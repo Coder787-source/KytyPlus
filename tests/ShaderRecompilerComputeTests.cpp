@@ -8754,6 +8754,10 @@ void CheckReverseRenderTargetFormatContract() {
     (void)SelectSampledColorView(VK_FORMAT_A2B10G10R10_UNORM_PACK32,
                                  VK_FORMAT_A2R10G10B10_UNORM_PACK32,
                                  DstSel(6, 5, 4, 7));
+  } else if (std::strcmp(kind, "sampled-abgr-format") == 0) {
+    (void)SelectSampledColorView(VK_FORMAT_R8G8B8A8_UNORM,
+                                 VK_FORMAT_R8G8B8A8_UNORM,
+                                 DstSel(7, 6, 5, 4));
   } else if (std::strcmp(kind, "sampled-depth-format") == 0) {
     (void)SelectSampledDepthView(VK_FORMAT_D24_UNORM_S8_UINT,
                                  VK_FORMAT_R32_SFLOAT, DstSel(4, 4, 4, 4));
@@ -8769,6 +8773,10 @@ void CheckReverseRenderTargetFormatContract() {
   } else if (std::strcmp(kind, "storage-compatible-swizzle") == 0) {
     (void)SelectStorageColorView(VK_FORMAT_B8G8R8A8_SRGB,
                                  VK_FORMAT_R8G8B8A8_UNORM, DstSel(4, 5, 6, 7));
+  } else if (std::strcmp(kind, "storage-abgr") == 0) {
+    (void)SelectStorageColorView(VK_FORMAT_R16G16B16A16_SFLOAT,
+                                 VK_FORMAT_R16G16B16A16_SFLOAT,
+                                 DstSel(7, 6, 5, 4));
   } else {
     ShaderRecompiler::IR::ImageResource resource{};
     resource.kind = ShaderRecompiler::IR::ResourceKind::StorageImage;
@@ -8840,6 +8848,11 @@ void CheckSampledColorViews() {
                                      DstSel(6, 5, 4, 7)) ==
                   VulkanImage::VIEW_BGRA_TO_RGBA,
           "packed RGB10 target did not select its matching mutable channel-order view");
+  Require("SampledColorViews", "reverse RGBA16F sampled view",
+          SelectSampledColorView(VK_FORMAT_R16G16B16A16_SFLOAT,
+                                 VK_FORMAT_R16G16B16A16_SFLOAT,
+                                 DstSel(7, 6, 5, 4)) == VulkanImage::VIEW_ABGR,
+          "reverse RGBA16F target did not select its reciprocal ABGR sampled view");
   Require("SampledColorViews", "D32 depth target",
           SelectSampledDepthView(VK_FORMAT_D32_SFLOAT_S8_UINT,
                                  VK_FORMAT_R32_SFLOAT,
@@ -8948,9 +8961,9 @@ void CheckSampledColorViews() {
        {"sampled", "sampled-compatible-swizzle", "sampled-compatible-reverse",
         "sampled-compatible-class", "sampled-compatible-colorspace",
         "sampled-compatible-snorm", "sampled-rgb10-swizzle",
-        "sampled-rgb10-reverse", "sampled-depth-format", "sampled-depth-swizzle",
-        "storage", "storage-format",
-        "storage-compatible-swizzle", "storage-kind", "storage-no-write",
+        "sampled-rgb10-reverse", "sampled-abgr-format", "sampled-depth-format",
+        "sampled-depth-swizzle", "storage", "storage-format",
+        "storage-compatible-swizzle", "storage-abgr", "storage-kind", "storage-no-write",
         "storage-atomic", "storage-compare", "storage-mip",
         "storage-dimension"}) {
     std::string command =

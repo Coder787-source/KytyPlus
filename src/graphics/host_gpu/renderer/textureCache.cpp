@@ -1437,6 +1437,10 @@ VkImageView TextureCache::GetRenderTargetSampledView(GraphicContext*           c
 			components = {VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R,
 			              VK_COMPONENT_SWIZZLE_A};
 			break;
+		case VulkanImage::VIEW_ABGR:
+			components = {VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G,
+			              VK_COMPONENT_SWIZZLE_R};
+			break;
 		default:
 			EXIT("TextureCache: unsupported render-target sampled view variant: %d\n", variant);
 	}

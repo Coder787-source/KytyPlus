@@ -84,6 +84,10 @@ namespace Libs::Graphics {
 			default: break;
 		}
 	}
+	if (image_format == VK_FORMAT_R16G16B16A16_SFLOAT && view_format == image_format &&
+	    swizzle == DstSel(7, 6, 5, 4)) {
+		return VulkanImage::VIEW_ABGR;
+	}
 	if (IsBgraToRgbaSampledView(image_format, view_format) && swizzle == DstSel(6, 5, 4, 7)) {
 		return VulkanImage::VIEW_BGRA_TO_RGBA;
 	}

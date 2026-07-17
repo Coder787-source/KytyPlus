@@ -67,7 +67,7 @@ enum class VulkanImageType {
 };
 
 struct VulkanImage {
-	static constexpr int VIEW_MAX                   = 21;
+	static constexpr int VIEW_MAX                   = 22;
 	static constexpr int VIEW_DEFAULT               = 0;
 	static constexpr int VIEW_BGRA                  = 1;
 	static constexpr int VIEW_DEPTH_TEXTURE         = 2;
@@ -89,6 +89,7 @@ struct VulkanImage {
 	static constexpr int VIEW_STORAGE               = 18;
 	static constexpr int VIEW_STORAGE_ARRAY         = 19;
 	static constexpr int VIEW_BGRA_TO_RGBA          = 20;
+	static constexpr int VIEW_ABGR                  = 21;
 
 	explicit VulkanImage(VulkanImageType type): type(type) {}
 
