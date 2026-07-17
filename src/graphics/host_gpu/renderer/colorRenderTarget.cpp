@@ -179,6 +179,10 @@ static float ColorClearF16(uint32_t value) {
 					color.float32[1] = ColorClearF16((c0 >> 16u) & 0xffffu);
 					color.float32[2] = ColorClearF16(c1 & 0xffffu);
 					color.float32[3] = ColorClearF16((c1 >> 16u) & 0xffffu);
+					if (rt.info.channel_order ==
+					    Prospero::GpuEnumValue(Prospero::ChannelOrder::kAlt)) {
+						std::swap(color.float32[0], color.float32[2]);
+					}
 					break;
 				case Prospero::ChannelLayout::k32:
 				case Prospero::ChannelLayout::k11_11_10:
@@ -535,6 +539,10 @@ void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 		      order == Prospero::ChannelOrder::kAlt)) ||
 		    (layout == Prospero::ChannelLayout::k10_10_10_2 &&
 		     type == Prospero::ChannelType::kUNorm &&
+		     (order == Prospero::ChannelOrder::kStandard ||
+		      order == Prospero::ChannelOrder::kAlt)) ||
+		    (layout == Prospero::ChannelLayout::k16_16_16_16 &&
+		     type == Prospero::ChannelType::kFloat &&
 		     (order == Prospero::ChannelOrder::kStandard || order == Prospero::ChannelOrder::kAlt));
 
 		EXIT_NOT_IMPLEMENTED(!supported_display_format);
@@ -555,6 +563,9 @@ void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 		r->extent         = video_image.image->extent;
 		r->base_mip_level = 0;
 		r->buffer_size    = video_image.size;
+		r->export_mapping = TextureGetRenderTargetFormat(rt.info.format, rt.info.channel_type,
+		                                                 rt.info.channel_order)
+		                        .export_mapping;
 	}
 }
 

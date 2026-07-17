@@ -240,6 +240,7 @@ struct VideoOutInfo {
 	uint32_t            tile_mode         = 0;
 	uint32_t            dcc_control       = 0;
 	VideoOutCompression compression       = VideoOutCompression::Unsupported;
+	bool                bgra16            = false;
 };
 
 [[nodiscard]] inline VideoOutCompression
@@ -265,48 +266,61 @@ CanUseVideoOutNativeWithoutUpload(VideoOutCompression compression, bool render_t
 }
 
 struct VideoOutPixelFormatInfo {
-	VkFormat format       = VK_FORMAT_UNDEFINED;
-	uint32_t guest_format = 0;
+	VkFormat format            = VK_FORMAT_UNDEFINED;
+	uint32_t guest_format      = 0;
+	uint32_t bytes_per_element = 0;
+	bool     bgra16            = false;
 };
+
+struct VideoOutFormatPolicy {
+	uint64_t                pixel_format;
+	VideoOutPixelFormatInfo info;
+};
+
+inline constexpr std::array<VideoOutFormatPolicy, 6> VIDEO_OUT_FORMAT_POLICIES {{
+    {0x8000000022000000ull,
+     {VK_FORMAT_R8G8B8A8_SRGB, Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb), 4,
+      false}},
+    {0x8000000000000000ull,
+     {VK_FORMAT_B8G8R8A8_SRGB, Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb), 4,
+      false}},
+    {0x8100000022000000ull,
+     {VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+      Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm), 4, false}},
+    {0x8100000000000000ull,
+     {VK_FORMAT_A2R10G10B10_UNORM_PACK32,
+      Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm), 4, false}},
+    {0xc001000622000000ull,
+     {VK_FORMAT_R16G16B16A16_SFLOAT,
+      Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16Float), 8, false}},
+    {0xc001000600000000ull,
+     {VK_FORMAT_R16G16B16A16_SFLOAT,
+      Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16Float), 8, true}},
+}};
 
 [[nodiscard]] inline bool DecodeVideoOutPixelFormat(uint64_t                 pixel_format,
                                                     VideoOutPixelFormatInfo* info) {
 	if (info == nullptr) {
 		return false;
 	}
-	VideoOutPixelFormatInfo next {};
-	switch (pixel_format) {
-		case 0x8000000022000000ull: // SCE_VIDEO_OUT_PIXEL_FORMAT2_R8_G8_B8_A8_SRGB
-			next.format       = VK_FORMAT_R8G8B8A8_SRGB;
-			next.guest_format = Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb);
-			break;
-		case 0x8000000000000000ull: // SCE_VIDEO_OUT_PIXEL_FORMAT2_B8_G8_R8_A8_SRGB
-			next.format       = VK_FORMAT_B8G8R8A8_SRGB;
-			next.guest_format = Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb);
-			break;
-		case 0x8100000022000000ull: // SCE_VIDEO_OUT_PIXEL_FORMAT2_R10_G10_B10_A2_SRGB
-			next.format       = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-			next.guest_format = Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm);
-			break;
-		case 0x8100000000000000ull: // SCE_VIDEO_OUT_PIXEL_FORMAT2_B10_G10_R10_A2_SRGB
-			next.format       = VK_FORMAT_A2R10G10B10_UNORM_PACK32;
-			next.guest_format = Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm);
-			break;
-		default: return false;
+	for (const auto& policy: VIDEO_OUT_FORMAT_POLICIES) {
+		if (policy.pixel_format == pixel_format) {
+			*info = policy.info;
+			return true;
+		}
 	}
-	*info = next;
-	return true;
+	return false;
 }
 
-[[nodiscard]] inline bool IsSupportedVideoOutFormat(uint32_t guest_format, VkFormat format) {
-	const bool rgba8 =
-	    guest_format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb) &&
-	    (format == VK_FORMAT_R8G8B8A8_SRGB || format == VK_FORMAT_B8G8R8A8_SRGB);
-	const bool rgb10 =
-	    guest_format == Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm) &&
-	    (format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
-	     format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
-	return rgba8 || rgb10;
+[[nodiscard]] inline bool IsSupportedVideoOutFormat(const VideoOutInfo& info) {
+	for (const auto& policy: VIDEO_OUT_FORMAT_POLICIES) {
+		if (info.format == policy.info.format && info.guest_format == policy.info.guest_format &&
+		    info.bytes_per_element == policy.info.bytes_per_element &&
+		    info.bgra16 == policy.info.bgra16) {
+			return true;
+		}
+	}
+	return false;
 }
 
 enum class DepthOverlap : uint8_t { None, RetireSampled, ExpandTarget, Unsupported };

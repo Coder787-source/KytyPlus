@@ -10706,62 +10706,97 @@ void CheckBufferImageWrites() {
 
 void CheckImageOverlapResolution() {
   CheckBufferImageWrites();
-	VideoOutPixelFormatInfo video_format {};
-	Require("ImageOverlapResolution", "existing video-out formats",
-	        DecodeVideoOutPixelFormat(0x8000000022000000ull, &video_format) &&
-	            video_format.format == VK_FORMAT_R8G8B8A8_SRGB &&
-	            video_format.guest_format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb) &&
-	            DecodeVideoOutPixelFormat(0x8000000000000000ull, &video_format) &&
-	            video_format.format == VK_FORMAT_B8G8R8A8_SRGB &&
-	            video_format.guest_format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb) &&
-	            DecodeVideoOutPixelFormat(0x8100000022000000ull, &video_format) &&
-	            video_format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
-	            video_format.guest_format == Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm),
-	        "pre-existing PS5 video-out format mappings changed during decoder centralization");
-	Require("ImageOverlapResolution", "B10G10R10A2 video-out format",
-	        DecodeVideoOutPixelFormat(0x8100000000000000ull, &video_format) &&
-	            video_format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32 &&
-	            video_format.guest_format ==
-	                Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm) &&
-	            IsSupportedVideoOutFormat(video_format.guest_format, video_format.format),
-	        "PS5 B10G10R10A2 sRGB video-out format did not preserve alternate channel order");
-	Require("ImageOverlapResolution", "video-out format guards",
-	        !DecodeVideoOutPixelFormat(0x8100070400000000ull, &video_format) &&
-	            !DecodeVideoOutPixelFormat(0x8100000000000000ull, nullptr) &&
-	            !IsSupportedVideoOutFormat(Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb),
-	                                       VK_FORMAT_A2R10G10B10_UNORM_PACK32) &&
-	            !IsSupportedVideoOutFormat(Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm),
-	                                       VK_FORMAT_R8G8B8A8_SRGB),
-	        "unsupported PS5 video-out formats or mismatched guest/host pairs were admitted");
+  VideoOutPixelFormatInfo video_format{};
+  Require(
+      "ImageOverlapResolution", "existing video-out formats",
+      DecodeVideoOutPixelFormat(0x8000000022000000ull, &video_format) &&
+          video_format.format == VK_FORMAT_R8G8B8A8_SRGB &&
+          video_format.guest_format ==
+              Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb) &&
+          DecodeVideoOutPixelFormat(0x8000000000000000ull, &video_format) &&
+          video_format.format == VK_FORMAT_B8G8R8A8_SRGB &&
+          video_format.guest_format ==
+              Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb) &&
+          DecodeVideoOutPixelFormat(0x8100000022000000ull, &video_format) &&
+          video_format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
+          video_format.guest_format ==
+              Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm),
+      "pre-existing PS5 video-out format mappings changed during decoder "
+      "centralization");
+  Require(
+      "ImageOverlapResolution", "B10G10R10A2 video-out format",
+      DecodeVideoOutPixelFormat(0x8100000000000000ull, &video_format) &&
+          video_format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32 &&
+          video_format.guest_format ==
+              Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm),
+      "PS5 B10G10R10A2 sRGB video-out format did not preserve alternate "
+      "channel order");
+  Require(
+      "ImageOverlapResolution", "RGBA16 float video-out formats",
+      DecodeVideoOutPixelFormat(0xc001000622000000ull, &video_format) &&
+          video_format.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+          video_format.guest_format ==
+              Prospero::GpuEnumValue(
+                  Prospero::BufferFormat::k16_16_16_16Float) &&
+          video_format.bytes_per_element == 8 &&
+          DecodeVideoOutPixelFormat(0xc001000600000000ull, &video_format) &&
+          video_format.bgra16,
+      "PS5 RGBA16-float video-out formats lost their 64-bpp storage contract");
+  VideoOutInfo supported_video_out{};
+  supported_video_out.format = video_format.format;
+  supported_video_out.guest_format = video_format.guest_format;
+  supported_video_out.bytes_per_element = video_format.bytes_per_element;
+  supported_video_out.bgra16 = video_format.bgra16;
+  Require(
+      "ImageOverlapResolution", "video-out format policy",
+      IsSupportedVideoOutFormat(supported_video_out),
+      "decoded PS5 video-out format was rejected by the centralized policy");
+  Require(
+      "ImageOverlapResolution", "video-out byte-size guards", ([&] {
+        auto mismatched = supported_video_out;
+        mismatched.bytes_per_element = 4;
+        return !IsSupportedVideoOutFormat(mismatched);
+      })(),
+      "video-out format validation admitted a mismatched storage element size");
+  Require(
+      "ImageOverlapResolution", "video-out format guards",
+      !DecodeVideoOutPixelFormat(0x8100070400000000ull, &video_format) &&
+          !DecodeVideoOutPixelFormat(0xc001070700000000ull, &video_format) &&
+          !DecodeVideoOutPixelFormat(0x8100000000000000ull, nullptr) && !([&] {
+            auto mismatched = supported_video_out;
+            mismatched.guest_format =
+                Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb);
+            return IsSupportedVideoOutFormat(mismatched);
+          })(),
+      "unsupported PS5 video-out formats or mismatched guest/host pairs were "
+      "admitted");
   TileSizeAlign render_target_layout{};
   Require("ImageOverlapResolution", "R8 render-target pitch",
           TileGetRenderTargetPitch(1920, 1) == 2048,
           "R8 target did not use native 256-pixel block width");
   Require("ImageOverlapResolution", "R8 render-target size",
-          TileGetRenderTargetSize(1920, 1080, 2048, 1,
-                                  &render_target_layout) &&
+          TileGetRenderTargetSize(1920, 1080, 2048, 1, &render_target_layout) &&
               render_target_layout.size == 0x280000 &&
               render_target_layout.align == 0x10000,
           "R8 target did not use native 64-KiB block geometry");
-  Require("ImageOverlapResolution", "RGBA8 render-target size",
-          TileGetRenderTargetPitch(1920, 4) == 1920 &&
-              TileGetRenderTargetSize(1920, 1080, 1920, 4,
-                                      &render_target_layout) &&
-              render_target_layout.size == 0x870000,
-          "RGBA8 target layout regressed");
+  Require(
+      "ImageOverlapResolution", "RGBA8 render-target size",
+      TileGetRenderTargetPitch(1920, 4) == 1920 &&
+          TileGetRenderTargetSize(1920, 1080, 1920, 4, &render_target_layout) &&
+          render_target_layout.size == 0x870000,
+      "RGBA8 target layout regressed");
   Require("ImageOverlapResolution", "PPSA19268 render-target edge",
           TileGetRenderTargetPitch(120, 8) == 128 &&
-              TileGetRenderTargetSize(120, 67, 128, 8,
-                                      &render_target_layout) &&
+              TileGetRenderTargetSize(120, 67, 128, 8, &render_target_layout) &&
               render_target_layout.size == 0x20000 &&
               ImageRangeOverlaps(0x11029fff8ull, 1, 0x110280000ull,
                                  render_target_layout.size),
           "title write did not land in the final native render-target block");
-  Require("ImageOverlapResolution", "render-target layout rejection",
-          TileGetRenderTargetPitch(1920, 3) == 0 &&
-              !TileGetRenderTargetSize(1920, 1080, 1920, 1,
-                                       &render_target_layout),
-          "unsupported element size or mismatched pitch was admitted");
+  Require(
+      "ImageOverlapResolution", "render-target layout rejection",
+      TileGetRenderTargetPitch(1920, 3) == 0 &&
+          !TileGetRenderTargetSize(1920, 1080, 1920, 1, &render_target_layout),
+      "unsupported element size or mismatched pitch was admitted");
 
   TileSizeOffset mip_levels[16]{};
   TilePaddedSize mip_padded[16]{};

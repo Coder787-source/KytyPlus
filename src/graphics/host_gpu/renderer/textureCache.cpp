@@ -1142,9 +1142,8 @@ void ValidateVideoOutInfo(GraphicContext* ctx, const VideoOutInfo& info) {
 	    (info.address & 0xffffu) != 0 || info.width == 0 || info.height == 0 ||
 	    info.width > 16384 || info.height > 16384 || info.pitch < info.width ||
 	    info.tile_mode != Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) ||
-	    info.bytes_per_element != 4 || compression == VideoOutCompression::Unsupported ||
-	    compression != info.compression || metadata_invalid ||
-	    !IsSupportedVideoOutFormat(info.guest_format, info.format)) {
+	    compression == VideoOutCompression::Unsupported || compression != info.compression ||
+	    metadata_invalid || !IsSupportedVideoOutFormat(info)) {
 		EXIT("TextureCache: unsupported video-out surface, ctx=%p addr=0x%016" PRIx64
 		     " size=0x%016" PRIx64 " metadata=0x%016" PRIx64 " dcc=0x%08" PRIx32
 		     " extent=%ux%u pitch=%u tile=%u guest_format=%u bpe=%u vk_format=%d\n",
@@ -1211,6 +1210,12 @@ void UploadVideoOut(GraphicContext* ctx, VideoOutVulkanImage* image, const Video
 	TileConvertTiledToLinearRenderTarget(
 	    scratch.Data(), reinterpret_cast<const void*>(info.address), info.width, info.height,
 	    info.pitch, info.bytes_per_element, info.size);
+	if (info.bgra16) {
+		auto* pixels = static_cast<uint16_t*>(scratch.Data());
+		for (uint64_t i = 0; i < info.size / sizeof(uint16_t); i += 4) {
+			std::swap(pixels[i], pixels[i + 2]);
+		}
+	}
 	UtilFillImage(ctx, image, scratch.Data(), info.size, info.pitch,
 	              static_cast<uint64_t>(VK_IMAGE_LAYOUT_GENERAL));
 }

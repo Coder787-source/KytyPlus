@@ -129,6 +129,7 @@ struct ColorComponentMapping {
 static_assert(sizeof(ColorComponentMapping) == sizeof(uint8_t));
 
 inline constexpr ColorComponentMapping ColorMappingAbgr {0x1bu}; // 3, 2, 1, 0
+inline constexpr ColorComponentMapping ColorMappingBgra {0xc6u}; // 2, 1, 0, 3
 
 enum class DepthFormat : uint32_t {
 	kInvalid = 0,

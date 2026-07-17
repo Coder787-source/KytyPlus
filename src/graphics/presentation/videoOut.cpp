@@ -303,7 +303,8 @@ static Graphics::VideoOutInfo MakeVideoOutInfo(const VideoOutBufferAttribute2& a
 	if (!Graphics::DecodeVideoOutPixelFormat(attribute.pixel_format, &pixel_format)) {
 		EXIT("unsupported video-out pixel format: 0x%016" PRIx64 "\n", attribute.pixel_format);
 	}
-	const auto tile_mode = Graphics::Prospero::GpuEnumValue(Graphics::Prospero::TileMode::kRenderTarget);
+	const auto tile_mode =
+	    Graphics::Prospero::GpuEnumValue(Graphics::Prospero::TileMode::kRenderTarget);
 	const auto pitch =
 	    Graphics::TileGetTexturePitch(pixel_format.guest_format, attribute.width, 1, tile_mode);
 	Graphics::TileSizeAlign total {};
@@ -321,10 +322,11 @@ static Graphics::VideoOutInfo MakeVideoOutInfo(const VideoOutBufferAttribute2& a
 	info.width             = attribute.width;
 	info.height            = attribute.height;
 	info.pitch             = pitch;
-	info.bytes_per_element = 4;
+	info.bytes_per_element = pixel_format.bytes_per_element;
 	info.tile_mode         = tile_mode;
 	info.dcc_control       = attribute.dcc_control;
 	info.compression       = compression;
+	info.bgra16            = pixel_format.bgra16;
 	return info;
 }
 
