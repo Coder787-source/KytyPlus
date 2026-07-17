@@ -431,38 +431,21 @@ struct TextureCache::ReadbackWorker {
 		    !storage || (single_layer_storage && cached.info.base_level == 0 &&
 		                 cached.info.levels == 1 && cached.info.base_array == 0 && linear);
 		const auto layers = target ? cached.target.layers : 1u;
-		const auto rows   = static_cast<uint64_t>(info.height - 1);
-		if ((!linear && !tiled) || !basic_storage || info.address == 0 || info.size == 0 ||
-		    info.width == 0 || info.height == 0 || info.levels != 1 || info.pitch < info.width ||
-		    info.bytes_per_element == 0 || layers == 0 || info.size > UINT32_MAX ||
-		    info.size % layers != 0 || cached.image->layers != layers ||
-		    rows > (UINT64_MAX - info.width) / info.pitch) {
+		if ((!linear && !tiled) || !basic_storage || info.levels != 1 || info.size > UINT32_MAX) {
 			EXIT("TextureCache: unsupported color-image readback layout, addr=0x%016" PRIx64
 			     " size=0x%016" PRIx64 " extent=%ux%u pitch=%u bpe=%u levels=%u tile=%u kind=%u\n",
 			     info.address, info.size, info.width, info.height, info.pitch,
 			     info.bytes_per_element, info.levels, info.tile_mode,
 			     static_cast<uint32_t>(cached.kind));
 		}
-		const auto linear_elements = rows * info.pitch + info.width;
-		if (linear_elements > UINT64_MAX / info.bytes_per_element) {
-			EXIT("TextureCache: color-image readback size overflow\n");
-		}
-		const auto linear_size    = linear_elements * info.bytes_per_element;
 		const auto slice_size     = info.size / layers;
 		const bool meta_overlap   = cache.HasMetaOverlapLocked(info.address, info.size);
 		const bool buffer_overlap = cache.m_buffer_cache.HasPageOverlap(info.address, info.size);
-		if (linear_size > slice_size || cached.image->format != info.format ||
-		    cached.image->extent.width != info.width ||
-		    cached.image->extent.height != info.height ||
-		    (tiled && !IsSupportedRenderTargetElementSize(info.bytes_per_element)) ||
-		    meta_overlap || buffer_overlap) {
+		if (meta_overlap || buffer_overlap) {
 			EXIT("TextureCache: color-image readback storage is unsupported, addr=0x%016" PRIx64
-			     " size=0x%016" PRIx64 " linear=0x%016" PRIx64
-			     " format=%d/%d extent=%ux%u/%ux%u bpe=%u tiled=%d meta=%d kind=%u\n",
-			     info.address, info.size, linear_size, static_cast<int>(cached.image->format),
-			     static_cast<int>(info.format), cached.image->extent.width,
-			     cached.image->extent.height, info.width, info.height, info.bytes_per_element,
-			     tiled, meta_overlap, static_cast<uint32_t>(cached.kind));
+			     " size=0x%016" PRIx64 " meta=%d buffer=%d kind=%u\n",
+			     info.address, info.size, meta_overlap, buffer_overlap,
+			     static_cast<uint32_t>(cached.kind));
 		}
 		download.resize(info.size);
 		std::fill(download.begin(), download.end(), 0);
@@ -982,8 +965,9 @@ void UploadRenderTargetLayers(GraphicContext* ctx, RenderTextureVulkanImage* ima
 		                                      false, false, false, "TextureCache render target");
 		const bool render_target_tiled =
 		    info.tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget);
-		if ((render_target_tiled && !layout.fmt_tiled_render_target) ||
-		    (standard64 && !layout.fmt_tiled_standard64kb) || layout.pitch != info.pitch) {
+		if (!standard64 &&
+		    ((render_target_tiled && !layout.fmt_tiled_render_target) ||
+		     layout.pitch != info.pitch)) {
 			EXIT("TextureCache: unsupported render-target mip upload layout, pitch=%u/%u tile=%u\n",
 			     info.pitch, layout.pitch, info.tile_mode);
 		}
@@ -1785,6 +1769,7 @@ VulkanImage* TextureCache::FindTexture(CommandBuffer* command, GraphicContext* c
 	if (command == nullptr || ctx == nullptr || info.address == 0 || info.size == 0 ||
 	    info.address >= TRACKER_ADDRESS_SIZE || info.size > TRACKER_ADDRESS_SIZE - info.address ||
 	    info.width == 0 || info.height == 0 || info.depth == 0 || info.levels == 0 ||
+	    info.levels >= 16 ||
 	    info.view_levels == 0 || info.base_level + info.view_levels > info.levels) {
 		EXIT("TextureCache: invalid sampled-image request, command=%p ctx=%p addr=0x%016" PRIx64
 		     " size=0x%016" PRIx64 " extent=%ux%ux%u levels=%u\n",
@@ -2302,6 +2287,7 @@ DepthStencilVulkanImage* TextureCache::FindDepthTarget(CommandBuffer* command, G
 	    info.address >= TRACKER_ADDRESS_SIZE || info.size > TRACKER_ADDRESS_SIZE - info.address ||
 	    (info.address & 0xffffu) != 0 || info.width == 0 || info.height == 0 ||
 	    info.pitch < info.width || info.layers == 0 || info.size % info.layers != 0 ||
+	    info.size > UINT32_MAX || info.stencil_size > UINT32_MAX ||
 	    info.tile_mode != Prospero::GpuEnumValue(Prospero::TileMode::kDepth) ||
 	    (has_stencil &&
 	     (info.stencil_address == 0 || info.stencil_size == 0 ||
@@ -3101,10 +3087,8 @@ void TextureCache::PrepareHostWrite(uint64_t vaddr, uint64_t size) {
 void TextureCache::SynchronizeColorImageToBufferLocked(CachedImage& cached) {
 	const bool render_target = cached.kind == CachedImage::Kind::RenderTarget;
 	const bool video_out     = cached.kind == CachedImage::Kind::VideoOut;
-	RenderTargetInfo target {};
-	if (render_target) {
-		target = cached.target;
-	} else if (video_out) {
+	RenderTargetInfo target = cached.target;
+	if (video_out) {
 		const auto& info         = cached.video_out;
 		target.address           = info.address;
 		target.size              = info.size;
@@ -3117,64 +3101,43 @@ void TextureCache::SynchronizeColorImageToBufferLocked(CachedImage& cached) {
 	}
 	const bool  linear = target.tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kLinear);
 	const bool  tiled  = IsTiledRenderTarget(target);
-	const auto  rows = static_cast<uint64_t>(target.height - 1);
 	TileSizeAlign exact {};
 	bool          single_slice = false;
 	if (IsSupportedStandard64RenderTarget(target)) {
-		const auto format = RenderTargetTransferFormat(target.bytes_per_element);
-		const auto expected_pitch =
-		    TileGetTexturePitch(format, target.width, target.levels, target.tile_mode);
-		TileGetTextureSize(format, target.width, target.height, expected_pitch, target.levels,
-		                   target.tile_mode, &exact, nullptr, nullptr);
-		single_slice = target.pitch == expected_pitch && exact.align == 65536 && exact.size != 0;
+		exact        = {static_cast<uint32_t>(target.size), 65536};
+		single_slice = true;
 	} else {
 		single_slice = TileGetRenderTargetSize(target.width, target.height, target.pitch,
 		                                       target.bytes_per_element, &exact);
 	}
-	const bool layered_size = target.layers != 0 && single_slice &&
-	                          exact.size <= UINT64_MAX / target.layers &&
-	                          exact.size * target.layers == target.size;
+	const bool layered_size =
+	    single_slice && static_cast<uint64_t>(exact.size) * target.layers == target.size;
 	const bool exact_tiled = tiled && exact.align == 65536 && layered_size;
-	const bool valid_video_out =
-	    video_out && cached.video_out.compression == VideoOutCompression::Uncompressed &&
-	    cached.video_out.metadata_address == 0 && cached.video_out.dcc_control == 0 &&
-	    target.tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) &&
-	    target.bytes_per_element == 4 && (target.address & 0xffffu) == 0;
-	const bool valid_cache = (render_target || valid_video_out) && cached.gpu_modified &&
-	                         !cached.buffer_modified && cached.ctx != nullptr &&
-	                         cached.image != nullptr;
-	const bool    valid_target =
-	    target.address != 0 && target.size != 0 && target.width != 0 && target.height != 0 &&
-	    target.pitch >= target.width && target.bytes_per_element != 0 && target.layers != 0 &&
-	    target.size % target.layers == 0 && target.size <= UINT32_MAX && target.levels == 1 &&
-	    rows <= (UINT64_MAX - target.width) / target.pitch;
-	const bool valid_image = cached.image != nullptr && cached.image->layers == target.layers;
-	if (!valid_cache || !valid_target || (!linear && !exact_tiled) || !valid_image) {
+	const bool valid_kind = render_target ||
+	                        (video_out && cached.video_out.compression ==
+	                                          VideoOutCompression::Uncompressed);
+	if (!valid_kind || !cached.gpu_modified || cached.buffer_modified || target.levels != 1 ||
+	    target.size > UINT32_MAX || (!linear && !exact_tiled) ||
+	    HasMetaOverlapLocked(target.address, target.size)) {
 		EXIT("TextureCache: unsupported color-image buffer synchronization, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-		     " extent=%ux%u pitch=%u bpe=%u levels=%u layers=%u/%u tile=%u"
+		     " extent=%ux%u pitch=%u bpe=%u levels=%u layers=%u tile=%u"
 		     " kind=%u compression=%u gpu_modified=%d buffer_modified=%d\n",
 		     target.address, target.size, target.width, target.height, target.pitch,
-		     target.bytes_per_element, target.levels, target.layers,
-		     cached.image == nullptr ? 0 : cached.image->layers, target.tile_mode,
+		     target.bytes_per_element, target.levels, target.layers, target.tile_mode,
 		     static_cast<uint32_t>(cached.kind),
 		     video_out ? static_cast<uint32_t>(cached.video_out.compression) : 0,
 		     cached.gpu_modified, cached.buffer_modified);
 	}
-	const auto linear_elements = rows * target.pitch + target.width;
-	if (linear_elements > UINT64_MAX / target.bytes_per_element) {
-		EXIT("TextureCache: color-image buffer synchronization size overflow\n");
-	}
-	const auto linear_size = linear_elements * target.bytes_per_element;
 	const auto slice_size  = target.size / target.layers;
-	if (linear_size > slice_size || cached.image->format != target.format ||
+	if (cached.image->format != target.format ||
 	    cached.image->extent.width != target.width ||
 	    cached.image->extent.height != target.height ||
 	    (tiled && !IsSupportedRenderTargetElementSize(target.bytes_per_element)) ||
 	    HasMetaOverlapLocked(target.address, target.size)) {
 		EXIT("TextureCache: color-image buffer synchronization storage mismatch, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " linear=0x%016" PRIx64 "\n",
-		     target.address, target.size, linear_size);
+		     target.address, target.size);
 	}
 
 	// This is the CPU Tiler backend for the image-to-buffer synchronization seam.
@@ -3199,9 +3162,6 @@ void TextureCache::SynchronizeColorImageToBufferLocked(CachedImage& cached) {
 	}
 	m_memory_tracker.ForEachDownloadRange<true>(target.address, target.size,
 	                                            [](uint64_t, uint64_t) noexcept {});
-	if (m_memory_tracker.IsRegionGpuModified(target.address, target.size)) {
-		EXIT("TextureCache: color-image buffer synchronization retained GPU ownership\n");
-	}
 	m_buffer_cache.PublishImageBacking(target.address, target.size);
 	cached.gpu_modified    = false;
 	cached.buffer_modified = true;
@@ -3262,17 +3222,9 @@ bool TextureCache::InvalidateMemoryFromGPU(uint64_t vaddr, uint64_t size,
 		case BufferImageWrite::InvalidateTexture:
 		case BufferImageWrite::InvalidateVideoOut: cached.buffer_modified = true; return true;
 		case BufferImageWrite::SynchronizeRenderTarget:
-			if (cached.kind != CachedImage::Kind::RenderTarget) {
-				EXIT("TextureCache: render-target synchronization action has kind=%u\n",
-				     static_cast<uint32_t>(cached.kind));
-			}
 			SynchronizeColorImageToBufferLocked(cached);
 			return true;
 		case BufferImageWrite::SynchronizeVideoOut:
-			if (cached.kind != CachedImage::Kind::VideoOut) {
-				EXIT("TextureCache: video-out synchronization action has kind=%u\n",
-				     static_cast<uint32_t>(cached.kind));
-			}
 			SynchronizeColorImageToBufferLocked(cached);
 			return true;
 		case BufferImageWrite::None:

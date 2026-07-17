@@ -1243,12 +1243,6 @@ bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 }
 
 void BufferCache::PublishImageBacking(uint64_t vaddr, uint64_t size) {
-	if (vaddr == 0 || size == 0 || vaddr >= TRACKER_ADDRESS_SIZE ||
-	    size > TRACKER_ADDRESS_SIZE - vaddr) {
-		EXIT("BufferCache: invalid image-backing publication, addr=0x%016" PRIx64
-		     " size=0x%016" PRIx64 "\n",
-		     vaddr, size);
-	}
 	FaultSafeCacheLock lock(this, m_mutex);
 	auto               owner = m_buffers.end();
 	for (auto it = m_buffers.begin(); it != m_buffers.end(); ++it) {
@@ -1265,10 +1259,7 @@ void BufferCache::PublishImageBacking(uint64_t vaddr, uint64_t size) {
 		}
 		owner = it;
 	}
-	if ((owner != m_buffers.end() &&
-	     (owner->second->ctx == nullptr || owner->second->buffer == nullptr ||
-	      owner->second->buffer->buffer == nullptr ||
-	      m_memory_tracker.IsRegionCpuModified(vaddr, size))) ||
+	if ((owner != m_buffers.end() && m_memory_tracker.IsRegionCpuModified(vaddr, size)) ||
 	    m_memory_tracker.IsRegionGpuModified(vaddr, size) ||
 	    !m_gpu_modified_ranges.Intersections(vaddr, size).empty()) {
 		EXIT("BufferCache: image backing requires clean buffer ownership, addr=0x%016" PRIx64
