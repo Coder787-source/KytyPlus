@@ -10276,6 +10276,26 @@ void CheckStandard64RenderTargetTileRoundTrip() {
               standard[16] == 512 && standard[32] == 4 &&
               standard[16383] == 16383,
           "Standard64KB reciprocal mapping disagreed with the PS5 SDK");
+
+  constexpr uint32_t block_width_16 = 256;
+  constexpr uint32_t block_height_16 = 128;
+  std::vector<uint16_t> tiled_16(block_size / sizeof(uint16_t));
+  for (uint32_t i = 0; i < tiled_16.size(); i++) {
+    tiled_16[i] = static_cast<uint16_t>(i);
+  }
+  std::vector<uint16_t> linear_16(tiled_16.size(), 0xffffu);
+  TileConvertTiledToLinearStandard64KB16(
+      linear_16.data(), tiled_16.data(), block_width_16, block_height_16,
+      block_width_16, block_size);
+  const auto sample_16 = [&](uint32_t x, uint32_t y) {
+    return linear_16[static_cast<uint64_t>(y) * block_width_16 + x];
+  };
+  Require("Standard64RenderTarget", "16-bit SDK byte mapping",
+          sample_16(0, 0) == 0 && sample_16(1, 0) == 1 &&
+              sample_16(2, 0) == 2 && sample_16(4, 0) == 4 &&
+              sample_16(8, 0) == 64 && sample_16(0, 1) == 8 &&
+              sample_16(0, 2) == 16 && sample_16(0, 4) == 32,
+          "Standard64KB 16-bit mapping interleaved X/Y address bits incorrectly");
   TileConvertLinearToTiledRenderTarget(
       render_target.data(), known.data(), block_width, block_height,
       block_width, sizeof(uint32_t), block_size);

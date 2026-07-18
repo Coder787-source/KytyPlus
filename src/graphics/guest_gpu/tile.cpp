@@ -1089,12 +1089,11 @@ struct Standard64KB16Tables {
 	constexpr Standard64KB16Tables() {
 		for (uint32_t i = 0; i < 256; i++) {
 			uint32_t x_part = 0;
-			x_part ^= (i << 1u) & 0x0006u;
-			x_part ^= (i << 4u) & 0x0040u;
-			x_part ^= (i << 5u) & 0x0100u;
-			x_part ^= (i << 6u) & 0x0400u;
-			x_part ^= (i << 7u) & 0x1000u;
-			x_part ^= (i << 8u) & 0x4000u;
+			x_part ^= (i << 1u) & 0x000eu;
+			x_part ^= (i << 4u) & 0x0080u;
+			x_part ^= (i << 5u) & 0x0200u;
+			x_part ^= (i << 6u) & 0x0800u;
+			x_part ^= (i << 7u) & 0x2000u;
 			x_part ^= (i << 8u) & 0x8000u;
 
 			x_words[i] = x_part >> 1u;
@@ -1102,11 +1101,11 @@ struct Standard64KB16Tables {
 
 		for (uint32_t i = 0; i < 128; i++) {
 			uint32_t y_part = 0;
-			y_part ^= (i << 3u) & 0x0038u;
-			y_part ^= (i << 4u) & 0x0080u;
-			y_part ^= (i << 5u) & 0x0200u;
-			y_part ^= (i << 6u) & 0x0800u;
-			y_part ^= (i << 7u) & 0x2000u;
+			y_part ^= (i << 4u) & 0x0070u;
+			y_part ^= (i << 5u) & 0x0100u;
+			y_part ^= (i << 6u) & 0x0400u;
+			y_part ^= (i << 7u) & 0x1000u;
+			y_part ^= (i << 8u) & 0x4000u;
 
 			y_words[i] = y_part >> 1u;
 		}
