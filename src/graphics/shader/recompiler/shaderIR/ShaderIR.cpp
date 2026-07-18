@@ -1165,22 +1165,6 @@ bool LowerImplemented(const Decoder::Instruction& decoded, BasicBlock* block, st
 	}
 
 	block->instructions.push_back(inst);
-	if (decoded.compare_exec) {
-		// V_CMPX has two architectural destinations. Keep the comparison's normal VCC/SDST
-		// result, then mirror the complete lane mask to EXEC. A mask is always a 64-bit scalar pair, including wave32 shaders.
-		for (uint32_t i = 0; i < 2u; i++) {
-			Instruction move;
-			move.pc        = decoded.pc;
-			move.op        = Opcode::MoveU32;
-			move.src_count = 1;
-			move.src[0]    = inst.dst;
-			move.src[0].reg.index += i;
-			move.dst.kind      = OperandKind::Register;
-			move.dst.reg.file  = RegisterFile::Exec;
-			move.dst.reg.index = i;
-			block->instructions.push_back(move);
-		}
-	}
 	return AppendScalarResultSccNonZero(decoded, block, error);
 }
 

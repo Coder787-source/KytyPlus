@@ -94,12 +94,8 @@ uint32_t VertexParameterComponentCount(const EmitterState& state, const InputBin
 	    input.location < ShaderVertexInputInfo::RES_MAX &&
 	    input.location < static_cast<uint32_t>(state.vertex_input_info->resources_num) &&
 	    state.vertex_input_info->resources_dst[input.location].registers_num > 0) {
-		const auto& descriptor = state.vertex_input_info->resources[input.location];
-		const auto  dst_count  = static_cast<uint32_t>(
+		count = static_cast<uint32_t>(
 		    state.vertex_input_info->resources_dst[input.location].registers_num);
-		// Keep the SPIR-V interface and native VkFormat width identical. A destination
-		// selector may request a raw component beyond the written VGPR count (W -> X).
-		count = VertexRawComponentCount(descriptor.DstSelXYZW(), dst_count);
 	}
 	return std::clamp(count, 1u, 4u);
 }

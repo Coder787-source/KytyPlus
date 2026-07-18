@@ -5871,24 +5871,24 @@ TestCase VectorVop3FloatCompareNegSourceModifier() {
           {O::VMovB32, O::VCmpLtF32, O::BufferStoreDword, O::SEndpgm}};
 }
 
-TestCase VectorVop3CmpxWritesScalarDstAndExecMask() {
+TestCase VectorVop3CmpxWritesExecMask() {
   using O = ShaderOpcode;
 
   std::vector<u32> code;
-	AppendVMovU32(&code, 0, 1);
-	AppendVMovU32(&code, 1, 1);
-	AppendVMovU32(&code, 2, 7);
-	AppendVMovU32(&code, 30, 0);
-	AppendVop3(&code, 0xd2, 5, Vgpr(0), Vgpr(1)); // v_cmpx_eq_u32 s[5:6], true
-	code.push_back(EncodeSop1(0x0a, 126, 5));     // s_wqm_b64 exec, s[5:6]
-	AppendBufferStoreDword(&code, 2, 30);
-	AppendEnd(&code);
+  AppendVMovU32(&code, 0, 2);
+  AppendVMovU32(&code, 1, 1);
+  AppendVMovU32(&code, 2, 0);
+  AppendVMovU32(&code, 30, 0);
+  AppendVop3(&code, 0xd1, 5, Vgpr(0), Vgpr(1)); // v_cmpx_lt_u32, false
+  AppendVMovU32(&code, 2, 7);
+  AppendBufferStoreDword(&code, 2, 30);
+  AppendEnd(&code);
 
-	return {"VectorVop3CmpxWritesScalarDstAndExecMask",
-	          code,
-	          {0},
-	          {7},
-	          {O::VMovB32, O::VCmpxEqU32, O::SWqmB64, O::BufferStoreDword, O::SEndpgm}};
+  return {"VectorVop3CmpxWritesExecMask",
+          code,
+          {0},
+          {0},
+          {O::VMovB32, O::VCmpxLtU32, O::BufferStoreDword, O::SEndpgm}};
 }
 
 TestCase VectorVopcSdwaCmpxWritesExecMask() {
@@ -5910,28 +5910,6 @@ TestCase VectorVopcSdwaCmpxWritesExecMask() {
           {0},
           {0},
           {O::VMovB32, O::VCmpxLtU32, O::BufferStoreDword, O::SEndpgm}};
-}
-
-TestCase VectorVopcCmpxPreservesVccForWqm() {
-  using O = ShaderOpcode;
-
-  std::vector<u32> code;
-  AppendVMovU32(&code, 0, 1);
-  AppendVMovU32(&code, 1, 1);
-  AppendVMovU32(&code, 2, 7);
-  AppendVMovU32(&code, 30, 0);
-  code.push_back(EncodeSop1(0x04, 106, InlineU32(0))); // s_mov_b64 vcc, 0
-  code.push_back(EncodeVopc(0xd2, Vgpr(0), 1));        // v_cmpx_eq_u32, true
-  code.push_back(EncodeSop1(0x0a, 126, 106));         // s_wqm_b64 exec, vcc
-  AppendBufferStoreDword(&code, 2, 30);
-  AppendEnd(&code);
-
-  return {"VectorVopcCmpxPreservesVccForWqm",
-          code,
-          {0},
-          {7},
-          {O::VMovB32, O::SMovB64, O::VCmpxEqU32, O::SWqmB64,
-           O::BufferStoreDword, O::SEndpgm}};
 }
 
 TestCase VectorCompareInvertedMaskSelect() {
@@ -8831,9 +8809,8 @@ std::vector<TestCase> MakeCases() {
   AddCase(Vop3CndmaskAllowsDataSourceModifier);
   AddCase(VectorCompareExecOps);
   AddCase(VectorVop3FloatCompareNegSourceModifier);
-	AddCase(VectorVop3CmpxWritesScalarDstAndExecMask);
+  AddCase(VectorVop3CmpxWritesExecMask);
   AddCase(VectorVopcSdwaCmpxWritesExecMask);
-  AddCase(VectorVopcCmpxPreservesVccForWqm);
   AddCase(VectorCompareInvertedMaskSelect);
   AddCase(BranchSelect);
   AddCase(SimpleLoop);

@@ -64,41 +64,6 @@ inline uint8_t GetDstSel(uint32_t swizzle, uint32_t channel) {
 	return (swizzle >> (channel * 3u)) & 0x7u;
 }
 
-enum class VertexDstSelectKind : uint8_t { Zero, One, Component, Reserved };
-
-struct VertexDstSelection {
-	VertexDstSelectKind kind             = VertexDstSelectKind::Reserved;
-	uint8_t             source_component = 0;
-};
-
-constexpr VertexDstSelection DecodeVertexDstSelector(uint8_t selector) {
-	if (selector == 0u) {
-		return {VertexDstSelectKind::Zero, 0};
-	}
-	if (selector == 1u) {
-		return {VertexDstSelectKind::One, 0};
-	}
-	if (selector >= 4u && selector <= 7u) {
-		return {VertexDstSelectKind::Component, static_cast<uint8_t>(selector - 4u)};
-	}
-	return {VertexDstSelectKind::Reserved, 0};
-}
-
-constexpr uint32_t VertexRawComponentCount(uint32_t swizzle, uint32_t destination_components) {
-	const auto dst_count = destination_components < 1u
-	                           ? 1u
-	                           : (destination_components > 4u ? 4u : destination_components);
-	auto       count     = dst_count;
-	for (uint32_t component = 0; component < dst_count; component++) {
-		const auto selection = DecodeVertexDstSelector(GetDstSel(swizzle, component));
-		if (selection.kind == VertexDstSelectKind::Component) {
-			const auto source_count = static_cast<uint32_t>(selection.source_component) + 1u;
-			count                   = count > source_count ? count : source_count;
-		}
-	}
-	return count;
-}
-
 struct ShaderVertexInputInfo {
 	static constexpr int RES_MAX = 32;
 
@@ -131,26 +96,26 @@ struct ShaderComputeInputInfo {
 };
 
 struct ShaderPixelInputInfo {
-	uint32_t                                       interpolator_settings[32]    = {0};
-	uint32_t                                       input_num                    = 0;
-	uint32_t                                       ps_system_input_base         = 0;
-	uint8_t                                        target_output_mode[8]        = {};
-	std::array<Prospero::ColorComponentMapping, 8> target_export_mapping        = {};
-	uint32_t                                       mrt_output_mask              = 0;
-	uint32_t                                       descriptor_set               = 0;
-	bool                                           ps_pos_x                     = false;
-	bool                                           ps_pos_y                     = false;
-	bool                                           ps_pos_xy                    = false;
-	bool                                           ps_pos_z                     = false;
-	bool                                           ps_pos_w                     = false;
-	bool                                           ps_front_face                = false;
-	bool                                           ps_no_perspective            = false;
-	bool                                           ps_pixel_kill_enable         = false;
-	bool                                           ps_depth_export_enable       = false;
-	bool                                           ps_sample_mask_export_enable = false;
-	bool                                           ps_early_z                   = false;
-	bool                                           ps_execute_on_noop           = false;
-	ShaderStageRuntime                             stage;
+	uint32_t           interpolator_settings[32]    = {0};
+	uint32_t           input_num                    = 0;
+	uint32_t           ps_system_input_base         = 0;
+	uint8_t            target_output_mode[8]        = {};
+	std::array<Prospero::ColorComponentMapping, 8> target_export_mapping = {};
+	uint32_t           mrt_output_mask              = 0;
+	uint32_t           descriptor_set               = 0;
+	bool               ps_pos_x                     = false;
+	bool               ps_pos_y                     = false;
+	bool               ps_pos_xy                    = false;
+	bool               ps_pos_z                     = false;
+	bool               ps_pos_w                     = false;
+	bool               ps_front_face                = false;
+	bool               ps_no_perspective            = false;
+	bool               ps_pixel_kill_enable         = false;
+	bool               ps_depth_export_enable       = false;
+	bool               ps_sample_mask_export_enable = false;
+	bool               ps_early_z                   = false;
+	bool               ps_execute_on_noop           = false;
+	ShaderStageRuntime stage;
 
 	bool HasPositionInput() const { return ps_pos_x || ps_pos_y || ps_pos_z || ps_pos_w; }
 };

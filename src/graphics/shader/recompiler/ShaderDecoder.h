@@ -639,8 +639,6 @@ struct Instruction {
 	bool           slc                                          = false;
 	bool           idxen                                        = false;
 	bool           offen                                        = false;
-	// V_CMPX writes the comparison result to its normal scalar destination and EXEC.
-	bool           compare_exec                                 = false;
 	int32_t        branch_offset                                = 0;
 	uint32_t       branch_target                                = 0;
 	struct {

@@ -1473,11 +1473,9 @@ void TestNewShaderRecompilerMoreAluFamilies() {
 	      "new decoder did not decode old-backed V_CMP_NEQ_F32");
 	Check(Common::ContainsStr(result.decoded_dump, "v_cmp_neq_f32 s0, 0.500000, v1"),
 	      "new decoder did not decode old-backed V_CMP_NEQ_F32 SDWA scalar destination");
-	Check(Common::ContainsStr(result.decoded_dump, "v_cmpx_lt_u32 vcc_lo, v5.sdwa(sel=4") &&
-	          Common::ContainsStr(result.ir_dump, "CompareMaskLtU32 vcc_lo") &&
-	          Common::ContainsStr(result.ir_dump, "MoveU32 exec_lo, vcc_lo") &&
-	          Common::ContainsStr(result.ir_dump, "MoveU32 exec_hi, vcc_hi"),
-	      "new decoder did not preserve V_CMPX SDWA destination and mirror its mask to exec");
+	Check(Common::ContainsStr(result.decoded_dump, "v_cmpx_lt_u32 exec_lo, v5.sdwa(sel=4") &&
+	          Common::ContainsStr(result.ir_dump, "CompareMaskLtU32 exec_lo"),
+	      "new decoder did not route V_CMPX SDWA destination to exec");
 	Check(Common::ContainsStr(result.decoded_dump, "v_cmp_nlt_f32"),
 	      "new decoder did not decode old-backed V_CMP_NLT_F32");
 	Check(Common::ContainsStr(result.decoded_dump, "v_cmpx_nge_f32"),
@@ -1776,12 +1774,10 @@ void TestNewShaderRecompilerMoreAluFamilies() {
 	      "VOP3-encoded VOP1 find-first-bit-low did not lower through shared IR");
 	Check(Common::ContainsStr(result.ir_dump, "CompareGtF32"),
 	      "VOPC float compare did not lower to IR");
-	Check(Common::ContainsStr(result.ir_dump, "CompareMaskGtF32 vcc_lo") &&
-	          Common::ContainsStr(result.ir_dump, "MoveU32 exec_lo, vcc_lo"),
-	      "VOPC float compare-and-mask did not lower to VCC plus EXEC IR");
-	Check(Common::ContainsStr(result.ir_dump, "CompareMaskGtU32 vcc_lo") &&
-	          Common::ContainsStr(result.ir_dump, "MoveU32 exec_hi, vcc_hi"),
-	      "VOPC uint compare-and-mask did not lower to VCC plus EXEC IR");
+	Check(Common::ContainsStr(result.ir_dump, "CompareMaskGtF32 exec_lo"),
+	      "VOPC float compare-and-mask did not lower to exec mask IR");
+	Check(Common::ContainsStr(result.ir_dump, "CompareMaskGtU32 exec_lo"),
+	      "VOPC uint compare-and-mask did not lower to exec mask IR");
 	Check(Common::ContainsStr(result.ir_dump, "CompareFalse vcc_lo, v6, v6"),
 	      "VOPC false compare did not lower to shared IR");
 	Check(Common::ContainsStr(result.ir_dump, "CompareTrue vcc_lo, v6, v6"),
@@ -1804,17 +1800,17 @@ void TestNewShaderRecompilerMoreAluFamilies() {
 	      "VOPC SDWA unordered-not-equal compare did not lower to scalar-destination IR");
 	Check(Common::ContainsStr(result.ir_dump, "CompareUnordGeF32 vcc_lo, v6, v6"),
 	      "VOPC unordered-greater-equal compare did not lower to shared IR");
-	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordLtF32 vcc_lo, v6, v6"),
+	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordLtF32 exec_lo, v6, v6"),
 	      "VOPC unordered-less compare-and-mask did not lower to shared IR");
-	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordEqF32 vcc_lo, v6, v6"),
+	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordEqF32 exec_lo, v6, v6"),
 	      "VOPC unordered-equal compare-and-mask did not lower to shared IR");
-	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordLeF32 vcc_lo, v6, v6"),
+	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordLeF32 exec_lo, v6, v6"),
 	      "VOPC unordered-less-equal compare-and-mask did not lower to shared IR");
-	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordGtF32 vcc_lo, v6, v6"),
+	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordGtF32 exec_lo, v6, v6"),
 	      "VOPC unordered-greater compare-and-mask did not lower to shared IR");
-	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordNeF32 vcc_lo, v6, v6"),
+	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordNeF32 exec_lo, v6, v6"),
 	      "VOPC unordered-not-equal compare-and-mask did not lower to shared IR");
-	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordGeF32 vcc_lo, v6, v6"),
+	Check(Common::ContainsStr(result.ir_dump, "CompareMaskUnordGeF32 exec_lo, v6, v6"),
 	      "VOPC unordered-greater-equal compare-and-mask did not lower to shared IR");
 	Check(Common::ContainsStr(result.ir_dump, "CompareFalse vcc_lo, v5, v5"),
 	      "VOPC integer false compare did not lower to shared IR");
@@ -2691,9 +2687,8 @@ void TestNewShaderRecompilerSignedCompareAlu() {
 	      "signed halfword greater-or-equal compare did not lower to IR");
 	Check(Common::ContainsStr(result.ir_dump, "CompareLtU16"),
 	      "unsigned halfword less-than compare did not lower to IR");
-	Check(Common::ContainsStr(result.ir_dump, "CompareMaskGtI32 vcc_lo") &&
-	          Common::ContainsStr(result.ir_dump, "MoveU32 exec_lo, vcc_lo"),
-	      "signed compare-and-mask did not lower to VCC plus EXEC IR");
+	Check(Common::ContainsStr(result.ir_dump, "CompareMaskGtI32 exec_lo"),
+	      "signed compare-and-mask did not lower to exec mask IR");
 	Check(SpirvContainsOpcode(result.spirv, 173), "SPIR-V binary does not contain OpSGreaterThan");
 	Check(SpirvContainsOpcode(result.spirv, 177), "SPIR-V binary does not contain OpSLessThan");
 	Check(SpirvContainsOpcode(result.spirv, 202),

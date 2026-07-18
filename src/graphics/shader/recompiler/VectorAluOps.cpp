@@ -1103,8 +1103,9 @@ bool DecodeVopcSdwa(uint32_t pc, std::span<const uint32_t> code, uint32_t word_i
 	    !DecodeScalarSource(vsrc1 + (fields.s1 == 0u ? 256u : 0u), pc, &inst->src1, error)) {
 		return false;
 	}
-	inst->compare_exec = IsVopcCompareExec(inst->opcode);
-	if (fields.sd == 0u) {
+	if (IsVopcCompareExec(inst->opcode)) {
+		inst->dst.kind = OperandKind::ExecLo;
+	} else if (fields.sd == 0u) {
 		inst->dst.kind = OperandKind::VccLo;
 	} else if (!DecodeScalarDestination(fields.sdst, pc, &inst->dst, error)) {
 		return false;
@@ -1141,8 +1142,7 @@ bool DecodeVopcDpp(uint32_t pc, std::span<const uint32_t> code, uint32_t word_in
 	    !DecodeVectorGpr(vsrc1, &inst->src1, error)) {
 		return false;
 	}
-	inst->dst.kind     = OperandKind::VccLo;
-	inst->compare_exec = IsVopcCompareExec(inst->opcode);
+	inst->dst.kind    = IsVopcCompareExec(inst->opcode) ? OperandKind::ExecLo : OperandKind::VccLo;
 	inst->src0.negate = ((modifier >> 20u) & 0x1u) != 0u;
 	inst->src0.absolute           = ((modifier >> 21u) & 0x1u) != 0u;
 	inst->src0.dpp                = true;
@@ -1532,8 +1532,7 @@ bool DecodeVopc(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	inst->family    = Family::VOPC;
 	inst->opcode_id = opcode;
 	inst->opcode    = Lookup(VOPC_OPS, static_cast<uint32_t>(std::size(VOPC_OPS)), opcode);
-	inst->dst.kind     = OperandKind::VccLo;
-	inst->compare_exec = IsVopcCompareExec(inst->opcode);
+	inst->dst.kind  = IsVopcCompareExec(inst->opcode) ? OperandKind::ExecLo : OperandKind::VccLo;
 	SetRawWords(inst, code, word_index, 1);
 
 	switch (src0) {
@@ -1619,8 +1618,9 @@ bool DecodeVop3(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 		return true;
 	}
 	bool dst_ok = true;
-	inst->compare_exec = compare_exec;
-	if (scalar_dst) {
+	if (compare_exec) {
+		inst->dst.kind = OperandKind::ExecLo;
+	} else if (scalar_dst) {
 		// VOP3A uses VDST for VOPC and the scalar-destination lane-read opcodes.
 		dst_ok = DecodeScalarDestination(vdst, pc, &inst->dst, error);
 	} else {
