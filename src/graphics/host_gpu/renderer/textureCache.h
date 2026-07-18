@@ -6,6 +6,7 @@
 #include "common/threads.h"
 #include "graphics/host_gpu/memoryTracker.h"
 #include "graphics/host_gpu/renderer/imageInfo.h"
+#include "graphics/host_gpu/renderer/multiLevelPageTable.h"
 #include "graphics/host_gpu/renderer/tiler.h"
 
 #include <array>
@@ -124,6 +125,7 @@ public:
 
 private:
 	struct CachedImage;
+	using ImageOwnerIndex = MultiRangePageOwnerIndex<CachedImage*>;
 	struct ReadbackWorker;
 	struct MetaDataInfo {
 		uint64_t size         = 0;
@@ -135,13 +137,16 @@ private:
 	[[nodiscard]] VkImageView  GetImageView(GraphicContext* ctx, VulkanImage* image,
 	                                        const ImageViewInfo& info);
 	[[nodiscard]] bool         HasMetaOverlapLocked(uint64_t vaddr, uint64_t size) const;
-	[[nodiscard]] CachedImage* FindGpuReadbackPageCandidateLocked(uint64_t vaddr,
-	                                                              uint64_t size) const;
+	[[nodiscard]] CachedImage* FindGpuReadbackPageCandidateLocked(uint64_t vaddr, uint64_t size);
 	void                       RequireNoMetaOverlapLocked(uint64_t vaddr, uint64_t size) const;
 	void                       MarkSampledAliasesCpuDirtyLocked(uint64_t vaddr, uint64_t size);
 	void RetireSampledTargetAliases(GraphicContext* ctx, const ImageInfo& requested);
-	void RetireStoragePageNeighbors(GraphicContext* ctx, const ImageInfo& requested);
+	void ResolveStorageImageOverlaps(GraphicContext* ctx, const ImageInfo& requested);
 	void RetireStorageDepthAliasLocked(GraphicContext* ctx, const ImageInfo& requested);
+	void RegisterImageLocked(CachedImage& image);
+	void UnregisterImageLocked(CachedImage& image, bool release_tracking);
+	[[nodiscard]] std::vector<CachedImage*>
+	FindImagesInRegionLocked(uint64_t vaddr, uint64_t size, bool page_overlap);
 	void RequireRetirementIsolation(const std::vector<CachedImage*>& retire, const char* operation,
 	                                uint64_t address, uint64_t size) const;
 	void RetireImages(const std::vector<CachedImage*>& retire,
@@ -165,6 +170,7 @@ private:
 	BufferCache&                              m_buffer_cache;
 	ResourceMutex&                            m_resource_mutex;
 	std::vector<std::shared_ptr<CachedImage>> m_images;
+	ImageOwnerIndex                           m_image_owner_index;
 	std::map<uint64_t, MetaDataInfo>          m_surface_metas;
 	std::unique_ptr<ReadbackWorker>           m_readback;
 	std::vector<uint8_t>                      m_buffer_transition_linear;

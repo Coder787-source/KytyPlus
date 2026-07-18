@@ -11490,6 +11490,49 @@ void CheckImageOverlapResolution() {
           ClassifySampledOverlap(sampled_alias, sampled, false, false) ==
               SampledOverlap::Unsupported,
           "cross-context sampled alias was admitted");
+  ImageInfo dirty_info{};
+  dirty_info.address = 0x500100;
+  dirty_info.size = 0x100;
+  Image dirty_image;
+  dirty_image = dirty_info;
+  dirty_image.InvalidateCpuWrite(0x500300, 0x10);
+  Require("ImageOverlapResolution", "sampled edge-page maybe dirty",
+          dirty_image.IsCpuDirty() && dirty_image.IsMaybeCpuDirty() &&
+              !dirty_image.IsDefinitelyCpuDirty(),
+          "byte-disjoint write sharing a tracker page was not kept maybe-dirty");
+  Require("ImageOverlapResolution", "sampled edge hash required",
+          dirty_image.NeedsMaybeCpuHash(),
+          "collapsed edge tracking did not request a baseline hash");
+  dirty_image.SetMaybeCpuHash(0x1234);
+  Require("ImageOverlapResolution", "sampled unchanged edge hash",
+          !dirty_image.ResolveMaybeCpuHash(0x1234) && !dirty_image.IsCpuDirty() &&
+              dirty_image.IsCpuTrackingComplete(),
+          "unchanged edge bytes forced an image upload");
+  dirty_image.InvalidateCpuWrite(0x500300, 0x10);
+  dirty_image.SetMaybeCpuHash(0x1234);
+  Require("ImageOverlapResolution", "sampled changed edge hash",
+          dirty_image.ResolveMaybeCpuHash(0x5678) &&
+              dirty_image.IsDefinitelyCpuDirty(),
+          "changed edge bytes were not promoted to definitely dirty");
+  dirty_image.RefreshComplete();
+  dirty_image.InvalidateCpuWrite(dirty_info.address, 1);
+  Require("ImageOverlapResolution", "sampled byte overlap dirty",
+          dirty_image.IsCpuDirty() && dirty_image.IsDefinitelyCpuDirty() &&
+              !dirty_image.IsMaybeCpuDirty(),
+          "true byte overlap was not promoted to definitely dirty");
+  ImageInfo two_page_info{};
+  two_page_info.address = 0x600100;
+  two_page_info.size = 0x1800;
+  Image two_page_image;
+  two_page_image = two_page_info;
+  two_page_image.InvalidateCpuWrite(0x600000, 1);
+  Require("ImageOverlapResolution", "sampled head tracking shrink",
+          !two_page_image.IsCpuDirty(),
+          "a single disjoint edge fault prematurely dirtied a two-page image");
+  two_page_image.InvalidateCpuWrite(0x601a00, 1);
+  Require("ImageOverlapResolution", "sampled head-tail collapse",
+          two_page_image.IsMaybeCpuDirty() && two_page_image.NeedsMaybeCpuHash(),
+          "both disjoint edge faults did not collapse logical tracking");
   constexpr uint64_t storage_subrange = 0x649b0100;
   constexpr uint64_t storage_subrange_size = 0x800;
   constexpr uint64_t sampled_backing = 0x649a3000;
@@ -11824,14 +11867,24 @@ void CheckImageOverlapResolution() {
   target.address++;
   Require("ImageOverlapResolution", "render target partial page",
           ClassifyRenderTargetOverlap(sampled, false, true, target) ==
-              RenderTargetOverlap::Unsupported,
-          "partially shared tracker page was retired for a render target");
+              RenderTargetOverlap::RetireSampled,
+          "true byte overlap within a partial tracker page was not retired");
+  target.address = sampled.address + 0x6101;
+  target.size = 0x4000;
+  Require("ImageOverlapResolution", "render target unaligned chance overlap",
+          ClassifyRenderTargetOverlap(sampled, false, true, target) ==
+              RenderTargetOverlap::RetireSampled,
+          "unaligned clean sampled chance overlap was not retired");
   target.address = page_left.address + page_left.size;
   target.size = page_left.size;
   Require("ImageOverlapResolution", "render target shared page",
           ClassifyRenderTargetOverlap(page_left, false, true, target) ==
-              RenderTargetOverlap::Unsupported,
-          "byte-disjoint allocation sharing a tracker page was silently admitted");
+              RenderTargetOverlap::None,
+          "byte-disjoint allocation sharing a tracker page was treated as an alias");
+  Require("ImageOverlapResolution", "sampled render-target shared page",
+          ClassifySampledRenderTargetOverlap(page_left, target, false, true) ==
+              RenderTargetOverlap::None,
+          "reverse byte-disjoint tracker-page relationship was treated as an alias");
   target.address = sampled.address + sampled.size;
   target.size = sampled.size;
   Require("ImageOverlapResolution", "render target adjacent",

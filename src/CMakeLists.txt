@@ -289,6 +289,11 @@ add_executable(resource_mutex_tests EXCLUDE_FROM_ALL
 target_link_libraries(resource_mutex_tests common)
 target_include_directories(resource_mutex_tests PRIVATE ${inc_headers})
 
+add_executable(image_page_table_tests EXCLUDE_FROM_ALL
+	../tests/ImagePageTableTests.cpp
+)
+target_include_directories(image_page_table_tests PRIVATE ${inc_headers})
+
 add_kyty_full_emulator_test(shader_recompiler_compute_tests ../tests/ShaderRecompilerComputeTests.cpp)
 
 add_kyty_full_emulator_test(virtual_memory_allocation_tests ../tests/VirtualMemoryAllocationTests.cpp)

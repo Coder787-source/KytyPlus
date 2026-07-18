@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "graphics/host_gpu/renderer/imageInfo.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <span>
 
@@ -11,30 +12,83 @@ namespace Libs::Graphics {
 
 struct Image final: ImageInfo {
 	Image& operator=(const ImageInfo& value) {
-		if (m_cpu_dirty) {
+		if (IsCpuDirty()) {
 			EXIT("dirty sampled image cannot be reassigned\n");
 		}
 		static_cast<ImageInfo&>(*this) = value;
+		m_track_begin = address;
+		m_track_end   = address + size;
+		m_maybe_cpu_hash_valid = false;
 		return *this;
 	}
 
 	void InvalidateCpuWrite(uint64_t vaddr, uint64_t size) {
-		if (ImagePageRangesOverlap(address, this->size, vaddr, size)) {
+		if (ImageRangeOverlaps(address, this->size, vaddr, size)) {
 			m_cpu_dirty = true;
+			m_maybe_cpu_dirty = false;
+			m_maybe_cpu_hash_valid = false;
+			m_track_begin = m_track_end;
+		} else if (ImagePageRangesOverlap(address, this->size, vaddr, size)) {
+			constexpr uint64_t page_mask = 4096 - 1;
+			if (vaddr + size <= address) {
+				const auto next_page = (address + page_mask) & ~page_mask;
+				m_track_begin = std::min(m_track_end, std::max(m_track_begin, next_page));
+			} else if (vaddr >= address + this->size) {
+				const auto page = (address + this->size) & ~page_mask;
+				m_track_end = std::max(m_track_begin, std::min(m_track_end, page));
+			}
+			m_maybe_cpu_dirty = m_track_begin == m_track_end;
 		}
 	}
 
-	[[nodiscard]] bool IsCpuDirty() const { return m_cpu_dirty; }
+	[[nodiscard]] bool IsCpuDirty() const { return m_cpu_dirty || m_maybe_cpu_dirty; }
+	[[nodiscard]] bool IsDefinitelyCpuDirty() const { return m_cpu_dirty; }
+	[[nodiscard]] bool IsMaybeCpuDirty() const { return m_maybe_cpu_dirty; }
+	[[nodiscard]] bool NeedsMaybeCpuHash() const {
+		return m_maybe_cpu_dirty && !m_maybe_cpu_hash_valid;
+	}
+	[[nodiscard]] bool IsCpuTrackingComplete() const {
+		return m_track_begin == address && m_track_end == address + size;
+	}
+	void SetMaybeCpuHash(uint64_t hash) {
+		if (!NeedsMaybeCpuHash()) {
+			EXIT("sampled image cannot initialize maybe-dirty hash\n");
+		}
+		m_maybe_cpu_hash       = hash;
+		m_maybe_cpu_hash_valid = true;
+	}
+	[[nodiscard]] bool ResolveMaybeCpuHash(uint64_t hash) {
+		if (!m_maybe_cpu_dirty || !m_maybe_cpu_hash_valid || m_cpu_dirty) {
+			EXIT("sampled image cannot resolve maybe-dirty hash\n");
+		}
+		m_maybe_cpu_dirty      = false;
+		m_maybe_cpu_hash_valid = false;
+		m_cpu_dirty            = hash != m_maybe_cpu_hash;
+		if (!m_cpu_dirty) {
+			m_track_begin = address;
+			m_track_end   = address + size;
+		}
+		return m_cpu_dirty;
+	}
 
 	void RefreshComplete() {
-		if (!m_cpu_dirty) {
+		if (!IsCpuDirty()) {
 			EXIT("clean sampled image cannot complete a refresh\n");
 		}
 		m_cpu_dirty = false;
+		m_maybe_cpu_dirty = false;
+		m_maybe_cpu_hash_valid = false;
+		m_track_begin = address;
+		m_track_end   = address + size;
 	}
 
 private:
 	bool m_cpu_dirty = false;
+	bool m_maybe_cpu_dirty = false;
+	bool m_maybe_cpu_hash_valid = false;
+	uint64_t m_track_begin = 0;
+	uint64_t m_track_end = 0;
+	uint64_t m_maybe_cpu_hash = 0;
 };
 
 struct ImageRetirementRange {
@@ -60,8 +114,8 @@ FindImageRetirementConflict(std::span<const ImageRetirementRange> ranges) {
 			if (ranges[retained].retire) {
 				continue;
 			}
-			if (ImagePageRangesOverlap(ranges[retired].address, ranges[retired].size,
-			                           ranges[retained].address, ranges[retained].size)) {
+			if (ImageRangeOverlaps(ranges[retired].address, ranges[retired].size,
+			                       ranges[retained].address, ranges[retained].size)) {
 				return {retired, retained};
 			}
 		}

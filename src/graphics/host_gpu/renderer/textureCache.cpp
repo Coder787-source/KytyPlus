@@ -22,6 +22,8 @@
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 
+#include <xxhash.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -36,6 +38,29 @@ namespace {
 
 thread_local const void* g_texture_cache_lock_owner = nullptr;
 thread_local const void* g_texture_fault_owner      = nullptr;
+
+[[nodiscard]] uint64_t HashSampledImageEdges(const Image& image) {
+	constexpr uint64_t page_mask = TRACKER_PAGE_SIZE - 1;
+	const uint64_t     begin     = image.address;
+	const uint64_t     end       = image.address + image.size;
+	const uint64_t     head_end  = std::min(end, (begin + page_mask) & ~page_mask);
+	const uint64_t     tail_begin = std::max(begin, end & ~page_mask);
+	const uint64_t     head_size = head_end - begin;
+	const uint64_t     tail_size = tail_begin < head_end ? end - head_end : end - tail_begin;
+	std::array<uint8_t, TRACKER_PAGE_SIZE * 2> bytes {};
+	if (head_size + tail_size > bytes.size()) {
+		EXIT("TextureCache: sampled-image edge hash range overflow\n");
+	}
+	if ((head_size != 0 && !LibKernel::Memory::TryReadBacking(begin, bytes.data(), head_size)) ||
+	    (tail_size != 0 &&
+	     !LibKernel::Memory::TryReadBacking(tail_begin < head_end ? head_end : tail_begin,
+	                                        bytes.data() + head_size, tail_size))) {
+		EXIT("TextureCache: failed to hash sampled-image edge backing, addr=0x%016" PRIx64
+		     " size=0x%016" PRIx64 "\n",
+		     image.address, image.size);
+	}
+	return XXH3_64bits(bytes.data(), static_cast<size_t>(head_size + tail_size));
+}
 
 class FaultSafeTextureLock final {
 public:
@@ -87,13 +112,14 @@ struct TextureCache::CachedImage {
 	bool             gpu_modified        = false;
 	bool             buffer_modified     = false;
 	bool             stencil_initialized = false;
+	bool             registered          = false;
 
 	~CachedImage() {
-		if (ctx == nullptr || image == nullptr) {
+		if (ctx == nullptr || image == nullptr || registered) {
 			EXIT("TextureCache: cached image destroyed with invalid resources, ctx=%p image=%p "
-			     "kind=%u\n",
+			     "kind=%u registered=%d\n",
 			     static_cast<const void*>(ctx), static_cast<const void*>(image),
-			     static_cast<uint32_t>(kind));
+			     static_cast<uint32_t>(kind), registered);
 		}
 		switch (kind) {
 			case Kind::Texture:
@@ -190,6 +216,43 @@ struct TextureCache::CachedImage {
 		return false;
 	}
 };
+
+void TextureCache::RegisterImageLocked(CachedImage& image) {
+	if (image.registered) {
+		EXIT("TextureCache: registering an already registered image\n");
+	}
+	std::vector<ImageOwnerIndex::ByteRange> ranges;
+	ranges.reserve(image.RangeCount());
+	for (uint32_t range = 0; range < image.RangeCount(); range++) {
+		ranges.push_back({image.Address(range), image.Size(range)});
+	}
+	if (!m_image_owner_index.Register(&image, ranges)) {
+		EXIT("TextureCache: invalid or duplicate image registration\n");
+	}
+	image.registered = true;
+}
+
+void TextureCache::UnregisterImageLocked(CachedImage& image, bool release_tracking) {
+	if (!image.registered) {
+		EXIT("TextureCache: unregistering an unregistered image\n");
+	}
+	std::vector<ImageOwnerIndex::ByteRange> final_releases;
+	if (!m_image_owner_index.Unregister(&image, final_releases)) {
+		EXIT("TextureCache: image missing from owner index\n");
+	}
+	if (release_tracking) {
+		for (const auto& release: final_releases) {
+			m_memory_tracker.UntrackMemory(release.address, release.size);
+		}
+	}
+	image.registered = false;
+}
+
+std::vector<TextureCache::CachedImage*>
+TextureCache::FindImagesInRegionLocked(uint64_t vaddr, uint64_t size, bool page_overlap) {
+	return page_overlap ? m_image_owner_index.QueryCandidates(vaddr, size)
+	                    : m_image_owner_index.Query(vaddr, size);
+}
 
 struct TextureCache::ReadbackWorker {
 	enum class State : uint32_t {
@@ -653,12 +716,10 @@ void TextureCache::RetireImages(const std::vector<CachedImage*>& retire,
 				     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
 				     (*it)->Address(range), (*it)->Size(range));
 			}
-			// A native image transition transfers this registration to the replacement cache
-			// record. Keeping it GPU-owned also keeps guest page protection continuous.
-			if (!native_image) {
-				m_memory_tracker.UntrackMemory((*it)->Address(range), (*it)->Size(range));
-			}
 		}
+		// A native transition keeps tracker ownership continuous until the replacement is
+		// published. Normal retirement only releases 4 KiB pages with no remaining image owner.
+		UnregisterImageLocked(**it, !native_image);
 		it = m_images.erase(it);
 		removed++;
 	}
@@ -1500,9 +1561,9 @@ VkImageView TextureCache::GetStorageTextureStorageView(GraphicContext*          
 }
 
 TextureCache::CachedImage* TextureCache::FindGpuReadbackPageCandidateLocked(uint64_t vaddr,
-                                                                            uint64_t size) const {
+	                                                                         uint64_t size) {
 	CachedImage* selected = nullptr;
-	for (const auto& cached: m_images) {
+	for (auto* cached: FindImagesInRegionLocked(vaddr, size, true)) {
 		if (!cached->IsGpuReadbackPageCandidate(vaddr, size)) {
 			continue;
 		}
@@ -1510,33 +1571,36 @@ TextureCache::CachedImage* TextureCache::FindGpuReadbackPageCandidateLocked(uint
 			EXIT("TextureCache: CPU fault has multiple GPU-modified image page candidates, "
 			     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " first=%p second=%p\n",
 			     vaddr, size, static_cast<const void*>(selected),
-			     static_cast<const void*>(cached.get()));
+			     static_cast<const void*>(cached));
 		}
-		selected = cached.get();
+		selected = cached;
 	}
 	return selected;
 }
 
 void TextureCache::MarkSampledAliasesCpuDirtyLocked(uint64_t vaddr, uint64_t size) {
-	for (auto& cached: m_images) {
+	for (auto* cached: FindImagesInRegionLocked(vaddr, size, true)) {
 		if (cached->kind != CachedImage::Kind::Texture) {
 			continue;
 		}
 		if (cached->gpu_modified &&
-		    ImagePageRangesOverlap(cached->info.address, cached->info.size, vaddr, size)) {
+		    ImageRangeOverlaps(cached->info.address, cached->info.size, vaddr, size)) {
 			EXIT("TextureCache: CPU write overlaps a GPU-modified sampled texture, "
 			     "write=0x%016" PRIx64 "+0x%016" PRIx64 " image=0x%016" PRIx64 "+0x%016" PRIx64
 			     "\n",
 			     vaddr, size, cached->info.address, cached->info.size);
 		}
 		cached->info.InvalidateCpuWrite(vaddr, size);
+		if (cached->info.NeedsMaybeCpuHash()) {
+			cached->info.SetMaybeCpuHash(HashSampledImageEdges(cached->info));
+		}
 	}
 }
 
 void TextureCache::RetireSampledTargetAliases(GraphicContext* ctx, const ImageInfo& requested) {
 	std::vector<CachedImage*> retire;
 	bool                      wait_idle = false;
-	for (const auto& cached: m_images) {
+	for (auto* cached: FindImagesInRegionLocked(requested.address, requested.size, true)) {
 		if (cached->kind != CachedImage::Kind::RenderTarget) {
 			continue;
 		}
@@ -1545,7 +1609,7 @@ void TextureCache::RetireSampledTargetAliases(GraphicContext* ctx, const ImageIn
 			case RenderTargetOverlap::None: continue;
 			case RenderTargetOverlap::RetireTarget:
 				wait_idle |= cached->gpu_modified;
-				retire.push_back(cached.get());
+				retire.push_back(cached);
 				break;
 			case RenderTargetOverlap::RetireSampled:
 			case RenderTargetOverlap::PreserveStorage:
@@ -1558,13 +1622,13 @@ void TextureCache::RetireSampledTargetAliases(GraphicContext* ctx, const ImageIn
 				     cached->ctx == ctx, cached->gpu_modified, cached->buffer_modified);
 		}
 	}
-	for (const auto& cached: m_images) {
+	for (auto* cached: FindImagesInRegionLocked(requested.address, requested.size, true)) {
 		if (cached->kind != CachedImage::Kind::DepthTarget) {
 			continue;
 		}
 		const auto overlap = ClassifyImageRangeOverlap(requested.address, requested.size,
 		                                               cached->depth.address, cached->depth.size);
-		if (overlap == ImageRangeOverlap::None) {
+		if (overlap == ImageRangeOverlap::None || overlap == ImageRangeOverlap::PageOnly) {
 			continue;
 		}
 		const auto delta = cached->depth.address >= requested.address
@@ -1578,8 +1642,7 @@ void TextureCache::RetireSampledTargetAliases(GraphicContext* ctx, const ImageIn
 		const bool supported = cached->ctx == ctx && !cached->buffer_modified &&
 		                       cached->depth.stencil_address == 0 &&
 		                       cached->depth.stencil_size == 0 && cached->depth.layers == 1 &&
-		                       (overlap == ImageRangeOverlap::PageOnly ||
-		                        (contained && (exact_range || sampled_expansion)));
+		                       contained && (exact_range || sampled_expansion);
 		if (!supported) {
 			EXIT("TextureCache: unsupported sampled/depth-target alias, sampled=0x%016" PRIx64
 			     "+0x%016" PRIx64 " depth=0x%016" PRIx64 "+0x%016" PRIx64
@@ -1599,7 +1662,7 @@ void TextureCache::RetireSampledTargetAliases(GraphicContext* ctx, const ImageIn
 			     cached->depth.tile_mode, cached->depth.htile_address, cached->depth.htile_size);
 		}
 		wait_idle |= cached->gpu_modified;
-		retire.push_back(cached.get());
+		retire.push_back(cached);
 	}
 	if (retire.empty()) {
 		return;
@@ -1660,10 +1723,9 @@ void TextureCache::RetireSampledTargetAliases(GraphicContext* ctx, const ImageIn
 	RetireImages(retire);
 }
 
-void TextureCache::RetireStoragePageNeighbors(GraphicContext* ctx, const ImageInfo& requested) {
+void TextureCache::ResolveStorageImageOverlaps(GraphicContext* ctx, const ImageInfo& requested) {
 	std::vector<CachedImage*> retire;
-	bool                      wait_idle = false;
-	for (const auto& cached: m_images) {
+	for (auto* cached: FindImagesInRegionLocked(requested.address, requested.size, true)) {
 		const bool tracker_gpu =
 		    m_memory_tracker.IsRegionGpuModified(cached->Address(), cached->Size());
 		switch (ClassifyStorageImageOverlap(
@@ -1671,8 +1733,8 @@ void TextureCache::RetireStoragePageNeighbors(GraphicContext* ctx, const ImageIn
 		    cached->kind == CachedImage::Kind::Texture, cached->ctx == ctx, cached->gpu_modified,
 		    cached->buffer_modified, tracker_gpu)) {
 			case StorageImageOverlap::None: continue;
-			case StorageImageOverlap::RetireSampled: retire.push_back(cached.get()); continue;
-			case StorageImageOverlap::PageNeighbor: break;
+			case StorageImageOverlap::RetireSampled: retire.push_back(cached); continue;
+			case StorageImageOverlap::PageNeighbor: continue;
 			case StorageImageOverlap::Unsupported:
 				EXIT("TextureCache: unsupported storage-image byte alias, requested=0x%016" PRIx64
 				     "+0x%016" PRIx64 " existing=0x%016" PRIx64 "+0x%016" PRIx64
@@ -1681,25 +1743,8 @@ void TextureCache::RetireStoragePageNeighbors(GraphicContext* ctx, const ImageIn
 				     static_cast<uint32_t>(cached->kind), cached->ctx == ctx, cached->gpu_modified,
 				     tracker_gpu, cached->buffer_modified);
 		}
-		const bool tracker_cpu =
-		    m_memory_tracker.IsRegionCpuModified(cached->Address(), cached->Size());
-		if (cached->kind != CachedImage::Kind::StorageTexture || cached->ctx != ctx ||
-		    cached->buffer_modified || cached->info.IsCpuDirty() ||
-		    cached->gpu_modified != tracker_gpu || (tracker_gpu && tracker_cpu)) {
-			EXIT("TextureCache: unsupported storage-image page neighbor, requested=0x%016" PRIx64
-			     "+0x%016" PRIx64 " existing=0x%016" PRIx64 "+0x%016" PRIx64
-			     " kind=%u same_context=%d gpu=%d/%d cpu=%d buffer=%d image_cpu=%d\n",
-			     requested.address, requested.size, cached->Address(), cached->Size(),
-			     static_cast<uint32_t>(cached->kind), cached->ctx == ctx, cached->gpu_modified,
-			     tracker_gpu, tracker_cpu, cached->buffer_modified, cached->info.IsCpuDirty());
-		}
-		wait_idle |= cached->gpu_modified;
-		retire.push_back(cached.get());
 	}
 	RequireRetirementIsolation(retire, "storage neighbor", requested.address, requested.size);
-	if (wait_idle) {
-		VulkanDeviceWaitIdle(ctx);
-	}
 	for (auto* cached: retire) {
 		if (!cached->gpu_modified) {
 			continue;
@@ -1715,7 +1760,7 @@ void TextureCache::RetireStoragePageNeighbors(GraphicContext* ctx, const ImageIn
 void TextureCache::RetireStorageDepthAliasLocked(GraphicContext* ctx,
 	                                              const ImageInfo& requested) {
 	CachedImage* selected = nullptr;
-	for (const auto& entry: m_images) {
+	for (auto* entry: FindImagesInRegionLocked(requested.address, requested.size, true)) {
 		auto& cached = *entry;
 		if (cached.kind != CachedImage::Kind::DepthTarget ||
 		    !cached.OverlapsRange(requested.address, requested.size, true)) {
@@ -1764,6 +1809,9 @@ TextureCache::~TextureCache() {
 	}
 	if (ctx != nullptr) {
 		VulkanDeviceWaitIdle(ctx);
+	}
+	for (const auto& image: m_images) {
+		UnregisterImageLocked(*image, false);
 	}
 	m_images.clear();
 	for (size_t i = 0; i < m_dummy_sampled_textures.size(); i++) {
@@ -1881,6 +1929,15 @@ VulkanImage* TextureCache::FindTexture(CommandBuffer* command, GraphicContext* c
 		match = cached;
 	}
 	if (match != nullptr) {
+		if (match->info.IsMaybeCpuDirty() && !match->info.IsDefinitelyCpuDirty()) {
+			const bool changed =
+			    match->info.ResolveMaybeCpuHash(HashSampledImageEdges(match->info));
+			if (!changed) {
+				m_memory_tracker.ForEachUploadRange(
+				    info.address, info.size, false, [](uint64_t, uint64_t) noexcept {},
+				    []() noexcept {});
+			}
+		}
 		const bool buffer_dirty = match->buffer_modified;
 		if (buffer_dirty) {
 			if (match->gpu_modified ||
@@ -1952,6 +2009,7 @@ VulkanImage* TextureCache::FindTexture(CommandBuffer* command, GraphicContext* c
 	auto* image = cached->image;
 	command->RetainResourceUntilFence(cached);
 	m_images.push_back(std::move(cached));
+	RegisterImageLocked(*m_images.back());
 	return image;
 }
 
@@ -2073,7 +2131,7 @@ StorageTextureVulkanImage* TextureCache::FindStorageTexture(CommandBuffer*   com
 		return static_cast<StorageTextureVulkanImage*>(match->image);
 	}
 
-	RetireStoragePageNeighbors(ctx, info);
+	ResolveStorageImageOverlaps(ctx, info);
 	m_images.reserve(m_images.size() + 1);
 	auto cached   = std::make_shared<CachedImage>();
 	cached->kind  = CachedImage::Kind::StorageTexture;
@@ -2094,6 +2152,7 @@ StorageTextureVulkanImage* TextureCache::FindStorageTexture(CommandBuffer*   com
 	auto* image = static_cast<StorageTextureVulkanImage*>(cached->image);
 	command->RetainResourceUntilFence(cached);
 	m_images.push_back(std::move(cached));
+	RegisterImageLocked(*m_images.back());
 	return image;
 }
 
@@ -2233,6 +2292,9 @@ RenderTextureVulkanImage* TextureCache::FindRenderTarget(CommandBuffer*         
 				break;
 			case CachedImage::Kind::VideoOut: break;
 		}
+		if (overlap == RenderTargetOverlap::None) {
+			continue;
+		}
 		bool supported = false;
 		switch (overlap) {
 			case RenderTargetOverlap::RetireSampled:
@@ -2328,6 +2390,7 @@ RenderTextureVulkanImage* TextureCache::FindRenderTarget(CommandBuffer*         
 	auto* image = static_cast<RenderTextureVulkanImage*>(cached->image);
 	command->RetainResourceUntilFence(cached);
 	m_images.push_back(std::move(cached));
+	RegisterImageLocked(*m_images.back());
 	return image;
 }
 
@@ -2649,6 +2712,7 @@ DepthStencilVulkanImage* TextureCache::FindDepthTarget(CommandBuffer* command, G
 	auto* image = static_cast<DepthStencilVulkanImage*>(cached->image);
 	command->RetainResourceUntilFence(cached);
 	m_images.push_back(std::move(cached));
+	RegisterImageLocked(*m_images.back());
 	return image;
 }
 
@@ -2715,6 +2779,7 @@ TextureCache::RegisterVideoOutSurfaces(GraphicContext*                  ctx,
 		}
 		result.push_back(static_cast<VideoOutVulkanImage*>(cached->image));
 		m_images.push_back(std::move(cached));
+		RegisterImageLocked(*m_images.back());
 	}
 	return result;
 }
@@ -2813,7 +2878,7 @@ void TextureCache::UnregisterVideoOutSurfaces(const std::vector<VideoOutVulkanIm
 			m_memory_tracker.UnmarkRegionAsGpuModified(cached->Address(), cached->Size());
 			cached->gpu_modified = false;
 		}
-		m_memory_tracker.UntrackMemory(cached->Address(), cached->Size());
+		UnregisterImageLocked(*cached, true);
 	}
 	for (auto* image: images) {
 		auto it = std::find_if(m_images.begin(), m_images.end(),
@@ -3485,8 +3550,8 @@ RenderTextureVulkanImage* TextureCache::FindRenderTargetByRange(CommandBuffer* c
 		     vaddr, size);
 	}
 	FaultSafeTextureLock         lock(this, m_lock);
-	std::shared_ptr<CachedImage> found;
-	for (auto& cached: m_images) {
+	CachedImage* found = nullptr;
+	for (auto* cached: FindImagesInRegionLocked(vaddr, size, false)) {
 		if (cached->kind != CachedImage::Kind::RenderTarget ||
 		    !ImageRangeOverlaps(vaddr, size, cached->Address(), cached->Size())) {
 			continue;
@@ -3503,14 +3568,19 @@ RenderTextureVulkanImage* TextureCache::FindRenderTargetByRange(CommandBuffer* c
 			EXIT("TextureCache: incompatible or ambiguous render-target range, addr=0x%016" PRIx64
 			     " size=0x%016" PRIx64 " cached=0x%016" PRIx64 "+0x%016" PRIx64 " previous=%p\n",
 			     vaddr, size, cached->Address(), cached->Size(),
-			     static_cast<const void*>(found.get()));
+			     static_cast<const void*>(found));
 		}
 		found = cached;
 	}
 	if (found == nullptr) {
 		return nullptr;
 	}
-	command->RetainResourceUntilFence(found);
+	const auto owner = std::find_if(m_images.begin(), m_images.end(),
+	                                [found](const auto& image) { return image.get() == found; });
+	if (owner == m_images.end()) {
+		EXIT("TextureCache: page-table render target has no cache owner\n");
+	}
+	command->RetainResourceUntilFence(*owner);
 	return static_cast<RenderTextureVulkanImage*>(found->image);
 }
 
@@ -3522,7 +3592,7 @@ bool TextureCache::HasGpuTargetPageOverlap(uint64_t vaddr, uint64_t size) {
 		     vaddr, size);
 	}
 	FaultSafeTextureLock lock(this, m_lock);
-	for (const auto& cached: m_images) {
+	for (const auto* cached: FindImagesInRegionLocked(vaddr, size, true)) {
 		if (cached->kind != CachedImage::Kind::Texture &&
 		    cached->OverlapsRange(vaddr, size, true)) {
 			return true;
@@ -3539,12 +3609,7 @@ bool TextureCache::HasPageOverlap(uint64_t vaddr, uint64_t size) {
 		     vaddr, size);
 	}
 	FaultSafeTextureLock lock(this, m_lock);
-	for (const auto& cached: m_images) {
-		if (cached->OverlapsRange(vaddr, size, true)) {
-			return true;
-		}
-	}
-	return false;
+	return !FindImagesInRegionLocked(vaddr, size, true).empty();
 }
 
 bool TextureCache::HasRangeOverlap(uint64_t vaddr, uint64_t size) {
@@ -3555,12 +3620,7 @@ bool TextureCache::HasRangeOverlap(uint64_t vaddr, uint64_t size) {
 		     vaddr, size);
 	}
 	FaultSafeTextureLock lock(this, m_lock);
-	for (const auto& cached: m_images) {
-		if (cached->OverlapsRange(vaddr, size, false)) {
-			return true;
-		}
-	}
-	return false;
+	return !FindImagesInRegionLocked(vaddr, size, false).empty();
 }
 
 bool TextureCache::HasGpuModifiedRangeOverlap(uint64_t vaddr, uint64_t size) {
@@ -3571,7 +3631,7 @@ bool TextureCache::HasGpuModifiedRangeOverlap(uint64_t vaddr, uint64_t size) {
 		     vaddr, size);
 	}
 	FaultSafeTextureLock lock(this, m_lock);
-	for (const auto& cached: m_images) {
+	for (const auto* cached: FindImagesInRegionLocked(vaddr, size, false)) {
 		if (cached->gpu_modified && cached->OverlapsRange(vaddr, size, false)) {
 			return true;
 		}
@@ -3997,14 +4057,6 @@ void TextureCache::UnmapMemory(uint64_t vaddr, uint64_t size) {
 		}
 		cached->gpu_modified = false;
 	}
-	for (auto& cached: m_images) {
-		if (!cached->OverlapsRange(vaddr, size, false)) {
-			continue;
-		}
-		for (uint32_t i = 0; i < cached->RangeCount(); i++) {
-			m_memory_tracker.UntrackMemory(cached->Address(i), cached->Size(i));
-		}
-	}
 	for (auto it = m_surface_metas.begin(); it != m_surface_metas.end();) {
 		const bool allocation_unmapped =
 		    ImageRangeOverlaps(vaddr, size, it->first, it->second.size);
@@ -4034,6 +4086,7 @@ void TextureCache::UnmapMemory(uint64_t vaddr, uint64_t size) {
 			++it;
 			continue;
 		}
+		UnregisterImageLocked(**it, false);
 		it = m_images.erase(it);
 	}
 }

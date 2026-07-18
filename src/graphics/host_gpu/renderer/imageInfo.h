@@ -821,14 +821,11 @@ ClassifyRenderTargetOverlap(const ImageInfo& sampled, bool sampled_gpu_modified,
 	if (!ImagePageRangesOverlap(sampled.address, sampled.size, target.address, target.size)) {
 		return RenderTargetOverlap::None;
 	}
-	const bool exact = sampled.address == target.address && sampled.size == target.size;
-	const bool page_isolated_overlap =
-	    sampled.address % TRACKER_PAGE_SIZE == 0 && sampled.size % TRACKER_PAGE_SIZE == 0 &&
-	    target.address % TRACKER_PAGE_SIZE == 0 && target.size % TRACKER_PAGE_SIZE == 0 &&
-	    ImageRangeOverlaps(sampled.address, sampled.size, target.address, target.size);
-	return !sampled_gpu_modified && same_context && (exact || page_isolated_overlap)
-	           ? RenderTargetOverlap::RetireSampled
-	           : RenderTargetOverlap::Unsupported;
+	if (!ImageRangeOverlaps(sampled.address, sampled.size, target.address, target.size)) {
+		return RenderTargetOverlap::None;
+	}
+	return !sampled_gpu_modified && same_context ? RenderTargetOverlap::RetireSampled
+	                                              : RenderTargetOverlap::Unsupported;
 }
 
 [[nodiscard]] inline RenderTargetOverlap
@@ -884,6 +881,9 @@ ClassifyStorageRenderTargetOverlap(const ImageInfo& storage, VkFormat storage_fo
 ClassifySampledRenderTargetOverlap(const ImageInfo& sampled, const RenderTargetInfo& target,
                                    bool target_buffer_modified, bool same_context) {
 	if (!ImagePageRangesOverlap(sampled.address, sampled.size, target.address, target.size)) {
+		return RenderTargetOverlap::None;
+	}
+	if (!ImageRangeOverlaps(sampled.address, sampled.size, target.address, target.size)) {
 		return RenderTargetOverlap::None;
 	}
 	return same_context && !target_buffer_modified ? RenderTargetOverlap::RetireTarget
