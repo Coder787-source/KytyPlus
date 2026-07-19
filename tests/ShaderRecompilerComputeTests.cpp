@@ -9690,6 +9690,51 @@ void CheckSampledDepthDescriptor() {
       (descriptor.fields[3] & ~(0xfu << 28u)) |
       (Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) << 28u);
 
+  ShaderTextureResource cube_descriptor{{0x01267d00u, 0xc0700000u, 0x00ffc0ffu,
+                                         0xb1800924u, 0x00000005u, 0x00700000u,
+                                         0x00000000u, 0x00000000u}};
+  DepthStencilVulkanImage cube_image;
+  cube_image.extent = {1024, 1024};
+  cube_image.guest_pitch = 1024;
+  cube_image.layers = 6;
+  cube_image.format = vk::Format::eD32Sfloat;
+  ShaderRecompiler::IR::ImageResource cube_resource{};
+  cube_resource.kind = ShaderRecompiler::IR::ResourceKind::Image;
+  cube_resource.dimension =
+      ShaderRecompiler::Decoder::ImageDimension::Dim2DArray;
+  cube_resource.read = true;
+  cube_resource.depth_compare = true;
+  const auto cube_view = ResolveTargetTextureView(
+      cube_resource, Prospero::ImageType::kCube, 0, cube_image.layers);
+  Require("SampledDepthDescriptor", "PPSA06084 six-face depth cubemap",
+          IsSupportedDepthTargetDescriptor(cube_descriptor, cube_image) &&
+              IsSupportedDepthTextureEncoding(cube_descriptor) &&
+              cube_view.type == vk::ImageViewType::e2DArray &&
+              cube_view.base_layer == 0 && cube_view.layer_count == 6,
+          "captured depth cubemap did not resolve to its layered target view");
+  auto partial_cube = cube_descriptor;
+  partial_cube.fields[4] = 4;
+  auto based_cube = cube_descriptor;
+  based_cube.fields[4] |= 1u << 16u;
+  auto reserved_cube = cube_descriptor;
+  reserved_cube.fields[4] |= 1u << 13u;
+  auto non_square_cube = cube_descriptor;
+  non_square_cube.fields[2] =
+      (non_square_cube.fields[2] & ~(0x3fffu << 14u)) | (511u << 14u);
+  DepthStencilVulkanImage non_square_image;
+  non_square_image.extent = cube_image.extent;
+  non_square_image.guest_pitch = cube_image.guest_pitch;
+  non_square_image.layers = cube_image.layers;
+  non_square_image.format = cube_image.format;
+  non_square_image.extent.height = 512;
+  Require(
+      "SampledDepthDescriptor", "cubemap hard guards",
+      !IsSupportedDepthTargetDescriptor(partial_cube, cube_image) &&
+          !IsSupportedDepthTargetDescriptor(based_cube, cube_image) &&
+          !IsSupportedDepthTextureEncoding(reserved_cube) &&
+          !IsSupportedDepthTargetDescriptor(non_square_cube, non_square_image),
+      "partial, based, non-square, or reserved-bit depth cubemap was accepted");
+
   image.guest_pitch = 1344;
   Require("SampledDepthDescriptor", "target pitch mismatch",
           !IsSupportedDepthTargetDescriptor(descriptor, image),
@@ -10712,6 +10757,77 @@ void CheckRenderTargetTileRoundTrip() {
               regions[2].src_layer == 2 && regions[2].pitch == pitch &&
               regions[2].width == width && regions[2].height == height,
           "layered image-buffer regions did not preserve slice offsets");
+
+  constexpr uint32_t mip_format =
+      Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16Float);
+  ImageInfo mip_info{};
+  mip_info.address = 0x10e3d0000ull;
+  mip_info.width = 512;
+  mip_info.height = 512;
+  mip_info.pitch = TileGetRenderTargetPitch(mip_info.width, 8);
+  mip_info.levels = 10;
+  mip_info.view_levels = mip_info.levels;
+  mip_info.tile = Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget);
+  mip_info.depth = 1;
+  mip_info.type = Prospero::GpuEnumValue(Prospero::ImageType::kColor2D);
+  mip_info.format = mip_format;
+  TileSizeAlign mip_storage{};
+  Require("RenderTargetTileRoundTrip", "PPSA06084 mip layout",
+          mip_info.pitch == 512 &&
+              TileGetRenderTargetMipLayout(mip_info.width, mip_info.height,
+                                           mip_info.pitch, 8, mip_info.levels,
+                                           &mip_storage, nullptr, nullptr) &&
+              mip_storage.align == 0x10000 && mip_storage.size == 0x2b0000,
+          "captured render-target mip-chain layout regressed");
+  mip_info.size = mip_storage.size;
+  const auto mip_layout = TextureCalcUploadLayout(
+      mip_info.format, mip_info.width, mip_info.height, mip_info.levels,
+      mip_info.depth, mip_info.pitch, mip_info.tile, mip_info.size, false,
+      false, false, "RenderTargetMipReadbackTest");
+  const auto mip_regions = TextureBuildUploadRegions(
+      mip_layout, vk::Format::eR16G16B16A16Sfloat, mip_info.width,
+      mip_info.height, mip_info.depth, mip_info.levels, true, false,
+      TextureUploadDestination::MipLevels,
+      TextureUploadSliceLayout::MipChainPerSlice);
+  Require(
+      "RenderTargetTileRoundTrip", "PPSA06084 mip regions",
+      mip_regions.size() == mip_info.levels &&
+          mip_layout.fmt_tiled_render_target &&
+          mip_layout.pitch == mip_info.pitch,
+      "captured render-target mip-chain did not produce exact subresources");
+  std::vector<uint8_t> mip_linear(mip_info.size, 0);
+  for (uint32_t level = 0; level < mip_info.levels; level++) {
+    const auto &region = mip_regions[level];
+    for (uint32_t y = 0; y < region.height; y++) {
+      auto *row = mip_linear.data() + region.offset +
+                  static_cast<uint64_t>(y) * region.pitch * 8u;
+      for (uint32_t x = 0; x < region.width * 8u; x++) {
+        row[x] =
+            static_cast<uint8_t>((level * 47u + y * 19u + x * 11u) & 0xffu);
+      }
+    }
+  }
+  std::vector<uint8_t> mip_guest(mip_info.size, 0xcd);
+  tiler.TileImage(mip_guest.data(), mip_linear.data(), mip_info);
+  std::vector<uint8_t> mip_restored(mip_info.size, 0);
+  for (uint32_t level = 0; level < mip_info.levels; level++) {
+    const auto &region = mip_regions[level];
+    const auto &level_size = mip_layout.level_sizes[level];
+    const auto guest_offset =
+        level_size.src_size != 0 ? level_size.src_offset : level_size.offset;
+    TileConvertTiledToLinearRenderTarget(
+        mip_restored.data() + region.offset, mip_guest.data() + guest_offset,
+        region.width, region.height, region.pitch, 8u, level_size.size,
+        level_size.src_size, level_size.x, level_size.y);
+    for (uint32_t y = 0; y < region.height; y++) {
+      const auto row =
+          region.offset + static_cast<uint64_t>(y) * region.pitch * 8u;
+      Require("RenderTargetTileRoundTrip", "PPSA06084 mip contents",
+              std::memcmp(mip_linear.data() + row, mip_restored.data() + row,
+                          region.width * 8u) == 0,
+              "render-target mip readback conversion did not round-trip");
+    }
+  }
   std::printf("[host]    %-32s ok\n", "RenderTargetTileRoundTrip");
 }
 
@@ -11090,6 +11206,91 @@ void CheckStorageTextureSampledReuse() {
               true) == StorageSampledOverlap::None,
           "disjoint storage image was classified as an alias");
 
+  ImageInfo mip_chain{};
+  mip_chain.address = 0x10eb50000ull;
+  mip_chain.size = 0x2b0000;
+  mip_chain.format =
+      Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16Float);
+  mip_chain.width = 512;
+  mip_chain.height = 512;
+  mip_chain.pitch = 512;
+  mip_chain.levels = 10;
+  mip_chain.view_levels = 10;
+  mip_chain.tile = Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget);
+  mip_chain.swizzle = DstSel(4, 5, 6, 7);
+  mip_chain.type = image_2d;
+  auto mip_storage = mip_chain;
+  mip_storage.address = mip_chain.address + 0x30000;
+  mip_storage.size = 0x80000;
+  mip_storage.width = 256;
+  mip_storage.height = 256;
+  mip_storage.pitch = 256;
+  mip_storage.levels = 1;
+  mip_storage.view_levels = 1;
+  Require("StorageTextureSampledReuse", "captured mip transition",
+          IsExactRenderTargetMipStorage(mip_chain, mip_storage,
+                                        vk::Format::eR16G16B16A16Sfloat,
+                                        vk::Format::eR16G16B16A16Sfloat) &&
+              ClassifyStorageSampledOverlap(
+                  mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
+                  vk::Format::eR16G16B16A16Sfloat, true, false, true, true,
+                  false, true) == StorageSampledOverlap::RetireStorage,
+          "captured GPU-owned level-1 storage allocation was not materialized "
+          "before "
+          "rebuilding its sampled chain");
+  auto tail_storage = mip_chain;
+  tail_storage.size = 0x10000;
+  tail_storage.width = 128;
+  tail_storage.height = 64;
+  tail_storage.pitch = 128;
+  tail_storage.levels = 1;
+  tail_storage.view_levels = 1;
+  Require("StorageTextureSampledReuse", "captured mip-tail transition",
+          IsExactRenderTargetMipStorage(mip_chain, tail_storage,
+                                        vk::Format::eR16G16B16A16Sfloat,
+                                        vk::Format::eR16G16B16A16Sfloat) &&
+              ClassifyStorageSampledOverlap(
+                  mip_chain, tail_storage, vk::Format::eR16G16B16A16Sfloat,
+                  vk::Format::eR16G16B16A16Sfloat, true, false, true, true,
+                  false, true) == StorageSampledOverlap::RetireStorage,
+          "captured GPU-owned physical mip-tail block was not materialized "
+          "before rebuilding its sampled chain");
+  auto malformed_mip = mip_storage;
+  malformed_mip.address += 0x10000;
+  auto malformed_tail = tail_storage;
+  malformed_tail.width = 64;
+  auto misaligned_chain = mip_chain;
+  misaligned_chain.address += 0x1000;
+  auto misaligned_tail = tail_storage;
+  misaligned_tail.address += 0x1000;
+  Require("StorageTextureSampledReuse", "mip transition guards",
+          !IsExactRenderTargetMipStorage(mip_chain, malformed_mip,
+                                         vk::Format::eR16G16B16A16Sfloat,
+                                         vk::Format::eR16G16B16A16Sfloat) &&
+              !IsExactRenderTargetMipStorage(mip_chain, malformed_tail,
+                                             vk::Format::eR16G16B16A16Sfloat,
+                                             vk::Format::eR16G16B16A16Sfloat) &&
+              !IsExactRenderTargetMipStorage(misaligned_chain, misaligned_tail,
+                                             vk::Format::eR16G16B16A16Sfloat,
+                                             vk::Format::eR16G16B16A16Sfloat) &&
+              ClassifyStorageSampledOverlap(
+                  mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
+                  vk::Format::eR16G16B16A16Sfloat, true, false, true, true,
+                  true, true) == StorageSampledOverlap::Unsupported &&
+              ClassifyStorageSampledOverlap(
+                  mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
+                  vk::Format::eR16G16B16A16Sfloat, true, false, true, true,
+                  false, false) == StorageSampledOverlap::Unsupported &&
+              ClassifyStorageSampledOverlap(
+                  mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
+                  vk::Format::eR16G16B16A16Sfloat, true, true, true, true,
+                  false, true) == StorageSampledOverlap::Unsupported &&
+              ClassifyStorageSampledOverlap(
+                  mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
+                  vk::Format::eR16G16B16A16Sfloat, true, false, false, true,
+                  false, true) == StorageSampledOverlap::Unsupported,
+          "malformed or unsafe mip-storage ownership was accepted");
+
   ImageInfo ppsa02604_storage{};
   ppsa02604_storage.address = 0x7c690000;
   ppsa02604_storage.size = 0x870000;
@@ -11358,6 +11559,11 @@ ShaderTextureResource BasicMetadataReuseDescriptor() {
            0x00700000u, 0x00000000u, 0x00000000u}};
 }
 
+ShaderTextureResource Ppsa06084MetadataReuseDescriptor() {
+  return {{0x00722290u, 0xc0100000u, 0x000fc00fu, 0x90560800u, 0x00000000u,
+           0x00700060u, 0x00000000u, 0x00000000u}};
+}
+
 [[noreturn]] void RunMetadataDescriptorDeathCase(const char *kind) {
   auto resource = BasicMetadataReuseResource();
   auto descriptor = BasicMetadataReuseDescriptor();
@@ -11375,6 +11581,14 @@ ShaderTextureResource BasicMetadataReuseDescriptor() {
     descriptor.fields[1] =
         (descriptor.fields[1] & ~0x1ff00000u) |
         (Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UInt) << 20u);
+  } else if (std::strcmp(kind, "invalid-swizzle") == 0) {
+    descriptor = Ppsa06084MetadataReuseDescriptor();
+    descriptor.fields[3] =
+        (descriptor.fields[3] & ~0xfffu) | DstSel(2, 0, 0, 4);
+  } else if (std::strcmp(kind, "mip-view-outside-allocation") == 0) {
+    descriptor = Ppsa06084MetadataReuseDescriptor();
+    descriptor.fields[3] =
+        (descriptor.fields[3] & ~(0xfu << 16u)) | (7u << 16u);
   } else {
     std::_Exit(0x7e);
   }
@@ -11543,6 +11757,25 @@ void CheckGpuMetadataReuse() {
   page_manager.OnGpuMap(base, allocation_size);
 
   texture_cache.RegisterMeta(nullptr, base, metadata_size, layers);
+  TextureCache::MetaRangeInfo full_meta{};
+  TextureCache::MetaRangeInfo slice_meta{};
+  TextureCache::MetaRangeInfo invalid_meta{};
+  constexpr uint64_t slice_size = metadata_size / layers;
+  Require("GpuMetadataReuse", "exact metadata ranges",
+          texture_cache.ResolveMetaRange(base, metadata_size, &full_meta) &&
+              full_meta.metadata_address == base &&
+              full_meta.metadata_size == metadata_size && full_meta.full &&
+              full_meta.slice == 0 &&
+              texture_cache.ResolveMetaRange(base + slice_size, slice_size,
+                                             &slice_meta) &&
+              slice_meta.metadata_address == base &&
+              slice_meta.metadata_size == metadata_size && !slice_meta.full &&
+              slice_meta.slice == 1 &&
+              !texture_cache.ResolveMetaRange(base + 0x1000, slice_size,
+                                              &invalid_meta) &&
+              !texture_cache.ResolveMetaRange(base + slice_size, slice_size / 2,
+                                              &invalid_meta),
+          "whole and per-slice metadata ranges were not classified exactly");
   Require("GpuMetadataReuse", "clear", texture_cache.ClearMeta(base),
           "metadata clear setup failed");
   const bool full_image_transition =
@@ -11583,13 +11816,27 @@ void CheckGpuMetadataReuse() {
 void CheckMetadataReuseDescriptors() {
   ValidateMetadataReuseTexture(BasicMetadataReuseResource(),
                                BasicMetadataReuseDescriptor(), 0x10000);
+  const auto captured = Ppsa06084MetadataReuseDescriptor();
+  ValidateMetadataReuseTexture(BasicMetadataReuseResource(), captured, 0x2000);
+  Require("MetadataReuseDescriptor", "PPSA06084 sampled mip chain",
+          captured.Format() ==
+                  Prospero::GpuEnumValue(Prospero::BufferFormat::k8UNorm) &&
+              captured.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
+              captured.BaseLevel() == 0 && captured.LastLevel() == 6 &&
+              captured.MaxMip() == 6 &&
+              captured.TileMode() ==
+                  Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
+              captured.DstSelXYZW() == DstSel(0, 0, 0, 4),
+          "captured metadata-reuse descriptor fields decoded unexpectedly");
   char path[MAX_PATH]{};
   Require("MetadataReuseDescriptor", "host",
           GetModuleFileNameA(nullptr, path, MAX_PATH) != 0,
           "GetModuleFileName failed");
   for (const char *kind :
        {"field1-reserved", "field2-low-reserved", "field2-high-reserved",
-        "unsupported-format", "uint-format"}) {
+        "unsupported-format", "uint-format", "invalid-swizzle",
+        "mip-view-outside-allocation"}) {
     std::string command =
         std::string("\"") + path + "\" --metadata-descriptor-death " + kind;
     std::vector<char> mutable_command(command.begin(), command.end());
@@ -12766,6 +13013,40 @@ void CheckImageOverlapResolution() {
           retirement_conflict.Exists() && retirement_conflict.retired == 0 &&
               retirement_conflict.retained == 1,
           "retiring a wide image silently untracked a retained tail alias");
+  using MipOwnerIndex = MultiRangePageOwnerIndex<uint32_t>;
+  constexpr uint64_t mip_chain_address = 0x110a10000ull;
+  constexpr uint64_t mip_chain_size = 0x2b0000;
+  constexpr uint64_t mip_zero_address = 0x110ac0000ull;
+  constexpr uint64_t mip_zero_size = 0x200000;
+  constexpr uint64_t mip_one_address = 0x110a40000ull;
+  constexpr uint64_t mip_one_size = 0x80000;
+  MipOwnerIndex mip_owners;
+  Require("ImageOverlapResolution", "PPSA06084 mip alias registration",
+          mip_owners.Register(1, {{mip_chain_address, mip_chain_size}}) &&
+              mip_owners.Register(2, {{mip_zero_address, mip_zero_size}}) &&
+              ClassifyStorageImageOverlap(mip_one_address, mip_one_size,
+                                          mip_chain_address, mip_chain_size,
+                                          true, true, false, false, false) ==
+                  StorageImageOverlap::RetireSampled &&
+              ClassifyStorageImageOverlap(mip_one_address, mip_one_size,
+                                          mip_zero_address, mip_zero_size, true,
+                                          true, false, false,
+                                          false) == StorageImageOverlap::None,
+          "captured full-chain and disjoint mip owners were misclassified");
+  std::vector<MipOwnerIndex::ByteRange> mip_releases;
+  Require(
+      "ImageOverlapResolution", "PPSA06084 retained mip ownership",
+      mip_owners.Unregister(1, mip_releases) && mip_releases.size() == 1 &&
+          mip_releases[0].address == mip_chain_address &&
+          mip_releases[0].size == mip_zero_address - mip_chain_address &&
+          mip_owners.Query(mip_zero_address, mip_zero_size) ==
+              std::vector<uint32_t>{2} &&
+          mip_owners.Register(3, {{mip_one_address, mip_one_size}}) &&
+          mip_owners.Query(mip_one_address, mip_one_size) ==
+              std::vector<uint32_t>{3} &&
+          mip_owners.Query(mip_zero_address, mip_zero_size) ==
+              std::vector<uint32_t>{2},
+      "retiring the full chain released or conflated a disjoint cached mip");
   DepthTargetInfo depth{};
   depth.address = sampled.address;
   depth.size = 0x6000;

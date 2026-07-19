@@ -113,6 +113,80 @@ ImageRangeOverlap ClassifyImageRangeOverlap(uint64_t left, uint64_t left_size, u
 
 } // namespace
 
+bool IsExactRenderTargetMipStorage(const ImageInfo& sampled, const ImageInfo& storage,
+                                   vk::Format sampled_view_format,
+                                   vk::Format storage_image_format) noexcept {
+	const auto render_target = Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget);
+	const auto image_2d      = Prospero::GpuEnumValue(Prospero::ImageType::kColor2D);
+	if (sampled.address == 0 || sampled.size == 0 || sampled.width == 0 || sampled.height == 0 ||
+	    (sampled.address & 0xffffu) != 0 || sampled.levels <= 1 || sampled.levels > 16 ||
+	    sampled.base_level != 0 || sampled.view_levels != sampled.levels ||
+	    sampled.tile != render_target || sampled.depth != 1 || sampled.type != image_2d ||
+	    sampled.base_array != 0 || storage.address == 0 || storage.size == 0 ||
+	    (storage.address & 0xffffu) != 0 || storage.width == 0 || storage.height == 0 ||
+	    storage.base_level != 0 || storage.levels != 1 || storage.view_levels != 1 ||
+	    storage.tile != render_target || storage.depth != 1 || storage.type != image_2d ||
+	    storage.base_array != 0 || sampled.format != storage.format ||
+	    sampled_view_format != storage_image_format) {
+		return false;
+	}
+	const auto bytes_per_element = Prospero::NumBytesPerElement(sampled.format);
+	if (bytes_per_element == 0) {
+		return false;
+	}
+	TileSizeAlign                  sampled_layout {};
+	std::array<TileSizeOffset, 16> level_layouts {};
+	std::array<TilePaddedSize, 16> level_padded {};
+	if (!TileGetRenderTargetMipLayout(sampled.width, sampled.height, sampled.pitch,
+	                                  bytes_per_element, sampled.levels, &sampled_layout,
+	                                  level_layouts.data(), level_padded.data()) ||
+	    sampled_layout.align != 65536 || sampled_layout.size != sampled.size) {
+		return false;
+	}
+	TileSizeAlign storage_layout {};
+	if (!TileGetRenderTargetSize(storage.width, storage.height, storage.pitch, bytes_per_element,
+	                             &storage_layout) ||
+	    storage_layout.align != 65536 || storage_layout.size != storage.size) {
+		return false;
+	}
+	for (uint32_t level = 0; level < sampled.levels; level++) {
+		const uint64_t divisor = 1ull << level;
+		const auto     level_width =
+		    static_cast<uint32_t>((static_cast<uint64_t>(sampled.width) + divisor - 1) / divisor);
+		const auto level_height =
+		    static_cast<uint32_t>((static_cast<uint64_t>(sampled.height) + divisor - 1) / divisor);
+		const auto& layout               = level_layouts[level];
+		const bool  dedicated_allocation = layout.size == layout.src_size &&
+		                                   layout.offset == layout.src_offset && layout.x == 0 &&
+		                                   layout.y == 0;
+		const auto& padded               = level_padded[level];
+		const bool  packed_tail_allocation =
+		    layout.src_size == 65536 && !dedicated_allocation && padded.width != 0 &&
+		    padded.height != 0 && storage.width == padded.width &&
+		    storage.height == padded.height && storage.pitch == padded.width &&
+		    storage.size == layout.src_size && storage_layout.size == layout.src_size &&
+		    layout.src_offset <= sampled.size &&
+		    layout.src_size <= sampled.size - layout.src_offset &&
+		    sampled.address <= UINT64_MAX - layout.src_offset &&
+		    storage.address == sampled.address + layout.src_offset;
+		if (packed_tail_allocation) {
+			// A PS5 mip tail is one physical thin-64 KiB tile. The storage descriptor exposes
+			// that complete padded block so its shader can address the packed mip locations.
+			return true;
+		}
+		if (!dedicated_allocation || storage.width != level_width ||
+		    storage.height != level_height ||
+		    storage.pitch != TileGetRenderTargetPitch(level_width, bytes_per_element) ||
+		    storage.size != layout.size || storage_layout.size != layout.size ||
+		    sampled.address > UINT64_MAX - layout.offset ||
+		    storage.address != sampled.address + layout.offset) {
+			continue;
+		}
+		return true;
+	}
+	return false;
+}
+
 struct TextureCache::CachedImage {
 	enum class Kind {
 		Texture,
@@ -568,9 +642,20 @@ struct TextureCache::ReadbackWorker {
 		    !storage ||
 		    (single_layer_storage && cached.info.base_level == 0 && cached.info.levels == 1 &&
 		     cached.info.base_array == 0 && (linear || tiled_storage));
-		const auto layers = target ? cached.target.layers : 1u;
+		const auto    layers = target ? cached.target.layers : 1u;
+		TileSizeAlign target_mip_layout {};
+		const bool    target_mip_chain =
+		    target && info.levels > 1 && layers == 1 && tiled_target &&
+		    TileGetRenderTargetMipLayout(info.width, info.height, info.pitch,
+		                                 info.bytes_per_element, info.levels, &target_mip_layout,
+		                                 nullptr, nullptr) &&
+		    target_mip_layout.align == 65536 && target_mip_layout.size == info.size &&
+		    cached.image != nullptr && cached.image->format == info.format &&
+		    cached.image->extent.width == info.width &&
+		    cached.image->extent.height == info.height && cached.image->layers == 1 &&
+		    cached.image->mip_levels == info.levels && cached.image->samples == 1;
 		if (info.samples != 1 || (!linear && !tiled_target && !tiled_storage) || !basic_storage ||
-		    info.levels != 1 || info.size > UINT32_MAX) {
+		    (info.levels != 1 && !target_mip_chain) || layers == 0 || info.size > UINT32_MAX) {
 			EXIT("TextureCache: unsupported color-image readback layout, addr=0x%016" PRIx64
 			     " size=0x%016" PRIx64
 			     " extent=%ux%u pitch=%u bpe=%u levels=%u samples=%u tile=%u kind=%u\n",
@@ -589,11 +674,49 @@ struct TextureCache::ReadbackWorker {
 		}
 		download.resize(info.size);
 		std::fill(download.begin(), download.end(), 0);
-		const auto regions = Transfer::MakeLayeredImageBufferCopies(layers, slice_size, info.pitch,
-		                                                            info.width, info.height);
+		std::vector<ImageBufferCopy> regions;
+		if (target_mip_chain) {
+			const auto format = ImageOps::RenderTargetTransferFormat(info.bytes_per_element);
+			auto layout = TextureCalcUploadLayout(format, info.width, info.height, info.levels, 1,
+			                                      info.pitch, info.tile_mode, info.size, false,
+			                                      false, false, "RenderTargetReadback");
+			if (!layout.fmt_tiled_render_target || layout.pitch != info.pitch) {
+				EXIT("TextureCache: inconsistent render-target readback layout, addr=0x%016" PRIx64
+				     " size=0x%016" PRIx64 " pitch=%u/%u levels=%u\n",
+				     info.address, info.size, info.pitch, layout.pitch, info.levels);
+			}
+			const auto uploads = TextureBuildUploadRegions(
+			    layout, info.format, info.width, info.height, 1, info.levels, true, false,
+			    TextureUploadDestination::MipLevels, TextureUploadSliceLayout::MipChainPerSlice);
+			regions.reserve(uploads.size());
+			for (const auto& upload: uploads) {
+				regions.push_back({upload.offset, upload.pitch, upload.dst_level, upload.width,
+				                   upload.height, upload.copy_height, upload.dst_layer,
+				                   upload.dst_x, upload.dst_y, upload.dst_z, upload.aspect});
+			}
+		} else {
+			regions = Transfer::MakeLayeredImageBufferCopies(layers, slice_size, info.pitch,
+			                                                 info.width, info.height);
+		}
 		Transfer::DownloadImage(cached.ctx, download.data(), info.size, regions, cached.image,
 		                        cached.image->layout);
-		if (tiled_target || tiled_storage) {
+		if (target_mip_chain) {
+			guest.resize(info.size);
+			ImageInfo layout {};
+			layout.address     = info.address;
+			layout.size        = info.size;
+			layout.format      = ImageOps::RenderTargetTransferFormat(info.bytes_per_element);
+			layout.width       = info.width;
+			layout.height      = info.height;
+			layout.pitch       = info.pitch;
+			layout.levels      = info.levels;
+			layout.view_levels = info.levels;
+			layout.tile        = info.tile_mode;
+			layout.depth       = 1;
+			layout.type        = Prospero::GpuEnumValue(Prospero::ImageType::kColor2D);
+			cache.m_tiler.TileImage(guest.data(), download.data(), layout);
+			Libs::LibKernel::Memory::WriteBacking(info.address, guest.data(), info.size);
+		} else if (tiled_target || tiled_storage) {
 			guest.resize(info.size);
 			const RenderTargetInfo layout =
 			    target ? cached.target : RenderTargetInfo {info.address,
@@ -1170,7 +1293,10 @@ void TextureCache::ResolveStorageImageOverlaps(GraphicContext* ctx, const ImageI
 				     tracker_gpu, cached->buffer_modified);
 		}
 	}
-	RequireRetirementIsolation(retire, "storage neighbor", requested.address, requested.size);
+	// Every exact byte overlap was classified above: only clean sampled images are retired and all
+	// retained byte aliases remain fatal. A retired full mip chain can still contain a cached,
+	// byte-disjoint subresource outside this storage request. The multi-owner index keeps those
+	// retained pages tracked and UnregisterImageLocked releases only pages whose final owner left.
 	for (auto* cached: retire) {
 		if (!cached->gpu_modified) {
 			continue;
@@ -1276,14 +1402,22 @@ VulkanImage* TextureCache::FindTexture(CommandBuffer* command, GraphicContext* c
 		     info.address, info.size, metadata_read);
 	}
 	std::shared_ptr<CachedImage> storage_match;
+	std::vector<CachedImage*>    storage_retire;
 	const auto                   requested_view_format = TextureGetFormat(info.format);
 	for (auto& cached: m_images) {
 		if (cached->kind != CachedImage::Kind::StorageTexture) {
 			continue;
 		}
-		switch (ClassifyStorageSampledOverlap(info, cached->info, requested_view_format,
-		                                      cached->image->format, cached->gpu_modified,
-		                                      cached->info.IsCpuDirty(), cached->ctx == ctx)) {
+		const bool tracker_gpu =
+		    m_memory_tracker.IsRegionGpuModified(cached->info.address, cached->info.size);
+		const bool cpu_dirty =
+		    cached->info.IsCpuDirty() ||
+		    m_memory_tracker.IsRegionCpuModified(cached->info.address, cached->info.size);
+		const bool exact_mip = IsExactRenderTargetMipStorage(
+		    info, cached->info, requested_view_format, cached->image->format);
+		switch (ClassifyStorageSampledOverlap(
+		    info, cached->info, requested_view_format, cached->image->format, cached->gpu_modified,
+		    cpu_dirty, cached->ctx == ctx, exact_mip, cached->buffer_modified, tracker_gpu)) {
 			case StorageSampledOverlap::None: break;
 			case StorageSampledOverlap::ExactImage:
 				if (storage_match != nullptr) {
@@ -1293,23 +1427,34 @@ VulkanImage* TextureCache::FindTexture(CommandBuffer* command, GraphicContext* c
 				}
 				storage_match = cached;
 				break;
+			case StorageSampledOverlap::RetireStorage:
+				storage_retire.push_back(cached.get());
+				break;
 			case StorageSampledOverlap::Unsupported:
 				EXIT("TextureCache: unsupported sampled/storage image alias, "
 				     "requested=0x%016" PRIx64 "+0x%016" PRIx64 " storage=0x%016" PRIx64
-				     "+0x%016" PRIx64 " gpu_modified=%d cpu_dirty=%d same_context=%d"
+				     "+0x%016" PRIx64
+				     " gpu_modified=%d buffer_modified=%d tracker_gpu=%d cpu_dirty=%d"
+				     " same_context=%d exact_mip=%d"
 				     " requested_info={format=%u extent=%ux%ux%u pitch=%u base=%u levels=%u"
 				     " view_levels=%u tile=%u swizzle=0x%03x type=%u base_array=%u}"
 				     " storage_info={format=%u extent=%ux%ux%u pitch=%u base=%u levels=%u"
 				     " view_levels=%u tile=%u swizzle=0x%03x type=%u base_array=%u}\n",
 				     info.address, info.size, cached->info.address, cached->info.size,
-				     cached->gpu_modified, cached->info.IsCpuDirty(), cached->ctx == ctx,
-				     info.format, info.width, info.height, info.depth, info.pitch, info.base_level,
-				     info.levels, info.view_levels, info.tile, info.swizzle, info.type,
-				     info.base_array, cached->info.format, cached->info.width, cached->info.height,
-				     cached->info.depth, cached->info.pitch, cached->info.base_level,
-				     cached->info.levels, cached->info.view_levels, cached->info.tile,
-				     cached->info.swizzle, cached->info.type, cached->info.base_array);
+				     cached->gpu_modified, cached->buffer_modified, tracker_gpu, cpu_dirty,
+				     cached->ctx == ctx, exact_mip, info.format, info.width, info.height,
+				     info.depth, info.pitch, info.base_level, info.levels, info.view_levels,
+				     info.tile, info.swizzle, info.type, info.base_array, cached->info.format,
+				     cached->info.width, cached->info.height, cached->info.depth,
+				     cached->info.pitch, cached->info.base_level, cached->info.levels,
+				     cached->info.view_levels, cached->info.tile, cached->info.swizzle,
+				     cached->info.type, cached->info.base_array);
 		}
+	}
+	if (storage_match != nullptr && !storage_retire.empty()) {
+		EXIT("TextureCache: sampled binding has both exact and mip storage owners, "
+		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " mip_owners=%zu\n",
+		     info.address, info.size, storage_retire.size());
 	}
 	if (storage_match != nullptr) {
 		if (m_memory_tracker.IsRegionCpuModified(info.address, info.size) ||
@@ -1322,6 +1467,30 @@ VulkanImage* TextureCache::FindTexture(CommandBuffer* command, GraphicContext* c
 		}
 		command->RetainResourceUntilFence(storage_match);
 		return storage_match->image;
+	}
+	if (!storage_retire.empty()) {
+		// shadPS4 resolves a modified cached mip before replacing it with the containing image.
+		// Kyty does not yet copy between those independently allocated Vulkan images, so use the
+		// existing synchronized tiled readback seam and rebuild the complete chain from coherent
+		// guest backing. This is an uncommon ownership transition, not a frame lookup fast path.
+		Transfer::WaitForGraphicsIdle(ctx);
+		for (auto* cached: storage_retire) {
+			if (!cached->gpu_modified || cached->buffer_modified || cached->info.IsCpuDirty() ||
+			    !m_memory_tracker.IsRegionGpuModified(cached->info.address, cached->info.size) ||
+			    m_memory_tracker.IsRegionCpuModified(cached->info.address, cached->info.size)) {
+				EXIT("TextureCache: sampled mip-storage ownership changed during transition, "
+				     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " gpu=%d buffer=%d dirty=%d\n",
+				     cached->info.address, cached->info.size, cached->gpu_modified,
+				     cached->buffer_modified, cached->info.IsCpuDirty());
+			}
+			const auto transfer = m_readback->DownloadColorImage(*cached);
+			for (const auto& range: transfer.Ranges()) {
+				m_memory_tracker.ForEachDownloadRange<true>(range.address, range.size,
+				                                            [](uint64_t, uint64_t) noexcept {});
+			}
+			cached->gpu_modified = false;
+		}
+		RetireImages(storage_retire);
 	}
 	if (m_memory_tracker.IsRegionCpuModified(info.address, info.size)) {
 		MarkSampledAliasesCpuDirtyLocked(info.address, info.size);
@@ -3139,6 +3308,46 @@ TextureCache::RegionInfo TextureCache::QueryRegion(uint64_t vaddr, uint64_t size
 	result.gpu_metadata_bytes =
 	    result.metadata_bytes && m_metadata_tracker.IsRegionGpuModified(vaddr, size);
 	return result;
+}
+
+bool TextureCache::ResolveMetaRange(uint64_t vaddr, uint64_t size, MetaRangeInfo* info) {
+	if (info == nullptr || vaddr == 0 || size == 0 || vaddr >= TRACKER_ADDRESS_SIZE ||
+	    size > TRACKER_ADDRESS_SIZE - vaddr) {
+		return false;
+	}
+	FaultSafeTextureLock lock(this, m_lock);
+	MetaRangeInfo        found {};
+	bool                 matched = false;
+	for (const auto& [address, metadata]: m_surface_metas) {
+		const auto slice_size = metadata.size / metadata.layers;
+		const bool full       = vaddr == address && size == metadata.size;
+		const auto offset     = vaddr >= address ? vaddr - address : UINT64_MAX;
+		const bool slice =
+		    !full && size == slice_size && offset < metadata.size && offset % slice_size == 0;
+		if (!full && !slice) {
+			continue;
+		}
+		MetaRangeInfo candidate {.metadata_address = address,
+		                         .metadata_size    = metadata.size,
+		                         .slice = full ? 0u : static_cast<uint32_t>(offset / slice_size),
+		                         .full  = full};
+		if (matched && (candidate.metadata_address != found.metadata_address ||
+		                candidate.metadata_size != found.metadata_size ||
+		                candidate.slice != found.slice || candidate.full != found.full)) {
+			EXIT("TextureCache: ambiguous exact metadata range, request=0x%016" PRIx64
+			     "+0x%016" PRIx64 " first=0x%016" PRIx64 "+0x%016" PRIx64
+			     " slice=%u full=%d second=0x%016" PRIx64 "+0x%016" PRIx64 " slice=%u full=%d\n",
+			     vaddr, size, found.metadata_address, found.metadata_size, found.slice, found.full,
+			     candidate.metadata_address, candidate.metadata_size, candidate.slice,
+			     candidate.full);
+		}
+		found   = candidate;
+		matched = true;
+	}
+	if (matched) {
+		*info = found;
+	}
+	return matched;
 }
 
 void TextureCache::RegisterMeta(GraphicContext* ctx, uint64_t vaddr, uint64_t size,

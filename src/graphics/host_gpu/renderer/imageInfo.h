@@ -360,7 +360,7 @@ enum class RenderTargetOverlap : uint8_t {
 	Unsupported
 };
 enum class SampledOverlap : uint8_t { None, ReadOnlyAlias, Unsupported };
-enum class StorageSampledOverlap : uint8_t { None, ExactImage, Unsupported };
+enum class StorageSampledOverlap : uint8_t { None, ExactImage, RetireStorage, Unsupported };
 enum class StorageSampledViewShape : uint8_t { Image2D, Image2DArray, Image3D, Unsupported };
 enum class StorageImageOverlap : uint8_t { None, RetireSampled, PageNeighbor, Unsupported };
 enum class HostWriteOverlap : uint8_t { None, InvalidateImage, Unsupported };
@@ -699,10 +699,11 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 	       sampled.base_array == 0;
 }
 
-[[nodiscard]] inline StorageSampledOverlap
-ClassifyStorageSampledOverlap(const ImageInfo& requested, const ImageInfo& cached,
-                              vk::Format requested_view_format, vk::Format cached_image_format,
-                              bool cached_gpu_modified, bool cached_cpu_dirty, bool same_context) {
+[[nodiscard]] inline StorageSampledOverlap ClassifyStorageSampledOverlap(
+    const ImageInfo& requested, const ImageInfo& cached, vk::Format requested_view_format,
+    vk::Format cached_image_format, bool cached_gpu_modified, bool cached_cpu_dirty,
+    bool same_context, bool exact_mip_subresource = false, bool cached_buffer_modified = false,
+    bool tracker_gpu_modified = true) {
 	if (!ImagePageRangesOverlap(requested.address, requested.size, cached.address, cached.size)) {
 		return StorageSampledOverlap::None;
 	}
@@ -717,10 +718,15 @@ ClassifyStorageSampledOverlap(const ImageInfo& requested, const ImageInfo& cache
 	    (requested.format == cached.format && requested_view_format == cached_image_format) ||
 	    IsRgba8SrgbReinterpretation(cached_image_format, requested_view_format) ||
 	    IsR32UintFloatReinterpretation(cached_image_format, requested_view_format);
-	return same_backing && compatible_format && cached_gpu_modified && !cached_cpu_dirty &&
-	               same_context
-	           ? StorageSampledOverlap::ExactImage
-	           : StorageSampledOverlap::Unsupported;
+	if (same_backing && compatible_format && cached_gpu_modified && !cached_cpu_dirty &&
+	    same_context) {
+		return StorageSampledOverlap::ExactImage;
+	}
+	if (exact_mip_subresource && cached_gpu_modified && tracker_gpu_modified &&
+	    !cached_buffer_modified && !cached_cpu_dirty && same_context) {
+		return StorageSampledOverlap::RetireStorage;
+	}
+	return StorageSampledOverlap::Unsupported;
 }
 
 [[nodiscard]] inline HostWriteOverlap

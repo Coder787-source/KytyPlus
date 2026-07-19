@@ -702,9 +702,13 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 	                               ? texture_region
 	                               : m_texture_cache->QueryRegion(begin, end - begin);
 	if (texture_pages.metadata_pages) {
-		EXIT("BufferCache: buffer aliases metadata pages, addr=0x%016" PRIx64 " size=0x%016" PRIx64
-		     "\n",
-		     begin, end - begin);
+		EXIT("BufferCache: buffer aliases metadata pages, request=0x%016" PRIx64 "+0x%016" PRIx64
+		     " aligned=0x%016" PRIx64 "+0x%016" PRIx64 " read=%d written=%d formatted=%d"
+		     " request_meta=%d/%d/%d aligned_meta=%d/%d/%d\n",
+		     vaddr, size, begin, end - begin, is_read, is_written, is_formatted,
+		     texture_region.metadata_pages, texture_region.metadata_bytes,
+		     texture_region.gpu_metadata_bytes, texture_pages.metadata_pages,
+		     texture_pages.metadata_bytes, texture_pages.gpu_metadata_bytes);
 	}
 	// Cache allocations are tracker-page aligned, but byte-disjoint buffers and images may share
 	// an edge page. Clean read-only buffer and image views may coexist; Kyty retains a hard failure

@@ -162,13 +162,14 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input, cons
 	if (resources.buffers.size() != program.info.buffers.size()) {
 		EXIT("compute runtime buffer count does not match shader metadata\n");
 	}
-	const auto&      z                   = ctx.GetDepthRenderTarget();
-	const uint64_t   meta_addr           = z.htile_data_base_addr;
-	auto*            cache               = g_render_ctx->GetTextureCache();
-	uint32_t         current_references  = 0;
-	uint32_t         registered_writes   = 0;
-	uint64_t         described_meta_size = 0;
-	HtileClearTarget registered_target {};
+	const auto&                 z                   = ctx.GetDepthRenderTarget();
+	const uint64_t              meta_addr           = z.htile_data_base_addr;
+	auto*                       cache               = g_render_ctx->GetTextureCache();
+	uint32_t                    current_references  = 0;
+	uint32_t                    registered_writes   = 0;
+	uint64_t                    described_meta_size = 0;
+	HtileClearTarget            registered_target {};
+	TextureCache::MetaRangeInfo registered_meta {};
 	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 		const auto& resource   = program.info.buffers[i];
 		const auto  descriptor = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
@@ -179,9 +180,12 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input, cons
 		}
 		// An exact registered metadata range remains
 		// identifiable even when it is no longer the currently bound depth target.
-		if (resource.written && cache->IsMetaRange(descriptor.Base48(), descriptor_size)) {
+		TextureCache::MetaRangeInfo resolved_meta {};
+		if (resource.written &&
+		    cache->ResolveMetaRange(descriptor.Base48(), descriptor_size, &resolved_meta)) {
 			registered_writes++;
 			registered_target = {.address = descriptor.Base48(), .size = descriptor_size};
+			registered_meta   = resolved_meta;
 		}
 	}
 	if (current_references == 0 && registered_writes == 0) {
@@ -207,6 +211,9 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input, cons
 			     z.z_info.num_samples);
 		}
 		cache->RegisterMeta(g_render_ctx->GetGraphicCtx(), target.address, target.size);
+		if (!cache->ResolveMetaRange(target.address, target.size, &registered_meta)) {
+			EXIT("failed to resolve registered HTile compute-clear range\n");
+		}
 	} else {
 		target = registered_target;
 	}
@@ -249,7 +256,10 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input, cons
 		     metadata_writes);
 	}
 	ValidateFullHtileClearDispatch(input, metadata_descriptor, group_x, group_y, group_z, mode);
-	if (!cache->ClearMeta(target.address)) {
+	const bool recorded = registered_meta.full ? cache->ClearMeta(registered_meta.metadata_address)
+	                                           : cache->TouchMeta(registered_meta.metadata_address,
+	                                                              registered_meta.slice, true);
+	if (!recorded) {
 		EXIT("failed to record HTile compute clear\n");
 	}
 	return true;

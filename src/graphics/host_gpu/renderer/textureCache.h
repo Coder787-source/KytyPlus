@@ -31,6 +31,10 @@ class CommandBuffer;
 class DummyTextureCache;
 class ResourceMutex;
 
+[[nodiscard]] bool IsExactRenderTargetMipStorage(const ImageInfo& sampled, const ImageInfo& storage,
+                                                 vk::Format sampled_view_format,
+                                                 vk::Format storage_image_format) noexcept;
+
 class TextureCache {
 public:
 	struct RegionInfo {
@@ -41,6 +45,12 @@ public:
 		bool metadata_pages     = false;
 		bool metadata_bytes     = false;
 		bool gpu_metadata_bytes = false;
+	};
+	struct MetaRangeInfo {
+		uint64_t metadata_address = 0;
+		uint64_t metadata_size    = 0;
+		uint32_t slice            = 0;
+		bool     full             = false;
 	};
 
 	TextureCache(PageManager& page_manager, BufferCache& buffer_cache,
@@ -101,6 +111,7 @@ public:
 	FindDepthTargetByRange(CommandBuffer* command, uint64_t vaddr, uint64_t size,
 	                       bool allow_containing_sampled = false);
 	[[nodiscard]] RegionInfo QueryRegion(uint64_t vaddr, uint64_t size);
+	[[nodiscard]] bool       ResolveMetaRange(uint64_t vaddr, uint64_t size, MetaRangeInfo* info);
 	void RegisterMeta(GraphicContext* ctx, uint64_t vaddr, uint64_t size, uint32_t layers = 1);
 	[[nodiscard]] bool IsMeta(uint64_t vaddr);
 	[[nodiscard]] bool IsMetaRange(uint64_t vaddr, uint64_t size);

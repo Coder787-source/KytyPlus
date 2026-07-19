@@ -321,27 +321,33 @@ bool IsSupportedDepthTargetDescriptor(const ShaderTextureResource& descriptor,
 	const auto height = static_cast<uint32_t>(descriptor.Height5()) + 1u;
 	const auto pitch  = TileGetTexturePitch(descriptor.Format(), width, 1, descriptor.TileMode());
 	const auto type   = static_cast<Prospero::ImageType>(descriptor.Type());
-	const bool supported_type =
-	    type == Prospero::ImageType::kColor2D || type == Prospero::ImageType::kColor2DArray;
-	return image.type == VulkanImageType::DepthStencil && image.layers == 1 &&
-	       width == image.extent.width && height == image.extent.height &&
-	       descriptor.Depth() == 0 && descriptor.BaseLevel() == 0 && descriptor.LastLevel() == 0 &&
-	       descriptor.MaxMip() == 0 && descriptor.MinLod() == 0 && descriptor.BaseArray5() == 0 &&
+	const bool supported_single_layer =
+	    image.layers == 1 && descriptor.Depth() == 0 && descriptor.BaseArray5() == 0 &&
+	    (type == Prospero::ImageType::kColor2D || type == Prospero::ImageType::kColor2DArray);
+	const bool supported_cube = type == Prospero::ImageType::kCube && width == height &&
+	                            image.layers >= 6 && image.layers % 6u == 0 &&
+	                            static_cast<uint32_t>(descriptor.Depth()) + 1u == image.layers &&
+	                            descriptor.BaseArray5() == 0;
+	return image.type == VulkanImageType::DepthStencil && width == image.extent.width &&
+	       height == image.extent.height && (supported_single_layer || supported_cube) &&
+	       descriptor.BaseLevel() == 0 && descriptor.LastLevel() == 0 && descriptor.MaxMip() == 0 &&
+	       descriptor.MinLod() == 0 && descriptor.BaseArray5() == 0 &&
 	       descriptor.TileMode() == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
-	       supported_type && descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth() &&
-	       pitch >= width && pitch == image.guest_pitch;
+	       descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth() && pitch >= width &&
+	       pitch == image.guest_pitch;
 }
 
-static bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor) {
+bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor) {
 	constexpr uint32_t field1_reserved_mask = 0x200fff00u;
 	constexpr uint32_t field2_reserved_mask = 0xf0003000u;
 	constexpr uint32_t field3_common        = 0x01800000u;
 	constexpr uint32_t field5_expected      = 0x00700000u;
 	const uint32_t     field3_expected =
 	    (descriptor.Type() << 28u) | field3_common | descriptor.DstSelXYZW();
+	const uint32_t field4_expected = descriptor.Depth() | (descriptor.BaseArray5() << 16u);
 	return (descriptor.fields[1] & field1_reserved_mask) == 0 &&
 	       (descriptor.fields[2] & field2_reserved_mask) == 0 &&
-	       descriptor.fields[3] == field3_expected && descriptor.fields[4] == 0 &&
+	       descriptor.fields[3] == field3_expected && descriptor.fields[4] == field4_expected &&
 	       descriptor.fields[5] == field5_expected && descriptor.fields[6] == 0 &&
 	       descriptor.fields[7] == 0;
 }
@@ -473,14 +479,52 @@ void ValidateMetadataReuseTexture(const ShaderRecompiler::IR::ImageResource& res
                                   const ShaderTextureResource& descriptor, uint64_t size) {
 	constexpr uint32_t field1_reserved = 0x200fff00u;
 	constexpr uint32_t field2_reserved = 0xf0003000u;
+	constexpr uint32_t field5_common   = 0x00700000u;
 	const auto         format          = descriptor.Format();
-	if (!IsSupportedSampledColorResource(resource) || size == 0 ||
-	    (descriptor.fields[1] & field1_reserved) != 0 ||
-	    (descriptor.fields[2] & field2_reserved) != 0 || descriptor.fields[3] != 0x90500facu ||
-	    descriptor.fields[4] != 0 || descriptor.fields[5] != 0x00700000u ||
-	    descriptor.fields[6] != 0 || descriptor.fields[7] != 0 ||
-	    !Prospero::IsSupportedTextureFormat(format) || Prospero::IsUintTextureFormat(format)) {
-		EXIT("unsupported storage texture descriptor encoding\n");
+	const bool         resource_ok     = IsSupportedSampledColorResource(resource);
+	const bool         swizzle_ok      = IsValidSampledColorSwizzle(descriptor.DstSelXYZW());
+	const bool         descriptor_ok =
+	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D &&
+	    descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
+	    descriptor.Depth() == 0 && descriptor.BaseArray5() == 0 &&
+	    descriptor.BaseLevel() <= descriptor.LastLevel() &&
+	    descriptor.LastLevel() <= descriptor.MaxMip() && descriptor.MaxMip() < 15 &&
+	    descriptor.TileMode() == Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
+	    swizzle_ok;
+	const uint32_t field3_expected = descriptor.DstSelXYZW() |
+	                                 (static_cast<uint32_t>(descriptor.BaseLevel()) << 12u) |
+	                                 (static_cast<uint32_t>(descriptor.LastLevel()) << 16u) |
+	                                 (static_cast<uint32_t>(descriptor.TileMode()) << 20u) |
+	                                 (static_cast<uint32_t>(descriptor.Type()) << 28u);
+	const uint32_t field4_expected = descriptor.Depth() | (descriptor.BaseArray5() << 16u);
+	const uint32_t field5_expected =
+	    field5_common | (static_cast<uint32_t>(descriptor.MaxMip()) << 4u);
+	const bool encoding_ok =
+	    (descriptor.fields[1] & field1_reserved) == 0 &&
+	    (descriptor.fields[2] & field2_reserved) == 0 && descriptor.fields[3] == field3_expected &&
+	    descriptor.fields[4] == field4_expected && descriptor.fields[5] == field5_expected &&
+	    descriptor.fields[6] == 0 && descriptor.fields[7] == 0;
+	const bool format_ok =
+	    Prospero::IsSupportedTextureFormat(format) && !Prospero::IsUintTextureFormat(format);
+	if (!resource_ok || !descriptor_ok || !encoding_ok || !format_ok || size == 0) {
+		EXIT("unsupported metadata-reuse sampled texture: resource=%d descriptor=%d encoding=%d "
+		     "format=%d "
+		     "kind=%u dimension=%u mip_mode=%u read=%d written=%d atomic=%d compare=%d "
+		     "base_level=%u last_level=%u max_mip=%u base_array=%u swizzle_ok=%d "
+		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
+		     " extent=%ux%ux%u type=%u format=%u tile=%u swizzle=0x%03x "
+		     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+		     resource_ok, descriptor_ok, encoding_ok, format_ok,
+		     static_cast<uint32_t>(resource.kind), static_cast<uint32_t>(resource.dimension),
+		     static_cast<uint32_t>(resource.mip_mode), resource.read, resource.written,
+		     resource.atomic, resource.depth_compare, descriptor.BaseLevel(),
+		     descriptor.LastLevel(), descriptor.MaxMip(), descriptor.BaseArray5(), swizzle_ok,
+		     descriptor.Base40(), size, static_cast<uint32_t>(descriptor.Width5()) + 1u,
+		     static_cast<uint32_t>(descriptor.Height5()) + 1u,
+		     static_cast<uint32_t>(descriptor.Depth()) + 1u, descriptor.Type(), format,
+		     descriptor.TileMode(), descriptor.DstSelXYZW(), descriptor.fields[0],
+		     descriptor.fields[1], descriptor.fields[2], descriptor.fields[3], descriptor.fields[4],
+		     descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
 	}
 }
 
