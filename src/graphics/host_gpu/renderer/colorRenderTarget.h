@@ -33,6 +33,7 @@ struct RenderColorInfo {
 	uint64_t                        base_addr        = 0;
 	uint64_t                        buffer_size      = 0;
 	uint32_t                        target_slot      = 0;
+	uint32_t                        samples          = 1;
 	Prospero::ColorComponentMapping export_mapping;
 	bool                            color_clear_enable = false;
 	vk::ClearColorValue             color_clear_value {};

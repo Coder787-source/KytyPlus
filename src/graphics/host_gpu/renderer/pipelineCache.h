@@ -35,6 +35,8 @@ struct PipelineStaticParameters {
 	bool                       negative_one_to_one      = false;
 	int                        scissor_ltrb[4]          = {0};
 	vk::PrimitiveTopology      topology                 = vk::PrimitiveTopology::ePointList;
+	uint32_t                   samples                  = 1;
+	bool                       sample_shading_enable    = false;
 	bool                       with_depth               = false;
 	bool                       depth_test_enable        = false;
 	bool                       depth_write_enable       = false;
@@ -74,8 +76,8 @@ static_assert(std::is_standard_layout_v<PipelineStaticParameters>);
 static_assert(alignof(PipelineStaticParameters) == 1);
 static_assert(sizeof(PipelineStaticParameters) ==
               sizeof(float[3]) + sizeof(float[3]) + sizeof(bool) + sizeof(int[4]) +
-                  sizeof(vk::PrimitiveTopology) + sizeof(bool) * 3 + sizeof(vk::CompareOp) +
-                  sizeof(bool) + sizeof(float) * 2 + sizeof(bool) +
+                  sizeof(vk::PrimitiveTopology) + sizeof(uint32_t) + sizeof(bool) * 4 +
+                  sizeof(vk::CompareOp) + sizeof(bool) + sizeof(float) * 2 + sizeof(bool) +
                   sizeof(PipelineStencilStaticState) * 2 + sizeof(uint32_t) +
                   sizeof(uint32_t[RENDER_COLOR_ATTACHMENTS_MAX]) + sizeof(bool) * 3 +
                   sizeof(uint8_t[RENDER_COLOR_ATTACHMENTS_MAX]) * 6 +

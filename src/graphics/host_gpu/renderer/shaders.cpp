@@ -755,8 +755,8 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	multisampling.sType                 = vk::StructureType::ePipelineMultisampleStateCreateInfo;
 	multisampling.pNext                 = nullptr;
 	multisampling.flags                 = {};
-	multisampling.sampleShadingEnable   = VK_FALSE;
-	multisampling.rasterizationSamples  = vk::SampleCountFlagBits::e1;
+	multisampling.sampleShadingEnable   = static_params.sample_shading_enable ? VK_TRUE : VK_FALSE;
+	multisampling.rasterizationSamples  = vulkan_sample_count(static_params.samples);
 	multisampling.minSampleShading      = 1.0f;
 	multisampling.pSampleMask           = nullptr;
 	multisampling.alphaToCoverageEnable = VK_FALSE;

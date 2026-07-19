@@ -43,6 +43,7 @@ struct VulkanInstance {
 	bool                               memory_budget_ext_enabled         = false;
 	bool                               rt_extensions_enabled             = false;
 	bool                               subgroup_size_control_enabled     = false;
+	bool                               sample_rate_shading_enabled       = false;
 	uint32_t                           subgroup_size                     = 0;
 	uint32_t                           min_subgroup_size                 = 0;
 	uint32_t                           max_subgroup_size                 = 0;

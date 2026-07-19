@@ -30,6 +30,7 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	uint32_t     color_count                      = 0;
 	VulkanImage* first_color                      = nullptr;
 	vk::Extent2D first_color_extent               = {};
+	uint32_t     attachment_samples               = 0;
 	for (uint32_t i = 0; i < requested_color_count; i++) {
 		with_color[i] = (colors[i].vulkan_buffer != nullptr);
 		if (!with_color[i]) {
@@ -38,6 +39,7 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 		if (first_color == nullptr) {
 			first_color        = colors[i].vulkan_buffer;
 			first_color_extent = colors[i].extent;
+			attachment_samples = colors[i].samples;
 		} else if (colors[i].extent.width != first_color_extent.width ||
 		           colors[i].extent.height != first_color_extent.height) {
 			LOGF("Framebuffer: temporary: dropping mismatched MRT%u attachment color0=%ux%u "
@@ -47,7 +49,33 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 			with_color[i] = false;
 			break;
 		}
+		if (colors[i].samples != attachment_samples ||
+		    colors[i].vulkan_buffer->samples != colors[i].samples) {
+			EXIT("Framebuffer: mismatched color attachment samples at slot %u, expected=%u "
+			     "requested=%u image=%u\n",
+			     i, attachment_samples, colors[i].samples, colors[i].vulkan_buffer->samples);
+		}
 		color_count++;
+	}
+	if (with_depth) {
+		if (depth->samples != depth->vulkan_buffer->samples) {
+			EXIT("Framebuffer: depth attachment sample identity mismatch, requested=%u image=%u\n",
+			     depth->samples, depth->vulkan_buffer->samples);
+		}
+		if (attachment_samples == 0) {
+			attachment_samples = depth->samples;
+		} else if (attachment_samples != depth->samples) {
+			EXIT(
+			    "Framebuffer: mixed color/depth sample counts are unsupported, color=%u depth=%u\n",
+			    attachment_samples, depth->samples);
+		}
+	}
+	if (!with_depth && color_count == 0) {
+		LOGF("Framebuffer: warning: no color or depth attachment\n");
+		return nullptr;
+	}
+	if (vulkan_sample_count(attachment_samples) == vk::SampleCountFlagBits {}) {
+		EXIT("Framebuffer: invalid attachment sample count %u\n", attachment_samples);
 	}
 	vk::ImageLayout color_layout[RENDER_COLOR_ATTACHMENTS_MAX] = {};
 	for (auto& layout: color_layout) {
@@ -107,11 +135,6 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 		}
 	}
 
-	if (!with_depth && color_count == 0) {
-		LOGF("Framebuffer: warning: no color or depth attachment\n");
-		return nullptr;
-	}
-
 	EXIT_NOT_IMPLEMENTED(with_depth && first_color != nullptr &&
 	                     (first_color_extent.width != depth->vulkan_buffer->extent.width ||
 	                      first_color_extent.height != depth->vulkan_buffer->extent.height));
@@ -123,6 +146,7 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	auto* framebuffer        = new VulkanFramebuffer;
 	framebuffer->render_pass = nullptr;
 	framebuffer->framebuffer = nullptr;
+	framebuffer->samples     = attachment_samples;
 	for (uint32_t i = 0; i < RENDER_COLOR_ATTACHMENTS_MAX; i++) {
 		framebuffer->color_layout[i] = color_layout[i];
 	}
@@ -136,7 +160,7 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	for (uint32_t i = 0; i < color_count; i++) {
 		attachments[i].flags         = {};
 		attachments[i].format        = colors[i].format;
-		attachments[i].samples       = vk::SampleCountFlagBits::e1;
+		attachments[i].samples       = vulkan_sample_count(attachment_samples);
 		attachments[i].loadOp        = (colors[i].color_clear_enable ? vk::AttachmentLoadOp::eClear
 		                                                             : vk::AttachmentLoadOp::eLoad);
 		attachments[i].storeOp       = vk::AttachmentStoreOp::eStore;
@@ -149,7 +173,7 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	const uint32_t depth_attachment       = color_count;
 	attachments[depth_attachment].flags   = {};
 	attachments[depth_attachment].format  = depth->format;
-	attachments[depth_attachment].samples = vk::SampleCountFlagBits::e1;
+	attachments[depth_attachment].samples = vulkan_sample_count(attachment_samples);
 	attachments[depth_attachment].loadOp =
 	    (depth->depth_load_clear_enable ? vk::AttachmentLoadOp::eClear
 	                                    : vk::AttachmentLoadOp::eLoad);
@@ -229,8 +253,8 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	for (uint32_t i = 0; i < color_count; i++) {
 		color_formats[i] = colors[i].format;
 	}
-	framebuffer->render_pass_id =
-	    render_pass_compat_id(color_count, color_formats, with_depth, depth->format, depth_layout);
+	framebuffer->render_pass_id = render_pass_compat_id(
+	    color_count, color_formats, with_depth, depth->format, depth_layout, attachment_samples);
 
 	EXIT_NOT_IMPLEMENTED(framebuffer->render_pass == nullptr);
 

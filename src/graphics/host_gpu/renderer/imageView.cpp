@@ -94,7 +94,7 @@ void CreateRenderTargetViews(GraphicContext* ctx, RenderTextureVulkanImage* imag
 		                       vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,
 		                       vk::ImageViewType::e2DArray);
 	}
-	if (FormatSupportsStorage(ctx, image->format)) {
+	if (image->samples == 1 && FormatSupportsStorage(ctx, image->format)) {
 		CreateRenderTargetView(ctx, image, VulkanImage::VIEW_STORAGE,
 		                       vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,
 		                       vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,

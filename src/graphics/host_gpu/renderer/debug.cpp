@@ -334,7 +334,7 @@ static void RtCheck(const HW::RenderTarget& rt) {
 		if (rt.attrib.num_samples != 0x00000000 || rt.attrib.num_fragments != 0x00000000) {
 			static bool logged = false;
 			if (!logged) {
-				LOGF("RenderTarget: temporary: rendering PS5 MSAA color target as single-sample, "
+				LOGF("RenderTarget: using native PS5 MSAA color target, "
 				     "samples=0x%08" PRIx32 " fragments=0x%08" PRIx32 "\n",
 				     rt.attrib.num_samples, rt.attrib.num_fragments);
 				logged = true;
@@ -534,7 +534,7 @@ static void ZCheck(const HW::DepthRenderTarget& z) {
 		if (z.z_info.num_samples != 0x00000000) {
 			static bool logged = false;
 			if (!logged) {
-				LOGF("DepthTarget: temporary: ignoring num_samples=0x%08" PRIx32 "\n",
+				LOGF("DepthTarget: using native num_samples=0x%08" PRIx32 "\n",
 				     z.z_info.num_samples);
 				logged = true;
 			}
@@ -932,7 +932,7 @@ static void EqaaCheck(const HW::EqaaControl& c) {
 	    c.incoherent_eqaa_reads || c.interpolate_comp_z || c.static_anchor_associations) {
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1) < 16) {
-			LOGF("\t warning: unsupported PS5 EQAA state, rendering with single-sample fallback\n");
+			LOGF("\t warning: unsupported PS5 EQAA controls use native Vulkan MSAA defaults\n");
 		}
 	}
 }
@@ -962,8 +962,8 @@ static void AaCheck(const HW::AaSampleControl& c, const HW::AaConfig& cf) {
 	    cf.max_sample_dist != 0 || cf.msaa_exposed_samples != 0) {
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1) < 16) {
-			LOGF("\t warning: unsupported PS5 AA/MSAA state, rendering with single-sample "
-			     "fallback: samples=%" PRIu8 ", exposed=%" PRIu8 ", max_dist=%" PRIu8 "\n",
+			LOGF("\t warning: unsupported PS5 sample locations use native Vulkan locations: "
+			     "samples=%" PRIu8 ", exposed=%" PRIu8 ", max_dist=%" PRIu8 "\n",
 			     cf.msaa_num_samples, cf.msaa_exposed_samples, cf.max_sample_dist);
 		}
 	}
@@ -1058,8 +1058,7 @@ static void VpCheck(const HW::ScreenViewport& vp, const HW::ScanModeControl& smc
 
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1) < 16) {
-			LOGF("\t warning: unsupported PS5 MSAA raster state, rendering with single-sample "
-			     "fallback\n");
+			LOGF("\t warning: unsupported PS5 MSAA raster controls use native Vulkan defaults\n");
 		}
 	}
 	// EXIT_NOT_IMPLEMENTED(smc.vport_scissor_enable);

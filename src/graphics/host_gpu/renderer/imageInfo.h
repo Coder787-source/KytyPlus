@@ -41,6 +41,7 @@ struct RenderTargetInfo {
 	uint32_t   tile_mode         = 0;
 	uint32_t   levels            = 1;
 	uint32_t   layers            = 1;
+	uint32_t   samples           = 1;
 };
 
 // Common image-to-buffer copy description. Storage images and render targets keep distinct
@@ -55,20 +56,21 @@ struct ColorImageTransferInfo {
 	uint32_t   bytes_per_element = 0;
 	uint32_t   tile_mode         = 0;
 	uint32_t   levels            = 1;
+	uint32_t   samples           = 1;
 };
 
 [[nodiscard]] inline ColorImageTransferInfo
 MakeColorImageTransferInfo(const ImageInfo& info, vk::Format format,
                            uint32_t bytes_per_element) noexcept {
-	return {info.address, info.size,         format,    info.width, info.height,
-	        info.pitch,   bytes_per_element, info.tile, info.levels};
+	return {info.address, info.size,         format,    info.width,  info.height,
+	        info.pitch,   bytes_per_element, info.tile, info.levels, 1};
 }
 
 [[nodiscard]] inline ColorImageTransferInfo
 MakeColorImageTransferInfo(const RenderTargetInfo& info) noexcept {
 	return {
-	    info.address,           info.size,      info.format, info.width, info.height, info.pitch,
-	    info.bytes_per_element, info.tile_mode, info.levels};
+	    info.address,           info.size,      info.format, info.width,  info.height, info.pitch,
+	    info.bytes_per_element, info.tile_mode, info.levels, info.samples};
 }
 
 struct DepthTargetInfo {
@@ -86,7 +88,9 @@ struct DepthTargetInfo {
 	uint32_t   bytes_per_element        = 0;
 	uint32_t   tile_mode                = 0;
 	uint32_t   layers                   = 1;
+	uint32_t   samples                  = 1;
 	bool       depth_load_clear         = false;
+	bool       depth_access             = false;
 	bool       stencil_load_clear       = false;
 	bool       stencil_access           = false;
 	bool       stencil_htile_compressed = false;
@@ -225,6 +229,13 @@ FindGuestDepthFormatPolicy(uint32_t guest_format) noexcept {
 	                    : info.format == policy->depth_attachment_format);
 }
 
+[[nodiscard]] inline constexpr bool IsSupportedDepthReadbackFormat(const DepthTargetInfo& info) {
+	const bool has_stencil = info.stencil_address != 0 || info.stencil_size != 0;
+	return IsSupportedDepthTargetFormat(info) &&
+	       DepthAspectTransferBytes(info.format) == info.bytes_per_element &&
+	       (!has_stencil || !info.stencil_htile_compressed);
+}
+
 enum class VideoOutCompression : uint8_t { Uncompressed, Dcc256_256_0, Dcc256_64_64, Unsupported };
 
 struct VideoOutInfo {
@@ -335,12 +346,14 @@ enum class DepthOverlap : uint8_t {
 	RetireStorage,
 	ExpandTarget,
 	DiscardTarget,
+	RecreateTarget,
 	Unsupported
 };
 enum class DepthTransitionSource : uint8_t { None, Guest, Native };
 enum class RenderTargetOverlap : uint8_t {
 	None,
 	RetireSampled,
+	RetireStorage,
 	PreserveStorage,
 	ExpandTarget,
 	RetireTarget,
@@ -373,8 +386,24 @@ enum class BufferImageWrite : uint8_t {
 	Unsupported
 };
 
+[[nodiscard]] inline constexpr bool
+HasGuestCurrentImageOwnership(bool image_gpu_modified, bool buffer_modified, bool cpu_dirty,
+                              bool tracker_gpu_modified, bool same_context) noexcept {
+	return !image_gpu_modified && !buffer_modified && !cpu_dirty && !tracker_gpu_modified &&
+	       same_context;
+}
+
 enum class StorageBufferRebind : uint8_t { Reuse, RefreshFromBacking, Unsupported };
-enum class MetaImageOverlap : uint8_t { RetainSampled, RetireTarget, Unsupported };
+enum class MetaImageOverlap : uint8_t { RetainSampled, RetireImage, Unsupported };
+
+[[nodiscard]] inline constexpr bool CanRetireGuestCurrentDepthForMetadataReuse(
+    bool depth_gpu_modified, bool depth_buffer_modified, bool depth_tracker_gpu_modified,
+    bool metadata_gpu_modified, bool metadata_tracker_gpu_modified, uint32_t metadata_clear_mask,
+    bool same_context) noexcept {
+	return !metadata_gpu_modified && !metadata_tracker_gpu_modified && metadata_clear_mask == 0 &&
+	       HasGuestCurrentImageOwnership(depth_gpu_modified, depth_buffer_modified, false,
+	                                     depth_tracker_gpu_modified, same_context);
+}
 
 [[nodiscard]] inline constexpr uint32_t SelectImageBackingBaseLevel(bool     storage,
                                                                     uint32_t view_base_level) {
@@ -434,7 +463,7 @@ IsSupportedDisplayRenderTargetTileMode(uint32_t tile_mode) noexcept {
 IsSupportedStandard64RenderTarget(const RenderTargetInfo& info) noexcept {
 	if (info.tile_mode != Prospero::GpuEnumValue(Prospero::TileMode::kStandard64KB) ||
 	    info.address == 0 || (info.address & 0xffffu) != 0 || info.width == 0 || info.height == 0 ||
-	    info.bytes_per_element != 4 || info.levels != 1 || info.layers != 1) {
+	    info.bytes_per_element != 4 || info.levels != 1 || info.layers != 1 || info.samples != 1) {
 		return false;
 	}
 	const auto expected_pitch = (static_cast<uint64_t>(info.width) + 127u) & ~uint64_t {127u};
@@ -462,14 +491,15 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 	           : DepthTransitionSource::Guest;
 }
 
-[[nodiscard]] inline MetaImageOverlap ClassifyMetaImageOverlap(bool sampled, bool render_target,
+[[nodiscard]] inline MetaImageOverlap ClassifyMetaImageOverlap(bool sampled, bool writable_image,
                                                                bool gpu_modified,
-                                                               bool buffer_modified) {
+                                                               bool buffer_modified, bool cpu_dirty,
+                                                               bool same_context) {
 	if (sampled && !gpu_modified) {
 		return MetaImageOverlap::RetainSampled;
 	}
-	if (render_target && !gpu_modified && !buffer_modified) {
-		return MetaImageOverlap::RetireTarget;
+	if (writable_image && !gpu_modified && !buffer_modified && !cpu_dirty && same_context) {
+		return MetaImageOverlap::RetireImage;
 	}
 	return MetaImageOverlap::Unsupported;
 }
@@ -559,6 +589,7 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 	const bool d32 =
 	    target.format == vk::Format::eD32Sfloat || target.format == vk::Format::eD32SfloatS8Uint;
 	return address == target.address && size == target.size && target.layers == 1 && d32 &&
+	       target.samples == 1 &&
 	       target.guest_format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float) &&
 	       target.bytes_per_element == 4 &&
 	       target.tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
@@ -826,8 +857,11 @@ ClassifyStorageBufferRebind(bool buffer_overlap, bool cached_gpu_modified,
 
 // Mirrors storage -> depth-target binding transition. An inaccessible stencil aspect
 // does not require the otherwise necessary image content copy.
-[[nodiscard]] inline DepthOverlap ClassifyStorageDepthOverlap(const ImageInfo&       storage,
-                                                              const DepthTargetInfo& depth) {
+[[nodiscard]] inline DepthOverlap
+ClassifyStorageDepthOverlap(const ImageInfo& storage, bool storage_gpu_modified,
+                            bool storage_buffer_modified, bool storage_cpu_dirty,
+                            bool tracker_gpu_modified, bool same_context,
+                            const DepthTargetInfo& depth) {
 	const bool overlaps_depth =
 	    ImageRangeOverlaps(storage.address, storage.size, depth.address, depth.size);
 	const bool overlaps_stencil =
@@ -836,9 +870,45 @@ ClassifyStorageBufferRebind(bool buffer_overlap, bool cached_gpu_modified,
 	if (!overlaps_depth && !overlaps_stencil) {
 		return DepthOverlap::None;
 	}
-	return !overlaps_depth && overlaps_stencil && !depth.stencil_access
+	const bool guest_current =
+	    HasGuestCurrentImageOwnership(storage_gpu_modified, storage_buffer_modified,
+	                                  storage_cpu_dirty, tracker_gpu_modified, same_context);
+	const bool aspects_discarded =
+	    (!overlaps_depth || !depth.depth_access) && (!overlaps_stencil || !depth.stencil_access);
+	return guest_current || (!storage_buffer_modified && !storage_cpu_dirty && same_context &&
+	                         aspects_discarded)
 	           ? DepthOverlap::RetireStorage
 	           : DepthOverlap::Unsupported;
+}
+
+[[nodiscard]] inline bool CanRetireGuestCurrentDepthForSampled(
+    const ImageInfo& sampled, const DepthTargetInfo& depth, bool depth_gpu_modified,
+    bool depth_buffer_modified, bool depth_tracker_gpu_modified, bool stencil_tracker_gpu_modified,
+    bool same_context) noexcept {
+	const bool overlaps_depth =
+	    ImageRangeOverlaps(sampled.address, sampled.size, depth.address, depth.size);
+	const bool overlaps_stencil =
+	    depth.stencil_address != 0 && ImageRangeOverlaps(sampled.address, sampled.size,
+	                                                     depth.stencil_address, depth.stencil_size);
+	return (overlaps_depth || overlaps_stencil) &&
+	       HasGuestCurrentImageOwnership(depth_gpu_modified, depth_buffer_modified, false,
+	                                     depth_tracker_gpu_modified || stencil_tracker_gpu_modified,
+	                                     same_context);
+}
+
+[[nodiscard]] inline bool
+CanRetireGuestCurrentSampledForDepth(const ImageInfo& sampled, const DepthTargetInfo& depth,
+                                     bool sampled_gpu_modified, bool sampled_buffer_modified,
+                                     bool sampled_cpu_dirty, bool tracker_gpu_modified,
+                                     bool same_context, bool guest_source_current) noexcept {
+	const bool overlaps_depth =
+	    ImageRangeOverlaps(sampled.address, sampled.size, depth.address, depth.size);
+	const bool overlaps_stencil =
+	    depth.stencil_address != 0 && ImageRangeOverlaps(sampled.address, sampled.size,
+	                                                     depth.stencil_address, depth.stencil_size);
+	return (overlaps_depth || overlaps_stencil) && guest_source_current &&
+	       HasGuestCurrentImageOwnership(sampled_gpu_modified, sampled_buffer_modified,
+	                                     sampled_cpu_dirty, tracker_gpu_modified, same_context);
 }
 
 [[nodiscard]] inline RenderTargetOverlap
@@ -857,9 +927,12 @@ ClassifyRenderTargetOverlap(const ImageInfo& sampled, bool sampled_gpu_modified,
 [[nodiscard]] inline RenderTargetOverlap
 ClassifyStorageRenderTargetOverlap(const ImageInfo& storage, vk::Format storage_format,
                                    bool storage_gpu_modified, bool storage_buffer_modified,
-                                   bool storage_cpu_dirty, bool same_context,
-                                   const RenderTargetInfo& target) {
+                                   bool storage_cpu_dirty, bool tracker_gpu_modified,
+                                   bool same_context, const RenderTargetInfo& target) {
 	if (!ImagePageRangesOverlap(storage.address, storage.size, target.address, target.size)) {
+		return RenderTargetOverlap::None;
+	}
+	if (!ImageRangeOverlaps(storage.address, storage.size, target.address, target.size)) {
 		return RenderTargetOverlap::None;
 	}
 	const bool exact_native_image =
@@ -869,10 +942,14 @@ ClassifyStorageRenderTargetOverlap(const ImageInfo& storage, vk::Format storage_
 	    storage.base_level == 0 && storage.levels == 1 && storage.view_levels == 1 &&
 	    storage.tile == target.tile_mode && storage.depth == 1 &&
 	    storage.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
-	    storage.base_array == 0 && target.levels == 1 && target.layers == 1;
-	return exact_native_image && storage_gpu_modified && !storage_buffer_modified &&
-	               !storage_cpu_dirty && same_context
-	           ? RenderTargetOverlap::PreserveStorage
+	    storage.base_array == 0 && target.levels == 1 && target.layers == 1 && target.samples == 1;
+	if (exact_native_image && storage_gpu_modified && tracker_gpu_modified &&
+	    !storage_buffer_modified && !storage_cpu_dirty && same_context) {
+		return RenderTargetOverlap::PreserveStorage;
+	}
+	return HasGuestCurrentImageOwnership(storage_gpu_modified, storage_buffer_modified,
+	                                     storage_cpu_dirty, tracker_gpu_modified, same_context)
+	           ? RenderTargetOverlap::RetireStorage
 	           : RenderTargetOverlap::Unsupported;
 }
 
@@ -899,7 +976,7 @@ ClassifyStorageRenderTargetOverlap(const ImageInfo& storage, vk::Format storage_
 	       cached.pitch == requested.pitch &&
 	       cached.bytes_per_element == requested.bytes_per_element &&
 	       cached.tile_mode == requested.tile_mode && cached.levels == requested.levels &&
-	       cached.layers == requested.layers &&
+	       cached.layers == requested.layers && cached.samples == requested.samples &&
 	       IsRgba8SrgbReinterpretation(cached.format, requested.format);
 }
 
@@ -959,6 +1036,7 @@ IsCompatibleRenderTargetBacking(const RenderTargetInfo& cached,
 	       cached.pitch == requested.pitch &&
 	       cached.bytes_per_element == requested.bytes_per_element &&
 	       cached.tile_mode == requested.tile_mode && cached.levels == requested.levels &&
+	       cached.samples == requested.samples &&
 	       (cached.format == requested.format ||
 	        IsRgba8SrgbReinterpretation(cached.format, requested.format));
 }
@@ -977,34 +1055,46 @@ IsCompatibleDepthTargetBacking(const DepthTargetInfo& cached,
 	       cached.width == requested.width && cached.height == requested.height &&
 	       cached.pitch == requested.pitch &&
 	       cached.bytes_per_element == requested.bytes_per_element &&
-	       cached.tile_mode == requested.tile_mode &&
+	       cached.tile_mode == requested.tile_mode && cached.samples == requested.samples &&
 	       cached.stencil_htile_compressed == requested.stencil_htile_compressed;
 }
 
 [[nodiscard]] inline RenderTargetOverlap
 ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modified,
-                            bool cached_buffer_modified, bool same_context,
+                            bool cached_buffer_modified, bool tracker_gpu_modified,
+                            bool same_context, bool guest_source_current,
                             const RenderTargetInfo& requested) {
 	if (!ImagePageRangesOverlap(cached.address, cached.size, requested.address, requested.size)) {
+		return RenderTargetOverlap::None;
+	}
+	if (!ImageRangeOverlaps(cached.address, cached.size, requested.address, requested.size)) {
 		return RenderTargetOverlap::None;
 	}
 	const bool expand = requested.layers > cached.layers &&
 	                    IsCompatibleRenderTargetBacking(requested, cached) &&
 	                    cached.format == requested.format;
-	if (expand && cached_gpu_modified && !cached_buffer_modified && same_context) {
+	if (expand && cached_gpu_modified && tracker_gpu_modified && !cached_buffer_modified &&
+	    same_context) {
 		return RenderTargetOverlap::ExpandTarget;
 	}
-	// For an equal-address allocation-pool entry, a changed block raster or block size is a new
-	// image allocation, not a view of the old image. In Kyty we can only retire an
-	// already-published target with page-isolated storage.
+	// A clean, page-isolated overlap is allocation-pool reuse, including a contained subrange.
+	// Compatible views are handled before this classifier and are never retired here.
 	const bool page_isolated =
 	    cached.address % TRACKER_PAGE_SIZE == 0 && cached.size % TRACKER_PAGE_SIZE == 0 &&
 	    requested.address % TRACKER_PAGE_SIZE == 0 && requested.size % TRACKER_PAGE_SIZE == 0;
-	const bool pool_storage_shape_changed = cached.pitch != requested.pitch ||
-	                                        cached.height != requested.height ||
-	                                        cached.bytes_per_element != requested.bytes_per_element;
-	return cached.address == requested.address && page_isolated && pool_storage_shape_changed &&
-	               !cached_gpu_modified && !cached_buffer_modified && same_context
+	const bool incompatible_format = cached.format != requested.format &&
+	                                 !IsRgba8SrgbReinterpretation(cached.format, requested.format);
+	const bool pool_storage_shape_changed =
+	    incompatible_format || cached.width != requested.width ||
+	    cached.height != requested.height || cached.pitch != requested.pitch ||
+	    cached.bytes_per_element != requested.bytes_per_element ||
+	    cached.tile_mode != requested.tile_mode || cached.levels != requested.levels ||
+	    cached.layers != requested.layers || cached.samples != requested.samples;
+	const bool new_allocation = cached.address != requested.address ||
+	                            cached.size != requested.size || pool_storage_shape_changed;
+	return page_isolated && new_allocation && guest_source_current &&
+	               HasGuestCurrentImageOwnership(cached_gpu_modified, cached_buffer_modified, false,
+	                                             tracker_gpu_modified, same_context)
 	           ? RenderTargetOverlap::RetireTarget
 	           : RenderTargetOverlap::Unsupported;
 }
@@ -1014,7 +1104,24 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
                                                              bool cached_buffer_modified,
                                                              bool same_context,
                                                              const DepthTargetInfo& requested) {
-	if (!ImagePageRangesOverlap(cached.address, cached.size, requested.address, requested.size)) {
+	const auto overlaps = [](uint64_t left, uint64_t left_size, uint64_t right, uint64_t right_size,
+	                         bool pages) {
+		if (left == 0 || left_size == 0 || right == 0 || right_size == 0) {
+			return false;
+		}
+		return pages ? ImagePageRangesOverlap(left, left_size, right, right_size)
+		             : ImageRangeOverlaps(left, left_size, right, right_size);
+	};
+	const auto planes_overlap = [&](bool pages) {
+		return overlaps(cached.address, cached.size, requested.address, requested.size, pages) ||
+		       overlaps(cached.address, cached.size, requested.stencil_address,
+		                requested.stencil_size, pages) ||
+		       overlaps(cached.stencil_address, cached.stencil_size, requested.address,
+		                requested.size, pages) ||
+		       overlaps(cached.stencil_address, cached.stencil_size, requested.stencil_address,
+		                requested.stencil_size, pages);
+	};
+	if (!planes_overlap(true) || !planes_overlap(false)) {
 		return DepthOverlap::None;
 	}
 	const bool expand =
@@ -1025,19 +1132,100 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 	const bool exact_discard =
 	    requested.depth_load_clear && cached_gpu_modified && !cached_buffer_modified &&
 	    same_context && cached.address == requested.address && cached.size == requested.size &&
-	    cached.stencil_address == 0 && cached.stencil_size == 0 && cached.htile_address == 0 &&
-	    cached.htile_size == 0 && requested.stencil_address == 0 && requested.stencil_size == 0 &&
+	    cached.samples == requested.samples && cached.stencil_address == 0 &&
+	    cached.stencil_size == 0 && cached.htile_address == 0 && cached.htile_size == 0 &&
+	    requested.stencil_address == 0 && requested.stencil_size == 0 &&
 	    requested.htile_address == 0 && requested.htile_size == 0;
-	return exact_discard ? DepthOverlap::DiscardTarget : DepthOverlap::Unsupported;
+	if (exact_discard) {
+		return DepthOverlap::DiscardTarget;
+	}
+	const bool exact_plane_rebind =
+	    (cached.address == requested.address && cached.size == requested.size) ||
+	    (cached.address == requested.stencil_address && cached.size == requested.stencil_size) ||
+	    (cached.stencil_address == requested.address && cached.stencil_size == requested.size) ||
+	    (cached.stencil_address == requested.stencil_address &&
+	     cached.stencil_size == requested.stencil_size);
+	const bool same_shape = cached.format == requested.format &&
+	                        cached.guest_format == requested.guest_format &&
+	                        cached.width == requested.width && cached.height == requested.height &&
+	                        cached.pitch == requested.pitch &&
+	                        cached.bytes_per_element == requested.bytes_per_element &&
+	                        cached.tile_mode == requested.tile_mode && cached.layers == 1 &&
+	                        requested.layers == 1 && cached.samples == 1 && requested.samples == 1;
+	return exact_plane_rebind && same_shape && !cached_buffer_modified && same_context
+	           ? DepthOverlap::RecreateTarget
+	           : DepthOverlap::Unsupported;
 }
 
-[[nodiscard]] inline bool CanRetireBufferOwnedDepthForRenderTarget(
-    const DepthTargetInfo& depth, bool gpu_modified, bool buffer_modified, bool same_context,
-    bool containing_buffer_source, const RenderTargetInfo& target) noexcept {
-	return !gpu_modified && buffer_modified && same_context && containing_buffer_source &&
-	       depth.address == target.address && depth.size == target.size &&
-	       depth.stencil_address == 0 && depth.stencil_size == 0 && depth.htile_address == 0 &&
-	       depth.htile_size == 0;
+[[nodiscard]] inline bool CanRecreateDepthForRenderTarget(const DepthTargetInfo& depth,
+                                                          bool gpu_modified, bool buffer_modified,
+                                                          bool tracker_gpu_modified,
+                                                          bool same_context,
+                                                          bool guest_source_current,
+                                                          const RenderTargetInfo& target) noexcept {
+	const bool exact_depth = depth.address == target.address && depth.size == target.size;
+	const bool exact_stencil =
+	    depth.stencil_address == target.address && depth.stencil_size == target.size;
+	const auto contains = [&](uint64_t address, uint64_t size) {
+		if (address == 0 || size == 0 || address < target.address) {
+			return false;
+		}
+		const auto offset = address - target.address;
+		return offset <= target.size && size <= target.size - offset;
+	};
+	const bool page_isolated_rebind =
+	    target.address % TRACKER_PAGE_SIZE == 0 && target.size % TRACKER_PAGE_SIZE == 0 &&
+	    ((contains(depth.address, depth.size) && depth.address % TRACKER_PAGE_SIZE == 0 &&
+	      depth.size % TRACKER_PAGE_SIZE == 0) ||
+	     (contains(depth.stencil_address, depth.stencil_size) &&
+	      depth.stencil_address % TRACKER_PAGE_SIZE == 0 &&
+	      depth.stencil_size % TRACKER_PAGE_SIZE == 0));
+	const bool ownership_consistent = gpu_modified == tracker_gpu_modified && !buffer_modified;
+	const bool source_available =
+	    ((exact_depth || exact_stencil) && gpu_modified) || guest_source_current;
+	return same_context && ownership_consistent && source_available &&
+	       (exact_depth || exact_stencil || page_isolated_rebind) && depth.layers == 1 &&
+	       target.levels == 1 && target.layers == 1 && depth.samples == 1 && target.samples == 1;
+}
+
+[[nodiscard]] inline bool
+CanRecreateRenderTargetForDepth(const RenderTargetInfo& target, bool gpu_modified,
+                                bool buffer_modified, bool tracker_gpu_modified, bool same_context,
+                                bool guest_source_current, const DepthTargetInfo& depth) noexcept {
+	const bool exact_depth = target.address == depth.address && target.size == depth.size;
+	const bool exact_stencil =
+	    target.address == depth.stencil_address && target.size == depth.stencil_size;
+	const auto overlaps_plane = [&](uint64_t address, uint64_t size) {
+		return address != 0 && size != 0 &&
+		       ImageRangeOverlaps(target.address, target.size, address, size);
+	};
+	const bool page_isolated_rebind =
+	    target.address % TRACKER_PAGE_SIZE == 0 && target.size % TRACKER_PAGE_SIZE == 0 &&
+	    ((overlaps_plane(depth.address, depth.size) && depth.address % TRACKER_PAGE_SIZE == 0 &&
+	      depth.size % TRACKER_PAGE_SIZE == 0) ||
+	     (overlaps_plane(depth.stencil_address, depth.stencil_size) &&
+	      depth.stencil_address % TRACKER_PAGE_SIZE == 0 &&
+	      depth.stencil_size % TRACKER_PAGE_SIZE == 0));
+	const bool source_available =
+	    (gpu_modified && (exact_depth || exact_stencil)) || guest_source_current;
+	return gpu_modified == tracker_gpu_modified && !buffer_modified && same_context &&
+	       source_available && (exact_depth || exact_stencil || page_isolated_rebind) &&
+	       target.levels == 1 && target.layers == 1 && depth.layers == 1 && target.samples == 1 &&
+	       depth.samples == 1;
+}
+
+[[nodiscard]] inline bool RequiresMultisampleDepthRefresh(const DepthTargetInfo& info,
+                                                          bool                   buffer_modified,
+                                                          bool                   depth_cpu_modified,
+                                                          bool stencil_cpu_modified) noexcept {
+	if (info.samples == 1) {
+		return false;
+	}
+	const bool depth_refresh =
+	    info.depth_access && !info.depth_load_clear && (buffer_modified || depth_cpu_modified);
+	const bool stencil_refresh = info.stencil_access && !info.stencil_load_clear &&
+	                             (buffer_modified || stencil_cpu_modified);
+	return depth_refresh || stencil_refresh;
 }
 
 } // namespace Libs::Graphics

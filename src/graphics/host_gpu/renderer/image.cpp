@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/framebufferCache.h"
 #include "graphics/host_gpu/renderer/imageView.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/renderTarget.h"
 #include "graphics/host_gpu/transfer.h"
 #include "graphics/host_gpu/vma.h"
 #include "graphics/shader/shader.h"
@@ -71,20 +72,24 @@ vk::ImageCreateFlags RenderTargetCreateFlags(vk::Format format) {
 }
 
 vk::ImageUsageFlags RenderTargetUsage(GraphicContext* ctx, vk::Format format,
-                                      vk::ImageCreateFlags flags) {
+                                      vk::ImageCreateFlags flags, uint32_t samples) {
 	auto usage = static_cast<vk::ImageUsageFlags>(vk::ImageUsageFlagBits::eColorAttachment) |
 	             static_cast<vk::ImageUsageFlags>(vk::ImageUsageFlagBits::eTransferSrc) |
-	             static_cast<vk::ImageUsageFlags>(vk::ImageUsageFlagBits::eTransferDst) |
-	             static_cast<vk::ImageUsageFlags>(vk::ImageUsageFlagBits::eSampled);
-	if (RenderTargetSupportsStorage(ctx, format, flags)) {
-		usage |= vk::ImageUsageFlagBits::eStorage;
+	             static_cast<vk::ImageUsageFlags>(vk::ImageUsageFlagBits::eTransferDst);
+	if (samples == 1) {
+		usage |= vk::ImageUsageFlagBits::eSampled;
+		if (RenderTargetSupportsStorage(ctx, format, flags)) {
+			usage |= vk::ImageUsageFlagBits::eStorage;
+		}
 	}
 	vk::ImageFormatProperties properties {};
 	if (ctx->GetImageFormatProperties(format, vk::ImageType::e2D, vk::ImageTiling::eOptimal, usage,
-	                                  flags, &properties) != vk::Result::eSuccess) {
+	                                  flags, &properties) != vk::Result::eSuccess ||
+	    !static_cast<bool>(properties.sampleCounts & vulkan_sample_count(samples))) {
 		EXIT("TextureCache: render-target format does not support required usage, format=%d "
-		     "usage=0x%x\n",
-		     static_cast<int>(format), static_cast<vk::ImageUsageFlags::MaskType>(usage));
+		     "usage=0x%x samples=%u supported=0x%x\n",
+		     static_cast<int>(format), static_cast<vk::ImageUsageFlags::MaskType>(usage), samples,
+		     static_cast<vk::SampleCountFlags::MaskType>(properties.sampleCounts));
 	}
 	return usage;
 }
@@ -172,6 +177,10 @@ void UploadRenderTargetLayers(GraphicContext* ctx, RenderTextureVulkanImage* ima
 		     "info_layers=%u image_layers=%u size=0x%016" PRIx64 "\n",
 		     base_layer, layer_count, info.layers, image != nullptr ? image->layers : 0, info.size);
 	}
+	if (info.samples != 1 || image->samples != 1) {
+		EXIT("TextureCache: multisampled render-target upload is unsupported, samples=%u/%u\n",
+		     info.samples, image->samples);
+	}
 	if (refresh) {
 		Transfer::WaitForGraphicsIdle(ctx);
 	}
@@ -230,6 +239,7 @@ RenderTextureVulkanImage* CreateRenderTarget(GraphicContext* ctx, const RenderTa
 	image->format        = info.format;
 	image->mip_levels    = info.levels;
 	image->layers        = info.layers;
+	image->samples       = info.samples;
 	image->layout        = vk::ImageLayout::eUndefined;
 	vk::ImageCreateInfo create {};
 	create.sType           = vk::StructureType::eImageCreateInfo;
@@ -241,9 +251,9 @@ RenderTextureVulkanImage* CreateRenderTarget(GraphicContext* ctx, const RenderTa
 	create.format          = info.format;
 	create.tiling          = vk::ImageTiling::eOptimal;
 	create.initialLayout   = vk::ImageLayout::eUndefined;
-	create.usage           = RenderTargetUsage(ctx, info.format, create.flags);
+	create.usage           = RenderTargetUsage(ctx, info.format, create.flags, info.samples);
 	create.sharingMode     = vk::SharingMode::eExclusive;
-	create.samples         = vk::SampleCountFlagBits::e1;
+	create.samples         = vulkan_sample_count(info.samples);
 	image->memory.property = vk::MemoryPropertyFlagBits::eDeviceLocal;
 	if (!VulkanCreateImage(ctx, create, image)) {
 		EXIT("TextureCache: failed to create render target, addr=0x%016" PRIx64
@@ -266,20 +276,24 @@ DepthStencilVulkanImage* CreateDepthTarget(GraphicContext* ctx, const DepthTarge
 	create.initialLayout = vk::ImageLayout::eUndefined;
 	create.usage         = DepthTargetImageUsage();
 	create.sharingMode   = vk::SharingMode::eExclusive;
-	create.samples       = vk::SampleCountFlagBits::e1;
+	create.samples       = vulkan_sample_count(info.samples);
 	vk::ImageFormatProperties properties {};
 	if (ctx->GetImageFormatProperties(info.format, vk::ImageType::e2D, vk::ImageTiling::eOptimal,
 	                                  create.usage, vk::ImageCreateFlags {},
-	                                  &properties) != vk::Result::eSuccess) {
-		EXIT("TextureCache: depth format does not support required usage, format=%d usage=0x%x\n",
+	                                  &properties) != vk::Result::eSuccess ||
+	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
+		EXIT("TextureCache: depth format does not support required usage, format=%d usage=0x%x "
+		     "samples=%u supported=0x%x\n",
 		     static_cast<int>(info.format),
-		     static_cast<vk::ImageUsageFlags::MaskType>(create.usage));
+		     static_cast<vk::ImageUsageFlags::MaskType>(create.usage), info.samples,
+		     static_cast<vk::SampleCountFlags::MaskType>(properties.sampleCounts));
 	}
 	auto* image            = new DepthStencilVulkanImage;
 	image->extent.width    = info.width;
 	image->extent.height   = info.height;
 	image->guest_pitch     = info.pitch;
 	image->layers          = info.layers;
+	image->samples         = info.samples;
 	image->format          = info.format;
 	image->layout          = vk::ImageLayout::eUndefined;
 	image->compressed      = false;
@@ -326,7 +340,7 @@ void ValidateVideoOut(GraphicContext* ctx, const VideoOutInfo& info) {
 		     " pitch=%u\n",
 		     info.address, info.size, exact.size, exact.align, info.pitch);
 	}
-	(void)RenderTargetUsage(ctx, info.format, vk::ImageCreateFlags {});
+	(void)RenderTargetUsage(ctx, info.format, vk::ImageCreateFlags {}, 1);
 }
 
 VideoOutVulkanImage* CreateVideoOut(GraphicContext* ctx, const VideoOutInfo& info) {
@@ -345,7 +359,7 @@ VideoOutVulkanImage* CreateVideoOut(GraphicContext* ctx, const VideoOutInfo& inf
 	create.tiling          = vk::ImageTiling::eOptimal;
 	create.initialLayout   = vk::ImageLayout::eUndefined;
 	create.flags           = RenderTargetCreateFlags(info.format);
-	create.usage           = RenderTargetUsage(ctx, info.format, create.flags);
+	create.usage           = RenderTargetUsage(ctx, info.format, create.flags, 1);
 	create.sharingMode     = vk::SharingMode::eExclusive;
 	create.samples         = vk::SampleCountFlagBits::e1;
 	image->memory.property = vk::MemoryPropertyFlagBits::eDeviceLocal;

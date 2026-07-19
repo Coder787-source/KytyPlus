@@ -580,6 +580,14 @@ void CommandBuffer::BeginRenderPass(VulkanFramebuffer* framebuffer, RenderColorI
 
 	for (uint32_t i = 0; i < color_count; i++) {
 		colors[i].vulkan_buffer->layout = RENDER_COLOR_IMAGE_LAYOUT;
+		if (colors[i].vulkan_buffer->type == VulkanImageType::RenderTexture) {
+			static_cast<RenderTextureVulkanImage*>(colors[i].vulkan_buffer)->initial_clear_pending =
+			    false;
+		}
+	}
+	if (with_depth) {
+		depth->vulkan_buffer->initial_depth_clear_pending   = false;
+		depth->vulkan_buffer->initial_stencil_clear_pending = false;
 	}
 }
 

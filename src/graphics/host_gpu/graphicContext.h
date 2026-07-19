@@ -111,6 +111,7 @@ struct VulkanImage {
 	uint32_t               guest_pitch          = 0;
 	uint32_t               layers               = 1;
 	uint32_t               mip_levels           = 1;
+	uint32_t               samples              = 1;
 	vk::Image              image                = nullptr;
 	vk::ImageView          image_view[VIEW_MAX] = {};
 	vk::ImageLayout        layout               = vk::ImageLayout::eUndefined;
@@ -124,7 +125,9 @@ struct VideoOutVulkanImage: public VulkanImage {
 
 struct DepthStencilVulkanImage: public VulkanImage {
 	DepthStencilVulkanImage(): VulkanImage(VulkanImageType::DepthStencil) {}
-	bool compressed = false;
+	bool compressed                    = false;
+	bool initial_depth_clear_pending   = false;
+	bool initial_stencil_clear_pending = false;
 };
 
 struct GpuTextureVulkanImage: public VulkanImage {
@@ -141,6 +144,7 @@ struct StorageTextureVulkanImage: public GpuTextureVulkanImage {
 
 struct RenderTextureVulkanImage: public VulkanImage {
 	RenderTextureVulkanImage(): VulkanImage(VulkanImageType::RenderTexture) {}
+	bool initial_clear_pending = false;
 };
 
 struct VulkanBuffer {

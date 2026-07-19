@@ -27,6 +27,7 @@ public:
 	void TileImage(void* dst, const void* src, const RenderTargetInfo& info) const;
 	void TileImage(void* dst, const void* src, const ImageInfo& info) const;
 	void TileImage(void* dst, const void* src, const DepthTargetInfo& info) const;
+	void TileStencil(void* dst, const void* src, const DepthTargetInfo& info) const;
 };
 
 } // namespace Libs::Graphics

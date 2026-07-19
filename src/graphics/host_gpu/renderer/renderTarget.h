@@ -10,14 +10,18 @@ namespace Libs::Graphics {
 
 static constexpr uint32_t RENDER_COLOR_ATTACHMENTS_MAX = 8;
 
-inline constexpr bool depth_msaa_single_sample_compatible(uint32_t encoded_fragments) {
-	return encoded_fragments == 1 || encoded_fragments == 2;
+[[nodiscard]] inline constexpr uint32_t render_sample_count(uint32_t encoded_samples) {
+	return encoded_samples <= 3 ? 1u << encoded_samples : 0;
 }
 
-inline constexpr bool color_msaa_single_sample_compatible(uint32_t encoded_samples,
-                                                          uint32_t encoded_fragments) {
-	return encoded_samples == encoded_fragments &&
-	       depth_msaa_single_sample_compatible(encoded_fragments);
+[[nodiscard]] inline constexpr vk::SampleCountFlagBits vulkan_sample_count(uint32_t samples) {
+	switch (samples) {
+		case 1: return vk::SampleCountFlagBits::e1;
+		case 2: return vk::SampleCountFlagBits::e2;
+		case 4: return vk::SampleCountFlagBits::e4;
+		case 8: return vk::SampleCountFlagBits::e8;
+		default: return {};
+	}
 }
 
 enum class TargetViewType : uint8_t { Image2D, Image2DArray, Unsupported };

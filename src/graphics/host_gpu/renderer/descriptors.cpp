@@ -285,6 +285,12 @@ TargetTextureViewInfo ResolveTargetTextureView(const ShaderRecompiler::IR::Image
 			               base_layer == 0 && image_layers == 1
 			           ? TargetTextureViewInfo {vk::ImageViewType::e2D, 0, 1}
 			           : TargetTextureViewInfo {};
+		case Prospero::ImageType::kCube:
+			if (resource.dimension != ShaderRecompiler::Decoder::ImageDimension::Dim2DArray ||
+			    base_layer >= image_layers || (image_layers - base_layer) % 6u != 0) {
+				return {};
+			}
+			return {vk::ImageViewType::e2DArray, base_layer, image_layers - base_layer};
 		case Prospero::ImageType::kColor2DArray:
 			if (resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D &&
 			    base_layer == 0 && image_layers == 1) {

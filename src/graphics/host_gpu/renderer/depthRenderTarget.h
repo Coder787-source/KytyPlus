@@ -25,6 +25,7 @@ struct RenderDepthInfo {
 	vk::Format                  format                   = vk::Format::eUndefined;
 	uint32_t                    width                    = 0;
 	uint32_t                    height                   = 0;
+	uint32_t                    samples                  = 1;
 	bool                        htile                    = false;
 	uint64_t                    depth_buffer_size        = 0;
 	uint64_t                    depth_buffer_vaddr       = 0;

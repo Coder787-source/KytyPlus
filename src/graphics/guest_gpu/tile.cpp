@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstring>
 #include <fmt/format.h>
 #include <vector>
@@ -327,6 +328,30 @@ static bool Gen5Thin64KBBlockSizeFromElementBytes(uint32_t bytes_per_element, ui
 	}
 
 	return false;
+}
+
+static bool Gen5Msaa64KBBlockSizeFromElementBytes(uint32_t  bytes_per_element,
+                                                  uint32_t  num_fragments_log2,
+                                                  uint32_t* block_width, uint32_t* block_height) {
+	if (num_fragments_log2 == 0) {
+		return Gen5Thin64KBBlockSizeFromElementBytes(bytes_per_element, block_width, block_height);
+	}
+	if (num_fragments_log2 > 3 || !std::has_single_bit(bytes_per_element) ||
+	    bytes_per_element > 16) {
+		return false;
+	}
+	// AGC kLog2BlockSizeMsaa. Row zero is the ordinary thin 64 KiB layout; rows 1..3
+	// describe 2x, 4x and 8x depth/render-target blocks respectively.
+	static constexpr uint8_t LOG2_BLOCK[4][5][2] = {
+	    {{8, 8}, {8, 7}, {7, 7}, {7, 6}, {6, 6}},
+	    {{7, 8}, {7, 7}, {6, 7}, {6, 6}, {5, 6}},
+	    {{7, 7}, {7, 6}, {6, 6}, {6, 5}, {5, 5}},
+	    {{6, 7}, {6, 6}, {5, 6}, {5, 5}, {4, 5}},
+	};
+	const auto bytes_log2 = std::countr_zero(bytes_per_element);
+	*block_width          = 1u << LOG2_BLOCK[num_fragments_log2][bytes_log2][0];
+	*block_height         = 1u << LOG2_BLOCK[num_fragments_log2][bytes_log2][1];
+	return true;
 }
 
 struct Gen5MipTailLocation {
@@ -2262,35 +2287,59 @@ void TileConvertLinearToTiledRenderTarget(void* dst, const void* src, uint32_t w
 	}
 }
 
+bool TileGetHtileSize(uint32_t width, uint32_t height, TileSizeAlign* htile_size) {
+	*htile_size = {};
+	if (width == 0 || width > 16384 || height == 0 || height > 16384) {
+		return false;
+	}
+	// Prospero HTile stores one DWORD per depth tile. Its 32 KiB allocation blocks cover
+	// 1024x512 pixels, independently of the attachment's fragment count.
+	const uint64_t size = static_cast<uint64_t>(AlignUp(width, 1024u) / 1024u) *
+	                      (AlignUp(height, 512u) / 512u) * 32768u;
+	if (size == 0 || size > UINT32_MAX) {
+		return false;
+	}
+	*htile_size = {static_cast<uint32_t>(size), 32768};
+	return true;
+}
+
 bool TileGetDepthSize(uint32_t width, uint32_t height, uint32_t pitch, uint32_t z_format,
                       uint32_t stencil_format, bool htile, TileSizeAlign* stencil_size,
-                      TileSizeAlign* htile_size, TileSizeAlign* depth_size) {
+                      TileSizeAlign* htile_size, TileSizeAlign* depth_size,
+                      uint32_t num_fragments_log2) {
 	EXIT_IF(pitch != 0);
-	// Prospero derives uncompressed depth/stencil as independent 64 KiB block surfaces and HTile
-	// as 32 KiB metadata blocks covering 1024x512 pixels for a single-mip, single-slice target.
+	// Prospero derives uncompressed depth/stencil as independent 64 KiB block surfaces.
 	if (width > 0 && width <= 16384 && height > 0 && height <= 16384 &&
-	    (z_format == 1 || z_format == 3) && stencil_format <= 1) {
-		const uint32_t depth_bytes       = z_format == 1 ? 2u : 4u;
-		const uint32_t depth_block_width = z_format == 1 ? 256u : 128u;
+	    (z_format == 1 || z_format == 3) && stencil_format <= 1 && num_fragments_log2 <= 3) {
+		const uint32_t depth_bytes          = z_format == 1 ? 2u : 4u;
+		uint32_t       depth_block_width    = 0;
+		uint32_t       depth_block_height   = 0;
+		uint32_t       stencil_block_width  = 0;
+		uint32_t       stencil_block_height = 0;
+		const bool     valid_blocks =
+		    Gen5Msaa64KBBlockSizeFromElementBytes(depth_bytes, num_fragments_log2,
+		                                          &depth_block_width, &depth_block_height) &&
+		    (stencil_format == 0 ||
+		     Gen5Msaa64KBBlockSizeFromElementBytes(1, num_fragments_log2, &stencil_block_width,
+		                                           &stencil_block_height));
+		const uint32_t fragments = 1u << num_fragments_log2;
 		const uint64_t depth_bytes_total =
-		    static_cast<uint64_t>(AlignUp(width, depth_block_width)) * AlignUp(height, 128u) *
-		    depth_bytes;
+		    valid_blocks ? static_cast<uint64_t>(AlignUp(width, depth_block_width)) *
+		                       AlignUp(height, depth_block_height) * depth_bytes * fragments
+		                 : 0;
 		const uint64_t stencil_bytes_total =
-		    stencil_format == 1
-		        ? static_cast<uint64_t>(AlignUp(width, 256u)) * AlignUp(height, 256u)
+		    stencil_format == 1 && valid_blocks
+		        ? static_cast<uint64_t>(AlignUp(width, stencil_block_width)) *
+		              AlignUp(height, stencil_block_height) * fragments
 		        : 0;
-		const uint64_t htile_bytes_total =
-		    htile ? static_cast<uint64_t>(AlignUp(width, 1024u) / 1024u) *
-		                (AlignUp(height, 512u) / 512u) * 32768u
-		          : 0;
-		if (depth_bytes_total <= UINT32_MAX && stencil_bytes_total <= UINT32_MAX &&
-		    htile_bytes_total <= UINT32_MAX) {
+		TileSizeAlign calculated_htile {};
+		const bool    htile_valid = !htile || TileGetHtileSize(width, height, &calculated_htile);
+		if (depth_bytes_total <= UINT32_MAX && stencil_bytes_total <= UINT32_MAX && htile_valid) {
 			*depth_size   = {static_cast<uint32_t>(depth_bytes_total), 65536};
 			*stencil_size = stencil_format == 1
 			                    ? TileSizeAlign {static_cast<uint32_t>(stencil_bytes_total), 65536}
 			                    : TileSizeAlign {};
-			*htile_size   = htile ? TileSizeAlign {static_cast<uint32_t>(htile_bytes_total), 32768}
-			                      : TileSizeAlign {};
+			*htile_size   = calculated_htile;
 			return true;
 		}
 	}
@@ -2300,11 +2349,12 @@ bool TileGetDepthSize(uint32_t width, uint32_t height, uint32_t pitch, uint32_t 
 	return false;
 }
 
-uint32_t TileGetRenderTargetPitch(uint32_t width, uint32_t bytes_per_element) {
+uint32_t TileGetRenderTargetPitch(uint32_t width, uint32_t bytes_per_element,
+                                  uint32_t num_fragments_log2) {
 	uint32_t block_width  = 0;
 	uint32_t block_height = 0;
-	if (width == 0 ||
-	    !Gen5Thin64KBBlockSizeFromElementBytes(bytes_per_element, &block_width, &block_height)) {
+	if (width == 0 || !Gen5Msaa64KBBlockSizeFromElementBytes(bytes_per_element, num_fragments_log2,
+	                                                         &block_width, &block_height)) {
 		return 0;
 	}
 	const uint64_t pitch = (static_cast<uint64_t>(width) + block_width - 1u) &
@@ -2312,19 +2362,27 @@ uint32_t TileGetRenderTargetPitch(uint32_t width, uint32_t bytes_per_element) {
 	return pitch <= UINT32_MAX ? static_cast<uint32_t>(pitch) : 0;
 }
 
+uint32_t TileGetDepthPitch(uint32_t width, uint32_t bytes_per_element,
+                           uint32_t num_fragments_log2) {
+	return TileGetRenderTargetPitch(width, bytes_per_element, num_fragments_log2);
+}
+
 bool TileGetRenderTargetSize(uint32_t width, uint32_t height, uint32_t pitch,
-                             uint32_t bytes_per_element, TileSizeAlign* total_size) {
+                             uint32_t bytes_per_element, TileSizeAlign* total_size,
+                             uint32_t num_fragments_log2) {
 	*total_size           = {};
 	uint32_t block_width  = 0;
 	uint32_t block_height = 0;
 	if (height == 0 || pitch == 0 ||
-	    !Gen5Thin64KBBlockSizeFromElementBytes(bytes_per_element, &block_width, &block_height) ||
-	    pitch != TileGetRenderTargetPitch(width, bytes_per_element)) {
+	    !Gen5Msaa64KBBlockSizeFromElementBytes(bytes_per_element, num_fragments_log2, &block_width,
+	                                           &block_height) ||
+	    pitch != TileGetRenderTargetPitch(width, bytes_per_element, num_fragments_log2)) {
 		return false;
 	}
 	const uint64_t padded_height = (static_cast<uint64_t>(height) + block_height - 1u) &
 	                               ~static_cast<uint64_t>(block_height - 1u);
-	const uint64_t size          = static_cast<uint64_t>(pitch) * padded_height * bytes_per_element;
+	const uint64_t size = static_cast<uint64_t>(pitch) * padded_height * bytes_per_element *
+	                      (1u << num_fragments_log2);
 	if (size == 0 || size > UINT32_MAX) {
 		return false;
 	}

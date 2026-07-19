@@ -819,6 +819,7 @@ static void ShaderGetStaticInputInfoPS(
 	ps_info->ps_pos_z               = (active_inputs & 0x00000400u) != 0;
 	ps_info->ps_pos_w               = (active_inputs & 0x00000800u) != 0;
 	ps_info->ps_front_face          = (active_inputs & 0x00001000u) != 0;
+	ps_info->ps_sample_shading      = (active_inputs & 0x00000011u) != 0;
 	ps_info->ps_no_perspective      = (sh->ps_input_ena & sh->ps_input_addr & 0x00000020u) != 0;
 	ps_info->ps_pixel_kill_enable   = sh->db_shader_control.shader_kill_enable;
 	ps_info->ps_depth_export_enable = sh->db_shader_control.shader_z_export_enable;
@@ -1260,6 +1261,7 @@ void ShaderDbgDumpInputInfo(const ShaderPixelInputInfo* info) {
 	     "\t ps_pos_z             = %s\n"
 	     "\t ps_pos_w             = %s\n"
 	     "\t ps_front_face        = %s\n"
+	     "\t ps_sample_shading    = %s\n"
 	     "\t ps_no_perspective    = %s\n"
 	     "\t ps_pixel_kill_enable = %s\n"
 	     "\t ps_early_z           = %s\n"
@@ -1267,8 +1269,9 @@ void ShaderDbgDumpInputInfo(const ShaderPixelInputInfo* info) {
 	     info->input_num, info->ps_system_input_base, info->ps_pos_x ? "true" : "false",
 	     info->ps_pos_y ? "true" : "false", info->ps_pos_z ? "true" : "false",
 	     info->ps_pos_w ? "true" : "false", info->ps_front_face ? "true" : "false",
-	     info->ps_no_perspective ? "true" : "false", info->ps_pixel_kill_enable ? "true" : "false",
-	     info->ps_early_z ? "true" : "false", info->ps_execute_on_noop ? "true" : "false");
+	     info->ps_sample_shading ? "true" : "false", info->ps_no_perspective ? "true" : "false",
+	     info->ps_pixel_kill_enable ? "true" : "false", info->ps_early_z ? "true" : "false",
+	     info->ps_execute_on_noop ? "true" : "false");
 
 	for (uint32_t i = 0; i < info->input_num; i++) {
 		LOGF("\t interpolator_settings[%u] = %u\n", i, info->interpolator_settings[i]);

@@ -113,6 +113,7 @@ struct ShaderPixelInputInfo {
 	bool                                           ps_pixel_kill_enable         = false;
 	bool                                           ps_depth_export_enable       = false;
 	bool                                           ps_sample_mask_export_enable = false;
+	bool                                           ps_sample_shading            = false;
 	bool                                           ps_early_z                   = false;
 	bool                                           ps_execute_on_noop           = false;
 	ShaderStageRuntime                             stage;

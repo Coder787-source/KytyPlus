@@ -77,6 +77,10 @@ void Tiler::DetileImage(GraphicContext* ctx, GpuTextureVulkanImage* image, const
 void Tiler::DetileImage(GraphicContext* ctx, DepthStencilVulkanImage* image,
                         const DepthTargetInfo& info, const BufferImageCopySource& source,
                         bool refresh, uint32_t base_layer) const {
+	if (info.samples != 1 || image == nullptr || image->samples != 1) {
+		EXIT("Tiler: multisampled depth upload is unsupported, samples=%u/%u\n", info.samples,
+		     image != nullptr ? image->samples : 0);
+	}
 	if (refresh) {
 		Transfer::WaitForGraphicsIdle(ctx);
 	}
@@ -118,6 +122,10 @@ void Tiler::DetileImage(GraphicContext* ctx, DepthStencilVulkanImage* image,
 void Tiler::DetileStencil(GraphicContext* ctx, DepthStencilVulkanImage* image,
                           const DepthTargetInfo& info, const BufferImageCopySource& source,
                           bool refresh, uint32_t base_layer) const {
+	if (info.samples != 1 || image == nullptr || image->samples != 1) {
+		EXIT("Tiler: multisampled stencil upload is unsupported, samples=%u/%u\n", info.samples,
+		     image != nullptr ? image->samples : 0);
+	}
 	const auto stencil_format = Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt);
 	const auto stencil_pitch  = TileGetTexturePitch(
 	    stencil_format, info.width, 1, Prospero::GpuEnumValue(Prospero::TileMode::kDepth));
@@ -150,7 +158,7 @@ void Tiler::TileImage(void* dst, const void* src, const RenderTargetInfo& info) 
 	const bool standard64 = IsSupportedStandard64RenderTarget(info);
 	if ((info.tile_mode != Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) &&
 	     !standard64) ||
-	    info.levels != 1) {
+	    info.levels != 1 || info.samples != 1) {
 		EXIT("Tiler: unsupported render-target tile, dst=%p src=%p "
 		     "addr=0x%016" PRIx64 "+0x%016" PRIx64
 		     " extent=%ux%u pitch=%u levels=%u tile=%u bpe=%u\n",
@@ -203,9 +211,8 @@ void Tiler::TileImage(void* dst, const void* src, const ImageInfo& info) const {
 }
 
 void Tiler::TileImage(void* dst, const void* src, const DepthTargetInfo& info) const {
-	if (info.stencil_address != 0 || info.stencil_size != 0 ||
-	    info.tile_mode != Prospero::GpuEnumValue(Prospero::TileMode::kDepth) ||
-	    !IsSupportedDepthTargetFormat(info)) {
+	if (info.samples != 1 || info.tile_mode != Prospero::GpuEnumValue(Prospero::TileMode::kDepth) ||
+	    !IsSupportedDepthReadbackFormat(info)) {
 		EXIT("Tiler: unsupported depth-target tile, dst=%p src=%p "
 		     "depth=0x%016" PRIx64 "+0x%016" PRIx64 " stencil=0x%016" PRIx64 "+0x%016" PRIx64
 		     " extent=%ux%u pitch=%u tile=%u format=%d guest_format=%u bpe=%u\n",
@@ -214,11 +221,35 @@ void Tiler::TileImage(void* dst, const void* src, const DepthTargetInfo& info) c
 		     info.guest_format, info.bytes_per_element);
 	}
 	const auto slice_size = info.size / info.layers;
+	std::memset(dst, 0, info.size);
 	for (uint32_t layer = 0; layer < info.layers; layer++) {
 		auto* guest_slice  = static_cast<uint8_t*>(dst) + slice_size * layer;
 		auto* linear_slice = static_cast<const uint8_t*>(src) + slice_size * layer;
 		TileConvertLinearToTiledDepth(guest_slice, linear_slice, info.guest_format, info.width,
 		                              info.height, info.pitch, slice_size);
+	}
+}
+
+void Tiler::TileStencil(void* dst, const void* src, const DepthTargetInfo& info) const {
+	const auto format = Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt);
+	const auto pitch  = TileGetTexturePitch(format, info.width, 1,
+	                                        Prospero::GpuEnumValue(Prospero::TileMode::kDepth));
+	if (info.samples != 1 || info.stencil_address == 0 || info.stencil_size == 0 ||
+	    info.layers == 0 || info.stencil_size % info.layers != 0 ||
+	    !IsSupportedDepthReadbackFormat(info)) {
+		EXIT("Tiler: unsupported stencil-target tile, dst=%p src=%p "
+		     "stencil=0x%016" PRIx64 "+0x%016" PRIx64
+		     " extent=%ux%u pitch=%u layers=%u format=%d compressed=%d\n",
+		     dst, src, info.stencil_address, info.stencil_size, info.width, info.height, pitch,
+		     info.layers, static_cast<int>(info.format), info.stencil_htile_compressed);
+	}
+	const auto slice_size = info.stencil_size / info.layers;
+	std::memset(dst, 0, info.stencil_size);
+	for (uint32_t layer = 0; layer < info.layers; layer++) {
+		auto* guest_slice  = static_cast<uint8_t*>(dst) + slice_size * layer;
+		auto* linear_slice = static_cast<const uint8_t*>(src) + slice_size * layer;
+		TileConvertLinearToTiledDepth(guest_slice, linear_slice, format, info.width, info.height,
+		                              pitch, slice_size);
 	}
 }
 

@@ -101,15 +101,15 @@ public:
 	FindDepthTargetByRange(CommandBuffer* command, uint64_t vaddr, uint64_t size,
 	                       bool allow_containing_sampled = false);
 	[[nodiscard]] RegionInfo QueryRegion(uint64_t vaddr, uint64_t size);
-	void                     RegisterMeta(uint64_t vaddr, uint64_t size, uint32_t layers = 1);
-	[[nodiscard]] bool       IsMeta(uint64_t vaddr);
-	[[nodiscard]] bool       IsMetaRange(uint64_t vaddr, uint64_t size);
-	[[nodiscard]] bool       IsMetaCleared(uint64_t vaddr, uint32_t slice);
-	[[nodiscard]] bool       ClearMeta(uint64_t vaddr);
-	[[nodiscard]] bool       TouchMeta(uint64_t vaddr, uint32_t slice, bool is_clear);
-	[[nodiscard]] bool       InvalidateMemory(PageFaultAccess access, uint64_t vaddr, uint64_t size,
-	                                          PageFaultPhase phase) noexcept;
-	void                     UnmapMemory(uint64_t vaddr, uint64_t size);
+	void RegisterMeta(GraphicContext* ctx, uint64_t vaddr, uint64_t size, uint32_t layers = 1);
+	[[nodiscard]] bool IsMeta(uint64_t vaddr);
+	[[nodiscard]] bool IsMetaRange(uint64_t vaddr, uint64_t size);
+	[[nodiscard]] bool IsMetaCleared(uint64_t vaddr, uint32_t slice);
+	[[nodiscard]] bool ClearMeta(uint64_t vaddr);
+	[[nodiscard]] bool TouchMeta(uint64_t vaddr, uint32_t slice, bool is_clear);
+	[[nodiscard]] bool InvalidateMemory(PageFaultAccess access, uint64_t vaddr, uint64_t size,
+	                                    PageFaultPhase phase) noexcept;
+	void               UnmapMemory(uint64_t vaddr, uint64_t size);
 
 	VulkanImage* GetDummySampledTexture(bool uint_format, bool image_3d);
 	VulkanImage* GetDummyStorageTexture(bool uint_format, bool image_3d);
@@ -129,7 +129,8 @@ private:
 	[[nodiscard]] bool          HasMetaOverlapLocked(uint64_t vaddr, uint64_t size) const;
 	[[nodiscard]] CachedImage*  FindGpuReadbackPageCandidateLocked(uint64_t vaddr, uint64_t size);
 	void                        RequireNoMetaOverlapLocked(uint64_t vaddr, uint64_t size) const;
-	void                        MarkSampledAliasesCpuDirtyLocked(uint64_t vaddr, uint64_t size);
+	void ResolveImageMetadataOverlapsLocked(GraphicContext* ctx, uint64_t vaddr, uint64_t size);
+	void MarkSampledAliasesCpuDirtyLocked(uint64_t vaddr, uint64_t size);
 	void RetireSampledTargetAliases(GraphicContext* ctx, const ImageInfo& requested);
 	void ResolveStorageImageOverlaps(GraphicContext* ctx, const ImageInfo& requested);
 	void RetireStorageDepthAliasLocked(GraphicContext* ctx, const ImageInfo& requested);
@@ -143,6 +144,10 @@ private:
 	                                uint64_t address, uint64_t size) const;
 	void RetireImages(const std::vector<CachedImage*>& retire,
 	                  const CachedImage*               native_image_source = nullptr);
+	void RetireDepthMetadataLocked(const std::vector<CachedImage*>& retire,
+	                               uint64_t                         preserve_address = 0);
+	void MaterializeImagesToGuestLocked(GraphicContext*                                  ctx,
+	                                    const std::vector<std::shared_ptr<CachedImage>>& images);
 	void SynchronizeColorImageToBufferLocked(CachedImage& cached, uint64_t write_address,
 	                                         uint64_t write_size);
 	void SynchronizeDepthImageToBufferLocked(CachedImage& cached, uint64_t write_address,

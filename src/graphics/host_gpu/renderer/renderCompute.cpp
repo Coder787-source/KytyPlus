@@ -59,18 +59,16 @@ bool ResolveHtileClearTarget(const HW::DepthRenderTarget& z, uint64_t descriptor
 	const bool has_stencil =
 	    z.stencil_info.format != Prospero::GpuEnumValue(Prospero::StencilFormat::kInvalid);
 	const auto* depth_policy = FindDepthFormatPolicy(z.z_info.format);
-	const bool  msaa_compat  = depth_msaa_single_sample_compatible(z.z_info.num_samples);
 	const bool  supported_depth_state =
 	    z.z_info.tile_surface_enable && depth_policy != nullptr && z.z_info.tile_mode_index == 0 &&
-	    (z.z_info.num_samples == 0 || msaa_compat) && z.z_info.zrange_precision <= 1 &&
-	    !z.z_info.expclear_enabled && !z.z_info.embedded_sample_locations &&
-	    !z.z_info.partially_resident && z.z_info.num_mip_levels == 0 &&
-	    z.z_info.plane_compression == 0 && z.depth_view.current_mip_level == 0 &&
-	    z.depth_view.slice_start == 0 && z.depth_view.slice_max == 0 &&
-	    z.depth_info.addr5_swizzle_mask == 0 && z.depth_info.array_mode == 0 &&
-	    z.depth_info.pipe_config == 0 && z.depth_info.bank_width == 0 &&
-	    z.depth_info.bank_height == 0 && z.depth_info.macro_tile_aspect == 0 &&
-	    z.depth_info.num_banks == 0;
+	    z.z_info.num_samples <= 3 && z.z_info.zrange_precision <= 1 && !z.z_info.expclear_enabled &&
+	    !z.z_info.embedded_sample_locations && !z.z_info.partially_resident &&
+	    z.z_info.num_mip_levels == 0 && z.z_info.plane_compression == 0 &&
+	    z.depth_view.current_mip_level == 0 && z.depth_view.slice_start == 0 &&
+	    z.depth_view.slice_max == 0 && z.depth_info.addr5_swizzle_mask == 0 &&
+	    z.depth_info.array_mode == 0 && z.depth_info.pipe_config == 0 &&
+	    z.depth_info.bank_width == 0 && z.depth_info.bank_height == 0 &&
+	    z.depth_info.macro_tile_aspect == 0 && z.depth_info.num_banks == 0;
 	const bool supported_stencil_state =
 	    z.stencil_info.tile_mode_index == 0 && z.stencil_info.tile_split == 0 &&
 	    !z.stencil_info.expclear_enabled &&
@@ -100,14 +98,6 @@ bool ResolveHtileClearTarget(const HW::DepthRenderTarget& z, uint64_t descriptor
 	    !supported_addresses) {
 		return false;
 	}
-	if (msaa_compat) {
-		static std::atomic<uint32_t> logged_fragments = 0;
-		const uint32_t               bit              = 1u << z.z_info.num_samples;
-		if ((logged_fragments.fetch_or(bit, std::memory_order_relaxed) & bit) == 0) {
-			LOGF("HTileClear: compatibility: treating PS5 %ux depth fragments as single-sample\n",
-			     bit);
-		}
-	}
 
 	const bool size_xy_valid = z.size.valid;
 	const bool wh_valid      = z.width_height_valid && z.width != 0 && z.height != 0;
@@ -133,36 +123,8 @@ bool ResolveHtileClearTarget(const HW::DepthRenderTarget& z, uint64_t descriptor
 	     (z.pitch_div8_minus1 != 0 || z.height_div8_minus1 != 0 || z.slice_div64_minus1 != 0))) {
 		return false;
 	}
-
-	const uint32_t guest_format = Prospero::GpuEnumValue(depth_policy->guest_format);
-	const uint32_t bytes        = depth_policy->bytes_per_element;
-	const uint32_t pitch = TileGetTexturePitch(guest_format, width, 1,
-	                                           Prospero::GpuEnumValue(Prospero::TileMode::kDepth));
-	if (z.pitch_height_valid && ((static_cast<uint64_t>(z.pitch_div8_minus1) + 1u) * 8u != pitch ||
-	                             (static_cast<uint64_t>(z.height_div8_minus1) + 1u) * 8u !=
-	                                 ((static_cast<uint64_t>(height) + 7u) & ~7ull))) {
-		return false;
-	}
-	const uint32_t block_width = bytes == 2 ? 256u : 128u;
-	const uint64_t padded_width =
-	    (static_cast<uint64_t>(pitch) + block_width - 1u) & ~(block_width - 1u);
-	const uint64_t padded_height = (static_cast<uint64_t>(height) + 127u) & ~127ull;
-	if (padded_width > UINT64_MAX / padded_height ||
-	    padded_width * padded_height > UINT64_MAX / bytes) {
-		return false;
-	}
-	const uint64_t expected_depth_size = padded_width * padded_height * bytes;
-	TileSizeAlign  depth_size {};
-	TileSizeAlign  stencil_size {};
-	TileSizeAlign  htile_size {};
-	if (!TileGetDepthSize(width, height, 0, z.z_info.format, z.stencil_info.format, true,
-	                      &stencil_size, &htile_size, &depth_size) ||
-	    expected_depth_size == 0 || expected_depth_size > UINT32_MAX || depth_size.align != 65536 ||
-	    depth_size.size != expected_depth_size ||
-	    (has_stencil != (stencil_size.align == 65536 && stencil_size.size != 0)) ||
-	    htile_size.align != 32768 || htile_size.size == 0 || htile_size.size != descriptor_size ||
-	    (z.pitch_height_valid &&
-	     (static_cast<uint64_t>(z.slice_div64_minus1) + 1u) * 64u != expected_depth_size)) {
+	TileSizeAlign htile_size {};
+	if (!TileGetHtileSize(width, height, &htile_size) || htile_size.size != descriptor_size) {
 		return false;
 	}
 	*resolved = {.address = z.htile_data_base_addr, .size = htile_size.size};
@@ -232,9 +194,19 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input, cons
 	HtileClearTarget target {};
 	if (current_references != 0) {
 		if (!ResolveHtileClearTarget(z, described_meta_size, &target)) {
-			EXIT("unsupported HTile compute-clear target state\n");
+			EXIT("unsupported HTile compute-clear target state: current=%u registered=%u "
+			     "meta=0x%016" PRIx64 "+0x%016" PRIx64 " depth=0x%016" PRIx64 "/0x%016" PRIx64
+			     " stencil=0x%016" PRIx64 "/0x%016" PRIx64
+			     " extent=%d:%ux%u wh=%d:%ux%u pitch=%d:%u/%u/%u zfmt=%u sfmt=%u samples=%u\n",
+			     current_references, registered_writes, meta_addr, described_meta_size,
+			     z.z_read_base_addr, z.z_write_base_addr, z.stencil_read_base_addr,
+			     z.stencil_write_base_addr, z.size.valid, static_cast<uint32_t>(z.size.x_max) + 1u,
+			     static_cast<uint32_t>(z.size.y_max) + 1u, z.width_height_valid, z.width, z.height,
+			     z.pitch_height_valid, z.pitch_div8_minus1, z.height_div8_minus1,
+			     z.slice_div64_minus1, z.z_info.format, z.stencil_info.format,
+			     z.z_info.num_samples);
 		}
-		cache->RegisterMeta(target.address, target.size);
+		cache->RegisterMeta(g_render_ctx->GetGraphicCtx(), target.address, target.size);
 	} else {
 		target = registered_target;
 	}

@@ -80,12 +80,18 @@ bool TileGetStandard4KBVolumeLayout(uint32_t format, uint32_t* bytes_per_element
                                     uint32_t* texels_per_element_tall, uint32_t* block_width_log2,
                                     uint32_t* block_height_log2, uint32_t* block_depth_log2);
 
+bool     TileGetHtileSize(uint32_t width, uint32_t height, TileSizeAlign* htile_size);
 bool     TileGetDepthSize(uint32_t width, uint32_t height, uint32_t pitch, uint32_t z_format,
                           uint32_t stencil_format, bool htile, TileSizeAlign* stencil_size,
-                          TileSizeAlign* htile_size, TileSizeAlign* depth_size);
-uint32_t TileGetRenderTargetPitch(uint32_t width, uint32_t bytes_per_element);
+                          TileSizeAlign* htile_size, TileSizeAlign* depth_size,
+                          uint32_t num_fragments_log2 = 0);
+uint32_t TileGetRenderTargetPitch(uint32_t width, uint32_t bytes_per_element,
+                                  uint32_t num_fragments_log2 = 0);
+uint32_t TileGetDepthPitch(uint32_t width, uint32_t bytes_per_element,
+                           uint32_t num_fragments_log2 = 0);
 bool     TileGetRenderTargetSize(uint32_t width, uint32_t height, uint32_t pitch,
-                                 uint32_t bytes_per_element, TileSizeAlign* total_size);
+                                 uint32_t bytes_per_element, TileSizeAlign* total_size,
+                                 uint32_t num_fragments_log2 = 0);
 bool     TileGetRenderTargetMipLayout(uint32_t width, uint32_t height, uint32_t pitch,
                                       uint32_t bytes_per_element, uint32_t levels,
                                       TileSizeAlign* total_size, TileSizeOffset* level_sizes,

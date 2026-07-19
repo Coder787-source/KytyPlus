@@ -8,6 +8,7 @@
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/framebufferCache.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <atomic>
 #include <cstring>
@@ -89,6 +90,13 @@ PipelineCache::GraphicsPipeline* PipelineCache::CreateGraphicsPipeline(
 
 	static_params.negative_one_to_one = !ctx->GetClipControl().dx_clip_space;
 	static_params.topology            = topology;
+	static_params.samples             = framebuffer->samples;
+	static_params.sample_shading_enable =
+	    ps_active && framebuffer->samples > 1 && ps_input_info->ps_sample_shading;
+	if (static_params.sample_shading_enable &&
+	    !g_render_ctx->GetGraphicCtx()->sample_rate_shading_enabled) {
+		EXIT("Pipeline: sample-rate shading is required but unsupported by the host\n");
+	}
 	static_params.with_depth =
 	    (depth->format != vk::Format::eUndefined && depth->vulkan_buffer != nullptr);
 	static_params.depth_test_enable  = depth->depth_test_enable;
