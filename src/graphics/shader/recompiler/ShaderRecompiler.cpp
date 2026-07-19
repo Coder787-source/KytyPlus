@@ -336,9 +336,21 @@ EmbeddedFetchData DetectEmbeddedVertexFetch(const Decoder::Program&      decoded
 	}
 
 	for (const auto& inst: decoded.instructions) {
-		if (data.loads.empty() && inst.opcode == Decoder::Opcode::VAddI32 &&
-		    IsDecodedVgpr(inst.dst) && inst.dst.reg == 0 && IsDecodedSgpr(inst.src0) &&
-		    IsDecodedVgpr(inst.src1) && inst.src1.reg == 0) {
+		// Fetch shaders accumulate the draw's vertex offset in v0. The PS5 NGG ABI
+		// seeds S_NGG_VERTEX_INDEX in v5 and applies the same offset there before fetching.
+		const bool vertex_index_accumulator =
+		    IsDecodedVgpr(inst.dst) &&
+		    (inst.dst.reg == 0 || (user_data_base == 8 && inst.dst.reg == 5));
+		uint32_t sad_zero = 0;
+		const bool vertex_offset_add =
+		    vertex_index_accumulator && IsDecodedSgpr(inst.src0) &&
+		    ((inst.opcode == Decoder::Opcode::VAddI32 && IsDecodedVgpr(inst.src1) &&
+		      inst.src1.reg == inst.dst.reg) ||
+		     (user_data_base == 8 && inst.dst.reg == 5 &&
+		      inst.opcode == Decoder::Opcode::VSadU32 && IsDecodedVgpr(inst.src2) &&
+		      inst.src2.reg == inst.dst.reg &&
+		      TryDecodedOperandConstant(sgprs, inst.src1, sad_zero) && sad_zero == 0));
+		if (data.loads.empty() && vertex_offset_add) {
 			const auto reg = DecodedSgprReg(inst.src0);
 			if (reg >= user_data_base && reg - user_data_base < user_data_count) {
 				if (offset_candidate >= 0 && offset_candidate != static_cast<int32_t>(reg)) {

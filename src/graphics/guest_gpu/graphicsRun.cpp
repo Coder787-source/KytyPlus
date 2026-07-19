@@ -1142,23 +1142,6 @@ void CommandProcessor::DrawIndex(uint32_t index_count, const void* index_addr, u
 		     "\n",
 		     vertex_offset_add, first_instance);
 	}
-	const auto frame_num = GraphicsRunGetFrameNum();
-	if (frame_num >= 480) {
-		static std::atomic<uint32_t> log_count {0};
-		if (log_count.fetch_add(1, std::memory_order_relaxed) < 512) {
-			const auto& oa = m_ucfg.GetGdsOaCounter(m_ucfg.GetGdsOaState().GetIndex());
-			LOGF("QueuePoint DrawIndex: frame=%u submit=%" PRIu64
-			     " queue=%d index_count=%u instances=%u prim=%u "
-			     "es=0x%016" PRIx64 " ps=0x%016" PRIx64
-			     " oa_index=%u oa_enabled=%s oa_addr=0x%04" PRIx32 " oa_space=0x%08" PRIx32 "\n",
-			     frame_num, m_submit_id, m_scheduler.Queue(), index_count, instance_count,
-			     m_ucfg.GetPrimType(), m_sh_ctx.GetVs().es_regs.data_addr,
-			     m_sh_ctx.GetPs().ps_regs.data_addr, m_ucfg.GetGdsOaState().GetIndex(),
-			     oa.IsCounterEnabled() ? "true" : "false", oa.GetAddressBytes(),
-			     oa.GetSpaceAvailable());
-		}
-	}
-
 	RenderDrawIndex(m_submit_id, CurrentBuffer(), &m_ctx, &m_ucfg, &m_sh_ctx, m_index_type_and_size,
 	                index_count, index_addr, flags, type, instance_count,
 	                render_target_slice_offset, vertex_offset_add, first_instance);
@@ -1458,22 +1441,6 @@ void CommandProcessor::DrawIndexAuto(uint32_t index_count, uint32_t flags,
 	Common::LockGuard lock(m_mutex);
 
 	CheckBuffer();
-	const auto frame_num = GraphicsRunGetFrameNum();
-	if (frame_num >= 480) {
-		static std::atomic<uint32_t> log_count {0};
-		if (log_count.fetch_add(1, std::memory_order_relaxed) < 512) {
-			const auto& oa = m_ucfg.GetGdsOaCounter(m_ucfg.GetGdsOaState().GetIndex());
-			LOGF("QueuePoint DrawIndexAuto: frame=%u submit=%" PRIu64
-			     " queue=%d index_count=%u instances=%u prim=%u "
-			     "first_vertex=%u first_instance=%u es=0x%016" PRIx64 " ps=0x%016" PRIx64
-			     " oa_index=%u oa_enabled=%s oa_addr=0x%04" PRIx32 " oa_space=0x%08" PRIx32 "\n",
-			     frame_num, m_submit_id, m_scheduler.Queue(), index_count, instance_count,
-			     m_ucfg.GetPrimType(), first_vertex, first_instance,
-			     m_sh_ctx.GetVs().es_regs.data_addr, m_sh_ctx.GetPs().ps_regs.data_addr,
-			     m_ucfg.GetGdsOaState().GetIndex(), oa.IsCounterEnabled() ? "true" : "false",
-			     oa.GetAddressBytes(), oa.GetSpaceAvailable());
-		}
-	}
 
 	RenderDrawIndexAuto(m_submit_id, CurrentBuffer(), &m_ctx, &m_ucfg, &m_sh_ctx, index_count,
 	                    flags, render_target_slice_offset, instance_count, first_vertex,

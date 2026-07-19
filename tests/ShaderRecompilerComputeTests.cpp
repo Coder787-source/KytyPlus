@@ -9009,14 +9009,29 @@ void CheckPs5GameExampleImageClearRuntimeShape() {
 
 void CheckEmbeddedFetchVertexOffset() {
   const auto MakeFetch = [](std::initializer_list<std::pair<u32, u32>> adds,
-                            std::optional<std::pair<u32, u32>> late_add = {}) {
+                            std::optional<std::pair<u32, u32>> late_add = {},
+                            u32 accumulator_vgpr = 0, bool ngg_sad = false) {
     std::vector<u32> code;
     code.push_back(EncodeSMovB32(0, InlineU32(0)));
     code.push_back(EncodeSmem0(0x02u, 20, 4));
     code.push_back(EncodeSmem1(0));
+    const auto AppendOffsets = [&]() {
+      for (const auto [sgpr, index_vgpr] : adds) {
+        if (ngg_sad) {
+          AppendVop3(&code, 0x15du, accumulator_vgpr, sgpr, InlineU32(0),
+                     Vgpr(index_vgpr));
+        } else {
+          AppendVop3B(&code, 0x30fu, accumulator_vgpr, 0, sgpr,
+                      Vgpr(index_vgpr));
+        }
+      }
+    };
+    if (ngg_sad) {
+      AppendOffsets();
+    }
     code.push_back(EncodeVop2(0x01u, 0, Vgpr(8), 5));
-    for (const auto [sgpr, index_vgpr] : adds) {
-      AppendVop3B(&code, 0x30fu, 0, 0, sgpr, Vgpr(index_vgpr));
+    if (!ngg_sad) {
+      AppendOffsets();
     }
     code.push_back(EncodeMubuf0(0x03u, 0, true));
     code.push_back(EncodeMubuf1(9, 5, 0));
@@ -9075,6 +9090,18 @@ void CheckEmbeddedFetchVertexOffset() {
       valid.program.info.vertex_offset_sgpr == 18 && Resolve(valid, 0) == 7 &&
           Resolve(valid, 5) == 5,
       "canonical fetch offset or register index-offset precedence is wrong");
+
+  const auto ngg_code = MakeFetch({{18, 5}}, {}, 5, true);
+  Require("EmbeddedFetchNggVertexOffset", "encoding",
+          ngg_code[3] == 0xd55d0005u && ngg_code[4] == 0x04150012u,
+          "test does not encode the PS5 V_SAD_U32 vertex-offset prolog");
+  const auto ngg =
+      Compile("EmbeddedFetchNggVertexOffset", ngg_code, 8);
+  Require("EmbeddedFetchNggVertexOffset", "parse",
+          ngg.program.info.vertex_offset_sgpr == 18 && Resolve(ngg, 0) == 8 &&
+              Resolve(ngg, 5) == 5,
+          "PS5 NGG vertex-index offset or register index-offset precedence is "
+          "wrong");
 
   const auto pointer = 0x5b7c5100u;
   const auto late = Compile("EmbeddedFetchLateOffset",

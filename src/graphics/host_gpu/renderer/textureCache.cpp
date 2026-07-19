@@ -2578,11 +2578,13 @@ void TextureCache::RefreshVideoOut(VideoOutVulkanImage* image, bool render_targe
 	if (cached.gpu_modified) {
 		return;
 	}
-	const auto& info         = cached.video_out;
-	const bool  image_dirty  = m_memory_tracker.IsRegionCpuModified(info.address, info.size);
-	const bool  buffer_dirty = cached.buffer_modified ||
-	                           m_buffer_cache.IsRegionCpuModified(info.address, info.size) ||
-	                           m_buffer_cache.IsRegionGpuModified(info.address, info.size);
+	const auto& info           = cached.video_out;
+	const bool  image_dirty    = m_memory_tracker.IsRegionCpuModified(info.address, info.size);
+	const bool  buffer_overlap = m_buffer_cache.HasPageOverlap(info.address, info.size);
+	const bool  buffer_dirty =
+	    cached.buffer_modified ||
+	    (buffer_overlap && (m_buffer_cache.IsRegionCpuModified(info.address, info.size) ||
+	                        m_buffer_cache.IsRegionGpuModified(info.address, info.size)));
 	if (!image_dirty && !buffer_dirty) {
 		if (info.compression == VideoOutCompression::Uncompressed ||
 		    CanUseVideoOutNativeWithoutUpload(info.compression, render_target, false, false)) {
