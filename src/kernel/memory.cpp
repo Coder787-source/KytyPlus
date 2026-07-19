@@ -882,6 +882,13 @@ void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
 	}
 }
 
+void PrepareHostWrite(uint64_t vaddr, uint64_t size) {
+	if (size == 0 || Graphics::g_render_ctx == nullptr) {
+		return;
+	}
+	Graphics::g_render_ctx->GetGpuResources()->PrepareHostWrite(vaddr, size);
+}
+
 struct PrtAperture {
 	uint64_t address = 0;
 	uint64_t size    = 0;

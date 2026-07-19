@@ -38,6 +38,7 @@ public:
 	[[nodiscard]] uint64_t GetPageSize() const;
 	[[nodiscard]] bool     IsTracked(uint64_t vaddr) const noexcept;
 	[[nodiscard]] bool     IsMapped(uint64_t vaddr, uint64_t size) const noexcept;
+	[[nodiscard]] bool     HasAnyMapping(uint64_t vaddr, uint64_t size) const noexcept;
 	[[nodiscard]] bool HasGpuAccess(uint64_t vaddr, uint64_t size, GpuAccess access) const noexcept;
 
 	void UpdatePageWatchers(bool track, uint64_t vaddr, uint64_t size,
@@ -46,6 +47,7 @@ public:
 	void OnGpuUnmap(uint64_t vaddr, uint64_t size, GpuAccess access = GpuAccess::ReadWrite);
 
 	[[nodiscard]] bool HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept;
+	[[nodiscard]] bool HandleWriteRange(uint64_t vaddr, uint64_t size) noexcept;
 
 private:
 	void BeginBackingWrite(uint64_t vaddr, uint64_t size) noexcept;

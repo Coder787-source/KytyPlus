@@ -734,7 +734,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	clip_ext.sType           = vk::StructureType::ePipelineRasterizationDepthClipStateCreateInfoEXT;
 	clip_ext.pNext           = nullptr;
 	clip_ext.flags           = {};
-	clip_ext.depthClipEnable = VK_FALSE;
+	clip_ext.depthClipEnable = static_params.depth_clip_enable ? VK_TRUE : VK_FALSE;
 
 	vk::PipelineRasterizationStateCreateInfo rasterizer {};
 	rasterizer.sType                   = vk::StructureType::ePipelineRasterizationStateCreateInfo;

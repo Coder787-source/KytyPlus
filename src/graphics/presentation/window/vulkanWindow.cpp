@@ -289,9 +289,13 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		color_write_ext.sType = vk::StructureType::ePhysicalDeviceColorWriteEnableFeaturesEXT;
 		color_write_ext.pNext = nullptr;
 
+		vk::PhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable {};
+		depth_clip_enable.sType = vk::StructureType::ePhysicalDeviceDepthClipEnableFeaturesEXT;
+		depth_clip_enable.pNext = &color_write_ext;
+
 		vk::PhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control {};
 		depth_clip_control.sType = vk::StructureType::ePhysicalDeviceDepthClipControlFeaturesEXT;
-		depth_clip_control.pNext = &color_write_ext;
+		depth_clip_control.pNext = &depth_clip_enable;
 
 		vk::PhysicalDeviceVulkan12Features features12 {};
 		features12.sType = vk::StructureType::ePhysicalDeviceVulkan12Features;
@@ -323,6 +327,10 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 
 		if (depth_clip_control.depthClipControl != VK_TRUE) {
 			LOGF("depthClipControl is not supported\n");
+			skip_device = true;
+		}
+		if (depth_clip_enable.depthClipEnable != VK_TRUE) {
+			LOGF("depthClipEnable is not supported\n");
 			skip_device = true;
 		}
 
@@ -590,9 +598,14 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, vk::Sur
 	color_write_ext.pNext = nullptr;
 	color_write_ext.colorWriteEnable = VK_TRUE;
 
+	vk::PhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable {};
+	depth_clip_enable.sType           = vk::StructureType::ePhysicalDeviceDepthClipEnableFeaturesEXT;
+	depth_clip_enable.pNext           = &color_write_ext;
+	depth_clip_enable.depthClipEnable = VK_TRUE;
+
 	vk::PhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control {};
 	depth_clip_control.sType = vk::StructureType::ePhysicalDeviceDepthClipControlFeaturesEXT;
-	depth_clip_control.pNext = &color_write_ext;
+	depth_clip_control.pNext = &depth_clip_enable;
 	depth_clip_control.depthClipControl = VK_TRUE;
 
 	vk::PhysicalDeviceVulkan12Features features12 {};

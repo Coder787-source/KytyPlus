@@ -61,6 +61,41 @@ bool GpuResourceManager::HandleFault(PageFaultAccess access, uint64_t fault_vadd
 	return m_page_manager.HandleFault(access, fault_vaddr);
 }
 
+void GpuResourceManager::PrepareHostWrite(uint64_t vaddr, uint64_t size) {
+	if (!m_page_manager.HasAnyMapping(vaddr, size)) {
+		return;
+	}
+	if (LabelInCallback()) {
+		EXIT("unsupported host write from an asynchronous GPU label callback, addr=0x%016" PRIx64
+		     " size=0x%016" PRIx64 "\n",
+		     vaddr, size);
+	}
+	const auto handle_range = [this, vaddr, size]() {
+		if (!m_page_manager.HandleWriteRange(vaddr, size)) {
+			EXIT("failed to prepare host write, addr=0x%016" PRIx64 " size=0x%016" PRIx64
+			     "\n",
+			     vaddr, size);
+		}
+	};
+	if (auto* cp = GraphicsRunCurrentCommandProcessor(); cp != nullptr) {
+		cp->BeginReadbackTransaction();
+		{
+			ResourceMutex::FaultScope fault(m_resource_mutex);
+			handle_range();
+		}
+		cp->EndReadbackTransaction();
+		return;
+	}
+	if (m_resource_mutex.IsOwnedByCurrentThread()) {
+		EXIT("unsupported host write from a pre-owned resource transaction, addr=0x%016" PRIx64
+		     " size=0x%016" PRIx64 "\n",
+		     vaddr, size);
+	}
+	GraphicsRunSubmissionLock submissions;
+	ResourceMutex::FaultScope fault(m_resource_mutex);
+	handle_range();
+}
+
 bool GpuResourceManager::IsMapped(uint64_t vaddr, uint64_t size) const noexcept {
 	return m_page_manager.IsMapped(vaddr, size);
 }

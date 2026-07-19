@@ -13869,6 +13869,30 @@ void CheckReferenceClockScale() {
   std::printf("[host]    %-32s ok\n", "ReferenceClockScale");
 }
 
+void CheckClipControlDepthClipState() {
+  HW::ClipControl clip;
+  Require("ClipControlDepthClipState", "default",
+          clip.IsZClipModeRepresentable() && clip.IsZClipEnabled(),
+          "default paired Z clipping was not enabled");
+
+  clip.min_z_clip_disable = true;
+  Require("ClipControlDepthClipState", "asymmetric near",
+          !clip.IsZClipModeRepresentable(),
+          "asymmetric near-plane state was accepted");
+
+  clip.min_z_clip_disable = false;
+  clip.max_z_clip_disable = true;
+  Require("ClipControlDepthClipState", "asymmetric far",
+          !clip.IsZClipModeRepresentable(),
+          "asymmetric far-plane state was accepted");
+
+  clip.min_z_clip_disable = true;
+  Require("ClipControlDepthClipState", "both disabled",
+          clip.IsZClipModeRepresentable() && !clip.IsZClipEnabled(),
+          "paired Z-clip disable was not represented");
+  std::printf("[host]    %-32s ok\n", "ClipControlDepthClipState");
+}
+
 } // namespace
 } // namespace Libs::Graphics
 
@@ -13877,6 +13901,10 @@ int main(int argc, char **argv) {
 
   EnsureConfigInitialized();
   TileInit();
+  if (argc == 2 && std::strcmp(argv[1], "--clip-control-only") == 0) {
+    CheckClipControlDepthClipState();
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--reference-clock-only") == 0) {
     CheckReferenceClockScale();
     return 0;
@@ -14021,6 +14049,7 @@ int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
 #endif
+  CheckClipControlDepthClipState();
   CheckReferenceClockScale();
   CheckEmbeddedFetchVertexOffset();
   CheckEmbeddedFetchLaneSpill();

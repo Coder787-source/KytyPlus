@@ -9,6 +9,7 @@
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "kernel/memory.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
@@ -502,6 +503,11 @@ int64_t KYTY_SYSV_ABI KernelRead(int d, void* buf, size_t nbytes) {
 	file->mutex.Lock();
 
 	bool     is_invalid = file->f.IsInvalid();
+	const auto pos       = file->f.Tell();
+	const auto file_size = file->f.Size();
+	const auto remaining = pos < file_size ? file_size - pos : 0;
+	Memory::PrepareHostWrite(reinterpret_cast<uint64_t>(buf),
+	                         std::min<uint64_t>(nbytes, remaining));
 	uint32_t bytes_read = 0;
 	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
 
@@ -622,6 +628,12 @@ int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offse
 
 	bool     is_invalid = file->f.IsInvalid();
 	auto     pos        = file->f.Tell();
+	const auto file_size = file->f.Size();
+	const auto remaining = static_cast<uint64_t>(offset) < file_size
+	                           ? file_size - static_cast<uint64_t>(offset)
+	                           : 0;
+	Memory::PrepareHostWrite(reinterpret_cast<uint64_t>(buf),
+	                         std::min<uint64_t>(nbytes, remaining));
 	uint32_t bytes_read = 0;
 	file->f.Seek(offset);
 	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
