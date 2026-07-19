@@ -5,6 +5,7 @@
 #include "common/common.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
+#include <functional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -73,6 +74,8 @@ MakeLayeredImageBufferCopies(uint32_t layers, uint64_t slice_size, uint32_t pitc
 
 enum class StagingBufferType { Texture, Vertex, ReadBack };
 
+using DownloadedImageConsumer = std::function<void(std::span<const uint8_t>)>;
+
 class ScratchBuffer {
 public:
 	explicit ScratchBuffer(uint64_t size);
@@ -107,6 +110,13 @@ void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size, uint32_t 
 void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size,
                    std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
                    vk::ImageLayout src_layout);
+// Invokes consumer synchronously after the image copy fence while the readback staging buffer is
+// reserved. The supplied span is valid only for the call; the consumer must not retain it or
+// re-enter Transfer.
+void ProcessDownloadedImage(GraphicContext* ctx, uint64_t size,
+                            std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
+                            vk::ImageLayout src_layout,
+                            const DownloadedImageConsumer& consumer);
 void UploadBuffer(GraphicContext* ctx, StagingBufferType type, VulkanBuffer* dst_buffer,
                   uint64_t dst_offset, const void* src_data, uint64_t size);
 void CopyBuffer(VulkanBuffer* src_buffer, VulkanBuffer* dst_buffer, uint64_t size);

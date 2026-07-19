@@ -351,12 +351,28 @@ public:
 	void DownloadFromImage(GraphicContext* ctx, void* dst_data, uint64_t size,
 	                       std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
 	                       vk::ImageLayout src_layout) {
-		Common::LockGuard lock(m_mutex);
-		EnsureBuffer(ctx, size, vk::BufferUsageFlagBits::eTransferDst);
-		ExecuteImmediateCommands([&](CommandBuffer* command, vk::CommandBuffer) {
-			RecordImageToBuffer(*command, *src_image, m_buffer, regions, src_layout);
-		});
-		std::memcpy(dst_data, m_mapped_data, size);
+		WithDownloadedImage(ctx, size, regions, src_image, src_layout,
+		                    [&](std::span<const uint8_t> data) {
+			                    std::memcpy(dst_data, data.data(), data.size());
+		                    });
+	}
+
+	void ProcessDownloadedImage(GraphicContext* ctx, uint64_t size,
+	                            std::span<const ImageBufferCopy> regions,
+	                            VulkanImage* src_image, vk::ImageLayout src_layout,
+	                            const DownloadedImageConsumer& consumer) {
+		WithDownloadedImage(ctx, size, regions, src_image, src_layout,
+		                    [&](std::span<const uint8_t> data) {
+			                    if (m_host_cached) {
+				                    consumer(data);
+				                    return;
+			                    }
+			                    // Scattered CPU tiler reads can be much slower from uncached mapped
+			                    // memory. Preserve the original sequential-copy path as a fallback.
+			                    m_cached_readback.resize(data.size());
+			                    std::memcpy(m_cached_readback.data(), data.data(), data.size());
+			                    consumer(m_cached_readback);
+		                    });
 	}
 
 	void Release(GraphicContext* ctx) {
@@ -366,11 +382,26 @@ public:
 			VulkanUnmapMemory(ctx, &m_buffer.memory);
 			VulkanDeleteBuffer(ctx, &m_buffer);
 		}
-		m_capacity    = 0;
-		m_mapped_data = nullptr;
+		m_capacity     = 0;
+		m_mapped_data  = nullptr;
+		m_host_cached  = false;
 	}
 
 private:
+	template <typename Consumer>
+	void WithDownloadedImage(GraphicContext* ctx, uint64_t size,
+	                         std::span<const ImageBufferCopy> regions,
+	                         VulkanImage* src_image, vk::ImageLayout src_layout,
+	                         const Consumer& consumer) {
+		Common::LockGuard lock(m_mutex);
+		EnsureBuffer(ctx, size, vk::BufferUsageFlagBits::eTransferDst);
+		ExecuteImmediateCommands([&](CommandBuffer* command, vk::CommandBuffer) {
+			RecordImageToBuffer(*command, *src_image, m_buffer, regions, src_layout);
+		});
+		consumer(std::span<const uint8_t>(static_cast<const uint8_t*>(m_mapped_data),
+		                                  static_cast<size_t>(size)));
+	}
+
 	template <bool WaitIdle, typename Recorder>
 	void RecordUpload(GraphicContext* ctx, const void* src_data, uint64_t size,
 	                  const Recorder& recorder) {
@@ -400,17 +431,30 @@ private:
 			m_buffer.usage           = usage;
 			m_buffer.memory.property = vk::MemoryPropertyFlagBits::eHostVisible |
 			                           vk::MemoryPropertyFlagBits::eHostCoherent;
+			// CPU readback benefits from cached host memory. Keep it optional so Vulkan devices
+			// without a coherent cached type can fall back to the original sequential-copy path.
+			m_buffer.memory.preferred_property =
+			    usage & vk::BufferUsageFlagBits::eTransferDst
+			        ? vk::MemoryPropertyFlags(vk::MemoryPropertyFlagBits::eHostCached)
+			        : vk::MemoryPropertyFlags {};
 			VulkanCreateBuffer(ctx, size, &m_buffer);
 			m_capacity = size;
+			const auto& properties = ctx->GetPhysicalDeviceMemoryProperties();
+			EXIT_IF(m_buffer.memory.type >= properties.memoryTypeCount);
+			m_host_cached =
+			    static_cast<bool>(properties.memoryTypes[m_buffer.memory.type].propertyFlags &
+			                      vk::MemoryPropertyFlagBits::eHostCached);
 
 			VulkanMapMemory(ctx, &m_buffer.memory, &m_mapped_data);
 		}
 	}
 
-	Common::Mutex m_mutex;
-	VulkanBuffer  m_buffer;
-	uint64_t      m_capacity    = 0;
-	void*         m_mapped_data = nullptr;
+	Common::Mutex        m_mutex;
+	VulkanBuffer         m_buffer;
+	uint64_t             m_capacity    = 0;
+	void*                m_mapped_data = nullptr;
+	bool                 m_host_cached = false;
+	std::vector<uint8_t> m_cached_readback;
 };
 
 // Do not replace with one
@@ -925,6 +969,16 @@ void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size,
 	EXIT_IF(size == 0 || regions.empty());
 	GetStagingBuffer(StagingBufferType::ReadBack)
 	    ->DownloadFromImage(ctx, dst_data, size, regions, src_image, src_layout);
+}
+
+void ProcessDownloadedImage(GraphicContext* ctx, uint64_t size,
+                            std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
+                            vk::ImageLayout src_layout,
+                            const DownloadedImageConsumer& consumer) {
+	KYTY_PROFILER_FUNCTION();
+	EXIT_IF(size == 0 || regions.empty() || !consumer);
+	GetStagingBuffer(StagingBufferType::ReadBack)
+	    ->ProcessDownloadedImage(ctx, size, regions, src_image, src_layout, consumer);
 }
 
 void UploadImage(GraphicContext* ctx, VulkanImage* image, const void* src_data, uint64_t size,

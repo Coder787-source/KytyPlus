@@ -127,6 +127,8 @@ void VulkanCreateBuffer(GraphicContext* ctx, uint64_t size, VulkanBuffer* buffer
 	VmaAllocationCreateInfo alloc_info {};
 	alloc_info.requiredFlags =
 	    static_cast<vk::MemoryPropertyFlags::MaskType>(buffer->memory.property);
+	alloc_info.preferredFlags =
+	    static_cast<vk::MemoryPropertyFlags::MaskType>(buffer->memory.preferred_property);
 
 	vk::Buffer::CType native_buffer = VK_NULL_HANDLE;
 	const auto        result        = static_cast<vk::Result>(vmaCreateBuffer(
@@ -170,6 +172,8 @@ bool VulkanCreateImage(GraphicContext* ctx, const vk::ImageCreateInfo& image_inf
 	auto&                   memory = image->memory;
 	VmaAllocationCreateInfo alloc_info {};
 	alloc_info.requiredFlags = static_cast<vk::MemoryPropertyFlags::MaskType>(memory.property);
+	alloc_info.preferredFlags =
+	    static_cast<vk::MemoryPropertyFlags::MaskType>(memory.preferred_property);
 
 	vk::Image::CType native_image = VK_NULL_HANDLE;
 	const auto       result       = static_cast<vk::Result>(vmaCreateImage(

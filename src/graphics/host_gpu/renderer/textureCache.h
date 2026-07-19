@@ -176,7 +176,6 @@ private:
 	ImageOwnerIndex                           m_image_owner_index;
 	std::map<uint64_t, MetaDataInfo>          m_surface_metas;
 	std::unique_ptr<ReadbackWorker>           m_readback;
-	std::vector<uint8_t>                      m_buffer_transition_linear;
 	std::vector<uint8_t>                      m_buffer_transition_guest;
 };
 

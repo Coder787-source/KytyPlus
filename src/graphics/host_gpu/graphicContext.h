@@ -49,14 +49,15 @@ struct GraphicContext: public VulkanInstance {
 };
 
 struct VulkanMemory {
-	vk::MemoryRequirements  requirements    = {};
-	vk::MemoryPropertyFlags property        = {};
-	vk::DeviceMemory        memory          = nullptr;
-	VmaAllocation           allocation      = nullptr;
-	VmaAllocationInfo       allocation_info = {};
-	vk::DeviceSize          offset          = 0;
-	uint32_t                type            = 0;
-	uint64_t                unique_id       = 0;
+	vk::MemoryRequirements  requirements       = {};
+	vk::MemoryPropertyFlags property           = {};
+	vk::MemoryPropertyFlags preferred_property = {};
+	vk::DeviceMemory        memory             = nullptr;
+	VmaAllocation           allocation         = nullptr;
+	VmaAllocationInfo       allocation_info    = {};
+	vk::DeviceSize          offset             = 0;
+	uint32_t                type               = 0;
+	uint64_t                unique_id          = 0;
 };
 
 enum class VulkanImageType {

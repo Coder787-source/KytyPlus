@@ -3015,11 +3015,9 @@ void TextureCache::SynchronizeColorImageToBufferLocked(CachedImage& cached, uint
 	}
 
 	// This is the CPU Tiler backend for the image-to-buffer synchronization seam.
-	// The vectors and Vulkan staging allocation retain capacity; a future PS5 GPU tiler can replace
-	// this block without changing alias classification or ownership transitions.
+	// The guest vector and Vulkan staging allocation retain capacity; a future PS5 GPU tiler can
+	// replace this block without changing alias classification or ownership transitions.
 	Transfer::WaitForGraphicsIdle(cached.ctx);
-	m_buffer_transition_linear.resize(target.size);
-	std::fill(m_buffer_transition_linear.begin(), m_buffer_transition_linear.end(), 0);
 	std::vector<ImageBufferCopy> regions;
 	if (storage) {
 		auto layout = TextureCalcUploadLayout(
@@ -3040,24 +3038,23 @@ void TextureCache::SynchronizeColorImageToBufferLocked(CachedImage& cached, uint
 		regions = Transfer::MakeLayeredImageBufferCopies(target.layers, slice_size, target.pitch,
 		                                                 target.width, target.height);
 	}
-	Transfer::DownloadImage(cached.ctx, m_buffer_transition_linear.data(), target.size, regions,
-	                        cached.image, cached.image->layout);
-	if (storage) {
-		m_buffer_transition_guest.resize(target.size);
-		m_tiler.TileImage(m_buffer_transition_guest.data(), m_buffer_transition_linear.data(),
-		                  cached.info);
-		Libs::LibKernel::Memory::WriteBacking(target.address, m_buffer_transition_guest.data(),
-		                                      target.size);
-	} else if (tiled) {
-		m_buffer_transition_guest.resize(target.size);
-		m_tiler.TileImage(m_buffer_transition_guest.data(), m_buffer_transition_linear.data(),
-		                  target);
-		Libs::LibKernel::Memory::WriteBacking(target.address, m_buffer_transition_guest.data(),
-		                                      target.size);
-	} else {
-		Libs::LibKernel::Memory::WriteBacking(target.address, m_buffer_transition_linear.data(),
-		                                      target.size);
-	}
+	Transfer::ProcessDownloadedImage(
+	    cached.ctx, target.size, regions, cached.image, cached.image->layout,
+	    [&](std::span<const uint8_t> linear) {
+		    if (storage) {
+			    m_buffer_transition_guest.resize(target.size);
+			    m_tiler.TileImage(m_buffer_transition_guest.data(), linear.data(), cached.info);
+			    Libs::LibKernel::Memory::WriteBacking(
+			        target.address, m_buffer_transition_guest.data(), target.size);
+		    } else if (tiled) {
+			    m_buffer_transition_guest.resize(target.size);
+			    m_tiler.TileImage(m_buffer_transition_guest.data(), linear.data(), target);
+			    Libs::LibKernel::Memory::WriteBacking(
+			        target.address, m_buffer_transition_guest.data(), target.size);
+		    } else {
+			    Libs::LibKernel::Memory::WriteBacking(target.address, linear.data(), target.size);
+		    }
+	    });
 	m_memory_tracker.ForEachDownloadRange<true>(target.address, target.size,
 	                                            [](uint64_t, uint64_t) noexcept {});
 	// Only the impending buffer-write range needs publication into BufferCache ownership. The
@@ -3104,16 +3101,16 @@ void TextureCache::SynchronizeDepthImageToBufferLocked(CachedImage& cached, uint
 		     has_stencil, has_htile, cached.gpu_modified, cached.buffer_modified);
 	}
 	Transfer::WaitForGraphicsIdle(cached.ctx);
-	m_buffer_transition_linear.resize(info.size);
-	std::fill(m_buffer_transition_linear.begin(), m_buffer_transition_linear.end(), 0);
 	const auto regions = Transfer::MakeLayeredImageBufferCopies(
 	    1, info.size, info.pitch, info.width, info.height, vk::ImageAspectFlagBits::eDepth);
-	Transfer::DownloadImage(cached.ctx, m_buffer_transition_linear.data(), info.size, regions,
-	                        cached.image, cached.image->layout);
-	m_buffer_transition_guest.resize(info.size);
-	m_tiler.TileImage(m_buffer_transition_guest.data(), m_buffer_transition_linear.data(), info);
-	Libs::LibKernel::Memory::WriteBacking(info.address, m_buffer_transition_guest.data(),
-	                                      info.size);
+	Transfer::ProcessDownloadedImage(
+	    cached.ctx, info.size, regions, cached.image, cached.image->layout,
+	    [&](std::span<const uint8_t> linear) {
+		    m_buffer_transition_guest.resize(info.size);
+		    m_tiler.TileImage(m_buffer_transition_guest.data(), linear.data(), info);
+		    Libs::LibKernel::Memory::WriteBacking(info.address, m_buffer_transition_guest.data(),
+		                                          info.size);
+	    });
 	m_memory_tracker.ForEachDownloadRange<true>(info.address, info.size,
 	                                            [](uint64_t, uint64_t) noexcept {});
 	m_buffer_cache.PublishImageBacking(write_address, write_size);
