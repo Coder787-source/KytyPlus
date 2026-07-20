@@ -4,6 +4,7 @@
 #include "common/profiler.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/tile.h"
+#include "graphics/host_gpu/gpuTiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/objects/textureCommon.h"
 #include "graphics/host_gpu/regionDefinitions.h"
@@ -191,36 +192,39 @@ void UploadRenderTargetLayers(GraphicContext* ctx, RenderTextureVulkanImage* ima
 		const auto format = RenderTargetTransferFormat(info.bytes_per_element);
 		auto layout = TextureCalcUploadLayout(format, info.width, info.height, info.levels,
 		                                      layer_count, info.pitch, info.tile_mode, upload_size,
-		                                      false, false, false, "TextureCache render target");
+		                                      false, false, "TextureCache render target");
 		const bool render_target_tiled =
 		    info.tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget);
-		if (!standard64 && ((render_target_tiled && !layout.fmt_tiled_render_target) ||
-		                    layout.pitch != info.pitch)) {
+		if (!standard64 &&
+		    ((render_target_tiled && layout.tile_family != TileBlockFamily::RenderTarget64KB) ||
+		     layout.pitch != info.pitch)) {
 			EXIT("TextureCache: unsupported render-target mip upload layout, pitch=%u/%u tile=%u\n",
 			     info.pitch, layout.pitch, info.tile_mode);
 		}
-		auto regions = TextureBuildUploadRegions(
-		    layout, info.format, info.width, info.height, layer_count, info.levels, true, false,
-		    TextureUploadDestination::MipLevels, TextureUploadSliceLayout::MipChainPerSlice);
+		auto regions = TextureBuildUploadRegions(layout, info.format, info.width, info.height,
+		                                         layer_count, info.levels, true, false,
+		                                         TextureUploadDestination::MipLevels);
 		for (auto& region: regions) {
 			region.dst_layer += base_layer;
 		}
 		const auto source_address = info.address + slice_size * base_layer;
 		TextureUploadGuestImage(ctx, image, reinterpret_cast<const void*>(source_address),
 		                        upload_size, regions, layout, format, info.width, info.height,
-		                        layer_count, info.levels,
-		                        TextureUploadSliceLayout::MipChainPerSlice,
-		                        "TextureCache render target", vk::ImageLayout::eGeneral);
+		                        layer_count, info.levels, "TextureCache render target",
+		                        vk::ImageLayout::eGeneral);
 		return;
 	}
 	if (info.tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) &&
 	    Transfer::GuestBufferIsTiled(info.address, slice_size)) {
-		Transfer::ScratchBuffer scratch(slice_size);
-		TileConvertTiledToLinearRenderTarget(
-		    scratch.Data(), reinterpret_cast<const void*>(info.address), info.width, info.height,
-		    info.pitch, info.bytes_per_element, slice_size);
-		Transfer::UploadImage(ctx, image, scratch.Data(), slice_size, info.pitch,
-		                      vk::ImageLayout::eGeneral);
+		const auto format = RenderTargetTransferFormat(info.bytes_per_element);
+		auto layout  = TextureCalcUploadLayout(format, info.width, info.height, 1, 1, info.pitch,
+		                                       info.tile_mode, slice_size, false, false,
+		                                       "TextureCache render target");
+		auto regions = TextureBuildUploadRegions(layout, info.format, info.width, info.height, 1, 1,
+		                                         true, false, TextureUploadDestination::MipLevels);
+		TextureUploadGuestImage(ctx, image, reinterpret_cast<const void*>(info.address), slice_size,
+		                        regions, layout, format, info.width, info.height, 1, 1,
+		                        "TextureCache render target", vk::ImageLayout::eGeneral);
 	} else {
 		Transfer::UploadImage(ctx, image, reinterpret_cast<const void*>(info.address), slice_size,
 		                      info.pitch, vk::ImageLayout::eGeneral);
@@ -383,18 +387,44 @@ void UploadVideoOut(GraphicContext* ctx, VideoOutVulkanImage* image, const Video
 		Transfer::WaitForGraphicsIdle(ctx);
 	}
 	image->layout = vk::ImageLayout::eUndefined;
-	Transfer::ScratchBuffer scratch(info.size);
-	TileConvertTiledToLinearRenderTarget(
-	    scratch.Data(), reinterpret_cast<const void*>(info.address), info.width, info.height,
-	    info.pitch, info.bytes_per_element, info.size);
-	if (info.bgra16) {
-		auto* pixels = static_cast<uint16_t*>(scratch.Data());
-		for (uint64_t i = 0; i < info.size / sizeof(uint16_t); i += 4) {
-			std::swap(pixels[i], pixels[i + 2]);
-		}
+	if (!info.bgra16) {
+		auto layout =
+		    TextureCalcUploadLayout(info.guest_format, info.width, info.height, 1, 1, info.pitch,
+		                            info.tile_mode, info.size, false, false, "VideoOut");
+		auto regions = TextureBuildUploadRegions(layout, info.format, info.width, info.height, 1, 1,
+		                                         false, false, TextureUploadDestination::MipLevels);
+		TextureUploadGuestImage(ctx, image, reinterpret_cast<const void*>(info.address), info.size,
+		                        regions, layout, info.guest_format, info.width, info.height, 1, 1,
+		                        "VideoOut", vk::ImageLayout::eGeneral);
+		return;
 	}
+	Transfer::ScratchBuffer scratch(info.size);
+	TileBlockLayout         block {};
+	EXIT_NOT_IMPLEMENTED(
+	    !TileGetBlockLayout(TileBlockFamily::RenderTarget64KB, info.bytes_per_element, &block));
+	const GpuTileInfo tile_info {block.family,
+	                             block.bytes_per_element,
+	                             0,
+	                             info.size,
+	                             0,
+	                             info.size,
+	                             0,
+	                             info.width,
+	                             info.height,
+	                             1,
+	                             info.pitch};
+	GpuDetile(ctx, reinterpret_cast<const void*>(info.address), scratch.Data(), info.size,
+	          info.size, std::span<const GpuTileInfo>(&tile_info, 1));
+	SwapVideoOutBgra16(scratch.Data(), info.size);
 	Transfer::UploadImage(ctx, image, scratch.Data(), info.size, info.pitch,
 	                      vk::ImageLayout::eGeneral);
+}
+
+void SwapVideoOutBgra16(void* data, uint64_t size) {
+	auto* pixels = static_cast<uint16_t*>(data);
+	for (uint64_t i = 0; i < size / sizeof(uint16_t); i += 4) {
+		std::swap(pixels[i], pixels[i + 2]);
+	}
 }
 
 GpuTextureVulkanImage* CreateDummyTexture(GraphicContext* ctx, bool uint_format, bool image_3d,

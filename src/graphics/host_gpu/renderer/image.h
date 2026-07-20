@@ -119,6 +119,7 @@ void UploadRenderTarget(GraphicContext* ctx, RenderTextureVulkanImage* image,
 
 void                               ValidateVideoOut(GraphicContext* ctx, const VideoOutInfo& info);
 [[nodiscard]] VideoOutVulkanImage* CreateVideoOut(GraphicContext* ctx, const VideoOutInfo& info);
+void                               SwapVideoOutBgra16(void* data, uint64_t size);
 void UploadVideoOut(GraphicContext* ctx, VideoOutVulkanImage* image, const VideoOutInfo& info,
                     bool refresh);
 

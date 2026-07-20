@@ -170,6 +170,40 @@ file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	loader/*.h
 )
 
+find_program(KYTY_GLSLANG_VALIDATOR glslangValidator REQUIRED)
+set(gpu_tiler_shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/graphics/host_gpu/shaders")
+set(gpu_tiler_generated_dir "${PROJECT_BINARY_DIR}/gpu_tiler_shaders")
+set(gpu_tiler_shader_names
+	standard256
+	standard4
+	standard4_3d
+	standard64
+	standard64_3d
+	prt
+	prt_3d
+	render_target
+	depth
+)
+file(GLOB gpu_tiler_shader_includes CONFIGURE_DEPENDS "${gpu_tiler_shader_dir}/gpu_tiler_*.inc")
+foreach(shader_name IN LISTS gpu_tiler_shader_names)
+	set(shader_source "${gpu_tiler_shader_dir}/gpu_tiler_${shader_name}.comp")
+	set(shader_spv "${gpu_tiler_generated_dir}/gpu_tiler_${shader_name}.spv")
+	set(shader_header "${gpu_tiler_generated_dir}/gpu_tiler_${shader_name}_spv.h")
+	string(TOUPPER "GPU_TILER_${shader_name}_SPV" shader_symbol)
+	add_custom_command(
+		OUTPUT "${shader_header}"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_tiler_generated_dir}"
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
+		        "-I${gpu_tiler_shader_dir}" -o "${shader_spv}" "${shader_source}"
+		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
+		        -DSYMBOL=${shader_symbol} -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
+		DEPENDS "${shader_source}" ${gpu_tiler_shader_includes}
+		VERBATIM
+	)
+	list(APPEND gpu_tiler_shader_headers "${shader_header}")
+endforeach()
+list(APPEND kyty_emulator_src ${gpu_tiler_shader_headers})
+
 list(APPEND kyty_emulator_src
 	emulator.h
 	emulator.cpp

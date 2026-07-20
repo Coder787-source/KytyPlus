@@ -1,0 +1,42 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(constant_id = 0) const uint ELEMENT_BYTES = 4u;
+layout(constant_id = 1) const uint TILE = 0u;
+const uint BLOCK_BYTES = 65536u;
+uvec3 block_extent() {
+	uint width = ELEMENT_BYTES <= 2 ? 256u : (ELEMENT_BYTES <= 8 ? 128u : 64u);
+	return uvec3(width, BLOCK_BYTES / (width * ELEMENT_BYTES), 1u);
+}
+uint rt_offset(uint x, uint y) {
+	switch (ELEMENT_BYTES) {
+	case 1: return ((y << 2) & 0x008u) ^ ((y << 4) & 0x010u) ^
+	               ((y << 3) & 0x0a0u) ^ ((y << 5) & 0xf00u) ^
+	               ((y << 6) & 0x1000u) ^ ((y << 7) & 0x4000u) ^ (x & 7u) ^
+	               ((x << 3) & 0x040u) ^ ((x << 5) & 0x300u) ^
+	               ((x << 4) & 0x400u) ^ ((x << 6) & 0x800u) ^
+	               ((x << 7) & 0x2000u) ^ ((x << 8) & 0x8000u);
+	case 2: return ((y << 4) & 0x070u) ^ ((y << 5) & 0xf00u) ^
+	               ((y << 8) & 0x5000u) ^ ((x << 1) & 0x00eu) ^
+	               ((x << 4) & 0x480u) ^ ((x << 5) & 0x300u) ^
+	               ((x << 6) & 0x800u) ^ ((x << 7) & 0x2000u) ^
+	               ((x << 8) & 0x8000u);
+	case 4: return ((y << 4) & 0x070u) ^ ((y << 5) & 0xf00u) ^
+	               ((y << 9) & 0x1000u) ^ ((y << 8) & 0x4000u) ^
+	               ((x << 2) & 0x00cu) ^ ((x << 5) & 0x380u) ^
+	               ((x << 4) & 0x400u) ^ ((x << 6) & 0x800u) ^ ((x << 9) & 0xa000u);
+	case 8: return ((y << 4) & 0x010u) ^ ((y << 6) & 0x080u) ^
+	               ((y << 5) & 0xf00u) ^ ((y << 10) & 0x5000u) ^
+	               ((x << 3) & 0x008u) ^ ((x << 4) & 0x460u) ^
+	               ((x << 5) & 0x300u) ^ ((x << 6) & 0x800u) ^
+	               ((x << 10) & 0x2000u) ^ ((x << 9) & 0x8000u);
+	default: return ((x << 4) & 0x410u) ^ ((x << 5) & 0x340u) ^
+	                ((x << 6) & 0x800u) ^ ((x << 11) & 0xa000u) ^
+	                ((y << 5) & 0xf20u) ^ ((y << 6) & 0x080u) ^
+	                ((y << 10) & 0x1000u) ^ ((y << 11) & 0x4000u);
+	}
+}
+uint volume_z(uint z) {
+	return ((z & 8u) << 5) ^ ((z & 4u) << 7) ^ ((z & 2u) << 9) ^ ((z & 1u) << 11);
+}
+uint block_offset(uvec3 p) { return rt_offset(p.x, p.y) ^ volume_z(p.z); }
+#include "gpu_tiler_common.inc"

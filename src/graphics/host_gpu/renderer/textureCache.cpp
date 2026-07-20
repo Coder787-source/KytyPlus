@@ -7,6 +7,7 @@
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/tile.h"
+#include "graphics/host_gpu/gpuTiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/objects/label.h"
 #include "graphics/host_gpu/objects/textureCommon.h"
@@ -587,7 +588,6 @@ struct TextureCache::ReadbackWorker {
 			     cached.image->extent.height, info.width, info.height, meta_overlap,
 			     buffer_overlap);
 		}
-		download.resize(transfer_size);
 		auto regions = Transfer::MakeLayeredImageBufferCopies(info.layers, depth_slice_size,
 		                                                      info.pitch, info.width, info.height,
 		                                                      vk::ImageAspectFlagBits::eDepth);
@@ -600,17 +600,55 @@ struct TextureCache::ReadbackWorker {
 			}
 			regions.insert(regions.end(), stencil_regions.begin(), stencil_regions.end());
 		}
-		Transfer::DownloadImage(cached.ctx, download.data(), transfer_size, regions, cached.image,
-		                        cached.image->layout);
-		guest.resize(info.size);
-		cache.m_tiler.TileImage(guest.data(), download.data(), info);
+		std::vector<GpuTileInfo> gpu_infos;
+		TileBlockLayout          depth_block {};
+		TileBlockLayout          stencil_block {};
+		EXIT_NOT_IMPLEMENTED(
+		    !TileGetBlockLayout(TileBlockFamily::Depth64KB, info.bytes_per_element, &depth_block) ||
+		    (has_stencil && !TileGetBlockLayout(TileBlockFamily::Depth64KB, 1, &stencil_block)));
+		gpu_infos.reserve(regions.size());
+		for (uint32_t layer = 0; layer < info.layers; layer++) {
+			const uint64_t offset = depth_slice_size * layer;
+			GpuTileInfo    tile {depth_block.family,
+			                     depth_block.bytes_per_element,
+			                     offset,
+			                     depth_slice_size,
+			                     offset,
+			                     depth_slice_size,
+			                     0,
+			                     info.width,
+			                     info.height,
+			                     1,
+			                     info.pitch};
+			tile.surface_z = layer;
+			gpu_infos.push_back(tile);
+		}
+		if (has_stencil) {
+			for (uint32_t layer = 0; layer < info.layers; layer++) {
+				const uint64_t offset = info.size + stencil_slice_size * layer;
+				GpuTileInfo    tile {stencil_block.family,
+				                     stencil_block.bytes_per_element,
+				                     offset,
+				                     stencil_slice_size,
+				                     offset,
+				                     stencil_slice_size,
+				                     0,
+				                     info.width,
+				                     info.height,
+				                     1,
+				                     expected_stencil_pitch};
+				tile.surface_z = layer;
+				gpu_infos.push_back(tile);
+			}
+		}
+		guest.resize(transfer_size);
+		Transfer::DownloadTiledImage(cached.ctx, guest.data(), transfer_size, transfer_size,
+		                             gpu_infos, regions, cached.image, cached.image->layout);
 		Libs::LibKernel::Memory::WriteBacking(info.address, guest.data(), info.size);
 		ReadbackTransfer transfer;
 		transfer.Add(info.address, info.size);
 		if (has_stencil) {
-			guest.resize(info.stencil_size);
-			cache.m_tiler.TileStencil(guest.data(), download.data() + info.size, info);
-			Libs::LibKernel::Memory::WriteBacking(info.stencil_address, guest.data(),
+			Libs::LibKernel::Memory::WriteBacking(info.stencil_address, guest.data() + info.size,
 			                                      info.stencil_size);
 			transfer.Add(info.stencil_address, info.stencil_size);
 		}
@@ -672,66 +710,48 @@ struct TextureCache::ReadbackWorker {
 			     info.address, info.size, meta_overlap, buffer_overlap,
 			     static_cast<uint32_t>(cached.kind));
 		}
-		download.resize(info.size);
-		std::fill(download.begin(), download.end(), 0);
 		std::vector<ImageBufferCopy> regions;
-		if (target_mip_chain) {
-			const auto format = ImageOps::RenderTargetTransferFormat(info.bytes_per_element);
-			auto layout = TextureCalcUploadLayout(format, info.width, info.height, info.levels, 1,
-			                                      info.pitch, info.tile_mode, info.size, false,
-			                                      false, false, "RenderTargetReadback");
-			if (!layout.fmt_tiled_render_target || layout.pitch != info.pitch) {
+		std::vector<BufferImageCopy> tiled_regions;
+		TextureUploadLayout          tiled_layout {};
+		const bool                   gpu_tiled = tiled_target || tiled_storage;
+		if (gpu_tiled) {
+			const auto format = storage
+			                        ? cached.info.format
+			                        : ImageOps::RenderTargetTransferFormat(info.bytes_per_element);
+			tiled_layout = TextureCalcUploadLayout(format, info.width, info.height, info.levels,
+			                                       layers, info.pitch, info.tile_mode, info.size,
+			                                       false, false, "RenderTargetReadback");
+			if (target_mip_chain &&
+			    (tiled_layout.tile_family != TileBlockFamily::RenderTarget64KB ||
+			     tiled_layout.pitch != info.pitch)) {
 				EXIT("TextureCache: inconsistent render-target readback layout, addr=0x%016" PRIx64
 				     " size=0x%016" PRIx64 " pitch=%u/%u levels=%u\n",
-				     info.address, info.size, info.pitch, layout.pitch, info.levels);
+				     info.address, info.size, info.pitch, tiled_layout.pitch, info.levels);
 			}
-			const auto uploads = TextureBuildUploadRegions(
-			    layout, info.format, info.width, info.height, 1, info.levels, true, false,
-			    TextureUploadDestination::MipLevels, TextureUploadSliceLayout::MipChainPerSlice);
-			regions.reserve(uploads.size());
-			for (const auto& upload: uploads) {
-				regions.push_back({upload.offset, upload.pitch, upload.dst_level, upload.width,
-				                   upload.height, upload.copy_height, upload.dst_layer,
-				                   upload.dst_x, upload.dst_y, upload.dst_z, upload.aspect});
-			}
+			tiled_regions = TextureBuildUploadRegions(tiled_layout, info.format, info.width,
+			                                          info.height, layers, info.levels, layers > 1,
+			                                          false, TextureUploadDestination::MipLevels);
+			regions       = TextureBuildDownloadRegions(tiled_regions);
 		} else {
 			regions = Transfer::MakeLayeredImageBufferCopies(layers, slice_size, info.pitch,
 			                                                 info.width, info.height);
 		}
-		Transfer::DownloadImage(cached.ctx, download.data(), info.size, regions, cached.image,
-		                        cached.image->layout);
-		if (target_mip_chain) {
+		if (gpu_tiled) {
+			std::vector<GpuTileInfo> infos;
+			const auto format = storage
+			                        ? cached.info.format
+			                        : ImageOps::RenderTargetTransferFormat(info.bytes_per_element);
 			guest.resize(info.size);
-			ImageInfo layout {};
-			layout.address     = info.address;
-			layout.size        = info.size;
-			layout.format      = ImageOps::RenderTargetTransferFormat(info.bytes_per_element);
-			layout.width       = info.width;
-			layout.height      = info.height;
-			layout.pitch       = info.pitch;
-			layout.levels      = info.levels;
-			layout.view_levels = info.levels;
-			layout.tile        = info.tile_mode;
-			layout.depth       = 1;
-			layout.type        = Prospero::GpuEnumValue(Prospero::ImageType::kColor2D);
-			cache.m_tiler.TileImage(guest.data(), download.data(), layout);
-			Libs::LibKernel::Memory::WriteBacking(info.address, guest.data(), info.size);
-		} else if (tiled_target || tiled_storage) {
-			guest.resize(info.size);
-			const RenderTargetInfo layout =
-			    target ? cached.target : RenderTargetInfo {info.address,
-			                                               info.size,
-			                                               info.format,
-			                                               info.width,
-			                                               info.height,
-			                                               info.pitch,
-			                                               info.bytes_per_element,
-			                                               info.tile_mode,
-			                                               info.levels,
-			                                               1};
-			cache.m_tiler.TileImage(guest.data(), download.data(), layout);
+			EXIT_NOT_IMPLEMENTED(!TextureBuildGpuTileInfos(info.size, tiled_regions, tiled_layout,
+			                                               format, layers, info.levels, &infos));
+			Transfer::DownloadTiledImage(cached.ctx, guest.data(), info.size, info.size, infos,
+			                             regions, cached.image, cached.image->layout);
 			Libs::LibKernel::Memory::WriteBacking(info.address, guest.data(), info.size);
 		} else {
+			download.resize(info.size);
+			std::fill(download.begin(), download.end(), 0);
+			Transfer::DownloadImage(cached.ctx, download.data(), info.size, regions, cached.image,
+			                        cached.image->layout);
 			Libs::LibKernel::Memory::WriteBacking(info.address, download.data(), info.size);
 		}
 		ReadbackTransfer transfer;
@@ -1061,8 +1081,7 @@ bool Equal(const DepthTargetInfo& left, const DepthTargetInfo& right) {
 
 [[nodiscard]] bool IsCoherentGuestImageSource(const BufferImageCopySource& source, uint64_t address,
                                               uint64_t size) {
-	// The current PS5 Tiler consumes coherent guest backing directly. A native buffer is an
-	// optional future GPU-detiler source or staging fallback.
+	// The GPU tiler currently consumes coherent guest backing directly.
 	return source.cpu_current && source.address == address && source.size == size &&
 	       (source.buffer != nullptr || source.offset == 0);
 }
@@ -1384,8 +1403,7 @@ VulkanImage* TextureCache::FindTexture(CommandBuffer* command, GraphicContext* c
 	}
 	BufferImageCopySource source {nullptr, 0, info.address, info.size, true};
 	if (m_buffer_cache.HasPageOverlap(info.address, info.size)) {
-		// ObtainBufferForImage publishes dirty native-buffer bytes when necessary and otherwise
-		// uses a CPU-current staging fallback through guest backing.
+		// ObtainBufferForImage publishes dirty native-buffer bytes into coherent guest backing.
 		source = m_buffer_cache.ObtainBufferForImage(info.address, info.size);
 		if (!IsCoherentGuestImageSource(source, info.address, info.size)) {
 			EXIT("TextureCache: sampled-image buffer source is inconsistent, addr=0x%016" PRIx64
@@ -2963,6 +2981,7 @@ void TextureCache::SynchronizeColorImageToBufferLocked(CachedImage& cached, uint
 	}
 	const bool    linear = target.tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kLinear);
 	const bool    tiled  = IsTiledRenderTarget(target);
+	const bool    bgra16 = video_out && cached.video_out.bgra16;
 	TileSizeAlign exact {};
 	bool          single_slice = false;
 	if (IsSupportedStandard64RenderTarget(target)) {
@@ -3014,47 +3033,72 @@ void TextureCache::SynchronizeColorImageToBufferLocked(CachedImage& cached, uint
 		     target.address, target.size);
 	}
 
-	// This is the CPU Tiler backend for the image-to-buffer synchronization seam.
-	// The guest vector and Vulkan staging allocation retain capacity; a future PS5 GPU tiler can
-	// replace this block without changing alias classification or ownership transitions.
 	Transfer::WaitForGraphicsIdle(cached.ctx);
 	std::vector<ImageBufferCopy> regions;
+	std::vector<BufferImageCopy> tiled_regions;
+	TextureUploadLayout          tiled_layout {};
+	uint32_t                     tiled_format = 0;
 	if (storage) {
-		auto layout = TextureCalcUploadLayout(
+		const bool array_texture  = TextureIsLayeredTexture(cached.info.type);
+		const bool volume_texture = TextureIs3DTexture(cached.info.type);
+		tiled_format              = cached.info.format;
+		tiled_layout              = TextureCalcUploadLayout(
 		    cached.info.format, cached.info.width, cached.info.height, cached.info.levels,
-		    cached.info.depth, cached.info.pitch, cached.info.tile, cached.info.size, true, false,
-		    false, "StorageTextureReadback");
-		auto uploads = TextureBuildUploadRegions(
-		    layout, cached.image->format, cached.info.width, cached.info.height, cached.info.depth,
-		    cached.info.levels, false, false, TextureUploadDestination::MipLevels,
-		    TextureUploadSliceLayout::MipChainPerSlice);
-		regions.reserve(uploads.size());
-		for (const auto& upload: uploads) {
-			regions.push_back({upload.offset, upload.pitch, upload.dst_level, upload.width,
-			                   upload.height, upload.copy_height, upload.dst_layer, upload.dst_x,
-			                   upload.dst_y, upload.dst_z, upload.aspect});
-		}
+		    cached.info.depth, cached.info.pitch, cached.info.tile, cached.info.size, true,
+		    volume_texture, "StorageTextureReadback");
+		tiled_regions = TextureBuildUploadRegions(
+		    tiled_layout, cached.image->format, cached.info.width, cached.info.height,
+		    cached.info.depth, cached.info.levels, array_texture, volume_texture,
+		    TextureUploadDestination::MipLevels);
+		regions = TextureBuildDownloadRegions(tiled_regions);
+	} else if (tiled && !bgra16) {
+		tiled_format = ImageOps::RenderTargetTransferFormat(target.bytes_per_element);
+		tiled_layout = TextureCalcUploadLayout(
+		    tiled_format, target.width, target.height, target.levels, target.layers, target.pitch,
+		    target.tile_mode, target.size, false, false, "ColorBufferTransition");
+		tiled_regions = TextureBuildUploadRegions(
+		    tiled_layout, target.format, target.width, target.height, target.layers, target.levels,
+		    target.layers > 1, false, TextureUploadDestination::MipLevels);
+		regions = TextureBuildDownloadRegions(tiled_regions);
 	} else {
 		regions = Transfer::MakeLayeredImageBufferCopies(target.layers, slice_size, target.pitch,
 		                                                 target.width, target.height);
 	}
-	Transfer::ProcessDownloadedImage(
-	    cached.ctx, target.size, regions, cached.image, cached.image->layout,
-	    [&](std::span<const uint8_t> linear) {
-		    if (storage) {
-			    m_buffer_transition_guest.resize(target.size);
-			    m_tiler.TileImage(m_buffer_transition_guest.data(), linear.data(), cached.info);
-			    Libs::LibKernel::Memory::WriteBacking(
-			        target.address, m_buffer_transition_guest.data(), target.size);
-		    } else if (tiled) {
-			    m_buffer_transition_guest.resize(target.size);
-			    m_tiler.TileImage(m_buffer_transition_guest.data(), linear.data(), target);
-			    Libs::LibKernel::Memory::WriteBacking(
-			        target.address, m_buffer_transition_guest.data(), target.size);
-		    } else {
-			    Libs::LibKernel::Memory::WriteBacking(target.address, linear.data(), target.size);
-		    }
-	    });
+	if (tiled && !bgra16) {
+		std::vector<GpuTileInfo> infos;
+		const uint32_t           depth = storage ? cached.info.depth : target.layers;
+		EXIT_NOT_IMPLEMENTED(!TextureBuildGpuTileInfos(target.size, tiled_regions, tiled_layout,
+		                                               tiled_format, depth, target.levels, &infos));
+		m_buffer_transition_guest.resize(target.size);
+		Transfer::DownloadTiledImage(cached.ctx, m_buffer_transition_guest.data(), target.size,
+		                             target.size, infos, regions, cached.image,
+		                             cached.image->layout);
+		Libs::LibKernel::Memory::WriteBacking(target.address, m_buffer_transition_guest.data(),
+		                                      target.size);
+	} else if (tiled) {
+		std::vector<uint8_t> linear_data(target.size);
+		Transfer::DownloadImage(cached.ctx, linear_data.data(), target.size, regions, cached.image,
+		                        cached.image->layout);
+		ImageOps::SwapVideoOutBgra16(linear_data.data(), target.size);
+		TileBlockLayout block {};
+		EXIT_NOT_IMPLEMENTED(!TileGetBlockLayout(TileBlockFamily::RenderTarget64KB,
+		                                         target.bytes_per_element, &block));
+		const GpuTileInfo info {
+		    block.family, block.bytes_per_element, 0, target.size, 0, target.size, 0,
+		    target.width, target.height,           1, target.pitch};
+		m_buffer_transition_guest.resize(target.size);
+		GpuTile(cached.ctx, linear_data.data(), m_buffer_transition_guest.data(), target.size,
+		        target.size, std::span<const GpuTileInfo>(&info, 1));
+		Libs::LibKernel::Memory::WriteBacking(target.address, m_buffer_transition_guest.data(),
+		                                      target.size);
+	} else {
+		Transfer::ProcessDownloadedImage(cached.ctx, target.size, regions, cached.image,
+		                                 cached.image->layout,
+		                                 [&](std::span<const uint8_t> linear_data) {
+			                                 Libs::LibKernel::Memory::WriteBacking(
+			                                     target.address, linear_data.data(), target.size);
+		                                 });
+	}
 	m_memory_tracker.ForEachDownloadRange<true>(target.address, target.size,
 	                                            [](uint64_t, uint64_t) noexcept {});
 	// Only the impending buffer-write range needs publication into BufferCache ownership. The
@@ -3103,14 +3147,26 @@ void TextureCache::SynchronizeDepthImageToBufferLocked(CachedImage& cached, uint
 	Transfer::WaitForGraphicsIdle(cached.ctx);
 	const auto regions = Transfer::MakeLayeredImageBufferCopies(
 	    1, info.size, info.pitch, info.width, info.height, vk::ImageAspectFlagBits::eDepth);
-	Transfer::ProcessDownloadedImage(
-	    cached.ctx, info.size, regions, cached.image, cached.image->layout,
-	    [&](std::span<const uint8_t> linear) {
-		    m_buffer_transition_guest.resize(info.size);
-		    m_tiler.TileImage(m_buffer_transition_guest.data(), linear.data(), info);
-		    Libs::LibKernel::Memory::WriteBacking(info.address, m_buffer_transition_guest.data(),
-		                                          info.size);
-	    });
+	TileBlockLayout block {};
+	EXIT_NOT_IMPLEMENTED(
+	    !TileGetBlockLayout(TileBlockFamily::Depth64KB, info.bytes_per_element, &block));
+	const GpuTileInfo tile_info {block.family,
+	                             block.bytes_per_element,
+	                             0,
+	                             info.size,
+	                             0,
+	                             info.size,
+	                             0,
+	                             info.width,
+	                             info.height,
+	                             1,
+	                             info.pitch};
+	m_buffer_transition_guest.resize(info.size);
+	Transfer::DownloadTiledImage(cached.ctx, m_buffer_transition_guest.data(), info.size, info.size,
+	                             std::span<const GpuTileInfo>(&tile_info, 1), regions, cached.image,
+	                             cached.image->layout);
+	Libs::LibKernel::Memory::WriteBacking(info.address, m_buffer_transition_guest.data(),
+	                                      info.size);
 	m_memory_tracker.ForEachDownloadRange<true>(info.address, info.size,
 	                                            [](uint64_t, uint64_t) noexcept {});
 	m_buffer_cache.PublishImageBacking(write_address, write_size);

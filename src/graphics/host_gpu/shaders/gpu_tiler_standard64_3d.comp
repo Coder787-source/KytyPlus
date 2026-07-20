@@ -1,0 +1,9 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(constant_id = 0) const uint ELEMENT_BYTES = 4u;
+layout(constant_id = 1) const uint TILE = 0u;
+const uint BLOCK_BYTES = 65536u;
+#include "gpu_tiler_standard64_3d.inc"
+uvec3 block_extent() { return standard64_3d_extent(); }
+uint block_offset(uvec3 p) { return standard64_3d_offset(p); }
+#include "gpu_tiler_common.inc"

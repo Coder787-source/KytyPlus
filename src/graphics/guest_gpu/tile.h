@@ -6,15 +6,6 @@
 
 namespace Libs::Graphics {
 
-enum class TileMode {
-	VideoOutLinear,
-	VideoOutTiled,
-	TextureLinear,
-	TextureTiled,
-	// RenderTextureLinear,
-	// RenderTextureTiled,
-};
-
 struct TileSizeAlign {
 	uint32_t size  = 0;
 	uint32_t align = 0;
@@ -34,51 +25,58 @@ struct TilePaddedSize {
 	uint32_t height = 0;
 };
 
-void TileInit();
-void TileConvertTiledToLinear(void* dst, const void* src, TileMode mode, uint32_t width,
-                              uint32_t height);
-void TileConvertTiledToLinearRenderTarget(void* dst, const void* src, uint32_t width,
-                                          uint32_t height, uint32_t pitch,
-                                          uint32_t bytes_per_element, uint64_t size,
-                                          uint64_t src_size = 0, uint32_t src_x = 0,
-                                          uint32_t src_y = 0);
-void TileConvertLinearToTiledRenderTarget(void* dst, const void* src, uint32_t width,
-                                          uint32_t height, uint32_t pitch,
-                                          uint32_t bytes_per_element, uint64_t size,
-                                          uint64_t dst_size = 0, uint32_t dst_x = 0,
-                                          uint32_t dst_y = 0);
-void TileConvertTiledToLinearStandard64KB(void* dst, const void* src, uint32_t format,
-                                          uint32_t width, uint32_t height, uint32_t pitch,
-                                          uint64_t size, uint64_t src_size = 0, uint32_t src_x = 0,
-                                          uint32_t src_y = 0);
-void TileConvertTiledToLinearStandard64KB32(void* dst, const void* src, uint32_t width,
-                                            uint32_t height, uint32_t pitch, uint64_t size,
-                                            uint64_t src_size = 0, uint32_t src_x = 0,
-                                            uint32_t src_y = 0);
-void TileConvertLinearToTiledStandard64KB32(void* dst, const void* src, uint32_t width,
-                                            uint32_t height, uint32_t pitch, uint64_t size);
-void TileConvertTiledToLinearStandard64KB16(void* dst, const void* src, uint32_t width,
-                                            uint32_t height, uint32_t pitch, uint64_t size,
-                                            uint64_t src_size = 0, uint32_t src_x = 0,
-                                            uint32_t src_y = 0);
-void TileConvertTiledToLinearDepth(void* dst, const void* src, uint32_t format, uint32_t width,
-                                   uint32_t height, uint32_t pitch, uint64_t size);
-void TileConvertLinearToTiledDepth(void* dst, const void* src, uint32_t format, uint32_t width,
-                                   uint32_t height, uint32_t pitch, uint64_t size);
-void TileConvertTiledToLinearStandard4KB(void* dst, const void* src, uint32_t format,
-                                         uint32_t width, uint32_t height, uint32_t pitch,
-                                         uint64_t dst_size, uint64_t src_size, uint32_t src_x = 0,
-                                         uint32_t src_y = 0);
-void TileConvertTiledToLinearStandard256B(void* dst, const void* src, uint32_t format,
-                                          uint32_t width, uint32_t height, uint32_t pitch,
-                                          uint64_t dst_size, uint64_t src_size);
+enum class TileBlockFamily : uint32_t {
+	Standard256B,
+	Standard4KB,
+	Standard4KB3D,
+	Standard64KB,
+	Standard64KB3D,
+	Prt64KB,
+	Prt64KB3D,
+	RenderTarget64KB,
+	Depth64KB,
+	Count,
+};
+
+struct TileBlockLayout {
+	TileBlockFamily family            = TileBlockFamily::Standard256B;
+	uint32_t        bytes_per_element = 0;
+	uint32_t        block_size        = 0;
+	uint32_t        block_width       = 0;
+	uint32_t        block_height      = 0;
+	uint32_t        block_depth       = 0;
+};
+
+struct TileVolumeLayout {
+	TileBlockFamily family            = TileBlockFamily::Count;
+	uint32_t        bytes_per_element = 0;
+	uint32_t        texel_width       = 1;
+	uint32_t        texel_height      = 1;
+	uint32_t        first_tail_level  = 0;
+	uint32_t        block_depth       = 1;
+	uint64_t        block_slice_size  = 0;
+	uint64_t        total_size        = 0;
+	uint64_t        level_offsets[16] = {};
+	uint64_t        level_sizes[16]   = {};
+	uint32_t        tail_x[16]        = {};
+	uint32_t        tail_y[16]        = {};
+	uint32_t        level_widths[16]  = {};
+	uint32_t        level_heights[16] = {};
+};
+
+bool TileGetBlockLayout(TileBlockFamily family, uint32_t bytes_per_element,
+                        TileBlockLayout* layout);
+bool TileGetBlockOffset(const TileBlockLayout& layout, uint32_t x, uint32_t y, uint32_t z,
+                        uint32_t* byte_offset);
+bool TileGetBlockXor(const TileBlockLayout& layout, uint32_t block_x, uint32_t block_y,
+                     uint32_t* byte_offset);
+bool TileGetBlockXor(const TileBlockLayout& layout, uint32_t block_x, uint32_t block_y,
+                     uint32_t block_z, uint32_t* byte_offset);
 bool TileIsStandard256BTextureSupported(uint32_t format);
 bool TileIsStandard4KBTextureSupported(uint32_t format);
 bool TileIsStandard64KBTextureSupported(uint32_t format);
-bool TileGetStandard4KBVolumeLayout(uint32_t format, uint32_t* bytes_per_element,
-                                    uint32_t* texels_per_element_wide,
-                                    uint32_t* texels_per_element_tall, uint32_t* block_width_log2,
-                                    uint32_t* block_height_log2, uint32_t* block_depth_log2);
+bool TileGetTextureVolumeLayout(uint32_t format, uint32_t width, uint32_t height, uint32_t depth,
+                                uint32_t levels, uint32_t tile, TileVolumeLayout* layout);
 
 bool     TileGetHtileSize(uint32_t width, uint32_t height, TileSizeAlign* htile_size);
 bool     TileGetDepthSize(uint32_t width, uint32_t height, uint32_t pitch, uint32_t z_format,
@@ -103,11 +101,6 @@ void TileGetTextureTotalSize(uint32_t format, uint32_t width, uint32_t height, u
                              uint32_t pitch, uint32_t levels, uint32_t tile, bool volume_texture,
                              TileSizeAlign* total_size);
 uint32_t TileGetTexturePitch(uint32_t format, uint32_t width, uint32_t levels, uint32_t tile);
-void     TileConvertTiledToLinearStandard4KB3D(void* dst, const void* src, uint32_t format,
-                                               uint32_t width, uint32_t height, uint32_t depth,
-                                               uint32_t pitch, uint64_t dst_slice_stride,
-                                               uint64_t dst_size, uint64_t src_size,
-                                               bool clear_dst = true);
 
 } // namespace Libs::Graphics
 

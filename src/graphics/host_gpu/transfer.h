@@ -3,6 +3,7 @@
 
 #include "common/abi.h"
 #include "common/common.h"
+#include "graphics/host_gpu/gpuTiler.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <functional>
@@ -102,6 +103,9 @@ void UploadImage(GraphicContext* ctx, DepthStencilVulkanImage* dst_image, const 
                  uint64_t size, uint32_t src_pitch, vk::ImageAspectFlags aspect);
 void UploadImage(GraphicContext* ctx, VulkanImage* dst_image, const void* src_data, uint64_t size,
                  std::span<const BufferImageCopy> regions, vk::ImageLayout dst_layout);
+void UploadTiledImage(GraphicContext* ctx, VulkanImage* dst_image, const void* tiled_data,
+                      uint64_t tiled_size, uint64_t linear_size, std::span<const GpuTileInfo> infos,
+                      std::span<const BufferImageCopy> regions, vk::ImageLayout dst_layout);
 void CopyImageImmediate(GraphicContext* ctx, std::span<const ImageImageCopy> regions,
                         VulkanImage* dst_image, vk::ImageLayout dst_layout);
 void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size, uint32_t dst_pitch,
@@ -115,8 +119,11 @@ void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size,
 // re-enter Transfer.
 void ProcessDownloadedImage(GraphicContext* ctx, uint64_t size,
                             std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
-                            vk::ImageLayout src_layout,
-                            const DownloadedImageConsumer& consumer);
+                            vk::ImageLayout src_layout, const DownloadedImageConsumer& consumer);
+void DownloadTiledImage(GraphicContext* ctx, void* tiled_data, uint64_t tiled_size,
+                        uint64_t linear_size, std::span<const GpuTileInfo> infos,
+                        std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
+                        vk::ImageLayout src_layout);
 void UploadBuffer(GraphicContext* ctx, StagingBufferType type, VulkanBuffer* dst_buffer,
                   uint64_t dst_offset, const void* src_data, uint64_t size);
 void CopyBuffer(VulkanBuffer* src_buffer, VulkanBuffer* dst_buffer, uint64_t size);

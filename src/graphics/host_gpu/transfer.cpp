@@ -4,6 +4,7 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/threads.h"
+#include "graphics/host_gpu/gpuTiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/imageView.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -240,9 +241,11 @@ ConvertImageBufferCopies(std::span<const ImageBufferCopy> regions) {
 	return vk_regions;
 }
 
-static void RecordImageToBuffer(CommandBuffer& command, VulkanImage& src_image,
-                                VulkanBuffer& dst_buffer, std::span<const ImageBufferCopy> regions,
-                                vk::ImageLayout final_layout) {
+static void
+RecordImageToBuffer(CommandBuffer& command, VulkanImage& src_image, VulkanBuffer& dst_buffer,
+                    std::span<const ImageBufferCopy> regions, vk::ImageLayout final_layout,
+                    vk::AccessFlags        final_access = vk::AccessFlagBits::eHostRead,
+                    vk::PipelineStageFlags final_stage  = vk::PipelineStageFlagBits::eHost) {
 	auto                 vk_command = command.Handle();
 	vk::ImageAspectFlags aspects    = {};
 	for (const auto& region: regions) {
@@ -259,8 +262,8 @@ static void RecordImageToBuffer(CommandBuffer& command, VulkanImage& src_image,
 	                             dst_buffer.buffer, static_cast<uint32_t>(copies.size()),
 	                             copies.data());
 	SetBufferMemoryBarrier(vk_command, dst_buffer.buffer, 0, VK_WHOLE_SIZE,
-	                       vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead,
-	                       vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost);
+	                       vk::AccessFlagBits::eTransferWrite, final_access,
+	                       vk::PipelineStageFlagBits::eTransfer, final_stage);
 	SetImageLayout(vk_command, &src_image, 0, VK_REMAINING_MIP_LEVELS, aspects,
 	               vk::ImageLayout::eTransferSrcOptimal, final_layout);
 }
@@ -358,8 +361,8 @@ public:
 	}
 
 	void ProcessDownloadedImage(GraphicContext* ctx, uint64_t size,
-	                            std::span<const ImageBufferCopy> regions,
-	                            VulkanImage* src_image, vk::ImageLayout src_layout,
+	                            std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
+	                            vk::ImageLayout                src_layout,
 	                            const DownloadedImageConsumer& consumer) {
 		WithDownloadedImage(ctx, size, regions, src_image, src_layout,
 		                    [&](std::span<const uint8_t> data) {
@@ -367,8 +370,8 @@ public:
 				                    consumer(data);
 				                    return;
 			                    }
-			                    // Scattered CPU tiler reads can be much slower from uncached mapped
-			                    // memory. Preserve the original sequential-copy path as a fallback.
+			                    // Read uncached mappings sequentially before CPU consumers inspect
+			                    // them.
 			                    m_cached_readback.resize(data.size());
 			                    std::memcpy(m_cached_readback.data(), data.data(), data.size());
 			                    consumer(m_cached_readback);
@@ -382,17 +385,16 @@ public:
 			VulkanUnmapMemory(ctx, &m_buffer.memory);
 			VulkanDeleteBuffer(ctx, &m_buffer);
 		}
-		m_capacity     = 0;
-		m_mapped_data  = nullptr;
-		m_host_cached  = false;
+		m_capacity    = 0;
+		m_mapped_data = nullptr;
+		m_host_cached = false;
 	}
 
 private:
 	template <typename Consumer>
 	void WithDownloadedImage(GraphicContext* ctx, uint64_t size,
-	                         std::span<const ImageBufferCopy> regions,
-	                         VulkanImage* src_image, vk::ImageLayout src_layout,
-	                         const Consumer& consumer) {
+	                         std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
+	                         vk::ImageLayout src_layout, const Consumer& consumer) {
 		Common::LockGuard lock(m_mutex);
 		EnsureBuffer(ctx, size, vk::BufferUsageFlagBits::eTransferDst);
 		ExecuteImmediateCommands([&](CommandBuffer* command, vk::CommandBuffer) {
@@ -438,7 +440,7 @@ private:
 			        ? vk::MemoryPropertyFlags(vk::MemoryPropertyFlagBits::eHostCached)
 			        : vk::MemoryPropertyFlags {};
 			VulkanCreateBuffer(ctx, size, &m_buffer);
-			m_capacity = size;
+			m_capacity             = size;
 			const auto& properties = ctx->GetPhysicalDeviceMemoryProperties();
 			EXIT_IF(m_buffer.memory.type >= properties.memoryTypeCount);
 			m_host_cached =
@@ -518,9 +520,39 @@ static ReusableStagingBuffer* GetStagingBuffer(StagingBufferType type) {
 
 void ReleaseCachedResources(GraphicContext* ctx) {
 	EXIT_IF(ctx == nullptr);
+	GpuTileRelease(ctx);
 	g_texture_staging_buffer.Release(ctx);
 	g_vertex_staging_buffer.Release(ctx);
 	g_readback_staging_buffer.Release(ctx);
+}
+
+void UploadTiledImage(GraphicContext* ctx, VulkanImage* dst_image, const void* tiled_data,
+                      uint64_t tiled_size, uint64_t linear_size, std::span<const GpuTileInfo> infos,
+                      std::span<const BufferImageCopy> regions, vk::ImageLayout dst_layout) {
+	EXIT_IF(ctx == nullptr || dst_image == nullptr || tiled_data == nullptr || regions.empty());
+	GpuDetile(ctx, tiled_data, nullptr, tiled_size, linear_size, infos,
+	          [&](CommandBuffer* command, VulkanBuffer* linear) {
+		          vk::ImageAspectFlags aspects {};
+		          for (const auto& region: regions) {
+			          aspects |= GetTransferAspects(*dst_image, region.aspect);
+		          }
+		          RecordBufferToImageCopy(*command, *linear, *dst_image,
+		                                  ConvertBufferImageCopies(regions), aspects,
+		                                  dst_image->layout, dst_layout);
+	          });
+}
+
+void DownloadTiledImage(GraphicContext* ctx, void* tiled_data, uint64_t tiled_size,
+                        uint64_t linear_size, std::span<const GpuTileInfo> infos,
+                        std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
+                        vk::ImageLayout src_layout) {
+	EXIT_IF(ctx == nullptr || tiled_data == nullptr || src_image == nullptr || regions.empty());
+	GpuTile(ctx, nullptr, tiled_data, tiled_size, linear_size, infos,
+	        [&](CommandBuffer* command, VulkanBuffer* linear) {
+		        RecordImageToBuffer(*command, *src_image, *linear, regions, src_layout,
+		                            vk::AccessFlagBits::eShaderRead,
+		                            vk::PipelineStageFlagBits::eComputeShader);
+	        });
 }
 
 static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage* dst_image, uint32_t base_level,
@@ -973,8 +1005,7 @@ void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size,
 
 void ProcessDownloadedImage(GraphicContext* ctx, uint64_t size,
                             std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
-                            vk::ImageLayout src_layout,
-                            const DownloadedImageConsumer& consumer) {
+                            vk::ImageLayout src_layout, const DownloadedImageConsumer& consumer) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(size == 0 || regions.empty() || !consumer);
 	GetStagingBuffer(StagingBufferType::ReadBack)

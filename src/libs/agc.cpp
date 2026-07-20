@@ -52,7 +52,6 @@ KYTY_SUBSYSTEM_INIT(Graphics) {
 	GraphicsRenderInit();
 	GraphicsRunInit();
 	LabelInit();
-	TileInit();
 	ShaderInit();
 }
 
