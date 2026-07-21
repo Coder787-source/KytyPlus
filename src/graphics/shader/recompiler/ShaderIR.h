@@ -753,7 +753,7 @@ struct Program {
 };
 
 bool LowerProgram(const Decoder::Program& decoded, const CFG::Graph& cfg, ShaderType stage,
-                  uint32_t wave_size, Program* program, std::string* error);
+                  uint32_t wave_size, Program& program, std::string* error);
 
 std::string RegisterToString(Register reg);
 std::string OperandToString(const Operand& operand);

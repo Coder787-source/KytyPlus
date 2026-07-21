@@ -25,15 +25,13 @@ namespace Libs::Graphics {
 static std::atomic<uint32_t> g_render_color_log_count = 0;
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const HW::Context& hw,
-                              RenderColorInfo* r, uint32_t render_target_slice_offset,
-                              uint32_t render_target_slot, bool ignore_target_mask,
-                              bool reuse_existing_render_texture) {
+void ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer, RenderColorInfo& r,
+                              uint32_t render_target_slice_offset, uint32_t render_target_slot,
+                              bool ignore_target_mask, bool reuse_existing_render_texture) {
 	KYTY_PROFILER_FUNCTION();
+	const auto& hw = buffer.GetRegisters();
 
-	EXIT_IF(r == nullptr);
-
-	const auto  rt_slot = (render_target_slot == UINT32_MAX ? render_target_first_bound_slot(hw)
+	const auto  rt_slot = (render_target_slot == UINT32_MAX ? render_target_first_bound_slot(buffer)
 	                                                        : render_target_slot);
 	const auto& rt      = hw.GetRenderTarget(rt_slot);
 	auto        mask    = render_target_mask_slot(hw.GetRenderTargetMask(), rt_slot);
@@ -41,8 +39,8 @@ void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 		mask = 0x0f;
 	}
 
-	r->target_slot    = rt_slot;
-	r->export_mapping = {};
+	r.target_slot    = rt_slot;
+	r.export_mapping = {};
 
 	if (rt.base.addr == 0 || mask == 0) {
 		if (graphics_debug_dump_enabled()) {
@@ -58,17 +56,17 @@ void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 		}
 
 		// No color output
-		r->type               = RenderColorType::NoColorOutput;
-		r->base_addr          = 0;
-		r->vulkan_buffer      = nullptr;
-		r->vulkan_view        = nullptr;
-		r->format             = vk::Format::eUndefined;
-		r->extent             = {};
-		r->base_mip_level     = 0;
-		r->buffer_size        = 0;
-		r->samples            = 1;
-		r->color_clear_enable = false;
-		r->color_clear_value  = {};
+		r.type               = RenderColorType::NoColorOutput;
+		r.base_addr          = 0;
+		r.vulkan_buffer      = nullptr;
+		r.vulkan_view        = nullptr;
+		r.format             = vk::Format::eUndefined;
+		r.extent             = {};
+		r.base_mip_level     = 0;
+		r.buffer_size        = 0;
+		r.samples            = 1;
+		r.color_clear_enable = false;
+		r.color_clear_value  = {};
 		return;
 	}
 	const auto samples = render_sample_count(rt.attrib.num_fragments);
@@ -88,7 +86,7 @@ void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 			     rt.view.base_array_slice_index, rt.view.last_array_slice_index,
 			     render_target_slice_offset);
 	}
-	r->base_array_layer   = view.base_layer;
+	r.base_array_layer    = view.base_layer;
 	const uint32_t levels = rt.attrib2.num_mip_levels + 1u;
 	if (levels == 0 || levels > 16 || rt.view.current_mip_level >= levels) {
 		EXIT("unsupported render-target mip range: current=%u levels=%u\n",
@@ -113,8 +111,8 @@ void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 	// SRGB clear words are still encoded as normalized component values.
 	// Fast color clears are metadata driven and must be handled explicitly when
 	// that metadata path is implemented; render-pass load must preserve contents.
-	r->color_clear_enable = false;
-	r->color_clear_value  = {};
+	r.color_clear_enable = false;
+	r.color_clear_value  = {};
 
 	uint32_t   width  = 0;
 	uint32_t   height = 0;
@@ -189,9 +187,9 @@ void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 		} else {
 			valid_layout =
 			    levels == 1 ? TileGetRenderTargetSize(width, height, pitch, bytes_per_element,
-			                                          &layout, rt.attrib.num_fragments)
+			                                          layout, rt.attrib.num_fragments)
 			                : TileGetRenderTargetMipLayout(width, height, pitch, bytes_per_element,
-			                                               levels, &layout, nullptr, nullptr);
+			                                               levels, layout, nullptr, nullptr);
 		}
 		if (!valid_layout) {
 			EXIT("unsupported render-target layout: %ux%u pitch=%u bytes=%u levels=%u\n", width,
@@ -257,23 +255,22 @@ void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 		target.levels            = levels;
 		target.layers            = view.image_layers;
 		target.samples           = samples;
-		auto* texture_cache      = g_render_ctx->GetTextureCache();
-		auto* buffer_vulkan =
-		    texture_cache->FindRenderTarget(buffer, g_render_ctx->GetGraphicCtx(), target);
-		r->type          = RenderColorType::RenderTexture;
-		r->base_addr     = rt.base.addr;
-		r->vulkan_buffer = buffer_vulkan;
-		r->vulkan_view   = texture_cache->GetRenderTargetAttachmentView(
-		    g_render_ctx->GetGraphicCtx(), buffer_vulkan, target.format, rt.view.current_mip_level,
-		    view.base_layer, view.layer_count);
-		r->format             = target.format;
-		r->extent             = view_extent;
-		r->base_mip_level     = rt.view.current_mip_level;
-		r->buffer_size        = backing_size;
-		r->samples            = samples;
-		r->export_mapping     = target_format.export_mapping;
-		r->color_clear_enable = buffer_vulkan->initial_clear_pending;
-		r->color_clear_value  = {};
+		auto& texture_cache      = GetRenderContext().GetTextureCache();
+		auto& buffer_vulkan      = texture_cache.FindRenderTarget(buffer, target);
+		r.type                   = RenderColorType::RenderTexture;
+		r.base_addr              = rt.base.addr;
+		r.vulkan_buffer          = &buffer_vulkan;
+		r.vulkan_view            = texture_cache.GetRenderTargetAttachmentView(
+		    buffer_vulkan, target.format, rt.view.current_mip_level, view.base_layer,
+		    view.layer_count);
+		r.format             = target.format;
+		r.extent             = view_extent;
+		r.base_mip_level     = rt.view.current_mip_level;
+		r.buffer_size        = backing_size;
+		r.samples            = samples;
+		r.export_mapping     = target_format.export_mapping;
+		r.color_clear_enable = buffer_vulkan.initial_clear_pending;
+		r.color_clear_value  = {};
 	} else {
 		if (samples != 1) {
 			EXIT("multisampled display render targets are unsupported\n");
@@ -305,16 +302,16 @@ void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 		}
 		EXIT_NOT_IMPLEMENTED(video_image.size < size);
 		EXIT_NOT_IMPLEMENTED(video_image.pitch != pitch);
-		r->type           = RenderColorType::DisplayBuffer;
-		r->base_addr      = rt.base.addr;
-		r->vulkan_buffer  = video_image.image;
-		r->vulkan_view    = video_image.image->image_view[VulkanImage::VIEW_DEFAULT];
-		r->format         = video_image.image->format;
-		r->extent         = video_image.image->extent;
-		r->base_mip_level = 0;
-		r->buffer_size    = video_image.size;
-		r->samples        = 1;
-		r->export_mapping = target_format.export_mapping;
+		r.type           = RenderColorType::DisplayBuffer;
+		r.base_addr      = rt.base.addr;
+		r.vulkan_buffer  = video_image.image;
+		r.vulkan_view    = video_image.image->image_view[VulkanImage::VIEW_DEFAULT];
+		r.format         = video_image.image->format;
+		r.extent         = video_image.image->extent;
+		r.base_mip_level = 0;
+		r.buffer_size    = video_image.size;
+		r.samples        = 1;
+		r.export_mapping = target_format.export_mapping;
 	}
 }
 
@@ -324,7 +321,7 @@ void MarkRenderTargetGpuWritten(const RenderColorInfo& target) {
 	if (with_color) {
 		if (target.type == RenderColorType::RenderTexture ||
 		    target.type == RenderColorType::DisplayBuffer) {
-			g_render_ctx->GetTextureCache()->MarkGpuWritten(target.vulkan_buffer);
+			GetRenderContext().GetTextureCache().MarkGpuWritten(*target.vulkan_buffer);
 		} else {
 			EXIT("unknown writable render-color resource type\n");
 		}

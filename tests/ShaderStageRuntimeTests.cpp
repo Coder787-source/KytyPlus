@@ -58,7 +58,7 @@ void TestMappedSrtUsesDirectReaderByDefault() {
 	auto cached_program  = SrtProgram(reinterpret_cast<uint64_t>(&dword));
 	ShaderStageRuntime stage;
 	std::string error;
-	Check(ShaderMaterializeStageRuntime(cached_program, {}, 0, &stage, &error), error.c_str());
+	Check(ShaderMaterializeStageRuntime(cached_program, {}, 0, stage, &error), error.c_str());
 	Check(stage.program == cached_program && stage.resources != nullptr,
 	      "cache rematerialization did not publish the mapped stage");
 	Check(stage.resources->flattened_srt.size() == 1 &&
@@ -73,7 +73,7 @@ void TestUnbasedFlatCacheHitFailsClosed() {
 	auto prior_resources = std::make_shared<const ShaderRecompiler::IR::ResourceSnapshot>();
 	ShaderStageRuntime stage {prior_program, prior_resources};
 	std::string error;
-	Check(!ShaderMaterializeStageRuntime(cached_program, {}, 0, &stage, &error) &&
+	Check(!ShaderMaterializeStageRuntime(cached_program, {}, 0, stage, &error) &&
 	          error.find("requires runtime guest-address translation") != std::string::npos,
 	      "unbased FLAT cache hit did not fail without a runtime translator");
 	Check(stage.program == prior_program && stage.resources == prior_resources,

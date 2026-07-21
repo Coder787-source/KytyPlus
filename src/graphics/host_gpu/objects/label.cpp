@@ -4,6 +4,7 @@
 #include "common/threads.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <algorithm>
@@ -58,17 +59,16 @@ public:
 	~LabelManager() { KYTY_NOT_IMPLEMENTED; }
 	KYTY_CLASS_NO_COPY(LabelManager);
 
-	Label* Create(GraphicContext* ctx, LabelCallback callback_1, LabelCallback callback_2,
-	              const uint64_t* args);
-	void   Delete(Label* label);
-	void   Set(CommandBuffer* buffer, Label* label);
+	Label* Create(LabelCallback callback_1, LabelCallback callback_2, const uint64_t* args);
+	void   Delete(Label& label);
+	void   Set(CommandBuffer& buffer, Label& label);
 	void   Drain();
 
 private:
 	static void ThreadRun(void* data);
 
-	bool        Remove(Label* label);
-	static void Destroy(Label* label);
+	bool        Remove(Label& label);
+	static void Destroy(Label& label);
 
 	Common::Mutex       m_mutex;
 	Common::CondVar     m_cond_var;
@@ -146,7 +146,7 @@ void LabelManager::ThreadRun(void* data) {
 		manager->m_callbacks_in_flight += fired_labels.size();
 
 		for (auto& label: deleted_labels) {
-			bool removed = manager->Remove(label);
+			bool removed = manager->Remove(*label);
 			EXIT_NOT_IMPLEMENTED(!removed);
 		}
 
@@ -158,7 +158,7 @@ void LabelManager::ThreadRun(void* data) {
 		(void)finished_submissions;
 
 		for (auto& label: deleted_labels) {
-			Destroy(label);
+			Destroy(*label);
 		}
 
 		for (auto& label: fired_labels) {
@@ -186,16 +186,14 @@ void LabelManager::ThreadRun(void* data) {
 	}
 }
 
-Label* LabelManager::Create(GraphicContext* ctx, LabelCallback callback_1, LabelCallback callback_2,
+Label* LabelManager::Create(LabelCallback callback_1, LabelCallback callback_2,
                             const uint64_t* args) {
-	EXIT_IF(ctx == nullptr);
-
 	Common::LockGuard lock(m_mutex);
 
 	auto* label = new Label;
 
 	label->status               = LabelStatus::New;
-	label->device               = ctx->device;
+	label->device               = GetRenderContext().GetGraphics().device;
 	label->callbacks.callback_1 = callback_1;
 	label->callbacks.callback_2 = callback_2;
 
@@ -210,21 +208,20 @@ Label* LabelManager::Create(GraphicContext* ctx, LabelCallback callback_1, Label
 	return label;
 }
 
-bool LabelManager::Remove(Label* label) {
-	EXIT_IF(label == nullptr);
-	EXIT_IF(label->device == nullptr);
+bool LabelManager::Remove(Label& label) {
+	EXIT_IF(label.device == nullptr);
 
 	Common::LockGuard lock(m_mutex);
 
-	const auto it = std::find(m_labels.begin(), m_labels.end(), label);
+	const auto it = std::find(m_labels.begin(), m_labels.end(), &label);
 	EXIT_NOT_IMPLEMENTED(it == m_labels.end());
 
-	EXIT_NOT_IMPLEMENTED(label->status != LabelStatus::NotActive &&
-	                     label->status != LabelStatus::Active &&
-	                     label->status != LabelStatus::ActiveDeleted);
+	EXIT_NOT_IMPLEMENTED(label.status != LabelStatus::NotActive &&
+	                     label.status != LabelStatus::Active &&
+	                     label.status != LabelStatus::ActiveDeleted);
 
-	if (!label->submissions.empty()) {
-		label->status = LabelStatus::ActiveDeleted;
+	if (!label.submissions.empty()) {
+		label.status = LabelStatus::ActiveDeleted;
 
 		return false;
 	}
@@ -234,44 +231,41 @@ bool LabelManager::Remove(Label* label) {
 	return true;
 }
 
-void LabelManager::Destroy(Label* label) {
-	EXIT_IF(label == nullptr);
-	EXIT_IF(label->device == nullptr);
+void LabelManager::Destroy(Label& label) {
+	EXIT_IF(label.device == nullptr);
 
-	EXIT_NOT_IMPLEMENTED(!label->submissions.empty());
+	EXIT_NOT_IMPLEMENTED(!label.submissions.empty());
 
-	delete label;
+	delete &label;
 }
 
-void LabelManager::Delete(Label* label) {
+void LabelManager::Delete(Label& label) {
 	if (Remove(label)) {
 		Destroy(label);
 	}
 }
 
-void LabelManager::Set(CommandBuffer* buffer, Label* label) {
-	EXIT_IF(label == nullptr);
-	EXIT_IF(buffer == nullptr);
-	EXIT_IF(buffer->IsInvalid());
-	EXIT_IF(label->device == nullptr);
+void LabelManager::Set(CommandBuffer& buffer, Label& label) {
+	EXIT_IF(buffer.IsInvalid());
+	EXIT_IF(label.device == nullptr);
 
 	Common::LockGuard lock(m_mutex);
 
-	const auto it = std::find(m_labels.begin(), m_labels.end(), label);
+	const auto it = std::find(m_labels.begin(), m_labels.end(), &label);
 	EXIT_NOT_IMPLEMENTED(it == m_labels.end());
 
-	EXIT_NOT_IMPLEMENTED(label->status != LabelStatus::New &&
-	                     label->status != LabelStatus::NotActive &&
-	                     label->status != LabelStatus::Active);
+	EXIT_NOT_IMPLEMENTED(label.status != LabelStatus::New &&
+	                     label.status != LabelStatus::NotActive &&
+	                     label.status != LabelStatus::Active);
 
-	label->status = LabelStatus::Active;
+	label.status = LabelStatus::Active;
 
 	LabelSubmission submission {};
-	submission.callbacks          = label->callbacks;
+	submission.callbacks          = label.callbacks;
 	submission.completion         = std::make_shared<LabelEvent>();
-	submission.completion->device = label->device;
+	submission.completion->device = label.device;
 
-	auto vk_buffer = buffer->Handle();
+	auto vk_buffer = buffer.Handle();
 
 	EXIT_NOT_IMPLEMENTED(vk_buffer == nullptr);
 
@@ -281,24 +275,24 @@ void LabelManager::Set(CommandBuffer* buffer, Label* label) {
 	create_info.flags = {};
 
 	const auto create_result =
-	    label->device.createEvent(&create_info, nullptr, &submission.completion->event);
+	    label.device.createEvent(&create_info, nullptr, &submission.completion->event);
 	if (create_result != vk::Result::eSuccess || submission.completion->event == nullptr) {
 		EXIT("failed to create label event: %s (%d)\n", VulkanToString(create_result).c_str(),
 		     static_cast<int>(create_result));
 	}
-	buffer->RetainResourceUntilFence(submission.completion);
+	buffer.RetainResourceUntilFence(submission.completion);
 
 	// Labels can be reused before an earlier end-of-pipe event has been
 	// observed by the polling thread. Capture a separate Vulkan event and
 	// callback snapshot for each set so older writes are not lost.
-	const auto reset_result = label->device.resetEvent(submission.completion->event);
+	const auto reset_result = label.device.resetEvent(submission.completion->event);
 	if (reset_result != vk::Result::eSuccess) {
 		EXIT("failed to reset label event: %s (%d)\n", VulkanToString(reset_result).c_str(),
 		     static_cast<int>(reset_result));
 	}
 	vk_buffer.setEvent(submission.completion->event, vk::PipelineStageFlagBits::eBottomOfPipe);
 
-	label->submissions.push_back(submission);
+	label.submissions.push_back(submission);
 
 	m_cond_var.SignalAll();
 }
@@ -324,20 +318,19 @@ void LabelInit() {
 	g_label_manager = new LabelManager;
 }
 
-Label* LabelCreate(GraphicContext* ctx, LabelCallback callback_1, LabelCallback callback_2,
-                   const uint64_t* args) {
+Label* LabelCreate(LabelCallback callback_1, LabelCallback callback_2, const uint64_t* args) {
 	EXIT_IF(g_label_manager == nullptr);
 
-	return g_label_manager->Create(ctx, callback_1, callback_2, args);
+	return g_label_manager->Create(callback_1, callback_2, args);
 }
 
-void LabelDelete(Label* label) {
+void LabelDelete(Label& label) {
 	EXIT_IF(g_label_manager == nullptr);
 
 	g_label_manager->Delete(label);
 }
 
-void LabelSet(CommandBuffer* buffer, Label* label) {
+void LabelSet(CommandBuffer& buffer, Label& label) {
 	EXIT_IF(g_label_manager == nullptr);
 
 	g_label_manager->Set(buffer, label);

@@ -621,7 +621,7 @@ CompiledShader CompileCase(const TestCase &test) {
 
   ShaderRecompiler::CompileResult result;
   std::string error;
-  if (!ShaderRecompiler::TryRecompile(test.code, options, &result, &error)) {
+  if (!ShaderRecompiler::TryRecompile(test.code, options, result, &error)) {
     Fail(test.name, "decode/IR", error.c_str());
   }
   Require(test.name, "SPIR-V emit", !result.spirv.empty(),
@@ -687,7 +687,7 @@ CompiledShader CompileFragmentCase(const GraphicsCase &test) {
 
   ShaderRecompiler::CompileResult result;
   std::string error;
-  if (!ShaderRecompiler::TryRecompile(test.fragment_code, options, &result,
+  if (!ShaderRecompiler::TryRecompile(test.fragment_code, options, result,
                                       &error)) {
     Fail(test.name, "decode/IR", error.c_str());
   }
@@ -882,7 +882,7 @@ public:
             &exact_properties) == vk::Result::eSuccess;
     GraphicContext context{};
     context.physical_device = m_physical_device;
-    Require(name, "format fallback", TextureCheckFormat(&context, &image_info),
+    Require(name, "format fallback", TextureCheckFormat(image_info),
             "mutable sampled/storage RGBA8 image is unsupported");
     Require(name, "format fallback",
             image_info.format == vk::Format::eR8G8B8A8Unorm ||
@@ -1073,8 +1073,9 @@ public:
     context.device = m_device;
     ResourceMutex resource_mutex;
     PageManager page_manager(RejectUnexpectedPageFault, nullptr);
-    BufferCache buffer_cache(page_manager, resource_mutex);
-    TextureCache texture_cache(page_manager, buffer_cache, resource_mutex);
+    BufferCache buffer_cache(context, page_manager, resource_mutex);
+    TextureCache texture_cache(context, page_manager, buffer_cache,
+                               resource_mutex);
     buffer_cache.SetTextureCache(texture_cache);
     RenderTextureVulkanImage image;
     image.image = image_handle;
@@ -1086,42 +1087,37 @@ public:
     constexpr auto first_swizzle = DstSel(5, 1, 7, 0);
     constexpr auto second_swizzle = DstSel(7, 4, 0, 1);
     const auto first = texture_cache.GetSampledColorView(
-        &context, &image, image.format, first_swizzle, 0, 1,
-        vk::ImageViewType::e2D, 0, 1);
+        image, image.format, first_swizzle, 0, 1, vk::ImageViewType::e2D, 0, 1);
     const auto first_again = texture_cache.GetSampledColorView(
-        &context, &image, image.format, first_swizzle, 0, 1,
-        vk::ImageViewType::e2D, 0, 1);
-    const auto second = texture_cache.GetSampledColorView(
-        &context, &image, image.format, second_swizzle, 0, 1,
-        vk::ImageViewType::e2D, 0, 1);
+        image, image.format, first_swizzle, 0, 1, vk::ImageViewType::e2D, 0, 1);
+    const auto second =
+        texture_cache.GetSampledColorView(image, image.format, second_swizzle,
+                                          0, 1, vk::ImageViewType::e2D, 0, 1);
     const auto different_mip = texture_cache.GetSampledColorView(
-        &context, &image, image.format, first_swizzle, 1, 1,
-        vk::ImageViewType::e2D, 0, 1);
+        image, image.format, first_swizzle, 1, 1, vk::ImageViewType::e2D, 0, 1);
     const auto different_layer = texture_cache.GetSampledColorView(
-        &context, &image, image.format, first_swizzle, 0, 1,
-        vk::ImageViewType::e2D, 1, 1);
-    const auto array_view = texture_cache.GetSampledColorView(
-        &context, &image, image.format, first_swizzle, 0, 1,
-        vk::ImageViewType::e2DArray, 0, 2);
+        image, image.format, first_swizzle, 0, 1, vk::ImageViewType::e2D, 1, 1);
+    const auto array_view =
+        texture_cache.GetSampledColorView(image, image.format, first_swizzle, 0,
+                                          1, vk::ImageViewType::e2DArray, 0, 2);
     constexpr auto identity = DstSel(4, 5, 6, 7);
     const auto native_format = texture_cache.GetSampledColorView(
-        &context, &image, image.format, identity, 0, 1, vk::ImageViewType::e2D,
-        0, 1);
+        image, image.format, identity, 0, 1, vk::ImageViewType::e2D, 0, 1);
     const auto reinterpreted_format = texture_cache.GetSampledColorView(
-        &context, &image, vk::Format::eR8G8B8A8Uint, identity, 0, 1,
+        image, vk::Format::eR8G8B8A8Uint, identity, 0, 1,
         vk::ImageViewType::e2D, 0, 1);
     const auto storage = texture_cache.GetRenderTargetStorageView(
-        &context, &image, image.format, 0, 1, vk::ImageViewType::e2D, 0, 1);
+        image, image.format, 0, 1, vk::ImageViewType::e2D, 0, 1);
     const auto storage_again = texture_cache.GetRenderTargetStorageView(
-        &context, &image, image.format, 0, 1, vk::ImageViewType::e2D, 0, 1);
+        image, image.format, 0, 1, vk::ImageViewType::e2D, 0, 1);
     const auto attachment = texture_cache.GetRenderTargetAttachmentView(
-        &context, &image, image.format, 0, 0, 1);
+        image, image.format, 0, 0, 1);
     const auto attachment_again = texture_cache.GetRenderTargetAttachmentView(
-        &context, &image, image.format, 0, 0, 1);
+        image, image.format, 0, 0, 1);
     const auto attachment_mip = texture_cache.GetRenderTargetAttachmentView(
-        &context, &image, image.format, 1, 0, 1);
+        image, image.format, 1, 0, 1);
     const auto attachment_array = texture_cache.GetRenderTargetAttachmentView(
-        &context, &image, image.format, 0, 0, 2);
+        image, image.format, 0, 0, 2);
     Require(name, "cache identity",
             first != nullptr && first_again == first && second != nullptr &&
                 second != first && different_mip != nullptr &&
@@ -1139,7 +1135,7 @@ public:
             "view cache omitted attachment usage, swizzle, format, type, mip, "
             "or layer identity");
 
-    ImageViewOps::DestroyViews(&context, &image);
+    ImageViewOps::DestroyViews(image);
     Require(name, "view teardown", image.view_cache.views.empty(),
             "dynamic render-target views survived DestroyViews");
     m_device.destroyImage(image_handle, nullptr);
@@ -1191,8 +1187,9 @@ public:
     context.device = m_device;
     ResourceMutex resource_mutex;
     PageManager page_manager(RejectUnexpectedPageFault, nullptr);
-    BufferCache buffer_cache(page_manager, resource_mutex);
-    TextureCache texture_cache(page_manager, buffer_cache, resource_mutex);
+    BufferCache buffer_cache(context, page_manager, resource_mutex);
+    TextureCache texture_cache(context, page_manager, buffer_cache,
+                               resource_mutex);
     buffer_cache.SetTextureCache(texture_cache);
     DepthStencilVulkanImage image;
     image.image = image_handle;
@@ -1204,28 +1201,28 @@ public:
     constexpr auto replicated = DstSel(4, 4, 4, 4);
     constexpr auto r001 = DstSel(4, 0, 0, 1);
     const auto first = texture_cache.GetDepthTargetSampledView(
-        &context, &image, vk::Format::eR32Sfloat, replicated, 0, 1,
-        vk::ImageViewType::e2D, 0, 1);
+        image, vk::Format::eR32Sfloat, replicated, 0, 1, vk::ImageViewType::e2D,
+        0, 1);
     const auto first_again = texture_cache.GetDepthTargetSampledView(
-        &context, &image, vk::Format::eR32Sfloat, replicated, 0, 1,
-        vk::ImageViewType::e2D, 0, 1);
+        image, vk::Format::eR32Sfloat, replicated, 0, 1, vk::ImageViewType::e2D,
+        0, 1);
     const auto different_swizzle = texture_cache.GetDepthTargetSampledView(
-        &context, &image, vk::Format::eR32Sfloat, r001, 0, 1,
-        vk::ImageViewType::e2D, 0, 1);
+        image, vk::Format::eR32Sfloat, r001, 0, 1, vk::ImageViewType::e2D, 0,
+        1);
     const auto different_layer = texture_cache.GetDepthTargetSampledView(
-        &context, &image, vk::Format::eR32Sfloat, replicated, 0, 1,
-        vk::ImageViewType::e2D, 1, 1);
+        image, vk::Format::eR32Sfloat, replicated, 0, 1, vk::ImageViewType::e2D,
+        1, 1);
     const auto array_view = texture_cache.GetDepthTargetSampledView(
-        &context, &image, vk::Format::eR32Sfloat, replicated, 0, 1,
+        image, vk::Format::eR32Sfloat, replicated, 0, 1,
         vk::ImageViewType::e2DArray, 0, 2);
     const auto attachment =
-        texture_cache.GetDepthTargetAttachmentView(&context, &image, 0, 1);
+        texture_cache.GetDepthTargetAttachmentView(image, 0, 1);
     const auto attachment_again =
-        texture_cache.GetDepthTargetAttachmentView(&context, &image, 0, 1);
+        texture_cache.GetDepthTargetAttachmentView(image, 0, 1);
     const auto attachment_layer =
-        texture_cache.GetDepthTargetAttachmentView(&context, &image, 1, 1);
+        texture_cache.GetDepthTargetAttachmentView(image, 1, 1);
     const auto attachment_array =
-        texture_cache.GetDepthTargetAttachmentView(&context, &image, 0, 2);
+        texture_cache.GetDepthTargetAttachmentView(image, 0, 2);
     Require(
         name, "cache identity",
         first != nullptr && first_again == first &&
@@ -1240,7 +1237,7 @@ public:
         "depth view cache omitted attachment usage, swizzle, type, or layer "
         "identity");
 
-    ImageViewOps::DestroyViews(&context, &image);
+    ImageViewOps::DestroyViews(image);
     Require(name, "view teardown", image.view_cache.views.empty(),
             "dynamic depth-target views survived DestroyViews");
     m_device.destroyImage(image_handle, nullptr);
@@ -1261,8 +1258,9 @@ public:
     context.device = m_device;
     ResourceMutex resource_mutex;
     PageManager page_manager(RejectUnexpectedPageFault, nullptr);
-    BufferCache buffer_cache(page_manager, resource_mutex);
-    TextureCache texture_cache(page_manager, buffer_cache, resource_mutex);
+    BufferCache buffer_cache(context, page_manager, resource_mutex);
+    TextureCache texture_cache(context, page_manager, buffer_cache,
+                               resource_mutex);
     buffer_cache.SetTextureCache(texture_cache);
     VideoOutVulkanImage image;
     image.image = backing.image;
@@ -1276,17 +1274,13 @@ public:
     constexpr auto bgra = DstSel(6, 5, 4, 7);
     constexpr auto uncommon = DstSel(5, 1, 7, 0);
     const auto default_view = texture_cache.GetSampledColorView(
-        &context, &image, image.format, identity, 0, 1, vk::ImageViewType::e2D,
-        0, 1);
-    const auto bgra_view =
-        texture_cache.GetSampledColorView(&context, &image, image.format, bgra,
-                                          0, 1, vk::ImageViewType::e2D, 0, 1);
+        image, image.format, identity, 0, 1, vk::ImageViewType::e2D, 0, 1);
+    const auto bgra_view = texture_cache.GetSampledColorView(
+        image, image.format, bgra, 0, 1, vk::ImageViewType::e2D, 0, 1);
     const auto uncommon_view = texture_cache.GetSampledColorView(
-        &context, &image, image.format, uncommon, 0, 1, vk::ImageViewType::e2D,
-        0, 1);
+        image, image.format, uncommon, 0, 1, vk::ImageViewType::e2D, 0, 1);
     const auto uncommon_again = texture_cache.GetSampledColorView(
-        &context, &image, image.format, uncommon, 0, 1, vk::ImageViewType::e2D,
-        0, 1);
+        image, image.format, uncommon, 0, 1, vk::ImageViewType::e2D, 0, 1);
     Require(name, "cache identity",
             default_view == backing.view && bgra_view != nullptr &&
                 bgra_view != default_view && uncommon_view != nullptr &&
@@ -1295,7 +1289,7 @@ public:
             "video-out sampled views did not use identity fast path and lazy "
             "mappings");
 
-    ImageViewOps::DestroyViews(&context, &image);
+    ImageViewOps::DestroyViews(image);
     Require(name, "view teardown",
             image.view_cache.views.empty() &&
                 std::all_of(std::begin(image.image_view),
@@ -1322,8 +1316,9 @@ public:
     EnsureRuntimeContext();
     ResourceMutex resource_mutex;
     PageManager page_manager(RejectUnexpectedPageFault, nullptr);
-    BufferCache buffer_cache(page_manager, resource_mutex);
-    TextureCache texture_cache(page_manager, buffer_cache, resource_mutex);
+    BufferCache buffer_cache(m_runtime_context, page_manager, resource_mutex);
+    TextureCache texture_cache(m_runtime_context, page_manager, buffer_cache,
+                               resource_mutex);
     buffer_cache.SetTextureCache(texture_cache);
     page_manager.OnGpuMap(base, allocation_size);
 
@@ -1342,7 +1337,7 @@ public:
     TileSizeAlign sampled_size{};
     TileGetTextureTotalSize(format, sampled_info.width, sampled_info.height,
                             sampled_info.depth, sampled_info.pitch,
-                            sampled_info.levels, linear, false, &sampled_size);
+                            sampled_info.levels, linear, false, sampled_size);
     sampled_info.size = sampled_size.size;
     Require(name, "sampled fixture",
             sampled_info.size != 0 && sampled_size.align != 0 &&
@@ -1362,12 +1357,8 @@ public:
 
     {
       CommandBuffer command(GraphicContext::QUEUE_GFX);
-      auto *sampled = texture_cache.FindTexture(&command, &m_runtime_context,
-                                                sampled_info, false);
-      auto *target = texture_cache.FindRenderTarget(
-          &command, &m_runtime_context, target_info);
-      Require(name, "registration", sampled != nullptr && target != nullptr,
-              "sampled or non-sampled image registration failed");
+      (void)texture_cache.FindTexture(command, sampled_info, false);
+      auto& target = texture_cache.FindRenderTarget(command, target_info);
 
       const auto sampled_bytes =
           texture_cache.QueryRegion(sampled_info.address + 0x20, 0x20);
@@ -2376,7 +2367,7 @@ public:
                                  const GpuTileInfo &info) {
       TileBlockLayout block{};
       Require(name, "reference layout",
-              TileGetBlockLayout(info.family, info.bytes_per_element, &block),
+              TileGetBlockLayout(info.family, info.bytes_per_element, block),
               "CPU reference rejected GPU tile info");
       const u32 tiled_width =
           info.tiled_width != 0 ? info.tiled_width : info.pitch;
@@ -2401,9 +2392,8 @@ public:
             const u32 lz = z % block.block_depth;
             u32 local = 0, block_xor = 0;
             Require(name, "reference offset",
-                    TileGetBlockOffset(block, lx, ly, lz, &local) &&
-                        TileGetBlockXor(block, bx, by, info.surface_z + bz,
-                                        &block_xor),
+                    TileGetBlockOffset(block, lx, ly, lz, local) &&
+                        TileGetBlockXor(block, bx, by, info.surface_z + bz, block_xor),
                     "CPU reference address lookup failed");
             const uint64_t block_index =
                 static_cast<uint64_t>(bz) * columns * rows + by * columns + bx;
@@ -2448,19 +2438,18 @@ public:
       u32 standard_offset = 0, prt_offset = 0, standard_3d_offset = 0,
           prt_3d_offset = 0, color_z = 0, depth_z = 0;
       bool fixed_addresses =
-          TileGetBlockLayout(TileBlockFamily::Standard64KB, 4, &standard) &&
-          TileGetBlockLayout(TileBlockFamily::Prt64KB, 4, &prt) &&
-          TileGetBlockLayout(TileBlockFamily::Standard64KB3D, 4,
-                             &standard_3d) &&
-          TileGetBlockLayout(TileBlockFamily::Prt64KB3D, 4, &prt_3d) &&
-          TileGetBlockLayout(TileBlockFamily::RenderTarget64KB, 4, &color) &&
-          TileGetBlockLayout(TileBlockFamily::Depth64KB, 4, &depth) &&
-          TileGetBlockOffset(standard, 64, 0, 0, &standard_offset) &&
-          TileGetBlockOffset(prt, 64, 0, 0, &prt_offset) &&
-          TileGetBlockOffset(standard_3d, 16, 0, 0, &standard_3d_offset) &&
-          TileGetBlockOffset(prt_3d, 16, 0, 0, &prt_3d_offset) &&
-          TileGetBlockXor(color, 0, 0, 1, &color_z) &&
-          TileGetBlockXor(depth, 0, 0, 15, &depth_z);
+          TileGetBlockLayout(TileBlockFamily::Standard64KB, 4, standard) &&
+          TileGetBlockLayout(TileBlockFamily::Prt64KB, 4, prt) &&
+          TileGetBlockLayout(TileBlockFamily::Standard64KB3D, 4, standard_3d) &&
+          TileGetBlockLayout(TileBlockFamily::Prt64KB3D, 4, prt_3d) &&
+          TileGetBlockLayout(TileBlockFamily::RenderTarget64KB, 4, color) &&
+          TileGetBlockLayout(TileBlockFamily::Depth64KB, 4, depth) &&
+          TileGetBlockOffset(standard, 64, 0, 0, standard_offset) &&
+          TileGetBlockOffset(prt, 64, 0, 0, prt_offset) &&
+          TileGetBlockOffset(standard_3d, 16, 0, 0, standard_3d_offset) &&
+          TileGetBlockOffset(prt_3d, 16, 0, 0, prt_3d_offset) &&
+          TileGetBlockXor(color, 0, 0, 1, color_z) &&
+          TileGetBlockXor(depth, 0, 0, 15, depth_z);
       Require(name, "fixed address vectors",
               fixed_addresses && standard_offset == 0x8000 &&
                   prt_offset == 0x8100 && standard_3d_offset == 0x8000 &&
@@ -2504,8 +2493,7 @@ public:
       for (const auto &info : infos) {
         convert_reference(false, &cpu, tiled, info);
       }
-      GpuDetile(&m_runtime_context, tiled.data(), gpu.data(), size, size,
-                infos);
+	  GpuDetile(tiled.data(), gpu.data(), size, size, infos);
       compare((std::string(stage) + " detile bytes").c_str(), cpu, gpu);
 
       std::vector<uint8_t> linear(size);
@@ -2515,7 +2503,7 @@ public:
       for (const auto &info : infos) {
         convert_reference(true, &cpu_tiled, linear, info);
       }
-      GpuTile(&m_runtime_context, linear.data(), gpu_tiled.data(), size, size,
+		GpuTile(linear.data(), gpu_tiled.data(), size, size,
               infos);
       compare((std::string(stage) + " tile bytes").c_str(), cpu_tiled,
               gpu_tiled);
@@ -2524,7 +2512,7 @@ public:
       for (u32 bpe = 1; bpe <= family.max_bpe; bpe <<= 1u) {
         TileBlockLayout block{};
         Require(name, "block layout",
-                TileGetBlockLayout(family.family, bpe, &block),
+                TileGetBlockLayout(family.family, bpe, block),
                 "admitted family/BPE has no block layout");
         const bool volume = block.block_depth > 1;
         const u32 width =
@@ -2564,7 +2552,7 @@ public:
                              ? 3
                              : 0;
         convert_reference(false, &cpu, tiled, info);
-        GpuDetile(&m_runtime_context, tiled.data(), gpu.data(), storage_size,
+		GpuDetile(tiled.data(), gpu.data(), storage_size,
                   storage_size, std::span<const GpuTileInfo>(&info, 1));
         const auto family_label = [&](const char *operation) {
           std::ostringstream out;
@@ -2580,7 +2568,7 @@ public:
           std::vector<uint8_t> gpu_tiled(storage_size, 0xab);
           fill(&linear, 0x80u + case_index);
           convert_reference(true, &cpu_tiled, linear, info);
-          GpuTile(&m_runtime_context, linear.data(), gpu_tiled.data(),
+			GpuTile(linear.data(), gpu_tiled.data(),
                   storage_size, storage_size,
                   std::span<const GpuTileInfo>(&info, 1));
           compare(family_label("tile bytes").c_str(), cpu_tiled, gpu_tiled);
@@ -2625,7 +2613,7 @@ public:
                      Prospero::BlockCompressedBytesPerBlock(format));
         TileBlockLayout block{};
         Require(name, "format block",
-                TileGetBlockLayout(mode.family, bpe, &block),
+                TileGetBlockLayout(mode.family, bpe, block),
                 "CPU-supported format has no GPU family/BPE mapping");
 
         constexpr u32 width = 67;
@@ -2645,7 +2633,7 @@ public:
             TextureUploadDestination::MipLevels);
         std::vector<GpuTileInfo> infos;
         if (!TextureBuildGpuTileInfos(total.size, regions, layout, format, 1, 1,
-                                      &infos)) {
+                                      infos)) {
           std::ostringstream out;
           out << "format=" << format << " tile=" << mode.tile
               << " size=" << total.size << " pitch=" << pitch;
@@ -2661,7 +2649,7 @@ public:
         std::vector<uint8_t> gpu(total.size, 0xab);
         fill(&tiled, ++case_index);
         convert_reference(false, &cpu, tiled, infos[0]);
-        GpuDetile(&m_runtime_context, tiled.data(), gpu.data(), total.size,
+		GpuDetile(tiled.data(), gpu.data(), total.size,
                   total.size, infos);
         compare("format bytes", cpu, gpu);
         ++format_cases;
@@ -2679,7 +2667,7 @@ public:
       const u32 pitch = TileGetTexturePitch(format, width, 1, tile);
       TileSizeAlign total{};
       TileGetTextureTotalSize(format, width, height, layers, pitch, 1, tile,
-                              false, &total);
+                              false, total);
       const auto layout =
           TextureCalcUploadLayout(format, width, height, 1, layers, pitch, tile,
                                   total.size, true, false, name);
@@ -2688,7 +2676,7 @@ public:
           TextureUploadDestination::MipLevels);
       std::vector<GpuTileInfo> infos;
       const bool built = TextureBuildGpuTileInfos(total.size, regions, layout,
-                                                  format, layers, 1, &infos);
+                                                  format, layers, 1, infos);
       Require(name, "array infos",
               built && infos.size() == layers && infos[0].surface_z == 0 &&
                   infos[1].surface_z == 1 && infos[2].surface_z == 2,
@@ -2701,7 +2689,7 @@ public:
           Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float);
       constexpr u32 levels = 2;
       TileBlockLayout block{};
-      Require(name, "odd mip block", TileGetBlockLayout(mode.family, 4, &block),
+      Require(name, "odd mip block", TileGetBlockLayout(mode.family, 4, block),
               "odd multi-mip format has no block layout");
       const u32 width = block.block_width * 2u + 1u;
       const u32 height = block.block_height * 2u + 1u;
@@ -2718,7 +2706,7 @@ public:
       std::vector<GpuTileInfo> infos;
       Require(name, "odd mip infos",
               TextureBuildGpuTileInfos(total.size, regions, layout, format, 1,
-                                       levels, &infos) &&
+                                       levels, infos) &&
                   infos.size() == 2 && infos[1].tiled_width >= infos[1].pitch &&
                   infos[1].tiled_height >= infos[1].height &&
                   (mode.family == TileBlockFamily::Standard256B ||
@@ -2749,7 +2737,7 @@ public:
           Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float);
       constexpr u32 levels = 7;
       TileBlockLayout block{};
-      Require(name, "2D tail block", TileGetBlockLayout(mode.family, 4, &block),
+      Require(name, "2D tail block", TileGetBlockLayout(mode.family, 4, block),
               "2D tail mode has no block layout");
       const u32 width = block.block_width * 2u;
       const u32 height = block.block_height * 2u;
@@ -2767,7 +2755,7 @@ public:
       Require(name, "2D mip tail seam",
               layout.first_tail_level == 2 &&
                   TextureBuildGpuTileInfos(total.size, regions, layout, format,
-                                           1, levels, &infos) &&
+                                           1, levels, infos) &&
                   infos.size() == levels && !infos[0].tail && !infos[1].tail &&
                   std::all_of(infos.begin() + 2, infos.end(),
                               [](const auto &info) { return info.tail; }),
@@ -2787,7 +2775,7 @@ public:
       const u32 pitch = TileGetTexturePitch(format, width, levels, tile);
       TileSizeAlign total{};
       TileGetTextureTotalSize(format, width, height, depth, pitch, levels, tile,
-                              true, &total);
+                              true, total);
       const auto layout =
           TextureCalcUploadLayout(format, width, height, levels, depth, pitch,
                                   tile, total.size, false, true, name);
@@ -2795,8 +2783,8 @@ public:
           layout, vk::Format::eR32Sfloat, width, height, depth, levels, false,
           true, TextureUploadDestination::MipLevels);
       std::vector<GpuTileInfo> infos;
-      const bool built = TextureBuildGpuTileInfos(
-          total.size, regions, layout, format, depth, levels, &infos);
+      const bool built = TextureBuildGpuTileInfos(total.size, regions, layout,
+                                                  format, depth, levels, infos);
       Require(name, "3D mip infos",
               regions.size() == depth + (depth >> 1u) && built &&
                   infos.size() == 4 && infos[0].depth == 8 &&
@@ -2823,7 +2811,7 @@ public:
       const u32 pitch = TileGetTexturePitch(format, width, levels, tile);
       TileSizeAlign total{};
       TileGetTextureTotalSize(format, width, height, depth, pitch, levels, tile,
-                              true, &total);
+                              true, total);
       const auto layout =
           TextureCalcUploadLayout(format, width, height, levels, depth, pitch,
                                   tile, total.size, false, true, name);
@@ -2833,7 +2821,7 @@ public:
       std::vector<GpuTileInfo> infos;
       Require(name, "3D BC mip infos",
               TextureBuildGpuTileInfos(total.size, regions, layout, format,
-                                       depth, levels, &infos) &&
+                                       depth, levels, infos) &&
                   infos.size() == 4 && infos[3].pitch == 8 &&
                   infos[3].height == 16 && infos[3].tiled_width == 16 &&
                   infos[3].tiled_height == 24,
@@ -2872,7 +2860,7 @@ public:
           TileGetTexturePitch(test.format, width, levels, test.tile);
       TileSizeAlign total{};
       TileGetTextureTotalSize(test.format, width, height, depth, pitch, levels,
-                              test.tile, true, &total);
+                              test.tile, true, total);
       const auto layout = TextureCalcUploadLayout(
           test.format, width, height, levels, depth, pitch, test.tile,
           total.size, true, true, name);
@@ -2881,7 +2869,7 @@ public:
           false, true, TextureUploadDestination::MipLevels);
       std::vector<GpuTileInfo> infos;
       const bool built = TextureBuildGpuTileInfos(
-          total.size, regions, layout, test.format, depth, levels, &infos);
+          total.size, regions, layout, test.format, depth, levels, infos);
       const bool uses_z = test.family == TileBlockFamily::RenderTarget64KB ||
                           test.family == TileBlockFamily::Depth64KB;
       Require(name, "volume family infos",
@@ -2924,8 +2912,7 @@ public:
       constexpr u32 levels = 5;
       TileBlockLayout block{};
       Require(name, "3D tail block",
-              TileGetBlockLayout(TileBlockFamily::Standard4KB3D, tail.bytes,
-                                 &block),
+              TileGetBlockLayout(TileBlockFamily::Standard4KB3D, tail.bytes, block),
               "Standard4KB3D tail format has no block layout");
       const bool compressed =
           Prospero::BlockCompressedBytesPerBlock(tail.format) != 0;
@@ -2935,7 +2922,7 @@ public:
       const u32 pitch = TileGetTexturePitch(tail.format, width, levels, tile);
       TileSizeAlign total{};
       TileGetTextureTotalSize(tail.format, width, height, depth, pitch, levels,
-                              tile, true, &total);
+                              tile, true, total);
       const auto layout =
           TextureCalcUploadLayout(tail.format, width, height, levels, depth,
                                   pitch, tile, total.size, false, true, name);
@@ -2949,7 +2936,7 @@ public:
               depth + std::max(depth >> 1u, 1u) + std::max(depth >> 2u, 1u) +
                   std::max(depth >> 3u, 1u) + std::max(depth >> 4u, 1u) &&
           TextureBuildGpuTileInfos(total.size, regions, layout, tail.format,
-                                   depth, levels, &infos) &&
+                                   depth, levels, infos) &&
           infos.size() == 6;
       const u32 table = std::countr_zero(tail.bytes);
       for (u32 level = 0; level < levels && valid; level++) {
@@ -2978,7 +2965,7 @@ public:
         if (family == TileBlockFamily::Depth64KB && bpe == 16)
           continue;
         TileBlockLayout block{};
-        Require(name, "tail layout", TileGetBlockLayout(family, bpe, &block),
+        Require(name, "tail layout", TileGetBlockLayout(family, bpe, block),
                 "tail family/BPE has no block layout");
         const u32 width = std::max(block.block_width / 4u, 1u);
         const u32 height = std::max(block.block_height / 4u, 1u);
@@ -3007,9 +2994,8 @@ public:
                              ? 2
                              : 0;
         convert_reference(false, &cpu, tiled, info);
-        GpuDetile(&m_runtime_context, tiled.data(), gpu.data(),
-                  block.block_size, linear_size,
-                  std::span<const GpuTileInfo>(&info, 1));
+		GpuDetile(tiled.data(), gpu.data(), block.block_size,
+                  linear_size, std::span<const GpuTileInfo>(&info, 1));
         compare("tail bytes", cpu, gpu);
 
         std::vector<uint8_t> linear(linear_size);
@@ -3017,7 +3003,7 @@ public:
         std::vector<uint8_t> gpu_tiled(block.block_size, 0xab);
         fill(&linear, 0x400u + case_index);
         convert_reference(true, &cpu_tiled, linear, info);
-        GpuTile(&m_runtime_context, linear.data(), gpu_tiled.data(),
+		GpuTile(linear.data(), gpu_tiled.data(),
                 block.block_size, linear_size,
                 std::span<const GpuTileInfo>(&info, 1));
         compare("tail tile bytes", cpu_tiled, gpu_tiled);
@@ -3026,7 +3012,7 @@ public:
 
     TileBlockLayout small_block{};
     Require(name, "small layout",
-            TileGetBlockLayout(TileBlockFamily::Standard256B, 4, &small_block),
+            TileGetBlockLayout(TileBlockFamily::Standard256B, 4, small_block),
             "small fixture layout is unavailable");
     std::vector<uint8_t> small_input(small_block.block_size);
     std::vector<uint8_t> small_expected(small_block.block_size, 0);
@@ -3041,14 +3027,14 @@ public:
     small_info.height = 1;
     small_info.pitch = small_block.block_width;
     convert_reference(false, &small_expected, small_input, small_info);
-    GpuDetile(&m_runtime_context, small_input.data(), small_output.data(),
+	GpuDetile(small_input.data(), small_output.data(),
               small_input.size(), small_output.size(),
               std::span<const GpuTileInfo>(&small_info, 1));
     compare("small detile", small_expected, small_output);
 
-    GpuTileRelease(&m_runtime_context);
+	GpuTileRelease();
     std::fill(small_output.begin(), small_output.end(), 0xab);
-    GpuDetile(&m_runtime_context, small_input.data(), small_output.data(),
+	GpuDetile(small_input.data(), small_output.data(),
               small_input.size(), small_output.size(),
               std::span<const GpuTileInfo>(&small_info, 1));
     compare("release recovery", small_expected, small_output);
@@ -3090,10 +3076,10 @@ private:
               static_cast<vk::Result>(vmaCreateAllocator(
                   &allocator_info, &m_runtime_context.allocator)),
               "vmaCreateAllocator");
-    if (g_render_ctx == nullptr) {
+    if (!HasRenderContext()) {
       GraphicsRenderInit();
+      GraphicsRenderSetContext(*new RenderContext(m_runtime_context));
     }
-    g_render_ctx->SetGraphicCtx(&m_runtime_context);
   }
 
   void Init() {
@@ -3196,7 +3182,7 @@ private:
       RequireVulkanSuccess(m_device.waitIdle(), "vkDeviceWaitIdle");
       if (m_runtime_context.allocator != nullptr) {
         GraphicsRenderReleaseThreadCommandPools();
-        Transfer::ReleaseCachedResources(&m_runtime_context);
+        Transfer::ReleaseCachedResources();
         vmaDestroyAllocator(m_runtime_context.allocator);
         m_runtime_context.allocator = nullptr;
       }
@@ -9676,7 +9662,7 @@ void CheckPs5GameExampleImageClearRuntimeShape() {
     ShaderRecompiler::CompileResult result;
     std::string error;
     Require("Ps5GameExampleImageClear", stage,
-            ShaderRecompiler::TryRecompile(code, options, &result, &error),
+            ShaderRecompiler::TryRecompile(code, options, result, &error),
             error);
     ValidateSpirv("Ps5GameExampleImageClear", result.spirv);
     return result;
@@ -9694,8 +9680,8 @@ void CheckPs5GameExampleImageClearRuntimeShape() {
   u32 packed_clear = 0;
   uint64_t size = 0;
   Require("Ps5GameExampleImageClear", "runtime shape",
-          ResolveComputeImageClear(compute, 64, 1, 1, 0x61u, &descriptor,
-                                   &packed_clear, &size) &&
+          ResolveComputeImageClear(compute, 64, 1, 1, 0x61u, descriptor,
+                                   packed_clear, size) &&
               descriptor.Base48() == 0x10000u && size == 64u * 16u &&
               packed_clear == 0xff000000u,
           "exact Prospero runtime binding did not resolve to a complete clear");
@@ -9706,16 +9692,16 @@ void CheckPs5GameExampleImageClearRuntimeShape() {
       std::make_shared<const ShaderRecompiler::IR::ResourceSnapshot>(
           non_repeated);
   Require("Ps5GameExampleImageClear", "non-repeated clear",
-          !ResolveComputeImageClear(compute, 64, 1, 1, 0x61u, &descriptor,
-                                    &packed_clear, &size),
+          !ResolveComputeImageClear(compute, 64, 1, 1, 0x61u, descriptor,
+                                    packed_clear, size),
           "non-uniform uint4 data was replaced with a color clear");
   compute.stage.resources =
       std::make_shared<const ShaderRecompiler::IR::ResourceSnapshot>(
           positive.resources);
   compute.dispatch_threads_num[0] = 32;
   Require("Ps5GameExampleImageClear", "partial dispatch",
-          !ResolveComputeImageClear(compute, 32, 1, 1, 0x61u, &descriptor,
-                                    &packed_clear, &size),
+          !ResolveComputeImageClear(compute, 32, 1, 1, 0x61u, descriptor,
+                                    packed_clear, size),
           "partial buffer coverage was classified as a complete clear");
   std::printf("[host]    %-32s ok\n", "Ps5GameExampleImageClear");
 }
@@ -9777,7 +9763,7 @@ void CheckEmbeddedFetchVertexOffset() {
     ShaderRecompiler::CompileResult result;
     std::string error;
     Require(name, "compile",
-            ShaderRecompiler::TryRecompile(code, options, &result, &error),
+            ShaderRecompiler::TryRecompile(code, options, result, &error),
             error);
     Require(name, "fetch rewrite", vertex.resource_fetch_components[0] == 4,
             "encoded fetch sequence was not recognized and rewritten");
@@ -10548,19 +10534,19 @@ void CheckSampledDepthDescriptor() {
 void CheckBufferCacheRangeMerge() {
   BufferCacheRange merged{0x10000, 0x4000};
   Require("BufferCacheRangeMerge", "disjoint",
-          !MergeOverlappingBufferCacheRange(&merged, {0x14000, 0x4000}) &&
+          !MergeOverlappingBufferCacheRange(merged, {0x14000, 0x4000}) &&
               merged.address == 0x10000 && merged.size == 0x4000,
           "adjacent range was merged");
   Require("BufferCacheRangeMerge", "right growth",
-          MergeOverlappingBufferCacheRange(&merged, {0x12000, 0x8000}) &&
+          MergeOverlappingBufferCacheRange(merged, {0x12000, 0x8000}) &&
               merged.address == 0x10000 && merged.size == 0xa000,
           "right overlap did not grow the cache range");
   Require("BufferCacheRangeMerge", "left growth",
-          MergeOverlappingBufferCacheRange(&merged, {0xc000, 0x8000}) &&
+          MergeOverlappingBufferCacheRange(merged, {0xc000, 0x8000}) &&
               merged.address == 0xc000 && merged.size == 0xe000,
           "left overlap did not grow the cache range");
   Require("BufferCacheRangeMerge", "contained",
-          MergeOverlappingBufferCacheRange(&merged, {0x10000, 0x1000}) &&
+          MergeOverlappingBufferCacheRange(merged, {0x10000, 0x1000}) &&
               merged.address == 0xc000 && merged.size == 0xe000,
           "contained range changed the cache union");
   Require("BufferCacheRangeMerge", "queue ownership",
@@ -10992,8 +10978,7 @@ void CheckStorageTextureLinearUploadLayout() {
   constexpr uint32_t tile = Prospero::GpuEnumValue(Prospero::TileMode::kLinear);
   const auto pitch = TileGetTexturePitch(format, width, 1, tile);
   TileSizeAlign total{};
-  TileGetTextureTotalSize(format, width, height, depth, pitch, 1, tile, false,
-                          &total);
+  TileGetTextureTotalSize(format, width, height, depth, pitch, 1, tile, false, total);
   const auto layout = TextureCalcUploadLayout(
       format, width, height, 1, depth, pitch, tile, total.size, true, false,
       "StorageTextureLinearTest");
@@ -11025,8 +11010,7 @@ void CheckStorageTextureDepthTileUploadLayout() {
   TilePaddedSize padded{};
   TileGetTextureSize(format, width, height, pitch, 1, tile, &slice, &level,
                      &padded);
-  TileGetTextureTotalSize(format, width, height, depth, pitch, 1, tile, false,
-                          &total);
+  TileGetTextureTotalSize(format, width, height, depth, pitch, 1, tile, false, total);
   const auto layout = TextureCalcUploadLayout(
       format, width, height, 1, depth, pitch, tile, total.size, true, false,
       "StorageTextureDepthTileTest");
@@ -11105,8 +11089,8 @@ void CheckStorageImageSwizzleSpecializationId() {
   rgb1_info.stage.program =
       std::make_shared<const ShaderRecompiler::IR::Program>(rgb1_program);
 
-  const auto identity_id = ShaderGetIdCS(&regs, &identity_info, true);
-  const auto rgb1_id = ShaderGetIdCS(&regs, &rgb1_info, true);
+  const auto identity_id = ShaderGetIdCS(regs, identity_info, true);
+  const auto rgb1_id = ShaderGetIdCS(regs, rgb1_info, true);
   Require("StorageImageSwizzleSpecializationId", "pipeline cache key",
           identity_id != rgb1_id &&
               identity_id.ids.size() == rgb1_id.ids.size(),
@@ -11126,7 +11110,7 @@ void CheckStorageTextureVolumeUploadLayout() {
   TileSizeAlign total{};
   TileGetTextureTotalSize(
       format, width, height, depth, pitch, 1,
-      Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget), true, &total);
+      Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget), true, total);
   const auto layout = TextureCalcUploadLayout(
       format, width, height, 1, depth, pitch,
       Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget), total.size,
@@ -11147,7 +11131,7 @@ void CheckStorageTextureVolumeUploadLayout() {
   std::vector<GpuTileInfo> infos;
   Require("StorageTextureVolumeUpload", "GPU records",
           TextureBuildGpuTileInfos(total.size, regions, layout, format, depth,
-                                   1, &infos) &&
+                                   1, infos) &&
               infos.size() == depth,
           "3D render-target GPU records were not built");
   for (const uint32_t z : {0u, 1u, depth - 1u}) {
@@ -11171,7 +11155,7 @@ void CheckStorageTextureVolumeMipRegions() {
   const auto pitch = TileGetTexturePitch(format, width, levels, tile);
   TileSizeAlign total{};
   TileGetTextureTotalSize(format, width, height, depth, pitch, levels, tile,
-                          true, &total);
+                          true, total);
   const auto layout = TextureCalcUploadLayout(
       format, width, height, levels, depth, pitch, tile, total.size, true, true,
       "StorageTextureVolumeMipTest");
@@ -11229,7 +11213,7 @@ void CheckColorResolveLayers() {
       "different array layers were treated as the same resolve subresource");
   const auto copy = MakeColorResolveCopy(src, dst, 128, 64);
   Require("ColorResolveLayers", "region",
-          copy.src_image == src.vulkan_buffer && copy.src_level == 2 &&
+	          &copy.src_image == src.vulkan_buffer && copy.src_level == 2 &&
               copy.dst_level == 2 && copy.src_layer == 1 &&
               copy.dst_layer == 3 && copy.width == 128 && copy.height == 64,
           "color resolve dropped its source or destination array layer");
@@ -11340,9 +11324,9 @@ void CheckStorageTextureGpuOwnedRebindState() {
       "StorageTextureGpuOwnedRebind", "owned",
       tracker.IsRegionGpuModified(base, size) &&
           page_manager.IsMapped(base, size) &&
-          (!HostMemoryQueryReadable(base, size, &readable) ||
+          (!HostMemoryQueryReadable(base, size, readable) ||
            readable < size) &&
-          HostMemoryQueryRange(base, size, HostMemoryAccess::Mapped, &mapped) &&
+          HostMemoryQueryRange(base, size, HostMemoryAccess::Mapped, mapped) &&
           mapped == size &&
           VirtualQuery(memory, &protection, sizeof(protection)) != 0 &&
           protection.Protect == PAGE_NOACCESS,
@@ -11354,7 +11338,7 @@ void CheckStorageTextureGpuOwnedRebindState() {
   Require("StorageTextureGpuOwnedRebind", "clean readback",
           !tracker.IsRegionGpuModified(base, size) &&
               !tracker.IsRegionCpuModified(base, size) &&
-              HostMemoryQueryReadable(base, size, &readable) &&
+              HostMemoryQueryReadable(base, size, readable) &&
               readable == size,
           "clean storage readback did not publish readable coherent backing");
   tracker.MarkRegionAsGpuModified(base, size);
@@ -11363,7 +11347,7 @@ void CheckStorageTextureGpuOwnedRebindState() {
       "StorageTextureGpuOwnedRebind", "clean reclaim",
       tracker.IsRegionGpuModified(base, size) &&
           !tracker.IsRegionCpuModified(base, size) &&
-          (!HostMemoryQueryReadable(base, size, &readable) || readable < size),
+          (!HostMemoryQueryReadable(base, size, readable) || readable < size),
       "clean storage rebind did not reclaim GPU ownership without an upload");
 
   tracker.UnmarkRegionAsGpuModified(base, size);
@@ -11379,7 +11363,7 @@ void CheckStorageTextureGpuOwnedRebindState() {
       dirty_ranges == 1 && upload_called &&
           tracker.IsRegionGpuModified(base, size) &&
           !tracker.IsRegionCpuModified(base, size) &&
-          (!HostMemoryQueryReadable(base, size, &readable) || readable < size),
+          (!HostMemoryQueryReadable(base, size, readable) || readable < size),
       "CPU-dirty storage rebind did not refresh once and reclaim GPU "
       "ownership");
 
@@ -11428,8 +11412,8 @@ void CheckStorageTextureSampledReuse() {
   Require("StorageTextureSampledReuse", "exact",
           ClassifyStorageSampledOverlap(
               storage, storage, vk::Format::eR16G16B16A16Sfloat,
-              vk::Format::eR16G16B16A16Sfloat, true, false,
-              true) == StorageSampledOverlap::ExactImage,
+              vk::Format::eR16G16B16A16Sfloat, true,
+              false) == StorageSampledOverlap::ExactImage,
           "exact GPU-owned storage image was not reusable for sampling");
   auto incompatible = storage;
   incompatible.format =
@@ -11437,28 +11421,24 @@ void CheckStorageTextureSampledReuse() {
   Require("StorageTextureSampledReuse", "incompatible",
           ClassifyStorageSampledOverlap(
               incompatible, storage, vk::Format::eR16G16B16A16Unorm,
-              vk::Format::eR16G16B16A16Sfloat, true, false,
-              true) == StorageSampledOverlap::Unsupported &&
+              vk::Format::eR16G16B16A16Sfloat, true,
+              false) == StorageSampledOverlap::Unsupported &&
               ClassifyStorageSampledOverlap(
                   storage, storage, vk::Format::eR16G16B16A16Sfloat,
-                  vk::Format::eR16G16B16A16Sfloat, false, false,
-                  true) == StorageSampledOverlap::Unsupported &&
+                  vk::Format::eR16G16B16A16Sfloat, false,
+                  false) == StorageSampledOverlap::Unsupported &&
               ClassifyStorageSampledOverlap(
                   storage, storage, vk::Format::eR16G16B16A16Sfloat,
-                  vk::Format::eR16G16B16A16Sfloat, true, true,
-                  true) == StorageSampledOverlap::Unsupported &&
-              ClassifyStorageSampledOverlap(
-                  storage, storage, vk::Format::eR16G16B16A16Sfloat,
-                  vk::Format::eR16G16B16A16Sfloat, true, false,
-                  false) == StorageSampledOverlap::Unsupported,
+                  vk::Format::eR16G16B16A16Sfloat, true,
+                  true) == StorageSampledOverlap::Unsupported,
           "incompatible storage-image state was accepted for sampling");
   auto separate = storage;
   separate.address += 0x400000;
   Require("StorageTextureSampledReuse", "separate",
-          ClassifyStorageSampledOverlap(
-              separate, storage, vk::Format::eR16G16B16A16Sfloat,
-              vk::Format::eR16G16B16A16Sfloat, true, false,
-              true) == StorageSampledOverlap::None,
+          ClassifyStorageSampledOverlap(separate, storage,
+                                        vk::Format::eR16G16B16A16Sfloat,
+                                        vk::Format::eR16G16B16A16Sfloat, true,
+                                        false) == StorageSampledOverlap::None,
           "disjoint storage image was classified as an alias");
 
   ImageInfo mip_chain{};
@@ -11488,8 +11468,8 @@ void CheckStorageTextureSampledReuse() {
                                         vk::Format::eR16G16B16A16Sfloat) &&
               ClassifyStorageSampledOverlap(
                   mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
-                  vk::Format::eR16G16B16A16Sfloat, true, false, true, true,
-                  false, true) == StorageSampledOverlap::RetireStorage,
+                  vk::Format::eR16G16B16A16Sfloat, true, false, true, false,
+                  true) == StorageSampledOverlap::RetireStorage,
           "captured GPU-owned level-1 storage allocation was not materialized "
           "before "
           "rebuilding its sampled chain");
@@ -11506,8 +11486,8 @@ void CheckStorageTextureSampledReuse() {
                                         vk::Format::eR16G16B16A16Sfloat) &&
               ClassifyStorageSampledOverlap(
                   mip_chain, tail_storage, vk::Format::eR16G16B16A16Sfloat,
-                  vk::Format::eR16G16B16A16Sfloat, true, false, true, true,
-                  false, true) == StorageSampledOverlap::RetireStorage,
+                  vk::Format::eR16G16B16A16Sfloat, true, false, true, false,
+                  true) == StorageSampledOverlap::RetireStorage,
           "captured GPU-owned physical mip-tail block was not materialized "
           "before rebuilding its sampled chain");
   auto malformed_mip = mip_storage;
@@ -11531,19 +11511,15 @@ void CheckStorageTextureSampledReuse() {
               ClassifyStorageSampledOverlap(
                   mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
                   vk::Format::eR16G16B16A16Sfloat, true, false, true, true,
-                  true, true) == StorageSampledOverlap::Unsupported &&
+                  true) == StorageSampledOverlap::Unsupported &&
               ClassifyStorageSampledOverlap(
                   mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
-                  vk::Format::eR16G16B16A16Sfloat, true, false, true, true,
-                  false, false) == StorageSampledOverlap::Unsupported &&
+                  vk::Format::eR16G16B16A16Sfloat, true, false, true, false,
+                  false) == StorageSampledOverlap::Unsupported &&
               ClassifyStorageSampledOverlap(
                   mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
-                  vk::Format::eR16G16B16A16Sfloat, true, true, true, true,
-                  false, true) == StorageSampledOverlap::Unsupported &&
-              ClassifyStorageSampledOverlap(
-                  mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
-                  vk::Format::eR16G16B16A16Sfloat, true, false, false, true,
-                  false, true) == StorageSampledOverlap::Unsupported,
+                  vk::Format::eR16G16B16A16Sfloat, true, true, true, false,
+                  true) == StorageSampledOverlap::Unsupported,
           "malformed or unsafe mip-storage ownership was accepted");
 
   ImageInfo ppsa02604_storage{};
@@ -11565,8 +11541,8 @@ void CheckStorageTextureSampledReuse() {
   Require("StorageTextureSampledReuse", "PPSA02604 sRGB view",
           ClassifyStorageSampledOverlap(
               ppsa02604_sampled, ppsa02604_storage, vk::Format::eR8G8B8A8Srgb,
-              vk::Format::eR8G8B8A8Unorm, true, false,
-              true) == StorageSampledOverlap::ExactImage,
+              vk::Format::eR8G8B8A8Unorm, true,
+              false) == StorageSampledOverlap::ExactImage,
           "PPSA02604 GPU-owned UNORM storage image did not accept its exact "
           "sRGB view");
   auto alternate_swizzle = ppsa02604_storage;
@@ -11575,8 +11551,8 @@ void CheckStorageTextureSampledReuse() {
       "StorageTextureSampledReuse", "descriptor swizzle view",
       ClassifyStorageSampledOverlap(alternate_swizzle, ppsa02604_storage,
                                     vk::Format::eR8G8B8A8Unorm,
-                                    vk::Format::eR8G8B8A8Unorm, true, false,
-                                    true) == StorageSampledOverlap::ExactImage,
+                                    vk::Format::eR8G8B8A8Unorm, true,
+                                    false) == StorageSampledOverlap::ExactImage,
       "exact storage backing rejected a distinct sampled descriptor swizzle");
   ImageInfo depth_uint_storage{};
   depth_uint_storage.address = 0x4a5c90000;
@@ -11597,10 +11573,10 @@ void CheckStorageTextureSampledReuse() {
       Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float);
   depth_float_sampled.swizzle = DstSel(4, 0, 0, 1);
   Require("StorageTextureSampledReuse", "PPSA01530 R32 view",
-          ClassifyStorageSampledOverlap(
-              depth_float_sampled, depth_uint_storage, vk::Format::eR32Sfloat,
-              vk::Format::eR32Uint, true, false,
-              true) == StorageSampledOverlap::ExactImage,
+          ClassifyStorageSampledOverlap(depth_float_sampled, depth_uint_storage,
+                                        vk::Format::eR32Sfloat,
+                                        vk::Format::eR32Uint, true, false) ==
+              StorageSampledOverlap::ExactImage,
           "PPSA01530 GPU-owned R32_UINT storage image did not accept its exact "
           "R32_SFLOAT view");
   const auto usage = TextureFormatUsage::Sampled | TextureFormatUsage::Storage;
@@ -11628,46 +11604,43 @@ void CheckStorageTextureDepthAlias() {
   depth.stencil_address = storage.address;
   depth.stencil_size = storage.size;
   Require("StorageTextureDepthAlias", "inactive stencil",
-          ClassifyStorageDepthOverlap(storage, true, false, false, true, true,
+          ClassifyStorageDepthOverlap(storage, true, false, false, true,
                                       depth) == DepthOverlap::RetireStorage,
           "inactive stencil storage ownership was not retired");
   depth.stencil_access = true;
   Require("StorageTextureDepthAlias", "active stencil",
-          ClassifyStorageDepthOverlap(storage, true, false, false, true, true,
+          ClassifyStorageDepthOverlap(storage, true, false, false, true,
                                       depth) == DepthOverlap::Unsupported,
           "active stencil storage contents were discarded");
   depth.stencil_access = false;
   storage.address = depth.address;
   depth.depth_access = true;
   Require("StorageTextureDepthAlias", "depth aspect",
-          ClassifyStorageDepthOverlap(storage, true, false, false, true, true,
+          ClassifyStorageDepthOverlap(storage, true, false, false, true,
                                       depth) == DepthOverlap::Unsupported,
           "depth-aspect storage contents were discarded");
   Require("StorageTextureDepthAlias", "clean depth transition",
-          ClassifyStorageDepthOverlap(storage, false, false, false, false, true,
+          ClassifyStorageDepthOverlap(storage, false, false, false, false,
                                       depth) == DepthOverlap::RetireStorage,
           "guest-current storage image was not retired for a depth target");
-  Require(
-      "StorageTextureDepthAlias", "depth ownership guards",
-      ClassifyStorageDepthOverlap(storage, false, true, false, false, true,
-                                  depth) == DepthOverlap::Unsupported &&
-          ClassifyStorageDepthOverlap(storage, false, false, true, false, true,
+  Require("StorageTextureDepthAlias", "depth ownership guards",
+          ClassifyStorageDepthOverlap(storage, false, true, false, false,
                                       depth) == DepthOverlap::Unsupported &&
-          ClassifyStorageDepthOverlap(storage, false, false, false, true, true,
-                                      depth) == DepthOverlap::Unsupported &&
-          ClassifyStorageDepthOverlap(storage, false, false, false, false,
-                                      false,
-                                      depth) == DepthOverlap::Unsupported,
-      "incoherent storage-to-depth transition was admitted");
+              ClassifyStorageDepthOverlap(storage, false, false, true, false,
+                                          depth) == DepthOverlap::Unsupported &&
+              ClassifyStorageDepthOverlap(storage, false, false, false, true,
+                                          depth) == DepthOverlap::Unsupported,
+          "incoherent storage-to-depth transition was admitted");
   storage.address = 0x2000000000ull;
   Require("StorageTextureDepthAlias", "disjoint",
-          ClassifyStorageDepthOverlap(storage, true, true, true, true, false,
-                                      depth) == DepthOverlap::None,
+          ClassifyStorageDepthOverlap(storage, true, true, true, true, depth) ==
+              DepthOverlap::None,
           "disjoint storage image was classified as an alias");
   std::printf("[host]    %-32s ok\n", "StorageTextureDepthAlias");
 }
 
 [[noreturn]] void RunStorageTextureAccessDeathCase(const char *kind) {
+  GraphicContext context{};
   constexpr uintptr_t base = 0x0000000200300000ull;
   constexpr uint64_t size = 0x10000;
   auto *memory = VirtualAlloc(reinterpret_cast<void *>(base), size,
@@ -11677,7 +11650,7 @@ void CheckStorageTextureDepthAlias() {
   }
   ResourceMutex resource_mutex;
   PageManager page_manager(CacheFault, nullptr);
-  BufferCache buffer_cache(page_manager, resource_mutex);
+  BufferCache buffer_cache(context, page_manager, resource_mutex);
   if (std::strcmp(kind, "read") == 0) {
     page_manager.OnGpuMap(base, size, GpuAccess::Write);
     buffer_cache.ValidateGpuAccess(base, size, true, true);
@@ -11691,6 +11664,7 @@ void CheckStorageTextureDepthAlias() {
 }
 
 void CheckStorageTextureAccessPermissions() {
+  GraphicContext context{};
   constexpr uintptr_t base = 0x0000000200300000ull;
   constexpr uint64_t size = 0x10000;
   auto *memory = VirtualAlloc(reinterpret_cast<void *>(base), size,
@@ -11700,7 +11674,7 @@ void CheckStorageTextureAccessPermissions() {
           "fixed VirtualAlloc failed");
   ResourceMutex resource_mutex;
   PageManager page_manager(CacheFault, nullptr);
-  BufferCache buffer_cache(page_manager, resource_mutex);
+  BufferCache buffer_cache(context, page_manager, resource_mutex);
   page_manager.OnGpuMap(base, size, GpuAccess::ReadWrite);
   buffer_cache.ValidateGpuAccess(base, size, true, true);
   page_manager.OnGpuUnmap(base, size, GpuAccess::ReadWrite);
@@ -11737,6 +11711,7 @@ void CheckStorageTextureAccessPermissions() {
 }
 
 [[noreturn]] void RunMetaOverlapDeathCase(const char *kind) {
+  GraphicContext context{};
   constexpr uint64_t address = 0x0000000200010000ull;
   constexpr uint64_t allocation_size = 0x10000;
   auto *memory = static_cast<uint8_t *>(
@@ -11747,23 +11722,23 @@ void CheckStorageTextureAccessPermissions() {
   }
   ResourceMutex resource_mutex;
   PageManager page_manager(CacheFault, nullptr);
-  BufferCache buffer_cache(page_manager, resource_mutex);
-  TextureCache texture_cache(page_manager, buffer_cache, resource_mutex);
+  BufferCache buffer_cache(context, page_manager, resource_mutex);
+  TextureCache texture_cache(context, page_manager, buffer_cache,
+                             resource_mutex);
   buffer_cache.SetTextureCache(texture_cache);
   page_manager.OnGpuMap(address, allocation_size);
-  auto *ctx = reinterpret_cast<GraphicContext *>(1);
-  texture_cache.RegisterMeta(ctx, address, 0x8000);
+  texture_cache.RegisterMeta(address, 0x8000);
 
   if (std::strcmp(kind, "metadata-size") == 0) {
-    texture_cache.RegisterMeta(ctx, address, 0x10000);
+    texture_cache.RegisterMeta(address, 0x10000);
   } else if (std::strcmp(kind, "texture") == 0) {
     ImageInfo info{};
     info.address = address;
     info.size = 0x1000;
     info.width = 1;
     info.height = 1;
-    (void)texture_cache.FindTexture(reinterpret_cast<CommandBuffer *>(1), ctx,
-                                    info, false);
+    (void)texture_cache.FindTexture(*reinterpret_cast<CommandBuffer *>(1), info,
+                                    false);
   } else if (std::strcmp(kind, "render-target") == 0) {
     RenderTargetInfo info{};
     info.address = address;
@@ -11774,8 +11749,8 @@ void CheckStorageTextureAccessPermissions() {
     info.pitch = 1;
     info.bytes_per_element = 4;
     info.tile_mode = Prospero::GpuEnumValue(Prospero::TileMode::kLinear);
-    (void)texture_cache.FindRenderTarget(reinterpret_cast<CommandBuffer *>(1),
-                                         ctx, info);
+    (void)texture_cache.FindRenderTarget(*reinterpret_cast<CommandBuffer *>(1),
+                                         info);
   } else if (std::strcmp(kind, "depth-target") == 0) {
     DepthTargetInfo info{};
     info.address = address;
@@ -11788,13 +11763,13 @@ void CheckStorageTextureAccessPermissions() {
     info.pitch = 1;
     info.bytes_per_element = 2;
     info.tile_mode = Prospero::GpuEnumValue(Prospero::TileMode::kDepth);
-    (void)texture_cache.FindDepthTarget(reinterpret_cast<CommandBuffer *>(1),
-                                        ctx, info);
+    (void)texture_cache.FindDepthTarget(*reinterpret_cast<CommandBuffer *>(1),
+                                        info);
   } else if (std::strcmp(kind, "copy-stale") == 0) {
     if (!texture_cache.ClearMeta(address)) {
       std::_Exit(0x7f);
     }
-    buffer_cache.CopyBuffer(nullptr, ctx, address + 0x9000, address, 0x1000);
+    buffer_cache.CopyBuffer(nullptr, address + 0x9000, address, 0x1000);
   } else {
     EXIT("metadata-reuse child received an unknown mode\n");
   }
@@ -11883,6 +11858,7 @@ void CheckMetaOverlapDeaths() {
 }
 
 void CheckOverlappingMetadataViews() {
+  GraphicContext context{};
   constexpr uintptr_t base = 0x0000000200010000ull;
   constexpr uint64_t allocation_size = 0x60000;
   constexpr uint64_t metadata_size = 0x30000;
@@ -11897,14 +11873,15 @@ void CheckOverlappingMetadataViews() {
   ResourceMutex resource_mutex;
   CacheFaultContext fault_context;
   PageManager page_manager(CacheFault, &fault_context);
-  BufferCache buffer_cache(page_manager, resource_mutex);
-  TextureCache texture_cache(page_manager, buffer_cache, resource_mutex);
+  BufferCache buffer_cache(context, page_manager, resource_mutex);
+  TextureCache texture_cache(context, page_manager, buffer_cache,
+                             resource_mutex);
   fault_context.texture = &texture_cache;
   buffer_cache.SetTextureCache(texture_cache);
   page_manager.OnGpuMap(base, allocation_size);
 
-  texture_cache.RegisterMeta(nullptr, base, metadata_size);
-  texture_cache.RegisterMeta(nullptr, second, metadata_size);
+  texture_cache.RegisterMeta(base, metadata_size);
+  texture_cache.RegisterMeta(second, metadata_size);
   Require("OverlappingMetadataViews", "registration",
           texture_cache.IsMeta(base) && texture_cache.IsMeta(second) &&
               texture_cache.IsMetaRange(base, metadata_size) &&
@@ -11932,6 +11909,7 @@ void CheckOverlappingMetadataViews() {
 }
 
 void CheckQueryRegionAggregation() {
+  GraphicContext context{};
   constexpr uintptr_t base = 0x0000000200010000ull;
   constexpr uint64_t allocation_size = 0x10000;
   constexpr uint64_t metadata_size = 0x180;
@@ -11945,8 +11923,9 @@ void CheckQueryRegionAggregation() {
   ResourceMutex resource_mutex;
   CacheFaultContext fault_context;
   PageManager page_manager(CacheFault, &fault_context);
-  BufferCache buffer_cache(page_manager, resource_mutex);
-  TextureCache texture_cache(page_manager, buffer_cache, resource_mutex);
+  BufferCache buffer_cache(context, page_manager, resource_mutex);
+  TextureCache texture_cache(context, page_manager, buffer_cache,
+                             resource_mutex);
   fault_context.texture = &texture_cache;
   buffer_cache.SetTextureCache(texture_cache);
   page_manager.OnGpuMap(base, allocation_size);
@@ -11958,7 +11937,7 @@ void CheckQueryRegionAggregation() {
               !empty.metadata_bytes && !empty.gpu_metadata_bytes,
           "empty region reported cached ownership");
 
-  texture_cache.RegisterMeta(nullptr, base, metadata_size);
+  texture_cache.RegisterMeta(base, metadata_size);
   const auto bytes = texture_cache.QueryRegion(base + 0x20, 0x40);
   const auto page_only = texture_cache.QueryRegion(base + 0x400, 0x40);
   const auto disjoint = texture_cache.QueryRegion(base + 0x1000, 0x40);
@@ -11991,6 +11970,7 @@ void CheckQueryRegionAggregation() {
 }
 
 void CheckGpuMetadataReuse() {
+  GraphicContext context{};
   constexpr uintptr_t base = 0x0000000200010000ull;
   constexpr uint64_t allocation_size = 0x20000;
   constexpr uint64_t metadata_size = 0x18000;
@@ -12005,31 +11985,32 @@ void CheckGpuMetadataReuse() {
   ResourceMutex resource_mutex;
   CacheFaultContext fault_context;
   PageManager page_manager(CacheFault, &fault_context);
-  BufferCache buffer_cache(page_manager, resource_mutex);
-  TextureCache texture_cache(page_manager, buffer_cache, resource_mutex);
+  BufferCache buffer_cache(context, page_manager, resource_mutex);
+  TextureCache texture_cache(context, page_manager, buffer_cache,
+                             resource_mutex);
   fault_context.texture = &texture_cache;
   buffer_cache.SetTextureCache(texture_cache);
   page_manager.OnGpuMap(base, allocation_size);
 
-  texture_cache.RegisterMeta(nullptr, base, metadata_size, layers);
+  texture_cache.RegisterMeta(base, metadata_size, layers);
   TextureCache::MetaRangeInfo full_meta{};
   TextureCache::MetaRangeInfo slice_meta{};
   TextureCache::MetaRangeInfo invalid_meta{};
   constexpr uint64_t slice_size = metadata_size / layers;
   Require("GpuMetadataReuse", "exact metadata ranges",
-          texture_cache.ResolveMetaRange(base, metadata_size, &full_meta) &&
+          texture_cache.ResolveMetaRange(base, metadata_size, full_meta) &&
               full_meta.metadata_address == base &&
               full_meta.metadata_size == metadata_size && full_meta.full &&
               full_meta.slice == 0 &&
               texture_cache.ResolveMetaRange(base + slice_size, slice_size,
-                                             &slice_meta) &&
+                                             slice_meta) &&
               slice_meta.metadata_address == base &&
               slice_meta.metadata_size == metadata_size && !slice_meta.full &&
               slice_meta.slice == 1 &&
               !texture_cache.ResolveMetaRange(base + 0x1000, slice_size,
-                                              &invalid_meta) &&
+                                              invalid_meta) &&
               !texture_cache.ResolveMetaRange(base + slice_size, slice_size / 2,
-                                              &invalid_meta),
+                                              invalid_meta),
           "whole and per-slice metadata ranges were not classified exactly");
   Require("GpuMetadataReuse", "clear", texture_cache.ClearMeta(base),
           "metadata clear setup failed");
@@ -12040,7 +12021,7 @@ void CheckGpuMetadataReuse() {
               !texture_cache.QueryRegion(base, allocation_size).metadata_bytes,
           "metadata-only overwrite retained identity or claimed an image "
           "transition");
-  texture_cache.RegisterMeta(nullptr, base, metadata_size, layers);
+  texture_cache.RegisterMeta(base, metadata_size, layers);
   Require("GpuMetadataReuse", "re-register",
           texture_cache.IsMetaRange(base, metadata_size) &&
               texture_cache.ClearMeta(base),
@@ -12297,15 +12278,14 @@ void CheckBufferImageWrites() {
   cleared_depth.depth_load_clear = true;
   Require(
       "BufferImageWrite", "cleared depth reinterpretation",
-      ClassifyDepthTargetOverlap(old_depth, true, false, true, cleared_depth) ==
+      ClassifyDepthTargetOverlap(old_depth, true, false, cleared_depth) ==
           DepthOverlap::DiscardTarget,
       "exact cleared depth allocation could not discard its old native shape");
   cleared_depth.depth_load_clear = false;
-  Require(
-      "BufferImageWrite", "loaded depth reinterpretation",
-      ClassifyDepthTargetOverlap(old_depth, true, false, true, cleared_depth) ==
-          DepthOverlap::Unsupported,
-      "loaded depth reinterpretation discarded live native contents");
+  Require("BufferImageWrite", "loaded depth reinterpretation",
+          ClassifyDepthTargetOverlap(old_depth, true, false, cleared_depth) ==
+              DepthOverlap::Unsupported,
+          "loaded depth reinterpretation discarded live native contents");
   RenderTargetInfo old_color{};
   old_color.address = 0x4a5cb0000ull;
   old_color.size = 0x10000;
@@ -12316,10 +12296,10 @@ void CheckBufferImageWrites() {
   reinterpreted_color.format = vk::Format::eR32Uint;
   Require("BufferImageWrite", "clean color format recreation",
           ClassifyRenderTargetOverlap(old_color, false, false, false, true,
-                                      true, reinterpreted_color) ==
+                                      reinterpreted_color) ==
                   RenderTargetOverlap::RetireTarget &&
               ClassifyRenderTargetOverlap(old_color, true, false, true, true,
-                                          true, reinterpreted_color) ==
+                                          reinterpreted_color) ==
                   RenderTargetOverlap::Unsupported,
           "clean equal-base color allocation did not preserve GPU-owned format "
           "failures");
@@ -12329,20 +12309,19 @@ void CheckBufferImageWrites() {
   auto shifted_depth = pool_depth;
   shifted_depth.address = old_depth.address - 0x20000;
   shifted_depth.stencil_address = old_depth.address;
-  Require("BufferImageWrite", "shifted depth-plane recreation",
-          ClassifyDepthTargetOverlap(pool_depth, true, false, true,
-                                     shifted_depth) ==
-                  DepthOverlap::RecreateTarget &&
-              ClassifyDepthTargetOverlap(pool_depth, true, true, true,
-                                         shifted_depth) ==
-                  DepthOverlap::Unsupported,
-          "exact stencil/depth pool reuse did not require clean single-sample "
-          "recreation");
+  Require(
+      "BufferImageWrite", "shifted depth-plane recreation",
+      ClassifyDepthTargetOverlap(pool_depth, true, false, shifted_depth) ==
+              DepthOverlap::RecreateTarget &&
+          ClassifyDepthTargetOverlap(pool_depth, true, true, shifted_depth) ==
+              DepthOverlap::Unsupported,
+      "exact stencil/depth pool reuse did not require clean single-sample "
+      "recreation");
   shifted_depth.samples = 8;
   Require(
       "BufferImageWrite", "multisampled depth-plane recreation",
-      ClassifyDepthTargetOverlap(pool_depth, true, false, true,
-                                 shifted_depth) == DepthOverlap::Unsupported,
+      ClassifyDepthTargetOverlap(pool_depth, true, false, shifted_depth) ==
+          DepthOverlap::Unsupported,
       "multisampled depth-plane reuse bypassed the unsupported readback guard");
   RenderTargetInfo pool_color{};
   pool_color.address = shifted_depth.stencil_address;
@@ -12351,15 +12330,15 @@ void CheckBufferImageWrites() {
   Require(
       "BufferImageWrite", "color/depth pool recreation",
       CanRecreateRenderTargetForDepth(pool_color, false, false, false, true,
-                                      true, shifted_depth) &&
+                                      shifted_depth) &&
           !CanRecreateRenderTargetForDepth(pool_color, false, true, false, true,
-                                           true, shifted_depth),
+                                           shifted_depth),
       "exact color-plane reuse did not require clean single-sample recreation");
   pool_color.size *= 2;
   Require(
       "BufferImageWrite", "larger color/depth pool recreation",
       CanRecreateRenderTargetForDepth(pool_color, false, false, false, true,
-                                      true, shifted_depth),
+                                      shifted_depth),
       "equal-base page-isolated color allocation was not recreated for depth");
   auto contained_depth = shifted_depth;
   contained_depth.address = pool_color.address + TRACKER_PAGE_SIZE;
@@ -12369,17 +12348,17 @@ void CheckBufferImageWrites() {
   Require(
       "BufferImageWrite", "contained color/depth pool recreation",
       CanRecreateRenderTargetForDepth(pool_color, false, false, false, true,
-                                      true, contained_depth) &&
+                                      contained_depth) &&
           !CanRecreateRenderTargetForDepth(pool_color, false, false, false,
-                                           true, false, contained_depth) &&
+                                           false, contained_depth) &&
           !CanRecreateRenderTargetForDepth(pool_color, true, false, false, true,
-                                           true, contained_depth),
+                                           contained_depth),
       "contained depth allocation bypassed source or tracker ownership guards");
   pool_color.samples = 8;
   Require(
       "BufferImageWrite", "multisampled color/depth recreation",
       !CanRecreateRenderTargetForDepth(pool_color, false, false, false, true,
-                                       true, shifted_depth),
+                                       shifted_depth),
       "multisampled color-plane reuse bypassed the unsupported readback guard");
   auto multisample_depth = old_depth;
   multisample_depth.samples = 8;
@@ -12404,49 +12383,49 @@ void CheckBufferImageWrites() {
   color_alias.bytes_per_element = 4;
   Require("BufferImageWrite", "guest-backed depth to color",
           CanRecreateDepthForRenderTarget(old_depth, false, false, false, true,
-                                          true, color_alias) &&
+                                          color_alias) &&
               CanRecreateDepthForRenderTarget(old_depth, true, false, true,
-                                              true, false, color_alias) &&
+                                              false, color_alias) &&
               !CanRecreateDepthForRenderTarget(old_depth, true, true, true,
-                                               true, true, color_alias),
+                                               true, color_alias),
           "depth-to-color recreation did not require coherent guest ownership");
   Require("BufferImageWrite", "guest-current depth to color",
-          !CanRecreateDepthForRenderTarget(old_depth, false, false, false, true,
+          !CanRecreateDepthForRenderTarget(old_depth, false, false, false,
                                            false, color_alias),
           "stale guest backing authorized depth-to-color recreation");
   auto mismatched_color = color_alias;
   mismatched_color.address += 0x1000;
   Require("BufferImageWrite", "mismatched depth to color",
           !CanRecreateDepthForRenderTarget(old_depth, false, false, false, true,
-                                           true, mismatched_color),
+                                           mismatched_color),
           "mismatched depth shape was discarded as a color allocation");
   color_alias.address = pool_depth.stencil_address;
   Require(
       "BufferImageWrite", "stencil-plane depth to color",
       CanRecreateDepthForRenderTarget(pool_depth, false, false, false, true,
-                                      true, color_alias),
+                                      color_alias),
       "exact stencil-plane reuse was not treated as whole-image recreation");
   auto containing_color = color_alias;
   containing_color.address = pool_depth.stencil_address - 0x40000;
   containing_color.size = 0x80000;
   Require("BufferImageWrite", "contained depth allocation to color",
           CanRecreateDepthForRenderTarget(pool_depth, false, false, false, true,
-                                          true, containing_color) &&
+                                          containing_color) &&
               !CanRecreateDepthForRenderTarget(pool_depth, false, false, false,
-                                               true, false, containing_color) &&
+                                               false, containing_color) &&
               !CanRecreateDepthForRenderTarget(pool_depth, false, false, true,
-                                               true, true, containing_color),
+                                               true, containing_color),
           "contained guest-current depth allocation bypassed ownership guards");
 
   TileSizeAlign storage{};
   Require("BufferImageWrite", "target layout",
           TileGetRenderTargetPitch(1920, 4) == 1920 &&
-              TileGetRenderTargetSize(1920, 1080, 1920, 4, &storage) &&
+              TileGetRenderTargetSize(1920, 1080, 1920, 4, storage) &&
               storage.align == 0x10000 && storage.size == target_size,
           "render-target write fixture has an invalid tiled layout");
   Require("BufferImageWrite", "PPSA02721 video layout",
           TileGetRenderTargetPitch(3840, 4) == 3840 &&
-              TileGetRenderTargetSize(3840, 2160, 3840, 4, &storage) &&
+              TileGetRenderTargetSize(3840, 2160, 3840, 4, storage) &&
               storage.align == 0x10000 && storage.size == video_size,
           "4K video-out ownership fixture lost its exact tiled layout");
   std::printf("[host]    %-32s ok\n", "BufferImageWrite");
@@ -12457,15 +12436,15 @@ void CheckImageOverlapResolution() {
   VideoOutPixelFormatInfo video_format{};
   Require(
       "ImageOverlapResolution", "existing video-out formats",
-      DecodeVideoOutPixelFormat(0x8000000022000000ull, &video_format) &&
+      DecodeVideoOutPixelFormat(0x8000000022000000ull, video_format) &&
           video_format.format == vk::Format::eR8G8B8A8Srgb &&
           video_format.guest_format ==
               Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb) &&
-          DecodeVideoOutPixelFormat(0x8000000000000000ull, &video_format) &&
+          DecodeVideoOutPixelFormat(0x8000000000000000ull, video_format) &&
           video_format.format == vk::Format::eB8G8R8A8Srgb &&
           video_format.guest_format ==
               Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb) &&
-          DecodeVideoOutPixelFormat(0x8100000022000000ull, &video_format) &&
+          DecodeVideoOutPixelFormat(0x8100000022000000ull, video_format) &&
           video_format.format == vk::Format::eA2B10G10R10UnormPack32 &&
           video_format.guest_format ==
               Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm),
@@ -12473,7 +12452,7 @@ void CheckImageOverlapResolution() {
       "centralization");
   Require(
       "ImageOverlapResolution", "B10G10R10A2 video-out format",
-      DecodeVideoOutPixelFormat(0x8100000000000000ull, &video_format) &&
+      DecodeVideoOutPixelFormat(0x8100000000000000ull, video_format) &&
           video_format.format == vk::Format::eA2R10G10B10UnormPack32 &&
           video_format.guest_format ==
               Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm),
@@ -12481,13 +12460,13 @@ void CheckImageOverlapResolution() {
       "channel order");
   Require(
       "ImageOverlapResolution", "RGBA16 float video-out formats",
-      DecodeVideoOutPixelFormat(0xc001000622000000ull, &video_format) &&
+      DecodeVideoOutPixelFormat(0xc001000622000000ull, video_format) &&
           video_format.format == vk::Format::eR16G16B16A16Sfloat &&
           video_format.guest_format ==
               Prospero::GpuEnumValue(
                   Prospero::BufferFormat::k16_16_16_16Float) &&
           video_format.bytes_per_element == 8 &&
-          DecodeVideoOutPixelFormat(0xc001000600000000ull, &video_format) &&
+          DecodeVideoOutPixelFormat(0xc001000600000000ull, video_format) &&
           video_format.bgra16,
       "PS5 RGBA16-float video-out formats lost their 64-bpp storage contract");
   VideoOutInfo supported_video_out{};
@@ -12517,9 +12496,8 @@ void CheckImageOverlapResolution() {
       "video-out format validation admitted a mismatched storage element size");
   Require(
       "ImageOverlapResolution", "video-out format guards",
-      !DecodeVideoOutPixelFormat(0x8100070400000000ull, &video_format) &&
-          !DecodeVideoOutPixelFormat(0xc001070700000000ull, &video_format) &&
-          !DecodeVideoOutPixelFormat(0x8100000000000000ull, nullptr) && !([&] {
+      !DecodeVideoOutPixelFormat(0x8100070400000000ull, video_format) &&
+          !DecodeVideoOutPixelFormat(0xc001070700000000ull, video_format) && !([&] {
             auto mismatched = supported_video_out;
             mismatched.guest_format =
                 Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb);
@@ -12532,19 +12510,19 @@ void CheckImageOverlapResolution() {
           TileGetRenderTargetPitch(1920, 1) == 2048,
           "R8 target did not use native 256-pixel block width");
   Require("ImageOverlapResolution", "R8 render-target size",
-          TileGetRenderTargetSize(1920, 1080, 2048, 1, &render_target_layout) &&
+          TileGetRenderTargetSize(1920, 1080, 2048, 1, render_target_layout) &&
               render_target_layout.size == 0x280000 &&
               render_target_layout.align == 0x10000,
           "R8 target did not use native 64-KiB block geometry");
   Require(
       "ImageOverlapResolution", "RGBA8 render-target size",
       TileGetRenderTargetPitch(1920, 4) == 1920 &&
-          TileGetRenderTargetSize(1920, 1080, 1920, 4, &render_target_layout) &&
+          TileGetRenderTargetSize(1920, 1080, 1920, 4, render_target_layout) &&
           render_target_layout.size == 0x870000,
       "RGBA8 target layout regressed");
   Require("ImageOverlapResolution", "PPSA19268 render-target edge",
           TileGetRenderTargetPitch(120, 8) == 128 &&
-              TileGetRenderTargetSize(120, 67, 128, 8, &render_target_layout) &&
+              TileGetRenderTargetSize(120, 67, 128, 8, render_target_layout) &&
               render_target_layout.size == 0x20000 &&
               ImageRangeOverlaps(0x11029fff8ull, 1, 0x110280000ull,
                                  render_target_layout.size),
@@ -12552,14 +12530,14 @@ void CheckImageOverlapResolution() {
   Require(
       "ImageOverlapResolution", "render-target layout rejection",
       TileGetRenderTargetPitch(1920, 3) == 0 &&
-          !TileGetRenderTargetSize(1920, 1080, 1920, 1, &render_target_layout),
+          !TileGetRenderTargetSize(1920, 1080, 1920, 1, render_target_layout),
       "unsupported element size or mismatched pitch was admitted");
 
   TileSizeOffset mip_levels[16]{};
   TilePaddedSize mip_padded[16]{};
   Require(
       "ImageOverlapResolution", "PPSA09076 mip-chain layout",
-      TileGetRenderTargetMipLayout(960, 540, 1024, 8, 10, &render_target_layout,
+      TileGetRenderTargetMipLayout(960, 540, 1024, 8, 10, render_target_layout,
                                    mip_levels, mip_padded) &&
           render_target_layout.size == 0x650000 &&
           render_target_layout.align == 0x10000 &&
@@ -12569,16 +12547,16 @@ void CheckImageOverlapResolution() {
       "native render-target mip allocation or subresource geometry regressed");
   Require(
       "ImageOverlapResolution", "render-target mip-chain rejection",
-      !TileGetRenderTargetMipLayout(960, 540, 960, 8, 10, &render_target_layout,
+      !TileGetRenderTargetMipLayout(960, 540, 960, 8, 10, render_target_layout,
                                     nullptr, nullptr) &&
           !TileGetRenderTargetMipLayout(
-              960, 540, 1024, 3, 10, &render_target_layout, nullptr, nullptr) &&
+              960, 540, 1024, 3, 10, render_target_layout, nullptr, nullptr) &&
           !TileGetRenderTargetMipLayout(
-              960, 540, 1024, 8, 0, &render_target_layout, nullptr, nullptr) &&
+              960, 540, 1024, 8, 0, render_target_layout, nullptr, nullptr) &&
           !TileGetRenderTargetMipLayout(
-              960, 540, 1024, 8, 17, &render_target_layout, nullptr, nullptr) &&
+              960, 540, 1024, 8, 17, render_target_layout, nullptr, nullptr) &&
           !TileGetRenderTargetMipLayout(4, 4, TileGetRenderTargetPitch(4, 4), 4,
-                                        4, &render_target_layout, nullptr,
+                                        4, render_target_layout, nullptr,
                                         nullptr),
       "invalid render-target mip topology was admitted");
 
@@ -12588,17 +12566,13 @@ void CheckImageOverlapResolution() {
   ImageInfo sampled_alias = sampled;
   sampled_alias.address += 0x1000;
   Require("ImageOverlapResolution", "sampled alias",
-          ClassifySampledOverlap(sampled_alias, sampled, false, true) ==
+          ClassifySampledOverlap(sampled_alias, sampled, false) ==
               SampledOverlap::ReadOnlyAlias,
           "read-only sampled pool alias was rejected");
   Require("ImageOverlapResolution", "sampled GPU owner",
-          ClassifySampledOverlap(sampled_alias, sampled, true, true) ==
+          ClassifySampledOverlap(sampled_alias, sampled, true) ==
               SampledOverlap::Unsupported,
           "GPU-modified sampled alias was admitted");
-  Require("ImageOverlapResolution", "sampled context",
-          ClassifySampledOverlap(sampled_alias, sampled, false, false) ==
-              SampledOverlap::Unsupported,
-          "cross-context sampled alias was admitted");
   ImageInfo dirty_info{};
   dirty_info.address = 0x500100;
   dirty_info.size = 0x100;
@@ -12651,13 +12625,13 @@ void CheckImageOverlapResolution() {
   Require("ImageOverlapResolution", "storage retires clean sampled backing",
           ClassifyStorageImageOverlap(storage_subrange, storage_subrange_size,
                                       sampled_backing, sampled_backing_size,
-                                      true, true, false, false, false) ==
+                                      true, false, false, false) ==
               StorageImageOverlap::RetireSampled,
           "clean sampled subrange was not retired before storage creation");
   Require("ImageOverlapResolution", "storage preserves dirty sampled backing",
           ClassifyStorageImageOverlap(storage_subrange, storage_subrange_size,
                                       sampled_backing, sampled_backing_size,
-                                      true, true, true, false,
+                                      true, true, false,
                                       true) == StorageImageOverlap::Unsupported,
           "GPU-owned sampled subrange was admitted as storage backing");
   ImageInfo page_left = sampled;
@@ -12668,13 +12642,13 @@ void CheckImageOverlapResolution() {
       "ImageOverlapResolution", "sampled shared page",
       !ImageRangeOverlaps(same_page.address, same_page.size, page_left.address,
                           page_left.size) &&
-          ClassifySampledOverlap(same_page, page_left, false, true) ==
+          ClassifySampledOverlap(same_page, page_left, false) ==
               SampledOverlap::ReadOnlyAlias,
       "byte-disjoint sampled images sharing a tracker page were not aliased");
   ImageInfo separate_page = same_page;
   separate_page.address = page_left.address + TRACKER_PAGE_SIZE;
   Require("ImageOverlapResolution", "sampled separate page",
-          ClassifySampledOverlap(separate_page, page_left, false, true) ==
+          ClassifySampledOverlap(separate_page, page_left, false) ==
               SampledOverlap::None,
           "sampled images on separate pages were aliased");
   constexpr uint64_t edge_target_address = 0x108ad00100ull;
@@ -12808,7 +12782,7 @@ void CheckImageOverlapResolution() {
   vk::ClearColorValue clear{};
   Require(
       "ImageOverlapResolution", "RGBA8 compute clear decode",
-      DecodePackedColorClear(vk::Format::eR8G8B8A8Unorm, 0x80402010u, &clear) &&
+      DecodePackedColorClear(vk::Format::eR8G8B8A8Unorm, 0x80402010u, clear) &&
           std::abs(clear.float32[0] - 16.0f / 255.0f) < 0.000001f &&
           std::abs(clear.float32[1] - 32.0f / 255.0f) < 0.000001f &&
           std::abs(clear.float32[2] - 64.0f / 255.0f) < 0.000001f &&
@@ -12816,7 +12790,7 @@ void CheckImageOverlapResolution() {
       "packed RGBA8 clear did not preserve component values");
   Require(
       "ImageOverlapResolution", "BGRA8 compute clear decode",
-      DecodePackedColorClear(vk::Format::eB8G8R8A8Unorm, 0x80402010u, &clear) &&
+      DecodePackedColorClear(vk::Format::eB8G8R8A8Unorm, 0x80402010u, clear) &&
           std::abs(clear.float32[0] - 64.0f / 255.0f) < 0.000001f &&
           std::abs(clear.float32[1] - 32.0f / 255.0f) < 0.000001f &&
           std::abs(clear.float32[2] - 16.0f / 255.0f) < 0.000001f,
@@ -12825,7 +12799,7 @@ void CheckImageOverlapResolution() {
       1023u | (512u << 10u) | (1u << 20u) | (3u << 30u);
   Require("ImageOverlapResolution", "RGB10 compute clear decode",
           DecodePackedColorClear(vk::Format::eA2B10G10R10UnormPack32,
-                                 rgb10_clear, &clear) &&
+                                 rgb10_clear, clear) &&
               clear.float32[0] == 1.0f &&
               std::abs(clear.float32[1] - 512.0f / 1023.0f) < 0.000001f &&
               std::abs(clear.float32[2] - 1.0f / 1023.0f) < 0.000001f &&
@@ -12833,38 +12807,36 @@ void CheckImageOverlapResolution() {
           "packed RGB10 clear did not preserve component values");
   Require(
       "ImageOverlapResolution", "sRGB compute clear decode",
-      DecodePackedColorClear(vk::Format::eR8G8B8A8Srgb, 0xff808080u, &clear) &&
+      DecodePackedColorClear(vk::Format::eR8G8B8A8Srgb, 0xff808080u, clear) &&
           std::abs(clear.float32[0] - 0.215861f) < 0.00001f &&
           std::abs(clear.float32[1] - 0.215861f) < 0.00001f &&
           std::abs(clear.float32[2] - 0.215861f) < 0.00001f &&
           clear.float32[3] == 1.0f &&
-          !DecodePackedColorClear(vk::Format::eR16G16Unorm, 0, &clear),
+          !DecodePackedColorClear(vk::Format::eR16G16Unorm, 0, clear),
       "sRGB clear decode or unsupported-format guard regressed");
   uint8_t stencil_clear = 0;
   Require("ImageOverlapResolution", "stencil compute clear decode",
-          DecodePackedStencilClear(0x7f7f7f7fu, &stencil_clear) &&
+          DecodePackedStencilClear(0x7f7f7f7fu, stencil_clear) &&
               stencil_clear == 0x7fu &&
-              DecodePackedStencilClear(0, &stencil_clear) &&
+              DecodePackedStencilClear(0, stencil_clear) &&
               stencil_clear == 0 &&
-              !DecodePackedStencilClear(0x0000007fu, &stencil_clear) &&
-              !DecodePackedStencilClear(0, nullptr),
+	          !DecodePackedStencilClear(0x0000007fu, stencil_clear),
           "packed stencil clear admitted non-uniform byte values");
   float depth_clear = -1.0f;
   Require(
       "ImageOverlapResolution", "D32 compute clear decode",
-      DecodePackedDepthClear(vk::Format::eD32Sfloat, 0u, &depth_clear) &&
+      DecodePackedDepthClear(vk::Format::eD32Sfloat, 0u, depth_clear) &&
           depth_clear == 0.0f &&
           DecodePackedDepthClear(vk::Format::eD32SfloatS8Uint, 0x3f800000u,
-                                 &depth_clear) &&
+                                 depth_clear) &&
           depth_clear == 1.0f &&
-          !DecodePackedDepthClear(vk::Format::eD16Unorm, 0u, &depth_clear) &&
+          !DecodePackedDepthClear(vk::Format::eD16Unorm, 0u, depth_clear) &&
           !DecodePackedDepthClear(vk::Format::eD32Sfloat, 0xbf800000u,
-                                  &depth_clear) &&
+                                  depth_clear) &&
           !DecodePackedDepthClear(vk::Format::eD32Sfloat, 0x40000000u,
-                                  &depth_clear) &&
+                                  depth_clear) &&
           !DecodePackedDepthClear(vk::Format::eD32Sfloat, 0x7f800000u,
-                                  &depth_clear) &&
-          !DecodePackedDepthClear(vk::Format::eD32Sfloat, 0u, nullptr),
+	                              depth_clear),
       "D32 compute clear decode admitted an unsupported format or value");
   DepthTargetInfo native_clear_target{};
   native_clear_target.address = 0x1158d80000ull;
@@ -12907,11 +12879,11 @@ void CheckImageOverlapResolution() {
   target.size = sampled.size;
   Require(
       "ImageOverlapResolution", "render target reuse",
-      ClassifyRenderTargetOverlap(sampled, false, true, target) ==
+      ClassifyRenderTargetOverlap(sampled, false, target) ==
           RenderTargetOverlap::RetireSampled,
       "exact CPU-owned sampled allocation was not retired for a render target");
   Require("ImageOverlapResolution", "render target GPU owner",
-          ClassifyRenderTargetOverlap(sampled, true, true, target) ==
+          ClassifyRenderTargetOverlap(sampled, true, target) ==
               RenderTargetOverlap::Unsupported,
           "GPU-owned sampled allocation was retired for a render target");
   ImageInfo partial_target_sample{};
@@ -12922,17 +12894,14 @@ void CheckImageOverlapResolution() {
   layered_target.size = 0x60000;
   Require("ImageOverlapResolution", "sampled partial target transition",
           ClassifySampledRenderTargetOverlap(partial_target_sample,
-                                             layered_target, false, true) ==
+                                             layered_target, false) ==
               RenderTargetOverlap::RetireTarget,
           "sampled partial target alias was not routed through readback");
   Require("ImageOverlapResolution", "sampled partial target rejection",
           ClassifySampledRenderTargetOverlap(partial_target_sample,
-                                             layered_target, true, true) ==
-                  RenderTargetOverlap::Unsupported &&
-              ClassifySampledRenderTargetOverlap(
-                  partial_target_sample, layered_target, false, false) ==
-                  RenderTargetOverlap::Unsupported,
-          "buffer-owned or cross-context target alias was admitted");
+                                             layered_target, true) ==
+              RenderTargetOverlap::Unsupported,
+          "buffer-owned target alias was admitted");
 
   ImageInfo storage{};
   storage.address = 0x112cd0000ull;
@@ -12955,7 +12924,7 @@ void CheckImageOverlapResolution() {
   storage_target.tile_mode = storage.tile;
   Require("ImageOverlapResolution", "storage render-target native transition",
           ClassifyStorageRenderTargetOverlap(
-              storage, storage_target.format, true, false, false, true, true,
+              storage, storage_target.format, true, false, false, true,
               storage_target) == RenderTargetOverlap::PreserveStorage,
           "exact GPU-owned RGBA16F storage image was not preserved for a "
           "render target");
@@ -12964,51 +12933,44 @@ void CheckImageOverlapResolution() {
   partial_storage_target.size = 0x10000;
   Require("ImageOverlapResolution", "clean storage render-target transition",
           ClassifyStorageRenderTargetOverlap(
-              storage, storage_target.format, false, false, false, false, true,
+              storage, storage_target.format, false, false, false, false,
               partial_storage_target) == RenderTargetOverlap::RetireStorage,
           "clean storage allocation was not retired for an overlapping render "
           "target");
   auto mismatched_storage_target = storage_target;
   mismatched_storage_target.width--;
-  Require(
-      "ImageOverlapResolution", "storage render-target guards",
-      ClassifyStorageRenderTargetOverlap(
-          storage, storage_target.format, true, true, false, true, true,
-          storage_target) == RenderTargetOverlap::Unsupported &&
+  Require("ImageOverlapResolution", "storage render-target guards",
           ClassifyStorageRenderTargetOverlap(
-              storage, storage_target.format, true, false, true, true, true,
+              storage, storage_target.format, true, true, false, true,
               storage_target) == RenderTargetOverlap::Unsupported &&
-          ClassifyStorageRenderTargetOverlap(
-              storage, storage_target.format, true, false, false, true, false,
-              storage_target) == RenderTargetOverlap::Unsupported &&
-          ClassifyStorageRenderTargetOverlap(
-              storage, vk::Format::eR32G32B32A32Sfloat, true, false, false,
-              true, true, storage_target) == RenderTargetOverlap::Unsupported &&
-          ClassifyStorageRenderTargetOverlap(
-              storage, storage_target.format, true, false, false, true, true,
-              mismatched_storage_target) == RenderTargetOverlap::Unsupported &&
-          ClassifyStorageRenderTargetOverlap(
-              storage, storage_target.format, false, false, false, true, true,
-              storage_target) == RenderTargetOverlap::Unsupported &&
-          ClassifyStorageRenderTargetOverlap(
-              storage, storage_target.format, true, false, false, false, true,
-              storage_target) == RenderTargetOverlap::Unsupported,
-      "unsupported storage-to-render-target transition was admitted");
+              ClassifyStorageRenderTargetOverlap(
+                  storage, storage_target.format, true, false, true, true,
+                  storage_target) == RenderTargetOverlap::Unsupported &&
+              ClassifyStorageRenderTargetOverlap(
+                  storage, vk::Format::eR32G32B32A32Sfloat, true, false, false,
+                  true, storage_target) == RenderTargetOverlap::Unsupported &&
+              ClassifyStorageRenderTargetOverlap(storage, storage_target.format,
+                                                 true, false, false, true,
+                                                 mismatched_storage_target) ==
+                  RenderTargetOverlap::Unsupported &&
+              ClassifyStorageRenderTargetOverlap(
+                  storage, storage_target.format, false, false, false, true,
+                  storage_target) == RenderTargetOverlap::Unsupported &&
+              ClassifyStorageRenderTargetOverlap(
+                  storage, storage_target.format, true, false, false, false,
+                  storage_target) == RenderTargetOverlap::Unsupported,
+          "unsupported storage-to-render-target transition was admitted");
   partial_storage_target.address = storage.address + storage.size;
   Require("ImageOverlapResolution", "storage render-target adjacency",
           ClassifyStorageRenderTargetOverlap(
-              storage, storage_target.format, false, false, false, false, true,
+              storage, storage_target.format, false, false, false, false,
               partial_storage_target) == RenderTargetOverlap::None,
           "byte-disjoint storage and render-target allocations were treated as "
           "aliases");
-  Require("ImageOverlapResolution", "render target context",
-          ClassifyRenderTargetOverlap(sampled, false, false, target) ==
-              RenderTargetOverlap::Unsupported,
-          "cross-context sampled allocation was retired for a render target");
   target.address += 0x2000;
   target.size = 0x2000;
   Require("ImageOverlapResolution", "render target pool reuse",
-          ClassifyRenderTargetOverlap(sampled, false, true, target) ==
+          ClassifyRenderTargetOverlap(sampled, false, target) ==
               RenderTargetOverlap::RetireSampled,
           "page-contained CPU-owned sampled pool was not retired for a render "
           "target");
@@ -13016,29 +12978,29 @@ void CheckImageOverlapResolution() {
   target.size = 0x4000;
   Require(
       "ImageOverlapResolution", "render target chance overlap",
-      ClassifyRenderTargetOverlap(sampled, false, true, target) ==
+      ClassifyRenderTargetOverlap(sampled, false, target) ==
           RenderTargetOverlap::RetireSampled,
       "page-isolated sampled pool overlap was not retired for a render target");
   target.address++;
   Require("ImageOverlapResolution", "render target partial page",
-          ClassifyRenderTargetOverlap(sampled, false, true, target) ==
+          ClassifyRenderTargetOverlap(sampled, false, target) ==
               RenderTargetOverlap::RetireSampled,
           "true byte overlap within a partial tracker page was not retired");
   target.address = sampled.address + 0x6101;
   target.size = 0x4000;
   Require("ImageOverlapResolution", "render target unaligned chance overlap",
-          ClassifyRenderTargetOverlap(sampled, false, true, target) ==
+          ClassifyRenderTargetOverlap(sampled, false, target) ==
               RenderTargetOverlap::RetireSampled,
           "unaligned clean sampled chance overlap was not retired");
   target.address = page_left.address + page_left.size;
   target.size = page_left.size;
   Require("ImageOverlapResolution", "render target shared page",
-          ClassifyRenderTargetOverlap(page_left, false, true, target) ==
+          ClassifyRenderTargetOverlap(page_left, false, target) ==
               RenderTargetOverlap::None,
           "byte-disjoint allocation sharing a tracker page was treated as an "
           "alias");
   Require("ImageOverlapResolution", "sampled render-target shared page",
-          ClassifySampledRenderTargetOverlap(page_left, target, false, true) ==
+          ClassifySampledRenderTargetOverlap(page_left, target, false) ==
               RenderTargetOverlap::None,
           "reverse byte-disjoint tracker-page relationship was treated as an "
           "alias");
@@ -13046,7 +13008,7 @@ void CheckImageOverlapResolution() {
   target.size = sampled.size;
   Require(
       "ImageOverlapResolution", "render target adjacent",
-      ClassifyRenderTargetOverlap(sampled, false, true, target) ==
+      ClassifyRenderTargetOverlap(sampled, false, target) ==
           RenderTargetOverlap::None,
       "adjacent sampled and render-target allocations were treated as aliases");
 
@@ -13068,30 +13030,25 @@ void CheckImageOverlapResolution() {
   replacement_target.bytes_per_element = 8;
   Require("ImageOverlapResolution", "render target allocation-pool replacement",
           ClassifyRenderTargetOverlap(old_target, false, false, false, true,
-                                      true, replacement_target) ==
+                                      replacement_target) ==
               RenderTargetOverlap::RetireTarget,
           "clean same-base render-target pool allocation was not retired");
   Require("ImageOverlapResolution", "render target allocation-pool GPU owner",
-          ClassifyRenderTargetOverlap(old_target, true, false, true, true, true,
+          ClassifyRenderTargetOverlap(old_target, true, false, true, true,
                                       replacement_target) ==
               RenderTargetOverlap::Unsupported,
           "GPU-owned render-target pool allocation was retired");
   Require("ImageOverlapResolution",
           "render target allocation-pool buffer owner",
           ClassifyRenderTargetOverlap(old_target, false, true, false, true,
-                                      true, replacement_target) ==
+                                      replacement_target) ==
               RenderTargetOverlap::Unsupported,
           "buffer-dirty render-target pool allocation was retired");
-  Require("ImageOverlapResolution", "render target allocation-pool context",
-          ClassifyRenderTargetOverlap(old_target, false, false, false, false,
-                                      true, replacement_target) ==
-              RenderTargetOverlap::Unsupported,
-          "cross-context render-target pool allocation was retired");
   auto offset_target = replacement_target;
   offset_target.address += TRACKER_PAGE_SIZE;
   Require("ImageOverlapResolution", "render target allocation-pool offset",
           ClassifyRenderTargetOverlap(old_target, false, false, false, true,
-                                      true, offset_target) ==
+                                      offset_target) ==
               RenderTargetOverlap::RetireTarget,
           "clean offset render-target allocation was not retired");
   auto contained_target = old_target;
@@ -13100,9 +13057,9 @@ void CheckImageOverlapResolution() {
   Require("ImageOverlapResolution",
           "render target contained allocation-pool reuse",
           ClassifyRenderTargetOverlap(old_target, false, false, false, true,
-                                      true, contained_target) ==
+                                      contained_target) ==
                   RenderTargetOverlap::RetireTarget &&
-              ClassifyRenderTargetOverlap(old_target, false, false, false, true,
+              ClassifyRenderTargetOverlap(old_target, false, false, false,
                                           false, contained_target) ==
                   RenderTargetOverlap::Unsupported,
           "contained render-target allocation bypassed guest ownership guards");
@@ -13111,7 +13068,7 @@ void CheckImageOverlapResolution() {
   Require("ImageOverlapResolution",
           "render target allocation-pool partial page",
           ClassifyRenderTargetOverlap(old_target, false, false, false, true,
-                                      true, partial_page_target) ==
+                                      partial_page_target) ==
               RenderTargetOverlap::Unsupported,
           "partially shared tracker page was treated as allocation-pool "
           "replacement");
@@ -13123,7 +13080,7 @@ void CheckImageOverlapResolution() {
           "view");
   Require("ImageOverlapResolution", "render target sRGB no retirement",
           ClassifyRenderTargetOverlap(old_target, false, false, false, true,
-                                      true, same_shape_target) ==
+                                      same_shape_target) ==
               RenderTargetOverlap::Unsupported,
           "compatible render-target view fell through to target retirement");
   auto incompatible_same_shape_target = same_shape_target;
@@ -13132,7 +13089,6 @@ void CheckImageOverlapResolution() {
           !IsCompatibleRenderTargetView(old_target,
                                         incompatible_same_shape_target) &&
               ClassifyRenderTargetOverlap(old_target, false, false, false, true,
-                                          true,
                                           incompatible_same_shape_target) ==
                   RenderTargetOverlap::RetireTarget,
           "clean incompatible render-target format was not recreated");
@@ -13158,53 +13114,46 @@ void CheckImageOverlapResolution() {
   adjacent_target.address = old_target.address + old_target.size;
   Require(
       "ImageOverlapResolution", "render target allocation-pool adjacent",
-      ClassifyRenderTargetOverlap(old_target, false, false, false, true, true,
+      ClassifyRenderTargetOverlap(old_target, false, false, false, true,
                                   adjacent_target) == RenderTargetOverlap::None,
       "adjacent render targets were treated as allocation-pool replacement");
 
   Require("ImageOverlapResolution", "metadata retains sampled image",
-          ClassifyMetaImageOverlap(true, false, false, false, false, true) ==
+          ClassifyMetaImageOverlap(true, false, false, false, false) ==
               MetaImageOverlap::RetainSampled,
           "CPU-current sampled metadata alias was rejected");
   Require("ImageOverlapResolution", "metadata retires writable image",
-          ClassifyMetaImageOverlap(false, true, false, false, false, true) ==
+          ClassifyMetaImageOverlap(false, true, false, false, false) ==
               MetaImageOverlap::RetireImage,
           "guest-current writable image was not retired for metadata reuse");
   Require("ImageOverlapResolution", "metadata rejects GPU target",
-          ClassifyMetaImageOverlap(false, true, true, false, false, true) ==
+          ClassifyMetaImageOverlap(false, true, true, false, false) ==
                   MetaImageOverlap::Unsupported &&
-              ClassifyMetaImageOverlap(false, true, false, true, false, true) ==
+              ClassifyMetaImageOverlap(false, true, false, true, false) ==
                   MetaImageOverlap::Unsupported &&
-              ClassifyMetaImageOverlap(false, true, false, false, true, true) ==
+              ClassifyMetaImageOverlap(false, true, false, false, true) ==
                   MetaImageOverlap::Unsupported,
           "unordered or dirty writable image was admitted for metadata "
           "reuse");
   Require("ImageOverlapResolution", "metadata rejects unsupported image",
-          ClassifyMetaImageOverlap(false, false, false, false, false, true) ==
+          ClassifyMetaImageOverlap(false, false, false, false, false) ==
               MetaImageOverlap::Unsupported,
           "unsupported cached image kind was admitted for metadata reuse");
-  Require("ImageOverlapResolution", "metadata rejects cross-context target",
-          ClassifyMetaImageOverlap(false, true, false, false, false, false) ==
-              MetaImageOverlap::Unsupported,
-          "cross-context writable image was retired for metadata reuse");
   Require(
       "ImageOverlapResolution", "guest-current depth metadata pool reuse",
       CanRetireGuestCurrentDepthForMetadataReuse(false, false, false, false,
-                                                 false, 0, true),
+                                                 false, 0),
       "guest-current depth owner was not retired when its HTile allocation was "
       "reused");
-  Require(
-      "ImageOverlapResolution", "depth metadata pool ownership guards",
-      !CanRetireGuestCurrentDepthForMetadataReuse(true, false, true, false,
-                                                  false, 0, true) &&
-          !CanRetireGuestCurrentDepthForMetadataReuse(false, true, false, false,
-                                                      false, 0, true) &&
-          !CanRetireGuestCurrentDepthForMetadataReuse(false, false, false, true,
-                                                      true, 1, true) &&
-          !CanRetireGuestCurrentDepthForMetadataReuse(false, false, false,
-                                                      false, false, 0, false),
-      "GPU-owned, buffer-owned, cleared, or cross-context HTile metadata was "
-      "admitted for pool reuse");
+  Require("ImageOverlapResolution", "depth metadata pool ownership guards",
+          !CanRetireGuestCurrentDepthForMetadataReuse(true, false, true, false,
+                                                      false, 0) &&
+              !CanRetireGuestCurrentDepthForMetadataReuse(false, true, false,
+                                                          false, false, 0) &&
+              !CanRetireGuestCurrentDepthForMetadataReuse(false, false, false,
+                                                          true, true, 1),
+          "GPU-owned, buffer-owned, or cleared HTile metadata was "
+          "admitted for pool reuse");
 
   ImageInfo pooled_sampled{};
   pooled_sampled.address = 0x71141000;
@@ -13215,20 +13164,17 @@ void CheckImageOverlapResolution() {
   pooled_depth.stencil_address = 0x71170000;
   pooled_depth.stencil_size = 0x10000;
   Require("ImageOverlapResolution", "guest-current sampled/depth pool alias",
-          CanRetireGuestCurrentDepthForSampled(
-              pooled_sampled, pooled_depth, false, false, false, false, true),
+          CanRetireGuestCurrentDepthForSampled(pooled_sampled, pooled_depth,
+                                               false, false, false, false),
           "guest-current contained depth target was not retired for a sampled "
           "allocation");
-  Require(
-      "ImageOverlapResolution", "sampled/depth pool ownership guards",
-      !CanRetireGuestCurrentDepthForSampled(pooled_sampled, pooled_depth, true,
-                                            false, true, true, true) &&
-          !CanRetireGuestCurrentDepthForSampled(
-              pooled_sampled, pooled_depth, false, true, false, false, true) &&
-          !CanRetireGuestCurrentDepthForSampled(
-              pooled_sampled, pooled_depth, false, false, false, false, false),
-      "GPU-owned, buffer-owned, or cross-context sampled/depth alias was "
-      "admitted");
+  Require("ImageOverlapResolution", "sampled/depth pool ownership guards",
+          !CanRetireGuestCurrentDepthForSampled(pooled_sampled, pooled_depth,
+                                                true, false, true, true) &&
+              !CanRetireGuestCurrentDepthForSampled(
+                  pooled_sampled, pooled_depth, false, true, false, false),
+          "GPU-owned or buffer-owned sampled/depth alias was "
+          "admitted");
   ImageInfo offset_sampled{};
   offset_sampled.address = 0x6c6cd000;
   offset_sampled.size = 0x10000;
@@ -13236,28 +13182,21 @@ void CheckImageOverlapResolution() {
   offset_depth.address = 0x6c6d0000;
   offset_depth.size = 0x10000;
   Require("ImageOverlapResolution", "guest-current sampled to depth pool alias",
-          CanRetireGuestCurrentSampledForDepth(offset_sampled, offset_depth,
-                                               false, false, false, false, true,
-                                               true),
+          CanRetireGuestCurrentSampledForDepth(
+              offset_sampled, offset_depth, false, false, false, false, true),
           "offset guest-current sampled allocation was not retired for depth "
           "reuse");
   Require(
       "ImageOverlapResolution", "sampled to depth pool ownership guards",
       !CanRetireGuestCurrentSampledForDepth(offset_sampled, offset_depth, true,
-                                            false, false, true, true, true) &&
-          !CanRetireGuestCurrentSampledForDepth(offset_sampled, offset_depth,
-                                                false, true, false, false, true,
-                                                true) &&
-          !CanRetireGuestCurrentSampledForDepth(offset_sampled, offset_depth,
-                                                false, false, true, false, true,
-                                                true) &&
-          !CanRetireGuestCurrentSampledForDepth(offset_sampled, offset_depth,
-                                                false, false, false, false,
-                                                false, true) &&
-          !CanRetireGuestCurrentSampledForDepth(offset_sampled, offset_depth,
-                                                false, false, false, false,
-                                                true, false),
-      "dirty, cross-context, or stale sampled allocation was admitted for "
+                                            false, false, true, true) &&
+          !CanRetireGuestCurrentSampledForDepth(
+              offset_sampled, offset_depth, false, true, false, false, true) &&
+          !CanRetireGuestCurrentSampledForDepth(
+              offset_sampled, offset_depth, false, false, true, false, true) &&
+          !CanRetireGuestCurrentSampledForDepth(
+              offset_sampled, offset_depth, false, false, false, false, false),
+      "dirty or stale sampled allocation was admitted for "
       "depth reuse");
 
   const std::array isolated_retirement{
@@ -13290,11 +13229,11 @@ void CheckImageOverlapResolution() {
               mip_owners.Register(2, {{mip_zero_address, mip_zero_size}}) &&
               ClassifyStorageImageOverlap(mip_one_address, mip_one_size,
                                           mip_chain_address, mip_chain_size,
-                                          true, true, false, false, false) ==
+                                          true, false, false, false) ==
                   StorageImageOverlap::RetireSampled &&
               ClassifyStorageImageOverlap(mip_one_address, mip_one_size,
                                           mip_zero_address, mip_zero_size, true,
-                                          true, false, false,
+                                          false, false,
                                           false) == StorageImageOverlap::None,
           "captured full-chain and disjoint mip owners were misclassified");
   std::vector<MipOwnerIndex::ByteRange> mip_releases;
@@ -13564,7 +13503,7 @@ void CheckNativeMsaaState() {
   const auto color_pitch = TileGetRenderTargetPitch(1920, 8, 3);
   Require("NativeMsaaState", "8x color footprint",
           color_pitch == 1920 &&
-              TileGetRenderTargetSize(1920, 1080, color_pitch, 8, &color, 3) &&
+              TileGetRenderTargetSize(1920, 1080, color_pitch, 8, color, 3) &&
               color.align == 0x10000 && color.size == 0x07f80000,
           "8x R16G16B16A16 color footprint was not preserved");
 
@@ -13576,8 +13515,7 @@ void CheckNativeMsaaState() {
               TileGetDepthSize(
                   1920, 1080, 0,
                   Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F),
-                  Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt), true,
-                  &stencil, &htile, &depth, 3) &&
+                  Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt), true, stencil, htile, depth, 3) &&
               depth.align == 0x10000 && depth.size == 0x03fc0000 &&
               stencil.align == 0x10000 && stencil.size == 0x010e0000 &&
               htile.align == 0x8000 && htile.size == 0x00030000,
@@ -13665,7 +13603,7 @@ void CheckDepthTargetFootprints() {
       TileGetDepthSize(1920, 1080, 0,
                        Prospero::GpuEnumValue(Prospero::DepthFormat::kZ16),
                        Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt),
-                       false, &stencil, &htile, &depth) &&
+                       false, stencil, htile, depth) &&
           depth.size == 0x480000 && depth.align == 0x10000 &&
           stencil.size == 0x280000 && stencil.align == 0x10000 &&
           htile.size == 0,
@@ -13776,8 +13714,7 @@ void CheckDepthTargetFootprints() {
   Require("DepthTargetFootprints", "640x360 Z32S8 without HTile",
           TileGetDepthSize(
               640, 360, 0, Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F),
-              Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt), false,
-              &stencil, &htile, &depth),
+              Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt), false, stencil, htile, depth),
           "valid non-HTile depth/stencil footprint was rejected");
   Require(
       "DepthTargetFootprints", "640x360 Prospero block sizes",
@@ -13792,8 +13729,7 @@ void CheckDepthTargetFootprints() {
   TileSizeAlign texture_depth{};
   TileGetTextureTotalSize(
       Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float), 640, 360, 1,
-      depth_pitch, 1, Prospero::GpuEnumValue(Prospero::TileMode::kDepth), false,
-      &texture_depth);
+      depth_pitch, 1, Prospero::GpuEnumValue(Prospero::TileMode::kDepth), false, texture_depth);
   Require("DepthTargetFootprints", "640x360 generic depth tile",
           depth_pitch == 640 && texture_depth.size == 0xf0000 &&
               texture_depth.align == 0x10000,
@@ -13804,7 +13740,7 @@ void CheckDepthTargetFootprints() {
       TileGetDepthSize(960, 540, 0,
                        Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F),
                        Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt),
-                       true, &stencil, &htile, &depth) &&
+                       true, stencil, htile, depth) &&
           depth.size == 0x280000 && depth.align == 0x10000 &&
           stencil.size == 0xc0000 && stencil.align == 0x10000 &&
           htile.size == 0x10000 && htile.align == 0x8000,
@@ -13814,7 +13750,7 @@ void CheckDepthTargetFootprints() {
       TileGetDepthSize(1280, 720, 0,
                        Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F),
                        Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt),
-                       true, &stencil, &htile, &depth) &&
+                       true, stencil, htile, depth) &&
           depth.size == 0x3c0000 && stencil.size == 0xf0000 &&
           htile.size == 0x20000,
       "validated 1280x720 HTile footprint regressed");
@@ -13823,7 +13759,7 @@ void CheckDepthTargetFootprints() {
       TileGetDepthSize(3840, 2160, 0,
                        Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F),
                        Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt),
-                       true, &stencil, &htile, &depth) &&
+                       true, stencil, htile, depth) &&
           depth.size == 0x1fe0000 && depth.align == 0x10000 &&
           stencil.size == 0x870000 && stencil.align == 0x10000 &&
           htile.size == 0xa0000 && htile.align == 0x8000,
@@ -13833,23 +13769,21 @@ void CheckDepthTargetFootprints() {
       "DepthTargetFootprints", "invalid depth format",
       !TileGetDepthSize(960, 540, 0, 2,
                         Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt),
-                        true, &stencil, &htile, &depth),
+                        true, stencil, htile, depth),
       "unsupported depth format was silently admitted");
   Require("DepthTargetFootprints", "invalid stencil format",
           !TileGetDepthSize(
               960, 540, 0, Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F),
-              2, true, &stencil, &htile, &depth),
+              2, true, stencil, htile, depth),
           "unsupported stencil format was silently admitted");
   Require("DepthTargetFootprints", "invalid extent",
           !TileGetDepthSize(
               0, 540, 0, Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F),
-              Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt), true,
-              &stencil, &htile, &depth) &&
+              Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt), true, stencil, htile, depth) &&
               !TileGetDepthSize(
                   16385, 540, 0,
                   Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F),
-                  Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt), true,
-                  &stencil, &htile, &depth),
+                  Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt), true, stencil, htile, depth),
           "invalid HTile extent was silently admitted");
   std::printf("[host]    %-32s ok\n", "DepthTargetFootprints");
 }
@@ -13877,7 +13811,7 @@ void CheckHtileClearTargetResolution() {
   HtileClearTarget resolved{};
   Require("HtileClearTargetResolution",
           "PPSA09076 descriptor-backed Z16 target",
-          ResolveHtileClearTarget(descriptor_backed, 0x8000, &resolved) &&
+	          ResolveHtileClearTarget(descriptor_backed, 0x8000, resolved) &&
               resolved.address == 0xc1a98000 && resolved.size == 0x8000,
           "valid descriptor-proven Z16 HTile clear target was rejected");
 
@@ -13890,10 +13824,10 @@ void CheckHtileClearTargetResolution() {
   mismatched_write.z_write_base_addr += 0x10000;
   Require(
       "HtileClearTargetResolution", "descriptor-backed rejection boundaries",
-      !ResolveHtileClearTarget(descriptor_backed, 0x4000, &resolved) &&
-          !ResolveHtileClearTarget(partial_extent, 0x8000, &resolved) &&
-          !ResolveHtileClearTarget(missing_stencil, 0x8000, &resolved) &&
-          !ResolveHtileClearTarget(mismatched_write, 0x8000, &resolved),
+	      !ResolveHtileClearTarget(descriptor_backed, 0x4000, resolved) &&
+	          !ResolveHtileClearTarget(partial_extent, 0x8000, resolved) &&
+	          !ResolveHtileClearTarget(missing_stencil, 0x8000, resolved) &&
+	          !ResolveHtileClearTarget(mismatched_write, 0x8000, resolved),
       "ambiguous or inconsistent descriptor-backed HTile target was admitted");
 
   HW::DepthRenderTarget derived{};
@@ -13917,13 +13851,12 @@ void CheckHtileClearTargetResolution() {
   Require(
       "HtileClearTargetResolution", "derived Z32S8 target",
       TileGetDepthSize(960, 540, 0, derived.z_info.format,
-                       derived.stencil_info.format, true, &stencil_size,
-                       &htile_size, &depth_size) &&
-          ResolveHtileClearTarget(derived, htile_size.size, &resolved) &&
+                       derived.stencil_info.format, true, stencil_size, htile_size, depth_size) &&
+	          ResolveHtileClearTarget(derived, htile_size.size, resolved) &&
           resolved.address == derived.htile_data_base_addr &&
           resolved.size == htile_size.size &&
-          !ResolveHtileClearTarget(derived, htile_size.size + 0x8000,
-                                   &resolved),
+	          !ResolveHtileClearTarget(derived, htile_size.size + 0x8000,
+	                                   resolved),
       "extent-derived HTile validation or descriptor cross-check regressed");
 
   auto derived_z16 = derived;
@@ -13936,10 +13869,9 @@ void CheckHtileClearTargetResolution() {
   Require(
       "HtileClearTargetResolution", "derived Z16 depth-only target",
       TileGetDepthSize(960, 540, 0, derived_z16.z_info.format,
-                       derived_z16.stencil_info.format, true, &stencil_size,
-                       &htile_size, &depth_size) &&
+                       derived_z16.stencil_info.format, true, stencil_size, htile_size, depth_size) &&
           stencil_size.align == 0 && stencil_size.size == 0 &&
-          ResolveHtileClearTarget(derived_z16, htile_size.size, &resolved) &&
+	          ResolveHtileClearTarget(derived_z16, htile_size.size, resolved) &&
           resolved.address == derived_z16.htile_data_base_addr &&
           resolved.size == htile_size.size,
       "extent-derived Z16 depth-only HTile target was rejected");
@@ -13950,10 +13882,9 @@ void CheckHtileClearTargetResolution() {
   Require(
       "HtileClearTargetResolution", "derived Z16S8 target",
       TileGetDepthSize(960, 540, 0, derived_z16s8.z_info.format,
-                       derived_z16s8.stencil_info.format, true, &stencil_size,
-                       &htile_size, &depth_size) &&
+                       derived_z16s8.stencil_info.format, true, stencil_size, htile_size, depth_size) &&
           stencil_size.size != 0 && stencil_size.align == 0x10000 &&
-          ResolveHtileClearTarget(derived_z16s8, htile_size.size, &resolved) &&
+	          ResolveHtileClearTarget(derived_z16s8, htile_size.size, resolved) &&
           resolved.address == derived_z16s8.htile_data_base_addr &&
           resolved.size == htile_size.size,
       "extent-derived Z16S8 HTile target was rejected");
@@ -13963,12 +13894,12 @@ void CheckHtileClearTargetResolution() {
   auto malformed_fragments = derived;
   malformed_fragments.z_info.num_samples = 4;
   Require("HtileClearTargetResolution", "fragment-independent metadata plane",
-          ResolveHtileClearTarget(derived_8x, htile_size.size, &resolved) &&
+	          ResolveHtileClearTarget(derived_8x, htile_size.size, resolved) &&
               resolved.address == derived_8x.htile_data_base_addr &&
               resolved.size == htile_size.size &&
               render_sample_count(derived_8x.z_info.num_samples) == 8 &&
-              !ResolveHtileClearTarget(malformed_fragments, htile_size.size,
-                                       &resolved),
+	              !ResolveHtileClearTarget(malformed_fragments, htile_size.size,
+	                                       resolved),
           "HTile clear was coupled to attachment MSAA support or admitted an "
           "invalid fragment field");
   std::printf("[host]    %-32s ok\n", "HtileClearTargetResolution");
@@ -14008,6 +13939,7 @@ void CheckCrossQueueImageLifetime() {
 }
 
 void CheckHostDmaMetadataReuse() {
+  GraphicContext context{};
   constexpr uintptr_t base = 0x0000000200010000ull;
   constexpr uint64_t allocation_size = 0x10000;
   constexpr uint64_t metadata_size = 0x8000;
@@ -14022,13 +13954,13 @@ void CheckHostDmaMetadataReuse() {
   ResourceMutex resource_mutex;
   CacheFaultContext fault_context;
   PageManager page_manager(CacheFault, &fault_context);
-  BufferCache buffer_cache(page_manager, resource_mutex);
-  TextureCache texture_cache(page_manager, buffer_cache, resource_mutex);
+  BufferCache buffer_cache(context, page_manager, resource_mutex);
+  TextureCache texture_cache(context, page_manager, buffer_cache,
+                             resource_mutex);
   fault_context.texture = &texture_cache;
   buffer_cache.SetTextureCache(texture_cache);
   page_manager.OnGpuMap(base, allocation_size);
-  auto *ctx = reinterpret_cast<GraphicContext *>(1);
-  texture_cache.RegisterMeta(ctx, base, metadata_size);
+  texture_cache.RegisterMeta(base, metadata_size);
 
   Require("HostDmaMetadataReuse", "clear", texture_cache.ClearMeta(base),
           "metadata clear setup failed");
@@ -14040,14 +13972,14 @@ void CheckHostDmaMetadataReuse() {
   Require("HostDmaMetadataReuse", "copy fault",
           page_manager.HandleFault(PageFaultAccess::Write, base),
           "copy destination did not transfer to CPU ownership");
-  buffer_cache.CopyBuffer(nullptr, ctx, base, base + metadata_size, 0x1000);
+  buffer_cache.CopyBuffer(nullptr, base, base + metadata_size, 0x1000);
   Require("HostDmaMetadataReuse", "copy",
           std::memcmp(memory, memory + metadata_size, 0x1000) == 0,
           "post-clear CPU DMA copy did not publish backing");
   Require("HostDmaMetadataReuse", "fill fault",
           page_manager.HandleFault(PageFaultAccess::Write, base + 0x1000),
           "fill destination did not transfer to CPU ownership");
-  buffer_cache.FillBuffer(nullptr, ctx, base + 0x1000, 0x1000, 0x11223344);
+  buffer_cache.FillBuffer(nullptr, base + 0x1000, 0x1000, 0x11223344);
   Require("HostDmaMetadataReuse", "fill",
           reinterpret_cast<uint32_t *>(memory + 0x1000)[0] == 0x11223344 &&
               reinterpret_cast<uint32_t *>(memory + 0x1ffc)[0] == 0x11223344,
@@ -14099,7 +14031,7 @@ void CheckEmbeddedFetchLaneSpill() {
   ShaderRecompiler::CompileResult result;
   std::string error;
   Require("EmbeddedFetchLaneSpill", "compile",
-          ShaderRecompiler::TryRecompile(code, options, &result, &error),
+          ShaderRecompiler::TryRecompile(code, options, result, &error),
           error);
   Require("EmbeddedFetchLaneSpill", "fetch rewrite",
           vertex.resource_fetch_components[0] == 4,
@@ -14110,25 +14042,24 @@ void CheckEmbeddedFetchLaneSpill() {
 void CheckReferenceClockScale() {
   uint64_t value = 0;
   Require("ReferenceClockScale", "zero",
-          Sync::ScaleReferenceClock(0, 3000000000ull, &value) && value == 0,
+          Sync::ScaleReferenceClock(0, 3000000000ull, value) && value == 0,
           "zero host tick did not produce a zero GPU clock");
   Require("ReferenceClockScale", "fractional second",
-          Sync::ScaleReferenceClock(1500000000ull, 3000000000ull, &value) &&
+          Sync::ScaleReferenceClock(1500000000ull, 3000000000ull, value) &&
               value == 50000000ull,
           "host half-second did not scale to 50,000,000 ticks");
   Require("ReferenceClockScale", "whole and fractional",
-          Sync::ScaleReferenceClock(3750000000ull, 3000000000ull, &value) &&
+          Sync::ScaleReferenceClock(3750000000ull, 3000000000ull, value) &&
               value == 125000000ull,
           "host 1.25 seconds did not scale to 125,000,000 ticks");
   Require("ReferenceClockScale", "monotonic floor",
-          Sync::ScaleReferenceClock(3750000001ull, 3000000000ull, &value) &&
+          Sync::ScaleReferenceClock(3750000001ull, 3000000000ull, value) &&
               value == 125000000ull,
           "sub-reference-tick increment did not use a monotonic floor");
   Require("ReferenceClockScale", "guards",
-          !Sync::ScaleReferenceClock(1, 0, &value) &&
-              !Sync::ScaleReferenceClock(1, 1, nullptr) &&
-              !Sync::ScaleReferenceClock(UINT64_MAX, 1, &value),
-          "invalid frequency, destination, or overflow was accepted");
+          !Sync::ScaleReferenceClock(1, 0, value) &&
+              !Sync::ScaleReferenceClock(UINT64_MAX, 1, value),
+          "invalid frequency or overflow was accepted");
   std::printf("[host]    %-32s ok\n", "ReferenceClockScale");
 }
 

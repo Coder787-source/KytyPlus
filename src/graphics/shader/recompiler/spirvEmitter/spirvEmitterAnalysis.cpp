@@ -60,12 +60,12 @@ void SetError(std::string* error, const char* message) {
 	}
 }
 
-void CollectRegister(std::vector<RegisterBinding>* registers, IR::Register reg) {
-	if (std::any_of(registers->begin(), registers->end(),
+void CollectRegister(std::vector<RegisterBinding>& registers, IR::Register reg) {
+	if (std::any_of(registers.begin(), registers.end(),
 	                [reg](const RegisterBinding& binding) { return binding.reg == reg; })) {
 		return;
 	}
-	registers->push_back({reg, 0});
+	registers.push_back({reg, 0});
 }
 
 IR::Operand MakeRegisterOperand(IR::RegisterFile file, uint32_t index) {
@@ -98,7 +98,7 @@ bool IsSccOperand(const IR::Operand& operand) {
 
 bool IsCompareOpcode(IR::Opcode op);
 
-void CollectMaskStateRegisters(std::vector<RegisterBinding>* registers) {
+void CollectMaskStateRegisters(std::vector<RegisterBinding>& registers) {
 	CollectRegister(registers, {IR::RegisterFile::Exec, 0});
 	CollectRegister(registers, {IR::RegisterFile::Exec, 1});
 	CollectRegister(registers, {IR::RegisterFile::Vcc, 0});
@@ -106,7 +106,7 @@ void CollectMaskStateRegisters(std::vector<RegisterBinding>* registers) {
 	CollectRegister(registers, SccRegister());
 }
 
-void CollectSequentialRegisters(std::vector<RegisterBinding>* registers, const IR::Operand& base,
+void CollectSequentialRegisters(std::vector<RegisterBinding>& registers, const IR::Operand& base,
                                 uint32_t count) {
 	if (base.kind != IR::OperandKind::Register) {
 		return;
@@ -129,8 +129,8 @@ uint32_t MaxCollectedVectorRegisterEnd(const std::vector<RegisterBinding>& regis
 }
 
 void CollectMoveRelSourceRegisters(const IR::Program&            program,
-                                   std::vector<RegisterBinding>* registers) {
-	const auto max_vector_end = MaxCollectedVectorRegisterEnd(*registers);
+	                               std::vector<RegisterBinding>& registers) {
+	const auto max_vector_end = MaxCollectedVectorRegisterEnd(registers);
 	for (const auto& block: program.blocks) {
 		for (const auto& inst: block.instructions) {
 			if (inst.op != IR::Opcode::MoveRelSourceU32 ||
@@ -184,7 +184,7 @@ uint32_t PairDwordSourceCount(IR::Opcode op, uint32_t src_count) {
 	}
 }
 
-void CollectRegisters(const IR::Program& program, std::vector<RegisterBinding>* registers) {
+void CollectRegisters(const IR::Program& program, std::vector<RegisterBinding>& registers) {
 	CollectMaskStateRegisters(registers);
 	for (const auto& block: program.blocks) {
 		for (const auto& inst: block.instructions) {
@@ -267,16 +267,16 @@ bool HasOutput(const std::vector<OutputBinding>& outputs, IR::StageOutputKind ki
 	});
 }
 
-void CopyProgramInputsAndOutputs(EmitterState* state, const IR::Program& program) {
+void CopyProgramInputsAndOutputs(EmitterState& state, const IR::Program& program) {
 	for (const auto& input: program.info.inputs) {
-		state->inputs.push_back(
+		state.inputs.push_back(
 		    {input.kind, input.location, input.component_count, 0, input.debug_name});
 	}
 	for (const auto& output: program.info.outputs) {
-		if (HasOutput(state->outputs, output.kind, output.index)) {
+		if (HasOutput(state.outputs, output.kind, output.index)) {
 			continue;
 		}
-		state->outputs.push_back(
+		state.outputs.push_back(
 		    {output.kind, output.index, output.location, 0, output.debug_name});
 	}
 }
@@ -528,23 +528,23 @@ uint32_t PointerForRegister(const EmitterState& state, IR::Register reg) {
 	return 0;
 }
 
-uint32_t          ConstantU32(EmitterState* state, uint32_t value);
-void              EmitStoreU32(EmitterState* state, const IR::Operand& dst, uint32_t value);
-uint32_t          EmitSubgroupLocalInvocationId(EmitterState* state);
-uint32_t          EmitLaneIndexActiveBool(EmitterState* state, uint32_t lane);
+uint32_t          ConstantU32(EmitterState& state, uint32_t value);
+void              EmitStoreU32(EmitterState& state, const IR::Operand& dst, uint32_t value);
+uint32_t          EmitSubgroupLocalInvocationId(EmitterState& state);
+uint32_t          EmitLaneIndexActiveBool(EmitterState& state, uint32_t lane);
 [[noreturn]] void ExitDescriptorBindingFailure(const EmitterState&       state,
                                                IR::DescriptorBindingKind kind, uint32_t resource,
                                                const char* reason) {
 	EXIT("shader binding resolution failed during SPIR-V emit: hash=0x%016" PRIx64
 	     " stage=%u resource=%" PRIu32 " binding_kind=%u reason=%s\n",
-	     state.program->shader_hash, static_cast<unsigned>(state.stage), resource,
+	     state.program.shader_hash, static_cast<unsigned>(state.stage), resource,
 	     static_cast<unsigned>(kind), reason);
 	std::abort();
 }
 
 DescriptorResourceBinding ResourceForDescriptor(const EmitterState&       state,
                                                 IR::DescriptorBindingKind kind, uint32_t resource) {
-	const auto* descriptor = IR::FindBinding(state.program->bindings, kind);
+	const auto* descriptor = IR::FindBinding(state.program.bindings, kind);
 	if (descriptor == nullptr) {
 		ExitDescriptorBindingFailure(state, kind, resource, "descriptor group was not allocated");
 	}
@@ -557,15 +557,15 @@ DescriptorResourceBinding ResourceForDescriptor(const EmitterState&       state,
 	return {descriptor, static_cast<uint32_t>(found - descriptor->resources.begin())};
 }
 
-uint32_t DescriptorElementPointer(EmitterState* state, uint32_t result_ptr_type,
+uint32_t DescriptorElementPointer(EmitterState& state, uint32_t result_ptr_type,
                                   uint32_t variable_id, uint32_t array_index,
                                   IR::DescriptorBindingKind kind, uint32_t resource,
                                   const char* variable_name) {
 	if (variable_id == 0) {
-		ExitDescriptorBindingFailure(*state, kind, resource, variable_name);
+		ExitDescriptorBindingFailure(state, kind, resource, variable_name);
 	}
-	const auto pointer = state->builder.AllocateId();
-	state->builder.AddFunction(
+	const auto pointer = state.builder.AllocateId();
+	state.builder.AddFunction(
 	    {OpAccessChain, result_ptr_type, pointer, variable_id, ConstantU32(state, array_index)});
 	return pointer;
 }
@@ -673,71 +673,71 @@ IR::DescriptorBindingKind StorageBindingKind(bool uint_image, ImageViewKind view
 	}
 }
 
-uint32_t LoadSampledImageDescriptor(EmitterState* state, const IR::MemoryInfo& mem, uint32_t use_pc,
+uint32_t LoadSampledImageDescriptor(EmitterState& state, const IR::MemoryInfo& mem, uint32_t use_pc,
                                     ImageViewKind view) {
 	(void)use_pc;
 	const bool  integer     = mem.kind == IR::ResourceKind::ImageUint;
 	const auto  kind        = SampledBindingKind(integer, view);
-	const auto  binding     = ResourceForDescriptor(*state, kind, mem.resource);
-	const auto& descriptors = state->sampled_images[SampledImageIndex(integer, view)];
+	const auto  binding     = ResourceForDescriptor(state, kind, mem.resource);
+	const auto& descriptors = state.sampled_images[SampledImageIndex(integer, view)];
 	const auto  pointer     = DescriptorElementPointer(
 	    state, descriptors.pointer_type, descriptors.variable, binding.array_index, kind,
 	    mem.resource, "sampled image descriptor array was not emitted");
-	const auto image = state->builder.AllocateId();
-	state->builder.AddFunction({OpLoad, ImageViewImageType(*state, view, integer), image, pointer});
+	const auto image = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, ImageViewImageType(state, view, integer), image, pointer});
 	return image;
 }
 
-uint32_t LoadSamplerDescriptor(EmitterState* state, uint32_t sampler, uint32_t use_pc) {
+uint32_t LoadSamplerDescriptor(EmitterState& state, uint32_t sampler, uint32_t use_pc) {
 	(void)use_pc;
 	const auto binding =
-	    ResourceForDescriptor(*state, IR::DescriptorBindingKind::Samplers, sampler);
+	    ResourceForDescriptor(state, IR::DescriptorBindingKind::Samplers, sampler);
 	const auto pointer = DescriptorElementPointer(
-	    state, state->ptr_uniform_sampler, state->sampler_variable, binding.array_index,
+	    state, state.ptr_uniform_sampler, state.sampler_variable, binding.array_index,
 	    IR::DescriptorBindingKind::Samplers, sampler, "sampler descriptor array was not emitted");
-	const auto sampler_id = state->builder.AllocateId();
-	state->builder.AddFunction({OpLoad, state->sampler_type, sampler_id, pointer});
+	const auto sampler_id = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, state.sampler_type, sampler_id, pointer});
 	return sampler_id;
 }
 
-uint32_t MakeSampledImage(EmitterState* state, const IR::MemoryInfo& mem, uint32_t use_pc,
+uint32_t MakeSampledImage(EmitterState& state, const IR::MemoryInfo& mem, uint32_t use_pc,
                           ImageViewKind view) {
 	const auto image   = LoadSampledImageDescriptor(state, mem, use_pc, view);
 	const auto sampler = LoadSamplerDescriptor(state, mem.sampler, use_pc);
 	if (image == 0 || sampler == 0) {
 		ExitDescriptorBindingFailure(
-		    *state, SampledBindingKind(mem.kind == IR::ResourceKind::ImageUint, view), mem.resource,
+		    state, SampledBindingKind(mem.kind == IR::ResourceKind::ImageUint, view), mem.resource,
 		    "sampled image or sampler descriptor load failed");
 	}
-	const auto sampled_image = state->builder.AllocateId();
-	state->builder.AddFunction(
+	const auto sampled_image = state.builder.AllocateId();
+	state.builder.AddFunction(
 	    {OpSampledImage,
-	     ImageViewSampledImageType(*state, view, mem.kind == IR::ResourceKind::ImageUint),
+	     ImageViewSampledImageType(state, view, mem.kind == IR::ResourceKind::ImageUint),
 	     sampled_image, image, sampler});
 	return sampled_image;
 }
 
-uint32_t StorageImageDescriptorPointer(EmitterState* state, uint32_t resource, bool uint_image,
+uint32_t StorageImageDescriptorPointer(EmitterState& state, uint32_t resource, bool uint_image,
                                        uint32_t use_pc, ImageViewKind view) {
 	(void)use_pc;
 	const auto kind     = StorageBindingKind(uint_image, view);
-	const auto binding  = ResourceForDescriptor(*state, kind, resource);
-	const auto ptr_type = StorageImagePointerType(*state, uint_image, view);
-	const auto variable = StorageImageVariable(*state, uint_image, view);
+	const auto binding  = ResourceForDescriptor(state, kind, resource);
+	const auto ptr_type = StorageImagePointerType(state, uint_image, view);
+	const auto variable = StorageImageVariable(state, uint_image, view);
 	return DescriptorElementPointer(state, ptr_type, variable, binding.array_index, kind, resource,
 	                                "storage image descriptor array was not emitted");
 }
 
-uint32_t LoadStorageImageDescriptor(EmitterState* state, uint32_t resource, bool uint_image,
+uint32_t LoadStorageImageDescriptor(EmitterState& state, uint32_t resource, bool uint_image,
                                     uint32_t use_pc, ImageViewKind view) {
 	const auto pointer = StorageImageDescriptorPointer(state, resource, uint_image, use_pc, view);
 	if (pointer == 0) {
-		ExitDescriptorBindingFailure(*state, StorageBindingKind(uint_image, view), resource,
+		ExitDescriptorBindingFailure(state, StorageBindingKind(uint_image, view), resource,
 		                             "storage image descriptor pointer creation failed");
 	}
-	const auto type  = StorageImageType(*state, uint_image, view);
-	const auto image = state->builder.AllocateId();
-	state->builder.AddFunction({OpLoad, type, image, pointer});
+	const auto type  = StorageImageType(state, uint_image, view);
+	const auto image = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, type, image, pointer});
 	return image;
 }
 

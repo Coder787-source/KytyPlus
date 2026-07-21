@@ -7,12 +7,12 @@ namespace Libs::Graphics {
 
 struct VulkanImage;
 
-void GraphicsRenderTextureBarrier(vk::CommandBuffer vk_buffer, VulkanImage* image);
-void GraphicsRenderColorImageBarrier(vk::CommandBuffer vk_buffer, VulkanImage* image,
+void GraphicsRenderTextureBarrier(vk::CommandBuffer vk_buffer, VulkanImage& image);
+void GraphicsRenderColorImageBarrier(vk::CommandBuffer vk_buffer, VulkanImage& image,
                                      vk::ImageLayout new_layout);
-void GraphicsRenderDepthStencilImageBarrier(vk::CommandBuffer vk_buffer, VulkanImage* image,
+void GraphicsRenderDepthStencilImageBarrier(vk::CommandBuffer vk_buffer, VulkanImage& image,
                                             vk::ImageLayout new_layout);
-void GraphicsRenderDepthStencilBarrier(vk::CommandBuffer vk_buffer, VulkanImage* image);
+void GraphicsRenderDepthStencilBarrier(vk::CommandBuffer vk_buffer, VulkanImage& image);
 
 } // namespace Libs::Graphics
 

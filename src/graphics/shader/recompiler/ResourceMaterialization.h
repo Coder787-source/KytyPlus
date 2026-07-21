@@ -31,11 +31,11 @@ bool ValidateResourceSpecialization(const Program& program, const ResourceSnapsh
 // Resolves the immutable dense resource topology against one runtime user-data/SRT snapshot.
 // On failure the destination is unchanged.
 bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
-                          ResourceSnapshot* snapshot, std::string* error);
+	                      ResourceSnapshot& snapshot, std::string* error);
 
 // Applies runtime descriptor shape/format facts to a copied dense topology before layout and
 // emission. On failure the program is unchanged.
-bool SpecializeResources(Program* program, const ResourceSnapshot& snapshot, std::string* error);
+bool SpecializeResources(Program& program, const ResourceSnapshot& snapshot, std::string* error);
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR
 

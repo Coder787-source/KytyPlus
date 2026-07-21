@@ -30,11 +30,8 @@ bool IsAccessible(DWORD protect, HostMemoryAccess access) {
 } // namespace
 
 bool HostMemoryQueryRange(uint64_t addr, uint64_t requested_size, HostMemoryAccess access,
-                          uint64_t* accessible_size) {
-	if (accessible_size == nullptr) {
-		return false;
-	}
-	*accessible_size = 0;
+	                      uint64_t& accessible_size) {
+	accessible_size = 0;
 	if (addr == 0 || requested_size == 0) {
 		return false;
 	}
@@ -87,11 +84,11 @@ bool HostMemoryQueryRange(uint64_t addr, uint64_t requested_size, HostMemoryAcce
 	(void)access;
 #endif
 
-	*accessible_size = current - addr;
-	return *accessible_size != 0;
+	accessible_size = current - addr;
+	return accessible_size != 0;
 }
 
-bool HostMemoryQueryReadable(uint64_t addr, uint64_t requested_size, uint64_t* readable_size) {
+bool HostMemoryQueryReadable(uint64_t addr, uint64_t requested_size, uint64_t& readable_size) {
 	return HostMemoryQueryRange(addr, requested_size, HostMemoryAccess::Read, readable_size);
 }
 
@@ -104,7 +101,7 @@ bool HostMemoryRangeIsReadable(uint64_t addr, uint64_t size) {
 		return false;
 	}
 	uint64_t readable_size = 0;
-	return HostMemoryQueryReadable(addr, size, &readable_size) && readable_size >= size;
+	return HostMemoryQueryReadable(addr, size, readable_size) && readable_size >= size;
 }
 
 } // namespace Libs::Graphics

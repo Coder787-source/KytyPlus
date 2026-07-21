@@ -61,20 +61,18 @@ static bool UsesStencilOpValue(uint8_t fail, uint8_t pass, uint8_t depth_fail) {
 	       depth_fail == Prospero::GpuEnumValue(Prospero::StencilOp::kReplaceOp);
 }
 
-[[nodiscard]] static vk::Format ResolveHostDepthAttachmentFormat(GraphicContext*          ctx,
-                                                                 const DepthFormatPolicy& policy,
+[[nodiscard]] static vk::Format ResolveHostDepthAttachmentFormat(const RenderCommandBuffer& buffer,
+                                                                 const DepthFormatPolicy&   policy,
                                                                  bool     has_stencil,
                                                                  uint32_t samples) {
-	if (ctx == nullptr) {
-		return vk::Format::eUndefined;
-	}
+	auto&      graphics         = buffer.GetGraphics();
 	const auto required_samples = vulkan_sample_count(samples);
 	const auto supports         = [&](vk::Format format) {
 		vk::ImageFormatProperties properties {};
 		return format != vk::Format::eUndefined &&
-		       ctx->GetImageFormatProperties(format, vk::ImageType::e2D, vk::ImageTiling::eOptimal,
-		                                     DepthTargetImageUsage(), vk::ImageCreateFlags {},
-		                                     &properties) == vk::Result::eSuccess &&
+		       graphics.GetImageFormatProperties(
+		           format, vk::ImageType::e2D, vk::ImageTiling::eOptimal, DepthTargetImageUsage(),
+		           vk::ImageCreateFlags {}, &properties) == vk::Result::eSuccess &&
 		       static_cast<bool>(properties.sampleCounts & required_samples);
 	};
 	if (!has_stencil) {
@@ -90,12 +88,10 @@ static bool UsesStencilOpValue(uint8_t fail, uint8_t pass, uint8_t depth_fail) {
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void ResolveRenderDepthTarget(uint64_t submit_id, CommandBuffer* buffer, const HW::Context& hw,
-                              RenderDepthInfo* r) {
+void ResolveRenderDepthTarget(uint64_t submit_id, RenderCommandBuffer& buffer, RenderDepthInfo& r) {
 	KYTY_PROFILER_FUNCTION();
-	EXIT_IF(r == nullptr);
 	(void)submit_id;
-	(void)buffer;
+	const auto& hw = buffer.GetRegisters();
 	const auto& z  = hw.GetDepthRenderTarget();
 	const auto& rc = hw.GetRenderControl();
 	const auto& dc = hw.GetDepthControl();
@@ -232,9 +228,8 @@ void ResolveRenderDepthTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 		DepthFatal("unsupported depth/stencil format pair");
 	}
 	const auto ideal_format = DepthAttachmentFormat(*policy, has_stencil);
-	r->format = ResolveHostDepthAttachmentFormat(g_render_ctx->GetGraphicCtx(), *policy,
-	                                             has_stencil, samples);
-	if (r->format == vk::Format::eUndefined) {
+	r.format = ResolveHostDepthAttachmentFormat(buffer, *policy, has_stencil, samples);
+	if (r.format == vk::Format::eUndefined) {
 		DepthFatal("no host depth/stencil format supports required usage for %s",
 		           VulkanToString(ideal_format).c_str());
 	}
@@ -250,7 +245,7 @@ void ResolveRenderDepthTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 	TileSizeAlign stencil_size {};
 	TileSizeAlign htile_size {};
 	if (!TileGetDepthSize(width, height, 0, z.z_info.format, z.stencil_info.format, has_htile,
-	                      &stencil_size, &htile_size, &depth_size, z.z_info.num_samples) ||
+	                      stencil_size, htile_size, depth_size, z.z_info.num_samples) ||
 	    depth_size.align != 65536 || depth_size.size == 0 ||
 	    (has_stencil != (stencil_size.align == 65536 && stencil_size.size != 0)) ||
 	    (has_htile != (htile_size.align == 32768 && htile_size.size != 0))) {
@@ -277,41 +272,40 @@ void ResolveRenderDepthTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 	    (has_htile && htile_backing_size > TRACKER_ADDRESS_SIZE - z.htile_data_base_addr)) {
 		DepthFatal("layered depth backing range is invalid");
 	}
-	r->htile                = has_htile;
-	r->width                = width;
-	r->height               = height;
-	r->samples              = samples;
-	r->depth_buffer_size    = depth_backing_size;
-	r->depth_buffer_vaddr   = z.z_read_base_addr;
-	r->stencil_buffer_size  = has_stencil ? stencil_backing_size : 0;
-	r->stencil_buffer_vaddr = has_stencil ? z.stencil_read_base_addr : 0;
-	r->htile_buffer_size    = has_htile ? htile_backing_size : 0;
-	r->htile_buffer_vaddr   = has_htile ? z.htile_data_base_addr : 0;
-	auto* cache             = g_render_ctx->GetTextureCache();
+	r.htile                = has_htile;
+	r.width                = width;
+	r.height               = height;
+	r.samples              = samples;
+	r.depth_buffer_size    = depth_backing_size;
+	r.depth_buffer_vaddr   = z.z_read_base_addr;
+	r.stencil_buffer_size  = has_stencil ? stencil_backing_size : 0;
+	r.stencil_buffer_vaddr = has_stencil ? z.stencil_read_base_addr : 0;
+	r.htile_buffer_size    = has_htile ? htile_backing_size : 0;
+	r.htile_buffer_vaddr   = has_htile ? z.htile_data_base_addr : 0;
+	auto& cache            = GetRenderContext().GetTextureCache();
 	if (has_htile) {
-		cache->RegisterMeta(g_render_ctx->GetGraphicCtx(), r->htile_buffer_vaddr,
-		                    r->htile_buffer_size, view.image_layers);
+		cache.RegisterMeta(r.htile_buffer_vaddr, r.htile_buffer_size, view.image_layers);
 	}
-	if (has_htile && rc.depth_clear_enable && !cache->ClearMeta(z.htile_data_base_addr)) {
+	if (has_htile && rc.depth_clear_enable && !cache.ClearMeta(z.htile_data_base_addr)) {
 		DepthFatal("failed to acquire HTile metadata for a depth clear");
 	}
 	const bool meta_clear =
-	    has_htile && cache->IsMetaCleared(z.htile_data_base_addr, z.depth_view.slice_start);
-	r->depth_clear_enable      = rc.depth_clear_enable;
-	r->depth_meta_clear_enable = meta_clear;
-	r->depth_load_clear_enable = r->depth_clear_enable || r->depth_meta_clear_enable;
-	r->depth_clear_value       = hw.GetDepthClearValue();
-	r->depth_test_enable       = dc.z_enable;
-	r->depth_write_enable      = dc.z_write_enable && !z.depth_view.depth_write_disable;
-	r->depth_compare_op        = static_cast<vk::CompareOp>(dc.zfunc);
+	    has_htile && cache.IsMetaCleared(z.htile_data_base_addr, z.depth_view.slice_start);
+	r.depth_clear_enable      = rc.depth_clear_enable;
+	r.depth_meta_clear_enable = meta_clear;
+	r.depth_load_clear_enable = r.depth_clear_enable || r.depth_meta_clear_enable;
+	r.depth_clear_value       = hw.GetDepthClearValue();
+	r.depth_test_enable       = dc.z_enable;
+	r.depth_write_enable      = dc.z_write_enable && !z.depth_view.depth_write_disable;
+	r.depth_compare_op        = static_cast<vk::CompareOp>(dc.zfunc);
 
-	r->depth_bounds_test_enable = dc.depth_bounds_enable;
-	r->depth_min_bounds         = hw.GetDepthBoundsMin();
-	r->depth_max_bounds         = hw.GetDepthBoundsMax();
+	r.depth_bounds_test_enable = dc.depth_bounds_enable;
+	r.depth_min_bounds         = hw.GetDepthBoundsMin();
+	r.depth_max_bounds         = hw.GetDepthBoundsMax();
 
-	r->stencil_clear_enable = rc.stencil_clear_enable;
-	r->stencil_clear_value  = hw.GetStencilClearValue();
-	r->stencil_test_enable  = dc.stencil_enable;
+	r.stencil_clear_enable = rc.stencil_clear_enable;
+	r.stencil_clear_value  = hw.GetStencilClearValue();
+	r.stencil_test_enable  = dc.stencil_enable;
 	if (dc.stencil_enable) {
 		if (dc.stencilfunc > static_cast<uint8_t>(vk::CompareOp::eAlways) ||
 		    (dc.backface_enable &&
@@ -323,40 +317,40 @@ void ResolveRenderDepthTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 		     sm.stencil_opval_bf != sm.stencil_testval_bf)) {
 			DepthFatal("unsupported stencil compare or replacement state");
 		}
-		r->stencil_static_front = {
+		r.stencil_static_front = {
 		    ConvertStencilOp(sc.stencil_fail), ConvertStencilOp(sc.stencil_zpass),
 		    ConvertStencilOp(sc.stencil_zfail), static_cast<vk::CompareOp>(dc.stencilfunc)};
-		r->stencil_dynamic_front = {sm.stencil_mask,
-		                            rc.stencil_clear_enable ? 0u : sm.stencil_writemask,
-		                            sm.stencil_testval};
+		r.stencil_dynamic_front = {sm.stencil_mask,
+		                           rc.stencil_clear_enable ? 0u : sm.stencil_writemask,
+		                           sm.stencil_testval};
 		if (dc.backface_enable) {
-			r->stencil_static_back  = {ConvertStencilOp(sc.stencil_fail_bf),
-			                           ConvertStencilOp(sc.stencil_zpass_bf),
-			                           ConvertStencilOp(sc.stencil_zfail_bf),
-			                           static_cast<vk::CompareOp>(dc.stencilfunc_bf)};
-			r->stencil_dynamic_back = {sm.stencil_mask_bf,
-			                           rc.stencil_clear_enable ? 0u : sm.stencil_writemask_bf,
-			                           sm.stencil_testval_bf};
+			r.stencil_static_back  = {ConvertStencilOp(sc.stencil_fail_bf),
+			                          ConvertStencilOp(sc.stencil_zpass_bf),
+			                          ConvertStencilOp(sc.stencil_zfail_bf),
+			                          static_cast<vk::CompareOp>(dc.stencilfunc_bf)};
+			r.stencil_dynamic_back = {sm.stencil_mask_bf,
+			                          rc.stencil_clear_enable ? 0u : sm.stencil_writemask_bf,
+			                          sm.stencil_testval_bf};
 		} else {
-			r->stencil_static_back  = r->stencil_static_front;
-			r->stencil_dynamic_back = r->stencil_dynamic_front;
+			r.stencil_static_back  = r.stencil_static_front;
+			r.stencil_dynamic_back = r.stencil_dynamic_front;
 		}
 	}
-	r->vaddr_num = has_stencil ? 2 : 1;
-	r->vaddr[0]  = r->depth_buffer_vaddr;
-	r->size[0]   = r->depth_buffer_size;
+	r.vaddr_num = has_stencil ? 2 : 1;
+	r.vaddr[0]  = r.depth_buffer_vaddr;
+	r.size[0]   = r.depth_buffer_size;
 	if (has_stencil) {
-		r->vaddr[1] = r->stencil_buffer_vaddr;
-		r->size[1]  = r->stencil_buffer_size;
+		r.vaddr[1] = r.stencil_buffer_vaddr;
+		r.size[1]  = r.stencil_buffer_size;
 	}
 	DepthTargetInfo info {};
-	info.address            = r->depth_buffer_vaddr;
-	info.size               = r->depth_buffer_size;
-	info.stencil_address    = r->stencil_buffer_vaddr;
-	info.stencil_size       = r->stencil_buffer_size;
-	info.htile_address      = r->htile_buffer_vaddr;
-	info.htile_size         = r->htile_buffer_size;
-	info.format             = r->format;
+	info.address            = r.depth_buffer_vaddr;
+	info.size               = r.depth_buffer_size;
+	info.stencil_address    = r.stencil_buffer_vaddr;
+	info.stencil_size       = r.stencil_buffer_size;
+	info.htile_address      = r.htile_buffer_vaddr;
+	info.htile_size         = r.htile_buffer_size;
+	info.format             = r.format;
 	info.guest_format       = guest_format;
 	info.width              = width;
 	info.height             = height;
@@ -365,28 +359,28 @@ void ResolveRenderDepthTarget(uint64_t submit_id, CommandBuffer* buffer, const H
 	info.tile_mode          = Prospero::GpuEnumValue(Prospero::TileMode::kDepth);
 	info.layers             = view.image_layers;
 	info.samples            = samples;
-	info.depth_load_clear   = r->depth_load_clear_enable;
+	info.depth_load_clear   = r.depth_load_clear_enable;
 	info.depth_access       = depth_active;
 	info.stencil_load_clear = rc.stencil_clear_enable;
 	info.stencil_access =
-	    r->stencil_clear_enable ||
-	    (r->stencil_test_enable &&
-	     (stencil_face_accesses_attachment(r->stencil_static_front, r->stencil_dynamic_front) ||
-	      stencil_face_accesses_attachment(r->stencil_static_back, r->stencil_dynamic_back)));
+	    r.stencil_clear_enable ||
+	    (r.stencil_test_enable &&
+	     (stencil_face_accesses_attachment(r.stencil_static_front, r.stencil_dynamic_front) ||
+	      stencil_face_accesses_attachment(r.stencil_static_back, r.stencil_dynamic_back)));
 	info.stencil_htile_compressed =
 	    has_stencil && has_htile && !z.stencil_info.tile_stencil_disable;
-	r->vulkan_buffer = cache->FindDepthTarget(buffer, g_render_ctx->GetGraphicCtx(), info);
-	r->vulkan_view   = cache->GetDepthTargetAttachmentView(
-	    g_render_ctx->GetGraphicCtx(), r->vulkan_buffer, view.base_layer, view.layer_count);
-	if (r->vulkan_buffer->initial_depth_clear_pending) {
-		r->depth_load_clear_enable = true;
-		r->depth_clear_value       = 0.0f;
+	r.vulkan_buffer = &cache.FindDepthTarget(buffer, info);
+	r.vulkan_view =
+	    cache.GetDepthTargetAttachmentView(*r.vulkan_buffer, view.base_layer, view.layer_count);
+	if (r.vulkan_buffer->initial_depth_clear_pending) {
+		r.depth_load_clear_enable = true;
+		r.depth_clear_value       = 0.0f;
 	}
-	if (r->vulkan_buffer->initial_stencil_clear_pending) {
-		r->stencil_clear_enable = true;
-		r->stencil_clear_value  = 0;
+	if (r.vulkan_buffer->initial_stencil_clear_pending) {
+		r.stencil_clear_enable = true;
+		r.stencil_clear_value  = 0;
 	}
-	if (meta_clear && !cache->TouchMeta(z.htile_data_base_addr, z.depth_view.slice_start, false)) {
+	if (meta_clear && !cache.TouchMeta(z.htile_data_base_addr, z.depth_view.slice_start, false)) {
 		DepthFatal("failed to consume HTile clear state");
 	}
 }
@@ -395,8 +389,8 @@ void MarkRenderTargetGpuWritten(const RenderDepthInfo& target) {
 	const bool with_depth =
 	    target.format != vk::Format::eUndefined && target.vulkan_buffer != nullptr;
 
-	if (with_depth && !depth_attachment_read_only(&target)) {
-		g_render_ctx->GetTextureCache()->MarkGpuWritten(target.vulkan_buffer);
+	if (with_depth && !depth_attachment_read_only(target)) {
+		GetRenderContext().GetTextureCache().MarkGpuWritten(*target.vulkan_buffer);
 	}
 }
 

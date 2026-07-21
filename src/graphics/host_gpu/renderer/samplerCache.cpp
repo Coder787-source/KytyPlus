@@ -143,8 +143,7 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r) {
 	}
 
 	vk::Sampler vk_sampler = nullptr;
-	const auto  result =
-	    g_render_ctx->GetGraphicCtx()->device.createSampler(&sampler_info, nullptr, &vk_sampler);
+	const auto  result     = m_graphics.device.createSampler(&sampler_info, nullptr, &vk_sampler);
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess || vk_sampler == nullptr);
 
 	m_samplers.emplace(key, vk_sampler);

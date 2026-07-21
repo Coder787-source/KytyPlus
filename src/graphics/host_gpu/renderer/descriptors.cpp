@@ -49,13 +49,10 @@ namespace Libs::Graphics {
 
 using TextureVariant = DescriptorCache::TextureVariant;
 
-static void BindNullStorageBuffer(CommandBuffer* cmd_buffer, BufferView* dst) {
-	EXIT_IF(cmd_buffer == nullptr || dst == nullptr);
-
-	dst->buffer =
-	    g_render_ctx->GetBufferCache()->ObtainNullBuffer(cmd_buffer, g_render_ctx->GetGraphicCtx());
-	dst->offset = 0;
-	dst->range  = 16;
+static void BindNullStorageBuffer(CommandBuffer& cmd_buffer, BufferView& dst) {
+	dst.buffer = &GetRenderContext().GetBufferCache().ObtainNullBuffer(cmd_buffer);
+	dst.offset = 0;
+	dst.range  = 16;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
@@ -71,21 +68,19 @@ static const char* VulkanImageTypeName(VulkanImageType type) {
 	}
 }
 
-static int SampledArrayViewIndex(const VulkanImage* image, int view_index) {
-	EXIT_IF(image == nullptr);
-
+static int SampledArrayViewIndex(const VulkanImage& image, int view_index) {
 	switch (view_index) {
 		case VulkanImage::VIEW_DEFAULT: return VulkanImage::VIEW_DEFAULT_ARRAY;
 		default: return view_index;
 	}
 }
 
-static int SelectSampledTextureArrayView(const VulkanImage* image, int base_view) {
+static int SelectSampledTextureArrayView(const VulkanImage& image, int base_view) {
 	const int array_view = SampledArrayViewIndex(image, base_view);
-	if (image->image_view[array_view] == nullptr) {
+	if (image.image_view[array_view] == nullptr) {
 		EXIT("missing sampled array image view: image_type=%s base_view=%d array_view=%d "
 		     "layers=%u\n",
-		     VulkanImageTypeName(image->type), base_view, array_view, image->layers);
+		     VulkanImageTypeName(image.type), base_view, array_view, image.layers);
 	}
 	return array_view;
 }
@@ -108,14 +103,14 @@ static int TextureVariantDefaultView(TextureVariant variant) {
 	                                      : VulkanImage::VIEW_DEFAULT;
 }
 
-static VulkanImage* GetDummySampledTexture(TextureVariant variant) {
-	return g_render_ctx->GetTextureCache()->GetDummySampledTexture(TextureVariantIsUint(variant),
-	                                                               TextureVariantIs3D(variant));
+static VulkanImage& GetDummySampledTexture(TextureVariant variant) {
+	return GetRenderContext().GetTextureCache().GetDummySampledTexture(
+	    TextureVariantIsUint(variant), TextureVariantIs3D(variant));
 }
 
-static VulkanImage* GetDummyStorageTexture(TextureVariant variant) {
-	return g_render_ctx->GetTextureCache()->GetDummyStorageTexture(TextureVariantIsUint(variant),
-	                                                               TextureVariantIs3D(variant));
+static VulkanImage& GetDummyStorageTexture(TextureVariant variant) {
+	return GetRenderContext().GetTextureCache().GetDummyStorageTexture(
+	    TextureVariantIsUint(variant), TextureVariantIs3D(variant));
 }
 
 static void CopyNativeDescriptor(const ShaderRecompiler::IR::DescriptorValue& source,
@@ -124,63 +119,11 @@ static void CopyNativeDescriptor(const ShaderRecompiler::IR::DescriptorValue& so
 	std::copy_n(source.dwords.begin(), destination.size(), destination.begin());
 }
 
-static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer* command_buffer,
+static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
                                       const ShaderBufferResource&                 descriptor,
                                       const ShaderRecompiler::IR::BufferResource& resource) {
 	BufferView result;
 
-	// Regression
-	//  Bind a null buffer when these four dwords are
-	//  the tracked prefix of an active image sharp. Image validity is encoded by dword 3 bit 31.
-	/*if (resource.image_alias != ShaderRecompiler::IR::BufferResource::NoImageAlias &&
-	    (descriptor.Type() & 2u) != 0) {
-	    BindNullStorageBuffer(command_buffer, &result);
-	    return result;
-	}
-	// Buffer TYPE is zero. A nonzero value means a buffer instruction received the first four
-	// dwords of an image sharp without a tracked image alias; support the known write-only path.
-	if (descriptor.Type() != 0) {
-	    ShaderTextureResource texture {};
-	    std::copy_n(descriptor.fields, 4, texture.fields);
-	    const auto    width   = static_cast<uint32_t>(texture.Width5()) + 1u;
-	    const auto    height  = static_cast<uint32_t>(texture.Height5()) + 1u;
-	    const auto    format  = texture.Format();
-	    const auto    tile    = texture.TileMode();
-	    const auto    type    = texture.Type();
-	    const auto    address = texture.Base40();
-	    const auto    pitch   = TileGetTexturePitch(format, width, 1, tile);
-	    TileSizeAlign footprint {};
-	    TileGetTextureTotalSize(format, width, height, 1, pitch, 1, tile, false, &footprint);
-	    const bool supported =
-	        resource.formatted && resource.written && !resource.read && !resource.atomic &&
-	        format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UInt) &&
-	        tile == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) &&
-	        type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
-	        texture.DstSelXYZW() == DstSel(4, 5, 6, 7) && address != 0 && footprint.size != 0 &&
-	        footprint.align == 65536;
-	    if (!supported) {
-	        EXIT("unsupported texture descriptor used as storage buffer: type=%u format=%u"
-	             " tile=%u swizzle=0x%03x extent=%ux%u read=%d written=%d formatted=%d atomic=%d\n",
-	             type, format, tile, texture.DstSelXYZW(), width, height, resource.read,
-	             resource.written, resource.formatted, resource.atomic);
-	    }
-	    auto* ctx = g_render_ctx->GetGraphicCtx();
-	    g_render_ctx->GetBufferCache()->ValidateGpuAccess(address, footprint.size, false, true);
-	    auto binding = g_render_ctx->GetBufferCache()->ObtainBuffer(
-	        command_buffer, ctx, address, footprint.size, true, false, true);
-	    const auto alignment = ctx->StorageMinAlignment();
-	    if (alignment == 0 || binding.second % alignment != 0 ||
-	        footprint.size > ctx->GetPhysicalDeviceProperties().limits.maxStorageBufferRange) {
-	        EXIT("texture-backed storage buffer binding is unsupported: addr=0x%016" PRIx64
-	             " size=0x%016" PRIx64 " offset=0x%016" PRIx64 " alignment=0x%016" PRIx64 "\n",
-	             address, footprint.size, static_cast<uint64_t>(binding.second),
-	             static_cast<uint64_t>(alignment));
-	    }
-	    result.buffer = binding.first;
-	    result.offset = binding.second;
-	    result.range  = footprint.size;
-	    return result;
-	}*/
 	const auto address = descriptor.Base48();
 	const auto stride  = descriptor.Stride();
 	const auto records = descriptor.NumRecords();
@@ -189,34 +132,35 @@ static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer* command
 	}
 	const auto size = stride != 0 ? static_cast<uint64_t>(stride) * records : records;
 	if (address == 0 || size == 0) {
-		BindNullStorageBuffer(command_buffer, &result);
+		BindNullStorageBuffer(command_buffer, result);
 		return result;
 	}
-	auto* const ctx       = g_render_ctx->GetGraphicCtx();
-	const auto  alignment = ctx->StorageMinAlignment();
-	if (alignment == 0 || size > ctx->GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
+	const auto& graphics  = GetRenderContext().GetGraphics();
+	const auto  alignment = graphics.StorageMinAlignment();
+	if (alignment == 0 ||
+	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
 	    BufferCache::CACHING_PAGE_SIZE % alignment != 0) {
 		EXIT("storage buffer range or device alignment is unsupported\n");
 	}
 	(void)submit_id;
-	auto binding = g_render_ctx->GetBufferCache()->ObtainBuffer(
-	    command_buffer, ctx, address, size, resource.written, resource.read, resource.formatted);
-	if (binding.second % alignment != 0) {
+	auto binding = GetRenderContext().GetBufferCache().ObtainBuffer(
+	    command_buffer, address, size, resource.written, resource.read, resource.formatted);
+	if (binding.offset % alignment != 0) {
 		EXIT("storage buffer binding is not device-aligned\n");
 	}
-	result.buffer = binding.first;
-	result.offset = binding.second;
+	result.buffer = &binding.buffer;
+	result.offset = binding.offset;
 	result.range  = static_cast<vk::DeviceSize>(size);
 	return result;
 }
 
 static BufferView
-NativeAddressBuffer(uint64_t submit_id, CommandBuffer* command_buffer,
+NativeAddressBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
                     const ShaderRecompiler::IR::AddressResource&           resource,
                     const ShaderRecompiler::IR::ResourceSnapshot::Address& address) {
 	BufferView result;
 	if (address.binding_base == 0) {
-		BindNullStorageBuffer(command_buffer, &result);
+		BindNullStorageBuffer(command_buffer, result);
 		return result;
 	}
 	if (resource.written) {
@@ -224,26 +168,28 @@ NativeAddressBuffer(uint64_t submit_id, CommandBuffer* command_buffer,
 	}
 	const auto limit  = resource.kind == ShaderRecompiler::IR::ResourceKind::Flat
 	                        ? ShaderRecompiler::IR::FlatAddressWindowSize
-	                        : static_cast<uint64_t>(g_render_ctx->GetGraphicCtx()
-	                                                    ->GetPhysicalDeviceProperties()
+	                        : static_cast<uint64_t>(GetRenderContext()
+	                                                    .GetGraphics()
+	                                                    .GetPhysicalDeviceProperties()
 	                                                    .limits.maxStorageBufferRange);
 	uint64_t   size   = 0;
 	const auto access = HostMemoryAccess::Mapped;
-	if (!HostMemoryQueryRange(address.binding_base, limit, access, &size)) {
+	if (!HostMemoryQueryRange(address.binding_base, limit, access, size)) {
 		EXIT("address resource is not host-accessible: base=0x%016" PRIx64 "\n",
 		     address.binding_base);
 	}
-	auto* const ctx       = g_render_ctx->GetGraphicCtx();
-	const auto  alignment = ctx->StorageMinAlignment();
-	if (alignment == 0 || size > ctx->GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
+	const auto& graphics  = GetRenderContext().GetGraphics();
+	const auto  alignment = graphics.StorageMinAlignment();
+	if (alignment == 0 ||
+	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
 	    BufferCache::GetBufferOffset(address.binding_base) % alignment != 0) {
 		EXIT("address resource range or alignment is unsupported\n");
 	}
 	(void)submit_id;
-	auto binding  = g_render_ctx->GetBufferCache()->ObtainBuffer(command_buffer, ctx,
-	                                                             address.binding_base, size);
-	result.buffer = binding.first;
-	result.offset = binding.second;
+	auto binding  = GetRenderContext().GetBufferCache().ObtainBuffer(command_buffer,
+	                                                                 address.binding_base, size);
+	result.buffer = &binding.buffer;
+	result.offset = binding.offset;
 	result.range  = static_cast<vk::DeviceSize>(size);
 	return result;
 }
@@ -529,7 +475,7 @@ void ValidateMetadataReuseTexture(const ShaderRecompiler::IR::ImageResource& res
 }
 
 static DescriptorCache::TextureBinding
-NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
+NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
               const ShaderRecompiler::IR::ImageResource&   resource,
               const ShaderRecompiler::IR::DescriptorValue& value) {
 	ShaderTextureResource descriptor;
@@ -541,9 +487,9 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 		ValidateStorageImageResource(resource);
 	}
 	if (descriptor.IsNull()) {
-		return storage ? DescriptorCache::TextureBinding {GetDummyStorageTexture(variant),
+		return storage ? DescriptorCache::TextureBinding {&GetDummyStorageTexture(variant),
 		                                                  TextureVariantDefaultView(variant)}
-		               : DescriptorCache::TextureBinding {GetDummySampledTexture(variant),
+		               : DescriptorCache::TextureBinding {&GetDummySampledTexture(variant),
 		                                                  TextureVariantDefaultView(variant)};
 	}
 	const auto address    = descriptor.Base40();
@@ -578,13 +524,13 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 	const auto    swizzle = descriptor.DstSelXYZW();
 	TileSizeAlign size;
 	TileGetTextureTotalSize(format, width, height, depth, pitch, levels, tile,
-	                        type == Prospero::ImageType::kColor3D, &size);
+	                        type == Prospero::ImageType::kColor3D, size);
 	EXIT_NOT_IMPLEMENTED(size.size == 0 ||
 	                     (address & (static_cast<uint64_t>(size.align) - 1u)) != 0);
 	if (storage) {
 		ValidateStorageTexture(resource, descriptor, size.size);
-		g_render_ctx->GetBufferCache()->ValidateGpuAccess(address, size.size, resource.read,
-		                                                  resource.written);
+		GetRenderContext().GetBufferCache().ValidateGpuAccess(address, size.size, resource.read,
+		                                                      resource.written);
 	}
 
 	VulkanImage*  image      = nullptr;
@@ -594,11 +540,11 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 	                         descriptor.MsaaDepth();
 	if (image == nullptr) {
 		if (check_depth) {
-			image = g_render_ctx->GetTextureCache()->FindDepthTargetByRange(command_buffer, address,
-			                                                                size.size, true);
+			image = GetRenderContext().GetTextureCache().FindDepthTargetByRange(
+			    command_buffer, address, size.size, true);
 		} else {
-			image = g_render_ctx->GetTextureCache()->FindRenderTargetByRange(command_buffer,
-			                                                                 address, size.size);
+			image = GetRenderContext().GetTextureCache().FindRenderTargetByRange(
+			    command_buffer, address, size.size);
 		}
 		if (image != nullptr) {
 			if (check_depth) {
@@ -628,10 +574,9 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 						     static_cast<uint32_t>(resource.dimension), descriptor.Type(),
 						     descriptor.BaseArray5(), image->layers);
 					}
-					image_view = g_render_ctx->GetTextureCache()->GetDepthTargetSampledView(
-					    g_render_ctx->GetGraphicCtx(), static_cast<DepthStencilVulkanImage*>(image),
-					    view_format, swizzle, 0, 1, depth_view.type, depth_view.base_layer,
-					    depth_view.layer_count);
+					image_view = GetRenderContext().GetTextureCache().GetDepthTargetSampledView(
+					    *static_cast<DepthStencilVulkanImage*>(image), view_format, swizzle, 0, 1,
+					    depth_view.type, depth_view.base_layer, depth_view.layer_count);
 				}
 			} else {
 				if (!(storage ? IsSupportedStorageImageResource(resource)
@@ -657,23 +602,21 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 				}
 				if (storage) {
 					view       = SelectStorageColorView(image->format, view_format, swizzle);
-					image_view = g_render_ctx->GetTextureCache()->GetRenderTargetStorageView(
-					    g_render_ctx->GetGraphicCtx(),
-					    static_cast<RenderTextureVulkanImage*>(image), view_format, base_level,
+					image_view = GetRenderContext().GetTextureCache().GetRenderTargetStorageView(
+					    *static_cast<RenderTextureVulkanImage*>(image), view_format, base_level,
 					    view_levels, target_view.type, target_view.base_layer,
 					    target_view.layer_count);
 				} else {
-					image_view = g_render_ctx->GetTextureCache()->GetSampledColorView(
-					    g_render_ctx->GetGraphicCtx(), image, view_format, swizzle, base_level,
-					    view_levels, target_view.type, target_view.base_layer,
-					    target_view.layer_count);
+					image_view = GetRenderContext().GetTextureCache().GetSampledColorView(
+					    *image, view_format, swizzle, base_level, view_levels, target_view.type,
+					    target_view.base_layer, target_view.layer_count);
 				}
 			}
 			if (image != nullptr && image_view == nullptr && image->image_view[view] == nullptr) {
 				EXIT("required cached texture image view is missing\n");
 			}
 			if (storage && image != nullptr) {
-				g_render_ctx->GetTextureCache()->MarkGpuWritten(image);
+				GetRenderContext().GetTextureCache().MarkGpuWritten(*image);
 			}
 		}
 	}
@@ -701,7 +644,7 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 				}
 				image = video.image;
 				view  = VulkanImage::VIEW_STORAGE;
-				g_render_ctx->GetTextureCache()->MarkGpuWritten(image);
+				GetRenderContext().GetTextureCache().MarkGpuWritten(*image);
 			} else {
 				const bool exact =
 				    IsSupportedSampledVideoOutView(resource, descriptor, *video.image) &&
@@ -721,15 +664,14 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 					     static_cast<uint32_t>(type), size.size, video.size, pitch, video.pitch);
 				}
 				image      = video.image;
-				image_view = g_render_ctx->GetTextureCache()->GetSampledColorView(
-				    g_render_ctx->GetGraphicCtx(), video.image, view_format, swizzle, 0, 1,
-				    vk::ImageViewType::e2D, 0, 1);
+				image_view = GetRenderContext().GetTextureCache().GetSampledColorView(
+				    *video.image, view_format, swizzle, 0, 1, vk::ImageViewType::e2D, 0, 1);
 			}
 		}
 	}
 	if (image == nullptr) {
-		auto*      texture_cache = g_render_ctx->GetTextureCache();
-		const bool metadata_read = texture_cache->QueryRegion(address, size.size).metadata_pages;
+		auto&      texture_cache = GetRenderContext().GetTextureCache();
+		const bool metadata_read = texture_cache.QueryRegion(address, size.size).metadata_pages;
 		if (storage && metadata_read) {
 			EXIT("storage texture overlaps surface metadata\n");
 		}
@@ -754,19 +696,15 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 		info.type        = descriptor.Type();
 		info.base_array  = descriptor.BaseArray5();
 		if (storage) {
-			image = texture_cache->FindStorageTexture(command_buffer, g_render_ctx->GetGraphicCtx(),
-			                                          info);
-			view  = VulkanImage::VIEW_DEFAULT;
-			image_view = texture_cache->GetStorageTextureStorageView(
-			    g_render_ctx->GetGraphicCtx(), static_cast<StorageTextureVulkanImage*>(image),
-			    base_level);
+			image      = &texture_cache.FindStorageTexture(command_buffer, info);
+			view       = VulkanImage::VIEW_DEFAULT;
+			image_view = texture_cache.GetStorageTextureStorageView(
+			    *static_cast<StorageTextureVulkanImage*>(image), base_level);
 		} else {
-			image = texture_cache->FindTexture(command_buffer, g_render_ctx->GetGraphicCtx(), info,
-			                                   metadata_read);
+			image = &texture_cache.FindTexture(command_buffer, info, metadata_read);
 			if (image->type == VulkanImageType::StorageTexture) {
-				image_view = texture_cache->GetStorageTextureSampledView(
-				    g_render_ctx->GetGraphicCtx(), static_cast<StorageTextureVulkanImage*>(image),
-				    info);
+				image_view = texture_cache.GetStorageTextureSampledView(
+				    *static_cast<StorageTextureVulkanImage*>(image), info);
 			}
 		}
 	}
@@ -774,7 +712,7 @@ NativeTexture(uint64_t submit_id, CommandBuffer* command_buffer,
 	if (NeedsStaticSampledArrayView(resource.dimension ==
 	                                    ShaderRecompiler::Decoder::ImageDimension::Dim2DArray,
 	                                image_view != nullptr)) {
-		view = SelectSampledTextureArrayView(image, view);
+		view = SelectSampledTextureArrayView(*image, view);
 	}
 	return {image, view, image_view};
 }
@@ -792,31 +730,31 @@ static vk::Sampler NativeSampler(const ShaderRecompiler::IR::Program& program, u
 	if (!depth_compare) {
 		descriptor.fields[0] &= ~(0x7u << 12u);
 	}
-	return g_render_ctx->GetSamplerCache()->GetSampler(descriptor);
+	return GetRenderContext().GetSamplerCache().GetSampler(descriptor);
 }
 
-static BufferView NativeUpload(CommandBuffer* command_buffer, std::span<const uint32_t> data) {
+static BufferView NativeUpload(CommandBuffer& command_buffer, std::span<const uint32_t> data) {
 	EXIT_IF(data.empty());
 	BufferView result;
-	EXIT_IF(!g_render_ctx->GetBufferCache()->UploadHostData(
-	    command_buffer, g_render_ctx->GetGraphicCtx(), data.data(), data.size_bytes(), 256,
-	    &result.buffer, &result.offset, &result.range));
+	EXIT_IF(!GetRenderContext().GetBufferCache().UploadHostData(
+	    command_buffer, data.data(), data.size_bytes(), 256, result.buffer, result.offset,
+	    result.range));
 	return result;
 }
 
-void BindDescriptors(uint64_t submit_id, CommandBuffer* buffer,
+void BindDescriptors(uint64_t submit_id, CommandBuffer& buffer,
                      vk::PipelineBindPoint pipeline_bind_point, vk::PipelineLayout layout,
                      const ShaderStageRuntime& runtime, vk::ShaderStageFlags vk_stage,
                      DescriptorCache::Stage stage) {
 	KYTY_PROFILER_FUNCTION();
-	EXIT_IF(buffer == nullptr || !runtime);
+	EXIT_IF(!runtime);
 	const auto& program  = *runtime.program;
 	const auto& snapshot = *runtime.resources;
 	std::string error;
 	if (!ShaderRecompiler::IR::ValidateResourceSpecialization(program, snapshot, &error)) {
 		EXIT("invalid native shader runtime snapshot: %s\n", error.c_str());
 	}
-	auto       vk_buffer     = buffer->Handle();
+	auto       vk_buffer     = buffer.Handle();
 	const auto shader_stages = ShaderPipelineStages(vk_stage);
 
 	DescriptorCache::NativeDescriptors descriptors;
@@ -864,9 +802,8 @@ void BindDescriptors(uint64_t submit_id, CommandBuffer* buffer,
 	}
 	if (ShaderRecompiler::IR::FindBinding(
 	        program.bindings, ShaderRecompiler::IR::DescriptorBindingKind::Gds) != nullptr) {
-		descriptors.gds.buffer =
-		    g_render_ctx->GetGdsBuffer()->GetBuffer(g_render_ctx->GetGraphicCtx());
-		const auto barrier = MakeGdsDependency(*descriptors.gds.buffer);
+		descriptors.gds.buffer = &GetRenderContext().GetGdsBuffer().GetBuffer();
+		const auto barrier     = MakeGdsDependency(*descriptors.gds.buffer);
 		vk_buffer.pipelineBarrier(
 		    vk::PipelineStageFlagBits::eHost | vk::PipelineStageFlagBits::eTransfer |
 		        vk::PipelineStageFlagBits::eAllGraphics | vk::PipelineStageFlagBits::eComputeShader,
@@ -880,14 +817,14 @@ void BindDescriptors(uint64_t submit_id, CommandBuffer* buffer,
 		    resource.kind == ShaderRecompiler::IR::ResourceKind::ImageUint) {
 			switch (image->type) {
 				case VulkanImageType::DepthStencil:
-					GraphicsRenderDepthStencilBarrier(vk_buffer, image);
+					GraphicsRenderDepthStencilBarrier(vk_buffer, *image);
 					break;
 				case VulkanImageType::RenderTexture:
 				case VulkanImageType::StorageTexture:
-					GraphicsRenderTextureBarrier(vk_buffer, image);
+					GraphicsRenderTextureBarrier(vk_buffer, *image);
 					break;
 				case VulkanImageType::VideoOut:
-					GraphicsRenderColorImageBarrier(vk_buffer, image, RENDER_COLOR_IMAGE_LAYOUT);
+					GraphicsRenderColorImageBarrier(vk_buffer, *image, RENDER_COLOR_IMAGE_LAYOUT);
 					break;
 				default: break;
 			}
@@ -901,11 +838,11 @@ void BindDescriptors(uint64_t submit_id, CommandBuffer* buffer,
 	}
 
 	if (!program.bindings.descriptors.empty()) {
-		auto* set = g_render_ctx->GetDescriptorCache()->GetDescriptor(stage, program, descriptors);
-		EXIT_IF(set == nullptr);
+		auto& set =
+		    GetRenderContext().GetDescriptorCache().GetDescriptor(stage, program, descriptors);
 		vk_buffer.bindDescriptorSets(pipeline_bind_point, layout, program.bindings.descriptor_set,
-		                             1, &set->set, 0, nullptr);
-		buffer->RecycleDescriptorAfterFence(set);
+		                             1, &set.set, 0, nullptr);
+		buffer.RecycleDescriptorAfterFence(set);
 	}
 	if (program.bindings.push_constant_size != 0) {
 		EXIT_IF(program.bindings.push_constant_size != user_data.size() * sizeof(uint32_t));

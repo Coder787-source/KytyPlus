@@ -50,14 +50,16 @@ inline uint64_t render_pass_compat_id(uint32_t color_count, const vk::Format* co
 
 class FramebufferCache {
 public:
-	FramebufferCache() { EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread()); }
+	explicit FramebufferCache(GraphicContext& graphics): m_graphics(graphics) {
+		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+	}
 	~FramebufferCache() { KYTY_NOT_IMPLEMENTED; }
 	KYTY_CLASS_NO_COPY(FramebufferCache);
 
 	VulkanFramebuffer* CreateFramebuffer(RenderColorInfo* colors, uint32_t color_count,
-	                                     RenderDepthInfo* depth);
-	void               FreeFramebufferByColor(VulkanImage* image);
-	void               FreeFramebufferByDepth(DepthStencilVulkanImage* image);
+	                                     RenderDepthInfo& depth);
+	void               FreeFramebufferByColor(VulkanImage& image);
+	void               FreeFramebufferByDepth(DepthStencilVulkanImage& image);
 
 private:
 	struct Framebuffer {
@@ -73,6 +75,7 @@ private:
 		bool               depth_read_only                                  = false;
 	};
 
+	GraphicContext&          m_graphics;
 	Common::Mutex            m_mutex;
 	std::vector<Framebuffer> m_framebuffers;
 };

@@ -44,10 +44,10 @@ bool IsControlFlowBranch(Opcode opcode) {
 	}
 }
 
-void ApplyLiteral(Operand* operand, uint32_t literal) {
-	if (operand->kind == OperandKind::LiteralConstant) {
-		operand->value      = literal;
-		operand->signed_val = static_cast<int32_t>(literal);
+void ApplyLiteral(Operand& operand, uint32_t literal) {
+	if (operand.kind == OperandKind::LiteralConstant) {
+		operand.value      = literal;
+		operand.signed_val = static_cast<int32_t>(literal);
 	}
 }
 
@@ -196,36 +196,31 @@ std::string FormatExp(const Instruction& inst) {
 
 } // namespace
 
-bool DecodeScalarSource(uint32_t code, uint32_t pc, Operand* operand, std::string* error) {
-	if (operand == nullptr) {
-		SetError(error, "internal decoder error: null source operand");
-		return false;
-	}
-
-	*operand = {};
+bool DecodeScalarSource(uint32_t code, uint32_t pc, Operand& operand, std::string* error) {
+	operand = {};
 
 	if (code <= 105u) {
-		operand->kind = OperandKind::Sgpr;
-		operand->reg  = code;
+		operand.kind = OperandKind::Sgpr;
+		operand.reg  = code;
 		return true;
 	}
 	if (code >= 128u && code <= 192u) {
-		operand->kind       = OperandKind::IntegerInlineConstant;
-		operand->signed_val = static_cast<int32_t>(code - 128u);
-		operand->value      = static_cast<uint32_t>(operand->signed_val);
+		operand.kind       = OperandKind::IntegerInlineConstant;
+		operand.signed_val = static_cast<int32_t>(code - 128u);
+		operand.value      = static_cast<uint32_t>(operand.signed_val);
 		return true;
 	}
 	if (code >= 193u && code <= 208u) {
-		operand->kind       = OperandKind::IntegerInlineConstant;
-		operand->signed_val = 192 - static_cast<int32_t>(code);
-		operand->value      = static_cast<uint32_t>(operand->signed_val);
+		operand.kind       = OperandKind::IntegerInlineConstant;
+		operand.signed_val = 192 - static_cast<int32_t>(code);
+		operand.value      = static_cast<uint32_t>(operand.signed_val);
 		return true;
 	}
 	if (code >= 240u && code <= 247u) {
 		constexpr float values[] = {0.5f, -0.5f, 1.0f, -1.0f, 2.0f, -2.0f, 4.0f, -4.0f};
-		operand->kind            = OperandKind::FloatInlineConstant;
-		operand->float_val       = values[code - 240u];
-		operand->value           = FloatBits(operand->float_val);
+		operand.kind            = OperandKind::FloatInlineConstant;
+		operand.float_val       = values[code - 240u];
+		operand.value           = FloatBits(operand.float_val);
 		return true;
 	}
 	if (code >= 256u && code <= 511u) {
@@ -233,22 +228,22 @@ bool DecodeScalarSource(uint32_t code, uint32_t pc, Operand* operand, std::strin
 	}
 
 	switch (code) {
-		case 106u: operand->kind = OperandKind::VccLo; return true;
-		case 107u: operand->kind = OperandKind::VccHi; return true;
-		case 124u: operand->kind = OperandKind::M0; return true;
-		case 125u: operand->kind = OperandKind::Null; return true;
-		case 126u: operand->kind = OperandKind::ExecLo; return true;
-		case 127u: operand->kind = OperandKind::ExecHi; return true;
-		case 239u: operand->kind = OperandKind::PopsExitingWaveId; return true;
+		case 106u: operand.kind = OperandKind::VccLo; return true;
+		case 107u: operand.kind = OperandKind::VccHi; return true;
+		case 124u: operand.kind = OperandKind::M0; return true;
+		case 125u: operand.kind = OperandKind::Null; return true;
+		case 126u: operand.kind = OperandKind::ExecLo; return true;
+		case 127u: operand.kind = OperandKind::ExecHi; return true;
+		case 239u: operand.kind = OperandKind::PopsExitingWaveId; return true;
 		case 248u:
-			operand->kind      = OperandKind::FloatInlineConstant;
-			operand->float_val = 0.15915494309189535f;
-			operand->value     = FloatBits(operand->float_val);
+			operand.kind      = OperandKind::FloatInlineConstant;
+			operand.float_val = 0.15915494309189535f;
+			operand.value     = FloatBits(operand.float_val);
 			return true;
-		case 251u: operand->kind = OperandKind::VccZ; return true;
-		case 252u: operand->kind = OperandKind::ExecZ; return true;
-		case 253u: operand->kind = OperandKind::Scc; return true;
-		case 255u: operand->kind = OperandKind::LiteralConstant; return true;
+		case 251u: operand.kind = OperandKind::VccZ; return true;
+		case 252u: operand.kind = OperandKind::ExecZ; return true;
+		case 253u: operand.kind = OperandKind::Scc; return true;
+		case 255u: operand.kind = OperandKind::LiteralConstant; return true;
 		default:
 			if (error != nullptr) {
 				*error = fmt::format("unsupported scalar source operand 0x{:08x} at pc 0x{:08x}",
@@ -258,27 +253,22 @@ bool DecodeScalarSource(uint32_t code, uint32_t pc, Operand* operand, std::strin
 	}
 }
 
-bool DecodeScalarDestination(uint32_t code, uint32_t pc, Operand* operand, std::string* error) {
-	if (operand == nullptr) {
-		SetError(error, "internal decoder error: null destination operand");
-		return false;
-	}
-
-	*operand = {};
+bool DecodeScalarDestination(uint32_t code, uint32_t pc, Operand& operand, std::string* error) {
+	operand = {};
 
 	if (code <= 105u) {
-		operand->kind = OperandKind::Sgpr;
-		operand->reg  = code;
+		operand.kind = OperandKind::Sgpr;
+		operand.reg  = code;
 		return true;
 	}
 
 	switch (code) {
-		case 106u: operand->kind = OperandKind::VccLo; return true;
-		case 107u: operand->kind = OperandKind::VccHi; return true;
-		case 124u: operand->kind = OperandKind::M0; return true;
-		case 125u: operand->kind = OperandKind::Null; return true;
-		case 126u: operand->kind = OperandKind::ExecLo; return true;
-		case 127u: operand->kind = OperandKind::ExecHi; return true;
+		case 106u: operand.kind = OperandKind::VccLo; return true;
+		case 107u: operand.kind = OperandKind::VccHi; return true;
+		case 124u: operand.kind = OperandKind::M0; return true;
+		case 125u: operand.kind = OperandKind::Null; return true;
+		case 126u: operand.kind = OperandKind::ExecLo; return true;
+		case 127u: operand.kind = OperandKind::ExecHi; return true;
 		default:
 			if (error != nullptr) {
 				*error = fmt::format(
@@ -288,67 +278,63 @@ bool DecodeScalarDestination(uint32_t code, uint32_t pc, Operand* operand, std::
 	}
 }
 
-bool DecodeVectorGpr(uint32_t reg, Operand* operand, std::string* error) {
-	if (operand == nullptr) {
-		SetError(error, "internal decoder error: null VGPR operand");
-		return false;
-	}
+bool DecodeVectorGpr(uint32_t reg, Operand& operand, std::string* error) {
 	if (reg > 255u) {
 		SetError(error, "VGPR index is out of range");
 		return false;
 	}
-	*operand      = {};
-	operand->kind = OperandKind::Vgpr;
-	operand->reg  = reg;
+	operand       = {};
+	operand.kind = OperandKind::Vgpr;
+	operand.reg  = reg;
 	return true;
 }
 
-bool ReadLiteralOperands(std::span<const uint32_t> code, uint32_t word_index, Instruction* inst,
+bool ReadLiteralOperands(std::span<const uint32_t> code, uint32_t word_index, Instruction& inst,
                          std::string* error) {
-	if (!HasLiteral(*inst)) {
+	if (!HasLiteral(inst)) {
 		return true;
 	}
-	if (word_index + inst->word_count >= code.size()) {
+	if (word_index + inst.word_count >= code.size()) {
 		if (error != nullptr) {
-			*error = fmt::format("missing literal constant at pc 0x{:08x}", inst->pc);
+			*error = fmt::format("missing literal constant at pc 0x{:08x}", inst.pc);
 		}
 		return false;
 	}
 
-	const auto literal = code[word_index + inst->word_count];
-	ApplyLiteral(&inst->src0, literal);
-	ApplyLiteral(&inst->src1, literal);
-	ApplyLiteral(&inst->src2, literal);
-	ApplyLiteral(&inst->src3, literal);
-	inst->word_count++;
-	SetRawWords(inst, code, word_index, inst->word_count);
+	const auto literal = code[word_index + inst.word_count];
+	ApplyLiteral(inst.src0, literal);
+	ApplyLiteral(inst.src1, literal);
+	ApplyLiteral(inst.src2, literal);
+	ApplyLiteral(inst.src3, literal);
+	inst.word_count++;
+	SetRawWords(inst, code, word_index, inst.word_count);
 	return true;
 }
 
-void SetRawWords(Instruction* inst, std::span<const uint32_t> code, uint32_t word_index,
+void SetRawWords(Instruction& inst, std::span<const uint32_t> code, uint32_t word_index,
                  uint32_t word_count) {
-	inst->word_count = word_count;
-	inst->raw_count  = std::min<uint32_t>(word_count, MaxInstructionRawWords);
-	for (uint32_t i = 0; i < inst->raw_count; i++) {
-		inst->raw[i] = code[word_index + i];
+	inst.word_count = word_count;
+	inst.raw_count  = std::min<uint32_t>(word_count, MaxInstructionRawWords);
+	for (uint32_t i = 0; i < inst.raw_count; i++) {
+		inst.raw[i] = code[word_index + i];
 	}
 }
 
-void SetUnsupported(Instruction* inst, Family family, uint32_t opcode_id, const char* reason) {
-	inst->opcode             = Opcode::Unsupported;
-	inst->family             = family;
-	inst->opcode_id          = opcode_id;
-	inst->unsupported_reason = reason;
+void SetUnsupported(Instruction& inst, Family family, uint32_t opcode_id, const char* reason) {
+	inst.opcode             = Opcode::Unsupported;
+	inst.family             = family;
+	inst.opcode_id          = opcode_id;
+	inst.unsupported_reason = reason;
 }
 
-bool DecodeProgram(std::span<const uint32_t> code, Program* program, std::string* error) {
-	if (code.empty() || code.size() > UINT32_MAX / sizeof(uint32_t) || program == nullptr) {
+bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string* error) {
+	if (code.empty() || code.size() > UINT32_MAX / sizeof(uint32_t)) {
 		SetError(error, "invalid shader decoder input");
 		return false;
 	}
 
-	program->instructions.clear();
-	program->code = code;
+	program.instructions.clear();
+	program.code = code;
 
 	std::set<uint32_t> branch_targets;
 	for (uint32_t word_index = 0; word_index < code.size();) {
@@ -358,30 +344,30 @@ bool DecodeProgram(std::span<const uint32_t> code, Program* program, std::string
 		Instruction inst;
 		bool        ok = false;
 		if ((word & 0x80000000u) == 0u) {
-			ok = DecodeVop2(pc, code, word_index, &inst, error);
+			ok = DecodeVop2(pc, code, word_index, inst, error);
 		} else if ((word & 0xc0000000u) == 0x80000000u) {
 			const auto opcode = (word >> 23u) & 0x7fu;
 			switch (opcode) {
-				case 0x7du: ok = DecodeSop1(pc, code, word_index, &inst, error); break;
-				case 0x7eu: ok = DecodeSopc(pc, code, word_index, &inst, error); break;
-				case 0x7fu: ok = DecodeSopp(pc, code, word_index, &inst, error); break;
+				case 0x7du: ok = DecodeSop1(pc, code, word_index, inst, error); break;
+				case 0x7eu: ok = DecodeSopc(pc, code, word_index, inst, error); break;
+				case 0x7fu: ok = DecodeSopp(pc, code, word_index, inst, error); break;
 				default:
-					ok = opcode >= 0x60u ? DecodeSopk(pc, code, word_index, &inst, error)
-					                     : DecodeSop2(pc, code, word_index, &inst, error);
+					ok = opcode >= 0x60u ? DecodeSopk(pc, code, word_index, inst, error)
+					                     : DecodeSop2(pc, code, word_index, inst, error);
 					break;
 			}
 		} else {
 			switch (word >> 26u) {
-				case 0x32u: ok = DecodeVintrp(pc, code, word_index, &inst, error); break;
-				case 0x33u: ok = DecodeVop3p(pc, code, word_index, &inst, error); break;
-				case 0x35u: ok = DecodeVop3(pc, code, word_index, &inst, error); break;
-				case 0x36u: ok = DecodeDs(pc, code, word_index, &inst, error); break;
-				case 0x37u: ok = DecodeFlat(pc, code, word_index, &inst, error); break;
-				case 0x38u: ok = DecodeMubuf(pc, code, word_index, &inst, error); break;
-				case 0x3au: ok = DecodeMtbuf(pc, code, word_index, &inst, error); break;
-				case 0x3cu: ok = DecodeMimg(pc, code, word_index, &inst, error); break;
-				case 0x3du: ok = DecodeSmem(pc, code, word_index, &inst, error); break;
-				case 0x3eu: ok = DecodeExp(pc, code, word_index, &inst, error); break;
+				case 0x32u: ok = DecodeVintrp(pc, code, word_index, inst, error); break;
+				case 0x33u: ok = DecodeVop3p(pc, code, word_index, inst, error); break;
+				case 0x35u: ok = DecodeVop3(pc, code, word_index, inst, error); break;
+				case 0x36u: ok = DecodeDs(pc, code, word_index, inst, error); break;
+				case 0x37u: ok = DecodeFlat(pc, code, word_index, inst, error); break;
+				case 0x38u: ok = DecodeMubuf(pc, code, word_index, inst, error); break;
+				case 0x3au: ok = DecodeMtbuf(pc, code, word_index, inst, error); break;
+				case 0x3cu: ok = DecodeMimg(pc, code, word_index, inst, error); break;
+				case 0x3du: ok = DecodeSmem(pc, code, word_index, inst, error); break;
+				case 0x3eu: ok = DecodeExp(pc, code, word_index, inst, error); break;
 				default:
 					if (error != nullptr) {
 						*error = fmt::format(
@@ -396,7 +382,7 @@ bool DecodeProgram(std::span<const uint32_t> code, Program* program, std::string
 			return false;
 		}
 
-		program->instructions.push_back(inst);
+		program.instructions.push_back(inst);
 		word_index += inst.word_count;
 
 		if (IsControlFlowBranch(inst.opcode)) {

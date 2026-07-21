@@ -6,12 +6,11 @@
 namespace Libs::Graphics {
 
 bool ShaderMaterializeStageRuntime(std::shared_ptr<const ShaderRecompiler::IR::Program> program,
-                                   std::span<const uint32_t> user_data, uint64_t shader_base,
-                                   ShaderStageRuntime* stage, std::string* error) {
-	if (program == nullptr || stage == nullptr) {
+	                               std::span<const uint32_t> user_data, uint64_t shader_base,
+	                               ShaderStageRuntime& stage, std::string* error) {
+	if (program == nullptr) {
 		if (error != nullptr) {
-			*error =
-			    program == nullptr ? "missing native shader plan" : "missing shader stage output";
+			*error = "missing native shader plan";
 		}
 		return false;
 	}
@@ -19,13 +18,13 @@ bool ShaderMaterializeStageRuntime(std::shared_ptr<const ShaderRecompiler::IR::P
 	runtime.user_data   = user_data;
 	runtime.shader_base = shader_base;
 	ShaderRecompiler::IR::ResourceSnapshot snapshot;
-	if (!ShaderRecompiler::IR::MaterializeResources(*program, runtime, &snapshot, error) ||
+	if (!ShaderRecompiler::IR::MaterializeResources(*program, runtime, snapshot, error) ||
 	    !ShaderRecompiler::IR::ValidateResourceSpecialization(*program, snapshot, error)) {
 		return false;
 	}
 	auto resources =
 	    std::make_shared<const ShaderRecompiler::IR::ResourceSnapshot>(std::move(snapshot));
-	*stage = {std::move(program), std::move(resources)};
+	stage = {std::move(program), std::move(resources)};
 	return true;
 }
 

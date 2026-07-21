@@ -5,7 +5,7 @@
 
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
 
-bool DecodeExp(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction* inst,
+bool DecodeExp(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction& inst,
                std::string* error);
 
 } // namespace Libs::Graphics::ShaderRecompiler::Decoder

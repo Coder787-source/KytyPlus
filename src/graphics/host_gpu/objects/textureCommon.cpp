@@ -5,6 +5,7 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/transfer.h"
 #include "graphics/host_gpu/vma.h"
 #include "graphics/host_gpu/vulkanCommon.h"
@@ -240,25 +241,26 @@ vk::ComponentMapping TextureGetComponentMapping(uint32_t swizzle) {
 	return components;
 }
 
-bool TextureCheckFormat(GraphicContext* ctx, vk::ImageCreateInfo* image_info) {
+bool TextureCheckFormat(vk::ImageCreateInfo& image_info) {
+	auto& graphics = GetRenderContext().GetGraphics();
 	vk::ImageFormatProperties props {};
-	if (ctx->GetImageFormatProperties(image_info->format, image_info->imageType, image_info->tiling,
-	                                  image_info->usage, image_info->flags,
-	                                  &props) == vk::Result::eErrorFormatNotSupported) {
+	if (graphics.GetImageFormatProperties(image_info.format, image_info.imageType,
+	                                      image_info.tiling, image_info.usage, image_info.flags,
+	                                      &props) == vk::Result::eErrorFormatNotSupported) {
 		auto apply_fallback = [&](vk::Format replacement, const char* message) {
-			image_info->format = replacement;
-			const bool result  = TextureCheckFormat(ctx, image_info);
+			image_info.format = replacement;
+			const bool result = TextureCheckFormat(image_info);
 			LOGF("%s [%s]\n", message, (!result ? "FAIL" : "SUCCESS"));
 			return result;
 		};
 
-		if (image_info->format == vk::Format::eR8G8B8A8Srgb) {
+		if (image_info.format == vk::Format::eR8G8B8A8Srgb) {
 			// TODO() convert SRGB -> LINEAR in shader
 			return apply_fallback(
 			    vk::Format::eR8G8B8A8Unorm,
 			    "replace vk::Format::eR8G8B8A8Srgb => vk::Format::eR8G8B8A8Unorm");
 		}
-		if (image_info->format == vk::Format::eB8G8R8A8Srgb) {
+		if (image_info.format == vk::Format::eB8G8R8A8Srgb) {
 			// TODO() convert SRGB -> LINEAR in shader
 			return apply_fallback(
 			    vk::Format::eB8G8R8A8Unorm,
@@ -269,34 +271,31 @@ bool TextureCheckFormat(GraphicContext* ctx, vk::ImageCreateInfo* image_info) {
 	return true;
 }
 
-static bool TextureCheckFormatExact(GraphicContext* ctx, const vk::ImageCreateInfo& image_info) {
+static bool TextureCheckFormatExact(const vk::ImageCreateInfo& image_info) {
+	auto& graphics = GetRenderContext().GetGraphics();
 	vk::ImageFormatProperties props {};
-	return ctx->GetImageFormatProperties(image_info.format, image_info.imageType, image_info.tiling,
-	                                     image_info.usage, image_info.flags,
-	                                     &props) != vk::Result::eErrorFormatNotSupported;
+	return graphics.GetImageFormatProperties(image_info.format, image_info.imageType,
+	                                         image_info.tiling, image_info.usage, image_info.flags,
+	                                         &props) != vk::Result::eErrorFormatNotSupported;
 }
 
-bool TextureCheckStorageSwizzle(vk::ImageCreateInfo* image_info, vk::ComponentMapping* components) {
-	if (image_info->usage & vk::ImageUsageFlagBits::eStorage) {
-		if (components->r == vk::ComponentSwizzle::eR &&
-		    components->g == vk::ComponentSwizzle::eG &&
-		    components->b == vk::ComponentSwizzle::eB &&
-		    components->a == vk::ComponentSwizzle::eA) {
+bool TextureCheckStorageSwizzle(vk::ImageCreateInfo& image_info, vk::ComponentMapping& components) {
+	if (image_info.usage & vk::ImageUsageFlagBits::eStorage) {
+		if (components.r == vk::ComponentSwizzle::eR && components.g == vk::ComponentSwizzle::eG &&
+		    components.b == vk::ComponentSwizzle::eB && components.a == vk::ComponentSwizzle::eA) {
 			return true;
 		}
 
-		if (components->r == vk::ComponentSwizzle::eB &&
-		    components->g == vk::ComponentSwizzle::eG &&
-		    components->b == vk::ComponentSwizzle::eR &&
-		    components->a == vk::ComponentSwizzle::eA &&
-		    image_info->format == vk::Format::eR8G8B8A8Srgb) {
+		if (components.r == vk::ComponentSwizzle::eB && components.g == vk::ComponentSwizzle::eG &&
+		    components.b == vk::ComponentSwizzle::eR && components.a == vk::ComponentSwizzle::eA &&
+		    image_info.format == vk::Format::eR8G8B8A8Srgb) {
 			LOGF("replace vk::Format::eR8G8B8A8Srgb => vk::Format::eB8G8R8A8Srgb\n");
 
-			components->r      = vk::ComponentSwizzle::eR;
-			components->g      = vk::ComponentSwizzle::eG;
-			components->b      = vk::ComponentSwizzle::eB;
-			components->a      = vk::ComponentSwizzle::eA;
-			image_info->format = vk::Format::eB8G8R8A8Srgb;
+			components.r      = vk::ComponentSwizzle::eR;
+			components.g      = vk::ComponentSwizzle::eG;
+			components.b      = vk::ComponentSwizzle::eB;
+			components.a      = vk::ComponentSwizzle::eA;
+			image_info.format = vk::Format::eB8G8R8A8Srgb;
 			return true;
 		}
 
@@ -413,10 +412,9 @@ bool TextureCanCreateCubeView(uint64_t type, uint32_t base_array, uint32_t layer
 	       layer_count % 6u == 0;
 }
 
-vk::ComponentMapping TextureCreateImage(GraphicContext* ctx, VulkanImage* vk_obj,
+vk::ComponentMapping TextureCreateImage(VulkanImage& vk_obj,
                                         const TextureImageCreateParams& params) {
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(vk_obj == nullptr);
+	auto& graphics = GetRenderContext().GetGraphics();
 	EXIT_IF(params.owner == nullptr);
 
 	const bool array_texture  = TextureIsLayeredTexture(params.type);
@@ -474,7 +472,7 @@ vk::ComponentMapping TextureCreateImage(GraphicContext* ctx, VulkanImage* vk_obj
 	image_info.samples       = vk::SampleCountFlagBits::e1;
 
 	const bool storage_view = TextureHasFormatUsage(params.view_usage, TextureFormatUsage::Storage);
-	if (storage_view && !TextureCheckStorageSwizzle(&image_info, &components)) {
+	if (storage_view && !TextureCheckStorageSwizzle(image_info, components)) {
 		if (!params.storage_swizzle_fallback) {
 			EXIT("swizzle is not supported");
 		}
@@ -494,11 +492,11 @@ vk::ComponentMapping TextureCreateImage(GraphicContext* ctx, VulkanImage* vk_obj
 	const auto requested_usage     = params.format_usage;
 	const auto required_usage      = params.required_format_usage;
 	const bool has_optional_usage  = static_cast<uint32_t>(requested_usage & ~required_usage) != 0;
-	if (!TextureCheckFormatExact(ctx, image_info) && has_optional_usage) {
+	if (!TextureCheckFormatExact(image_info) && has_optional_usage) {
 		auto required_info   = image_info;
 		required_info.usage  = TextureGetUsage(required_usage);
 		required_info.format = view_checked_format;
-		if (TextureCheckFormatExact(ctx, required_info)) {
+		if (TextureCheckFormatExact(required_info)) {
 			static std::atomic_uint log_count {0};
 			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
 				LOGF("\t %s usage 0x%08x is not supported for format %d, using required "
@@ -511,39 +509,38 @@ vk::ComponentMapping TextureCreateImage(GraphicContext* ctx, VulkanImage* vk_obj
 		}
 	}
 
-	if (!TextureCheckFormat(ctx, &image_info)) {
+	if (!TextureCheckFormat(image_info)) {
 		if (has_optional_usage) {
 			image_info.format = view_checked_format;
 			image_info.usage  = TextureGetUsage(required_usage);
 		}
-		if (!has_optional_usage || !TextureCheckFormat(ctx, &image_info)) {
+		if (!has_optional_usage || !TextureCheckFormat(image_info)) {
 			EXIT("format is not supported");
 		}
 	}
 
-	vk_obj->extent.width  = image_info.extent.width;
-	vk_obj->extent.height = image_info.extent.height;
-	vk_obj->layers        = image_info.arrayLayers;
-	vk_obj->mip_levels    = image_info.mipLevels;
-	vk_obj->format        = image_info.format;
-	vk_obj->image         = nullptr;
-	vk_obj->layout        = image_info.initialLayout;
+	vk_obj.extent.width  = image_info.extent.width;
+	vk_obj.extent.height = image_info.extent.height;
+	vk_obj.layers        = image_info.arrayLayers;
+	vk_obj.mip_levels    = image_info.mipLevels;
+	vk_obj.format        = image_info.format;
+	vk_obj.image         = nullptr;
+	vk_obj.layout        = image_info.initialLayout;
 
-	vk_obj->memory.property = vk::MemoryPropertyFlagBits::eDeviceLocal;
+	vk_obj.memory.property = vk::MemoryPropertyFlagBits::eDeviceLocal;
 
-	bool created = VulkanCreateImage(ctx, image_info, vk_obj);
+	bool created = graphics.CreateImage(image_info, vk_obj);
 	EXIT_NOT_IMPLEMENTED(!created);
 
 	return components;
 }
 
-void TextureCreateImageViews(GraphicContext* ctx, VulkanImage* vk_obj,
+void TextureCreateImageViews(VulkanImage& vk_obj,
                              vk::ComponentMapping components, uint64_t type, uint32_t base_array,
                              uint32_t base_level, uint32_t level_count, uint32_t depth,
                              bool allow_cube_view, TextureFormatUsage view_usage) {
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(vk_obj == nullptr);
-	EXIT_IF(level_count == 0 || base_level + level_count > vk_obj->mip_levels);
+	auto& graphics = GetRenderContext().GetGraphics();
+	EXIT_IF(level_count == 0 || base_level + level_count > vk_obj.mip_levels);
 
 	const bool layered_texture = TextureIsLayeredTexture(type);
 	const bool volume_texture  = TextureIs3DTexture(type);
@@ -559,9 +556,9 @@ void TextureCreateImageViews(GraphicContext* ctx, VulkanImage* vk_obj,
 	create_info.sType                           = vk::StructureType::eImageViewCreateInfo;
 	create_info.pNext                           = (usage_info.usage ? &usage_info : nullptr);
 	create_info.flags                           = {};
-	create_info.image                           = vk_obj->image;
+	create_info.image                           = vk_obj.image;
 	create_info.viewType                        = vk::ImageViewType::e2D;
-	create_info.format                          = vk_obj->format;
+	create_info.format                          = vk_obj.format;
 	create_info.components                      = components;
 	create_info.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
 	create_info.subresourceRange.baseArrayLayer = (layered_texture ? base_array : 0);
@@ -581,8 +578,8 @@ void TextureCreateImageViews(GraphicContext* ctx, VulkanImage* vk_obj,
 
 	auto create_view = [&](int index) {
 		const auto result =
-		    ctx->device.createImageView(&create_info, nullptr, &vk_obj->image_view[index]);
-		if (result != vk::Result::eSuccess || vk_obj->image_view[index] == nullptr) {
+		    graphics.device.createImageView(&create_info, nullptr, &vk_obj.image_view[index]);
+		if (result != vk::Result::eSuccess || vk_obj.image_view[index] == nullptr) {
 			EXIT("failed to create texture image view: result=%d format=%d index=%d\n",
 			     static_cast<int>(result), static_cast<int>(create_info.format), index);
 		}
@@ -854,7 +851,7 @@ static uint64_t FmaskRegionCopySize(const BufferImageCopy& region) {
 	       sizeof(uint32_t);
 }
 
-static void UploadFmaskIdentity(GraphicContext* ctx, VulkanImage* vk_obj,
+static void UploadFmaskIdentity(VulkanImage& vk_obj,
                                 const std::vector<BufferImageCopy>& regions,
                                 vk::ImageLayout dst_layout, const char* owner) {
 	constexpr uint32_t kIdentityFmaskPattern = 0x76543210u;
@@ -878,7 +875,8 @@ static void UploadFmaskIdentity(GraphicContext* ctx, VulkanImage* vk_obj,
 		words[i] = kIdentityFmaskPattern;
 	}
 
-	Transfer::UploadImage(ctx, vk_obj, temp_buf.Data(), upload_size, upload_regions, dst_layout);
+	Transfer::UploadImage(vk_obj, temp_buf.Data(), upload_size, upload_regions,
+	                      dst_layout);
 }
 
 struct GpuTileElementLayout {
@@ -887,31 +885,30 @@ struct GpuTileElementLayout {
 	uint32_t tall  = 1;
 };
 
-static bool GetGpuTileElementLayout(uint32_t fmt, GpuTileElementLayout* out) {
-	EXIT_IF(out == nullptr);
+static bool GetGpuTileElementLayout(uint32_t fmt, GpuTileElementLayout& out) {
 	if (const auto bytes = Prospero::NumBytesPerElement(fmt); bytes != 0) {
-		*out = {bytes, 1, 1};
+		out = {bytes, 1, 1};
 		return true;
 	}
 	if (const auto bytes = Prospero::BlockCompressedBytesPerBlock(fmt); bytes != 0) {
-		*out = {bytes, 4, 4};
+		out = {bytes, 4, 4};
 		return true;
 	}
 	return false;
 }
 
-static bool SetGpuTileSize(uint64_t offset, uint64_t length, uint64_t capacity, uint64_t* size) {
-	if (size == nullptr || offset > capacity || length > capacity - offset) {
+static bool SetGpuTileSize(uint64_t offset, uint64_t length, uint64_t capacity, uint64_t& size) {
+	if (offset > capacity || length > capacity - offset) {
 		return false;
 	}
-	*size = length;
+	size = length;
 	return true;
 }
 
 bool TextureBuildGpuTileInfos(uint64_t size, const std::vector<BufferImageCopy>& regions,
                               const TextureUploadLayout& layout, uint32_t fmt, uint32_t depth,
-                              uint64_t levels, std::vector<GpuTileInfo>* out_infos) {
-	if (out_infos == nullptr || size == 0 || levels == 0 || levels > 16 || depth == 0 ||
+                              uint64_t levels, std::vector<GpuTileInfo>& out_infos) {
+	if (size == 0 || levels == 0 || levels > 16 || depth == 0 ||
 	    regions.size() != GetTextureRegionCount(depth, levels, layout.volume_texture) ||
 	    Prospero::IsFmaskTextureFormat(fmt)) {
 		return false;
@@ -921,7 +918,7 @@ bool TextureBuildGpuTileInfos(uint64_t size, const std::vector<BufferImageCopy>&
 	if (layout.tile_family == TileBlockFamily::RenderTarget64KB ||
 	    layout.tile_family == TileBlockFamily::Depth64KB) {
 		element.bytes = Prospero::RenderTargetBytesPerElement(fmt);
-	} else if (!GetGpuTileElementLayout(fmt, &element)) {
+	} else if (!GetGpuTileElementLayout(fmt, element)) {
 		return false;
 	}
 	if (element.bytes == 0) {
@@ -933,12 +930,12 @@ bool TextureBuildGpuTileInfos(uint64_t size, const std::vector<BufferImageCopy>&
 	if (layout.volume_texture) {
 		TileVolumeLayout volume {};
 		if (!TileGetTextureVolumeLayout(fmt, regions[0].width, regions[0].height, depth,
-		                                static_cast<uint32_t>(levels), layout.tile, &volume)) {
+		                                static_cast<uint32_t>(levels), layout.tile, volume)) {
 			return false;
 		}
 		element = {volume.bytes_per_element, volume.texel_width, volume.texel_height};
 		TileBlockLayout block {};
-		if (!TileGetBlockLayout(volume.family, element.bytes, &block)) return false;
+		if (!TileGetBlockLayout(volume.family, element.bytes, block)) return false;
 
 		size_t region_base = 0;
 		for (uint32_t level = 0; level < levels; ++level) {
@@ -958,9 +955,9 @@ bool TextureBuildGpuTileInfos(uint64_t size, const std::vector<BufferImageCopy>&
 				const uint64_t linear_span =
 				    static_cast<uint64_t>(copy_depth - 1u) * linear_stride +
 				    layout.level_sizes[level].size;
-				if (!SetGpuTileSize(info.linear_offset, linear_span, size, &info.linear_size) ||
+				if (!SetGpuTileSize(info.linear_offset, linear_span, size, info.linear_size) ||
 				    !SetGpuTileSize(info.tiled_offset, volume.level_sizes[level], size,
-				                    &info.tiled_size)) {
+				                    info.tiled_size)) {
 					return false;
 				}
 				info.linear_slice_stride = linear_stride;
@@ -990,7 +987,7 @@ bool TextureBuildGpuTileInfos(uint64_t size, const std::vector<BufferImageCopy>&
 			const bool      tail       = level >= layout.first_tail_level;
 			const auto      family     = base_family;
 			TileBlockLayout block {};
-			if (!TileGetBlockLayout(family, element.bytes, &block)) {
+			if (!TileGetBlockLayout(family, element.bytes, block)) {
 				return false;
 			}
 			const auto level_depth = GetTextureLevelDepth(depth, level, layout.volume_texture);
@@ -1001,9 +998,9 @@ bool TextureBuildGpuTileInfos(uint64_t size, const std::vector<BufferImageCopy>&
 				info.bytes_per_element = block.bytes_per_element;
 				info.linear_offset     = region.offset;
 				info.tiled_offset      = TextureUploadSliceSourceOffset(layout, level, z);
-				if (!SetGpuTileSize(info.linear_offset, level_size.size, size, &info.linear_size) ||
+				if (!SetGpuTileSize(info.linear_offset, level_size.size, size, info.linear_size) ||
 				    !SetGpuTileSize(info.tiled_offset, GetLevelSrcSize(level_size), size,
-				                    &info.tiled_size)) {
+				                    info.tiled_size)) {
 					return false;
 				}
 				info.width     = std::max((region.width + element.wide - 1u) / element.wide, 1u);
@@ -1036,11 +1033,11 @@ bool TextureBuildGpuTileInfos(uint64_t size, const std::vector<BufferImageCopy>&
 	if (infos.empty()) {
 		return false;
 	}
-	*out_infos = std::move(infos);
+	out_infos = std::move(infos);
 	return true;
 }
 
-void TextureUploadGuestImage(GraphicContext* ctx, VulkanImage* vk_obj, const void* src_data,
+void TextureUploadGuestImage(VulkanImage& vk_obj, const void* src_data,
                              uint64_t size, const std::vector<BufferImageCopy>& regions,
                              const TextureUploadLayout& layout, uint32_t fmt, uint64_t width,
                              uint64_t height, uint32_t depth, uint64_t levels, const char* owner,
@@ -1051,21 +1048,21 @@ void TextureUploadGuestImage(GraphicContext* ctx, VulkanImage* vk_obj, const voi
 		     owner, layout.tile, size, width, height, depth, layout.pitch, levels);
 	}
 	if (static_cast<Prospero::TileMode>(layout.tile) == Prospero::TileMode::kLinear) {
-		Transfer::UploadImage(ctx, vk_obj, src_data, size, regions, dst_layout);
+		Transfer::UploadImage(vk_obj, src_data, size, regions, dst_layout);
 		return;
 	}
 	if (layout.tile_family == TileBlockFamily::Depth64KB && Prospero::IsFmaskTextureFormat(fmt)) {
-		UploadFmaskIdentity(ctx, vk_obj, regions, dst_layout, owner);
+		UploadFmaskIdentity(vk_obj, regions, dst_layout, owner);
 		return;
 	}
 
 	std::vector<GpuTileInfo> infos;
-	if (!TextureBuildGpuTileInfos(size, regions, layout, fmt, depth, levels, &infos)) {
+	if (!TextureBuildGpuTileInfos(size, regions, layout, fmt, depth, levels, infos)) {
 		EXIT("%s: GPU tiled upload unsupported: fmt=%u tile=%u size=%" PRIu64 " extent=%" PRIu64
 		     "x%" PRIu64 " depth=%u pitch=%u levels=%" PRIu64 "\n",
 		     owner, fmt, layout.tile, size, width, height, depth, layout.pitch, levels);
 	}
-	Transfer::UploadTiledImage(ctx, vk_obj, src_data, size, size, infos, regions, dst_layout);
+	Transfer::UploadTiledImage(vk_obj, src_data, size, size, infos, regions, dst_layout);
 }
 
 } // namespace Libs::Graphics

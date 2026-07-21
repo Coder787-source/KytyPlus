@@ -14,9 +14,13 @@
 
 namespace Libs::Graphics {
 
+struct GraphicContext;
+
 class SamplerCache {
 public:
-	SamplerCache() { EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread()); }
+	explicit SamplerCache(GraphicContext& graphics): m_graphics(graphics) {
+		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+	}
 	~SamplerCache() { KYTY_NOT_IMPLEMENTED; }
 	KYTY_CLASS_NO_COPY(SamplerCache);
 
@@ -37,6 +41,7 @@ private:
 		}
 	};
 
+	GraphicContext&                                             m_graphics;
 	Common::Mutex                                               m_mutex;
 	std::unordered_map<SamplerKey, vk::Sampler, SamplerKeyHash> m_samplers;
 };

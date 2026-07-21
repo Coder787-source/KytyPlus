@@ -2,7 +2,6 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
-#include "graphics/presentation/window.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 
@@ -10,38 +9,11 @@
 
 namespace Libs::Graphics {
 
-void RenderContext::SetGraphicCtx(GraphicContext* ctx) {
-	EXIT_IF(ctx == nullptr);
-
-	Common::LockGuard lock(m_graphic_ctx_mutex);
-
-	m_graphic_ctx = ctx;
-}
-
-GraphicContext* RenderContext::GetGraphicCtx() {
-	{
-		Common::LockGuard lock(m_graphic_ctx_mutex);
-		if (m_graphic_ctx != nullptr) {
-			return m_graphic_ctx;
-		}
-	}
-
-	WindowWaitForGraphicInitialized();
-
-	auto* ctx = WindowGetGraphicContext();
-	LOGF("Graphic context initialized\n ctx = %p\n", static_cast<void*>(ctx));
-	EXIT_IF(ctx == nullptr);
-
-	GraphicContext* ret = nullptr;
-	{
-		Common::LockGuard lock(m_graphic_ctx_mutex);
-		if (m_graphic_ctx == nullptr) {
-			m_graphic_ctx = ctx;
-		}
-		ret = m_graphic_ctx;
-	}
-
-	return ret;
+RenderContext::RenderContext(GraphicContext& graphics)
+    : m_graphics(graphics), m_pipeline_cache(graphics), m_descriptor_cache(graphics),
+      m_framebuffer_cache(graphics), m_sampler_cache(graphics), m_gds_buffer(graphics),
+      m_gpu_resources(graphics) {
+	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 }
 
 void RenderContext::AddEopEq(LibKernel::EventQueue::KernelEqueue eq, int id) {

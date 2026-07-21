@@ -21,6 +21,7 @@
 #include <array>
 #include <bit>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -86,17 +87,17 @@ struct Resources {
 	void*                                    mapped = nullptr;
 };
 
-bool CheckedAdd(uint64_t a, uint64_t b, uint64_t* result) {
-	return b <= UINT64_MAX - a && (*result = a + b, true);
+bool CheckedAdd(uint64_t a, uint64_t b, uint64_t& result) {
+	return b <= UINT64_MAX - a && (result = a + b, true);
 }
 
-bool CheckedMultiply(uint64_t a, uint64_t b, uint64_t* result) {
-	return (a == 0 || b <= UINT64_MAX / a) && (*result = a * b, true);
+bool CheckedMultiply(uint64_t a, uint64_t b, uint64_t& result) {
+	return (a == 0 || b <= UINT64_MAX / a) && (result = a * b, true);
 }
 
-bool CheckedAddProduct(uint64_t* value, uint64_t count, uint64_t stride) {
+bool CheckedAddProduct(uint64_t& value, uint64_t count, uint64_t stride) {
 	uint64_t bytes = 0;
-	return CheckedMultiply(count, stride, &bytes) && CheckedAdd(*value, bytes, value);
+	return CheckedMultiply(count, stride, bytes) && CheckedAdd(value, bytes, value);
 }
 
 bool IsRangeValid(uint64_t offset, uint64_t size, uint64_t capacity) {
@@ -129,53 +130,51 @@ void Barrier(vk::CommandBuffer command, vk::Buffer buffer, vk::AccessFlags src_a
 	command.pipelineBarrier(src_stage, dst_stage, {}, 0, nullptr, 1, &barrier, 0, nullptr);
 }
 
-class Tiler final {
+class TileCompute final {
 public:
-	void Run(bool to_tiled, GraphicContext* context, const void* input, void* output,
-	         uint64_t tiled_capacity, uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
+	explicit TileCompute(GraphicContext& graphics): graphics(graphics) {}
+	void Run(bool to_tiled, const void* input, void* output, uint64_t tiled_capacity,
+	         uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
 	         const GpuTileRecord& record);
-	void Release(GraphicContext* context);
+	void Release();
 
 private:
-	void Prepare(bool to_tiled, GraphicContext* context, uint64_t tiled_capacity,
-	             uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
-	             std::vector<Dispatch>* dispatches) const;
-	void Init(GraphicContext* context);
+	void Prepare(bool to_tiled, uint64_t tiled_capacity, uint64_t linear_capacity,
+	             std::span<const GpuTileInfo> infos, std::vector<Dispatch>& dispatches) const;
+	void Init();
 	void CreatePipelines(std::span<const Dispatch> dispatches);
 	void CreatePipeline(uint32_t pipeline_slot);
 	void Resize(uint64_t staging_size, uint64_t linear_size);
-	void CreateBuffer(uint64_t size, bool mapped, VulkanBuffer* buffer, void** data) const;
+	void CreateBuffer(uint64_t size, bool mapped, VulkanBuffer& buffer, void** data) const;
 	void Execute(bool to_tiled, const void* input, void* output, uint64_t tiled_capacity,
 	             uint64_t linear_capacity, std::span<const Dispatch> dispatches,
 	             const GpuTileRecord& record);
-	void Destroy(Resources* target) const;
+	void Destroy(Resources& target) const;
 
-	Common::Mutex   mutex;
-	GraphicContext* ctx = nullptr;
+	GraphicContext& graphics;
 	Resources       resources;
 };
 
-Tiler g_tiler;
+Common::Mutex                g_tiler_mutex;
+std::unique_ptr<TileCompute> g_tiler;
 
-void Tiler::Prepare(bool to_tiled, GraphicContext* context, uint64_t tiled_capacity,
-                    uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
-                    std::vector<Dispatch>* dispatches) const {
-	EXIT_IF(context == nullptr || g_render_ctx == nullptr ||
-	        g_render_ctx->GetGraphicCtx() != context || infos.empty() || tiled_capacity == 0 ||
-	        linear_capacity == 0);
-	const auto& limits = context->GetPhysicalDeviceProperties().limits;
+void TileCompute::Prepare(bool to_tiled, uint64_t tiled_capacity, uint64_t linear_capacity,
+                          std::span<const GpuTileInfo> infos,
+                          std::vector<Dispatch>&       dispatches) const {
+	EXIT_IF(infos.empty() || tiled_capacity == 0 || linear_capacity == 0);
+	const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
 	EXIT_NOT_IMPLEMENTED(tiled_capacity > UINT32_MAX || linear_capacity > UINT32_MAX ||
 	                     AlignToDword(tiled_capacity) > limits.maxStorageBufferRange ||
 	                     AlignToDword(linear_capacity) > limits.maxStorageBufferRange);
 
-	dispatches->clear();
-	dispatches->reserve(infos.size());
+	dispatches.clear();
+	dispatches.reserve(infos.size());
 	for (const auto& info: infos) {
 		TileBlockLayout block {};
 		const uint32_t  tiled_width  = info.tiled_width != 0 ? info.tiled_width : info.pitch;
 		const uint32_t  tiled_height = info.tiled_height != 0 ? info.tiled_height : info.height;
 		EXIT_NOT_IMPLEMENTED(
-		    !TileGetBlockLayout(info.family, info.bytes_per_element, &block) || info.width == 0 ||
+		    !TileGetBlockLayout(info.family, info.bytes_per_element, block) || info.width == 0 ||
 		    info.height == 0 || info.depth == 0 || info.pitch < info.width ||
 		    (!info.tail && (tiled_width < info.width || tiled_height < info.height)) ||
 		    !IsRangeValid(info.linear_offset, info.linear_size, linear_capacity) ||
@@ -183,19 +182,19 @@ void Tiler::Prepare(bool to_tiled, GraphicContext* context, uint64_t tiled_capac
 		    (block.block_depth == 1 && info.depth != 1));
 
 		uint64_t elements = 0, pitch_bytes = 0;
-		EXIT_NOT_IMPLEMENTED(!CheckedMultiply(info.width, info.height, &elements) ||
-		                     !CheckedMultiply(elements, info.depth, &elements) ||
-		                     !CheckedMultiply(info.pitch, info.bytes_per_element, &pitch_bytes) ||
+		EXIT_NOT_IMPLEMENTED(!CheckedMultiply(info.width, info.height, elements) ||
+		                     !CheckedMultiply(elements, info.depth, elements) ||
+		                     !CheckedMultiply(info.pitch, info.bytes_per_element, pitch_bytes) ||
 		                     elements > UINT32_MAX || pitch_bytes > UINT32_MAX);
 		uint64_t slice_bytes = info.linear_slice_stride;
 		EXIT_NOT_IMPLEMENTED(slice_bytes == 0 &&
-		                     !CheckedMultiply(pitch_bytes, info.height, &slice_bytes));
+		                     !CheckedMultiply(pitch_bytes, info.height, slice_bytes));
 		uint64_t linear_used = 0, minimum_slice = 0;
-		EXIT_NOT_IMPLEMENTED(!CheckedMultiply(pitch_bytes, info.height, &minimum_slice) ||
+		EXIT_NOT_IMPLEMENTED(!CheckedMultiply(pitch_bytes, info.height, minimum_slice) ||
 		                     (info.depth > 1 && slice_bytes < minimum_slice) ||
-		                     !CheckedAddProduct(&linear_used, info.depth - 1u, slice_bytes) ||
-		                     !CheckedAddProduct(&linear_used, info.height - 1u, pitch_bytes) ||
-		                     !CheckedAddProduct(&linear_used, info.width, info.bytes_per_element) ||
+		                     !CheckedAddProduct(linear_used, info.depth - 1u, slice_bytes) ||
+		                     !CheckedAddProduct(linear_used, info.height - 1u, pitch_bytes) ||
+		                     !CheckedAddProduct(linear_used, info.width, info.bytes_per_element) ||
 		                     linear_used > info.linear_size || slice_bytes > UINT32_MAX);
 
 		const uint64_t columns =
@@ -203,7 +202,7 @@ void Tiler::Prepare(bool to_tiled, GraphicContext* context, uint64_t tiled_capac
 		const uint64_t rows =
 		    (static_cast<uint64_t>(tiled_height) + block.block_height - 1u) / block.block_height;
 		uint64_t blocks_per_slice = 0;
-		EXIT_NOT_IMPLEMENTED(!CheckedMultiply(columns, rows, &blocks_per_slice) ||
+		EXIT_NOT_IMPLEMENTED(!CheckedMultiply(columns, rows, blocks_per_slice) ||
 		                     columns > UINT32_MAX || blocks_per_slice > UINT32_MAX ||
 		                     rows * block.block_height > UINT32_MAX);
 		if (info.tail) {
@@ -217,8 +216,8 @@ void Tiler::Prepare(bool to_tiled, GraphicContext* context, uint64_t tiled_capac
 			const uint64_t slices =
 			    (static_cast<uint64_t>(info.depth) + block.block_depth - 1u) / block.block_depth;
 			uint64_t tiled_used = 0;
-			EXIT_NOT_IMPLEMENTED(!CheckedMultiply(blocks_per_slice, slices, &tiled_used) ||
-			                     !CheckedMultiply(tiled_used, block.block_size, &tiled_used) ||
+			EXIT_NOT_IMPLEMENTED(!CheckedMultiply(blocks_per_slice, slices, tiled_used) ||
+			                     !CheckedMultiply(tiled_used, block.block_size, tiled_used) ||
 			                     tiled_used > info.tiled_size);
 		}
 		const uint32_t alignment = std::min(info.bytes_per_element, 4u);
@@ -243,47 +242,42 @@ void Tiler::Prepare(bool to_tiled, GraphicContext* context, uint64_t tiled_capac
 		dispatch.push.tail_x           = info.tail_x;
 		dispatch.push.tail_y           = info.tail_y;
 		dispatch.push.tail             = info.tail;
-		dispatches->push_back(dispatch);
+		dispatches.push_back(dispatch);
 	}
 }
 
-void Tiler::Destroy(Resources* target) const {
-	if (ctx == nullptr) {
-		return;
+void TileCompute::Destroy(Resources& target) const {
+	if (target.mapped != nullptr) {
+		graphics.UnmapMemory(target.staging.memory);
 	}
-	if (target->mapped != nullptr) {
-		VulkanUnmapMemory(ctx, &target->staging.memory);
+	if (target.staging.buffer != nullptr) {
+		graphics.DeleteBuffer(target.staging);
 	}
-	if (target->staging.buffer != nullptr) {
-		VulkanDeleteBuffer(ctx, &target->staging);
+	if (target.linear.buffer != nullptr) {
+		graphics.DeleteBuffer(target.linear);
 	}
-	if (target->linear.buffer != nullptr) {
-		VulkanDeleteBuffer(ctx, &target->linear);
-	}
-	for (auto pipeline: target->pipelines) {
+	for (auto pipeline: target.pipelines) {
 		if (pipeline != nullptr) {
-			ctx->device.destroyPipeline(pipeline, nullptr);
+			graphics.device.destroyPipeline(pipeline, nullptr);
 		}
 	}
-	if (target->descriptor_pool != nullptr) {
-		ctx->device.destroyDescriptorPool(target->descriptor_pool, nullptr);
+	if (target.descriptor_pool != nullptr) {
+		graphics.device.destroyDescriptorPool(target.descriptor_pool, nullptr);
 	}
-	if (target->pipeline_layout != nullptr) {
-		ctx->device.destroyPipelineLayout(target->pipeline_layout, nullptr);
+	if (target.pipeline_layout != nullptr) {
+		graphics.device.destroyPipelineLayout(target.pipeline_layout, nullptr);
 	}
-	if (target->descriptor_layout != nullptr) {
-		ctx->device.destroyDescriptorSetLayout(target->descriptor_layout, nullptr);
+	if (target.descriptor_layout != nullptr) {
+		graphics.device.destroyDescriptorSetLayout(target.descriptor_layout, nullptr);
 	}
-	*target = {};
+	target = {};
 }
 
-void Tiler::Init(GraphicContext* context) {
+void TileCompute::Init() {
 	if (resources.pipeline_layout != nullptr) {
-		EXIT_IF(ctx != context);
 		return;
 	}
-	EXIT_IF(context == nullptr || context->device == nullptr || context->allocator == nullptr);
-	ctx = context;
+	EXIT_IF(graphics.device == nullptr || graphics.allocator == nullptr);
 	std::array<vk::DescriptorSetLayoutBinding, 2> bindings {};
 	for (uint32_t i = 0; i < bindings.size(); i++) {
 		bindings[i] = {i, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute,
@@ -293,8 +287,8 @@ void Tiler::Init(GraphicContext* context) {
 	descriptor_info.sType        = vk::StructureType::eDescriptorSetLayoutCreateInfo;
 	descriptor_info.bindingCount = static_cast<uint32_t>(bindings.size());
 	descriptor_info.pBindings    = bindings.data();
-	RequireVulkanSuccess(ctx->device.createDescriptorSetLayout(&descriptor_info, nullptr,
-	                                                           &resources.descriptor_layout),
+	RequireVulkanSuccess(graphics.device.createDescriptorSetLayout(&descriptor_info, nullptr,
+	                                                               &resources.descriptor_layout),
 	                     "create GPU tiler descriptor layout");
 
 	vk::PushConstantRange        push_range {vk::ShaderStageFlagBits::eCompute, 0, sizeof(Push)};
@@ -305,7 +299,7 @@ void Tiler::Init(GraphicContext* context) {
 	layout_info.pushConstantRangeCount = 1;
 	layout_info.pPushConstantRanges    = &push_range;
 	RequireVulkanSuccess(
-	    ctx->device.createPipelineLayout(&layout_info, nullptr, &resources.pipeline_layout),
+	    graphics.device.createPipelineLayout(&layout_info, nullptr, &resources.pipeline_layout),
 	    "create GPU tiler pipeline layout");
 	vk::DescriptorPoolSize       pool_size {vk::DescriptorType::eStorageBuffer, 2};
 	vk::DescriptorPoolCreateInfo pool_info {};
@@ -314,18 +308,19 @@ void Tiler::Init(GraphicContext* context) {
 	pool_info.poolSizeCount = 1;
 	pool_info.pPoolSizes    = &pool_size;
 	RequireVulkanSuccess(
-	    ctx->device.createDescriptorPool(&pool_info, nullptr, &resources.descriptor_pool),
+	    graphics.device.createDescriptorPool(&pool_info, nullptr, &resources.descriptor_pool),
 	    "create GPU tiler descriptor pool");
 	vk::DescriptorSetAllocateInfo set_info {};
 	set_info.sType              = vk::StructureType::eDescriptorSetAllocateInfo;
 	set_info.descriptorPool     = resources.descriptor_pool;
 	set_info.descriptorSetCount = 1;
 	set_info.pSetLayouts        = &resources.descriptor_layout;
-	RequireVulkanSuccess(ctx->device.allocateDescriptorSets(&set_info, &resources.descriptor_set),
-	                     "allocate GPU tiler descriptor set");
+	RequireVulkanSuccess(
+	    graphics.device.allocateDescriptorSets(&set_info, &resources.descriptor_set),
+	    "allocate GPU tiler descriptor set");
 }
 
-void Tiler::CreatePipeline(uint32_t pipeline_slot) {
+void TileCompute::CreatePipeline(uint32_t pipeline_slot) {
 	const uint32_t element_size_index     = pipeline_slot % BYTES_PER_ELEMENT_COUNT;
 	const uint32_t family_direction_index = pipeline_slot / BYTES_PER_ELEMENT_COUNT;
 	const uint32_t family_index           = family_direction_index % FAMILY_COUNT;
@@ -339,7 +334,7 @@ void Tiler::CreatePipeline(uint32_t pipeline_slot) {
 	module_info.codeSize    = SHADERS[family_index].words * sizeof(uint32_t);
 	module_info.pCode       = SHADERS[family_index].code;
 	vk::ShaderModule module = nullptr;
-	RequireVulkanSuccess(ctx->device.createShaderModule(&module_info, nullptr, &module),
+	RequireVulkanSuccess(graphics.device.createShaderModule(&module_info, nullptr, &module),
 	                     "create GPU tiler shader module");
 	vk::PipelineShaderStageCreateInfo stage {};
 	stage.sType               = vk::StructureType::ePipelineShaderStageCreateInfo;
@@ -352,13 +347,14 @@ void Tiler::CreatePipeline(uint32_t pipeline_slot) {
 	info.stage            = stage;
 	info.layout           = resources.pipeline_layout;
 	vk::Pipeline pipeline = nullptr;
-	const auto   result = ctx->device.createComputePipelines(nullptr, 1, &info, nullptr, &pipeline);
-	ctx->device.destroyShaderModule(module, nullptr);
+	const auto   result =
+	    graphics.device.createComputePipelines(nullptr, 1, &info, nullptr, &pipeline);
+	graphics.device.destroyShaderModule(module, nullptr);
 	RequireVulkanSuccess(result, "create GPU tiler pipeline");
 	resources.pipelines[pipeline_slot] = pipeline;
 }
 
-void Tiler::CreatePipelines(std::span<const Dispatch> dispatches) {
+void TileCompute::CreatePipelines(std::span<const Dispatch> dispatches) {
 	for (const auto& dispatch: dispatches) {
 		if (resources.pipelines[dispatch.pipeline_slot] == nullptr) {
 			CreatePipeline(dispatch.pipeline_slot);
@@ -366,18 +362,19 @@ void Tiler::CreatePipelines(std::span<const Dispatch> dispatches) {
 	}
 }
 
-void Tiler::CreateBuffer(uint64_t size, bool mapped, VulkanBuffer* buffer, void** data) const {
-	buffer->usage = vk::BufferUsageFlagBits::eStorageBuffer |
-	                vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
-	buffer->memory.property =
+void TileCompute::CreateBuffer(uint64_t size, bool mapped, VulkanBuffer& buffer,
+                               void** data) const {
+	buffer.usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+	               vk::BufferUsageFlagBits::eTransferDst;
+	buffer.memory.property =
 	    mapped
 	        ? vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
 	        : vk::MemoryPropertyFlags(vk::MemoryPropertyFlagBits::eDeviceLocal);
-	VulkanCreateBuffer(ctx, size, buffer);
-	if (mapped) VulkanMapMemory(ctx, &buffer->memory, data);
+	graphics.CreateBuffer(size, buffer);
+	if (mapped) graphics.MapMemory(buffer.memory, *data);
 }
 
-void Tiler::Resize(uint64_t staging_size, uint64_t linear_size) {
+void TileCompute::Resize(uint64_t staging_size, uint64_t linear_size) {
 	if (resources.staging.buffer_size >= staging_size &&
 	    resources.linear.buffer_size >= linear_size) {
 		return;
@@ -386,19 +383,19 @@ void Tiler::Resize(uint64_t staging_size, uint64_t linear_size) {
 	linear_size  = std::max(linear_size, resources.linear.buffer_size);
 	VulkanBuffer staging {}, linear {};
 	void*        mapped = nullptr;
-	CreateBuffer(staging_size, true, &staging, &mapped);
-	CreateBuffer(linear_size, false, &linear, nullptr);
-	if (resources.mapped != nullptr) VulkanUnmapMemory(ctx, &resources.staging.memory);
-	if (resources.staging.buffer != nullptr) VulkanDeleteBuffer(ctx, &resources.staging);
-	if (resources.linear.buffer != nullptr) VulkanDeleteBuffer(ctx, &resources.linear);
+	CreateBuffer(staging_size, true, staging, &mapped);
+	CreateBuffer(linear_size, false, linear, nullptr);
+	if (resources.mapped != nullptr) graphics.UnmapMemory(resources.staging.memory);
+	if (resources.staging.buffer != nullptr) graphics.DeleteBuffer(resources.staging);
+	if (resources.linear.buffer != nullptr) graphics.DeleteBuffer(resources.linear);
 	resources.staging = staging;
 	resources.linear  = linear;
 	resources.mapped  = mapped;
 }
 
-void Tiler::Execute(bool to_tiled, const void* input, void* output, uint64_t tiled_capacity,
-                    uint64_t linear_capacity, std::span<const Dispatch> dispatches,
-                    const GpuTileRecord& record) {
+void TileCompute::Execute(bool to_tiled, const void* input, void* output, uint64_t tiled_capacity,
+                          uint64_t linear_capacity, std::span<const Dispatch> dispatches,
+                          const GpuTileRecord& record) {
 	const uint64_t tiled_size  = AlignToDword(tiled_capacity);
 	const uint64_t linear_size = AlignToDword(linear_capacity);
 	const uint64_t input_size  = to_tiled ? linear_capacity : tiled_capacity;
@@ -423,8 +420,8 @@ void Tiler::Execute(bool to_tiled, const void* input, void* output, uint64_t til
 		writes[i].descriptorType  = vk::DescriptorType::eStorageBuffer;
 		writes[i].pBufferInfo     = &buffer_info[i];
 	}
-	ctx->device.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0,
-	                                 nullptr);
+	graphics.device.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0,
+	                                     nullptr);
 
 	CommandBuffer command(GraphicContext::QUEUE_UTIL);
 	command.Begin();
@@ -446,7 +443,7 @@ void Tiler::Execute(bool to_tiled, const void* input, void* output, uint64_t til
 		        vk::PipelineStageFlagBits::eTransfer);
 	}
 	if (to_tiled && record) {
-		record(&command, &resources.linear);
+		record(command, resources.linear);
 		Barrier(vk_command, resources.linear.buffer,
 		        vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eMemoryWrite,
 		        vk::AccessFlagBits::eShaderRead, vk::PipelineStageFlagBits::eAllCommands,
@@ -463,7 +460,7 @@ void Tiler::Execute(bool to_tiled, const void* input, void* output, uint64_t til
 	                              &resources.descriptor_set, 0, nullptr);
 	const uint64_t limit =
 	    static_cast<uint64_t>(
-	        ctx->GetPhysicalDeviceProperties().limits.maxComputeWorkGroupCount[0]) *
+	        graphics.GetPhysicalDeviceProperties().limits.maxComputeWorkGroupCount[0]) *
 	    GROUP_SIZE;
 	for (const auto& dispatch: dispatches) {
 		vk_command.bindPipeline(vk::PipelineBindPoint::eCompute,
@@ -484,7 +481,7 @@ void Tiler::Execute(bool to_tiled, const void* input, void* output, uint64_t til
 	        vk::PipelineStageFlagBits::eComputeShader,
 	        vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eHost);
 	if (!to_tiled && record) {
-		record(&command, &resources.linear);
+		record(command, resources.linear);
 	}
 	if (!to_tiled && output != nullptr) {
 		const vk::BufferCopy copy {0, 0, linear_size};
@@ -502,15 +499,14 @@ void Tiler::Execute(bool to_tiled, const void* input, void* output, uint64_t til
 	}
 }
 
-void Tiler::Run(bool to_tiled, GraphicContext* context, const void* input, void* output,
-                uint64_t tiled_capacity, uint64_t linear_capacity,
-                std::span<const GpuTileInfo> infos, const GpuTileRecord& record) {
-	Common::LockGuard lock(mutex);
+void TileCompute::Run(bool to_tiled, const void* input, void* output, uint64_t tiled_capacity,
+                      uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
+                      const GpuTileRecord& record) {
 	EXIT_IF((to_tiled && (output == nullptr || (input == nullptr && !record))) ||
 	        (!to_tiled && (input == nullptr || (output == nullptr && !record))));
 	std::vector<Dispatch> dispatches;
-	Prepare(to_tiled, context, tiled_capacity, linear_capacity, infos, &dispatches);
-	Init(context);
+	Prepare(to_tiled, tiled_capacity, linear_capacity, infos, dispatches);
+	Init();
 	CreatePipelines(dispatches);
 	const uint64_t staging_size =
 	    std::max(AlignToDword(tiled_capacity), AlignToDword(linear_capacity));
@@ -519,29 +515,38 @@ void Tiler::Run(bool to_tiled, GraphicContext* context, const void* input, void*
 	Execute(to_tiled, input, output, tiled_capacity, linear_capacity, dispatches, record);
 }
 
-void Tiler::Release(GraphicContext* context) {
-	Common::LockGuard lock(mutex);
-	EXIT_IF(ctx != nullptr && context != ctx);
-	Destroy(&resources);
-	ctx = nullptr;
+void TileCompute::Release() {
+	Destroy(resources);
 }
 
 } // namespace
 
-void GpuDetile(GraphicContext* ctx, const void* tiled, void* linear, uint64_t tiled_capacity,
+void GpuDetile(const void* tiled, void* linear, uint64_t tiled_capacity,
                uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
                const GpuTileRecord& after) {
-	g_tiler.Run(false, ctx, tiled, linear, tiled_capacity, linear_capacity, infos, after);
+	Common::LockGuard lock(g_tiler_mutex);
+	if (!g_tiler) {
+		g_tiler = std::make_unique<TileCompute>(GetRenderContext().GetGraphics());
+	}
+	g_tiler->Run(false, tiled, linear, tiled_capacity, linear_capacity, infos, after);
 }
 
-void GpuTile(GraphicContext* ctx, const void* linear, void* tiled, uint64_t tiled_capacity,
+void GpuTile(const void* linear, void* tiled, uint64_t tiled_capacity,
              uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
              const GpuTileRecord& before) {
-	g_tiler.Run(true, ctx, linear, tiled, tiled_capacity, linear_capacity, infos, before);
+	Common::LockGuard lock(g_tiler_mutex);
+	if (!g_tiler) {
+		g_tiler = std::make_unique<TileCompute>(GetRenderContext().GetGraphics());
+	}
+	g_tiler->Run(true, linear, tiled, tiled_capacity, linear_capacity, infos, before);
 }
 
-void GpuTileRelease(GraphicContext* ctx) {
-	g_tiler.Release(ctx);
+void GpuTileRelease() {
+	Common::LockGuard lock(g_tiler_mutex);
+	if (g_tiler) {
+		g_tiler->Release();
+		g_tiler.reset();
+	}
 }
 
 } // namespace Libs::Graphics

@@ -80,35 +80,35 @@ static bool HasLayer(const std::vector<vk::LayerProperties>& layers, const char*
 }
 
 void VulkanGetSurfaceCapabilities(vk::PhysicalDevice physical_device, vk::SurfaceKHR surface,
-                                  SurfaceCapabilities* r) {
-	RequireVulkanSuccess(physical_device.getSurfaceCapabilitiesKHR(surface, &r->capabilities),
+                                  SurfaceCapabilities& r) {
+	RequireVulkanSuccess(physical_device.getSurfaceCapabilitiesKHR(surface, &r.capabilities),
 	                     "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
 
-	r->formats = EnumerateVulkan<vk::SurfaceFormatKHR>( // @suppress("Ambiguous problem")
+	r.formats = EnumerateVulkan<vk::SurfaceFormatKHR>( // @suppress("Ambiguous problem")
 	    "vkGetPhysicalDeviceSurfaceFormatsKHR", [&](uint32_t* count, vk::SurfaceFormatKHR* values) {
 		    return physical_device.getSurfaceFormatsKHR(surface, count, values);
 	    });
-	EXIT_NOT_IMPLEMENTED(r->formats.empty());
+	EXIT_NOT_IMPLEMENTED(r.formats.empty());
 
-	r->present_modes = EnumerateVulkan<vk::PresentModeKHR>( // @suppress("Ambiguous problem")
+	r.present_modes = EnumerateVulkan<vk::PresentModeKHR>( // @suppress("Ambiguous problem")
 	    "vkGetPhysicalDeviceSurfacePresentModesKHR",
 	    [&](uint32_t* count, vk::PresentModeKHR* values) {
 		    return physical_device.getSurfacePresentModesKHR(surface, count, values);
 	    });
-	EXIT_NOT_IMPLEMENTED(r->present_modes.empty());
+	EXIT_NOT_IMPLEMENTED(r.present_modes.empty());
 
-	r->format_srgb_bgra32  = false;
-	r->format_unorm_bgra32 = false;
-	for (const auto& f: r->formats) {
+	r.format_srgb_bgra32  = false;
+	r.format_unorm_bgra32 = false;
+	for (const auto& f: r.formats) {
 		if (f.format == vk::Format::eB8G8R8A8Srgb &&
 		    f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-			r->format_srgb_bgra32 = true;
+			r.format_srgb_bgra32 = true;
 		}
 		if (f.format == vk::Format::eB8G8R8A8Unorm &&
 		    f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-			r->format_unorm_bgra32 = true;
+			r.format_unorm_bgra32 = true;
 		}
-		if (r->format_srgb_bgra32 && r->format_unorm_bgra32) {
+		if (r.format_srgb_bgra32 && r.format_unorm_bgra32) {
 			break;
 		}
 	}
@@ -244,13 +244,10 @@ static VulkanQueues VulkanFindQueues(vk::PhysicalDevice device, vk::SurfaceKHR s
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surface,
                                      const std::vector<const char*>& device_extensions,
-                                     SurfaceCapabilities*            out_capabilities,
-                                     vk::PhysicalDevice* out_device, VulkanQueues* out_queues) {
+                                     SurfaceCapabilities&            out_capabilities,
+                                     vk::PhysicalDevice& out_device, VulkanQueues& out_queues) {
 	EXIT_IF(instance == nullptr);
 	EXIT_IF(surface == nullptr);
-	EXIT_IF(out_capabilities == nullptr);
-	EXIT_IF(out_device == nullptr);
-	EXIT_IF(out_queues == nullptr);
 
 	auto devices = EnumerateVulkan<vk::PhysicalDevice>(
 	    "vkEnumeratePhysicalDevices", [&](uint32_t* count, vk::PhysicalDevice* values) {
@@ -408,7 +405,7 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 
 		SurfaceCapabilities candidate_capabilities;
 		if (!skip_device) {
-			VulkanGetSurfaceCapabilities(device, surface, &candidate_capabilities);
+			VulkanGetSurfaceCapabilities(device, surface, candidate_capabilities);
 
 			if (!(candidate_capabilities.capabilities.supportedUsageFlags &
 			      vk::ImageUsageFlagBits::eTransferDst)) {
@@ -512,16 +509,16 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		}
 	}
 
-	*out_device = best_device;
-	*out_queues = best_queues;
+	out_device = best_device;
+	out_queues = best_queues;
 	if (best_device != nullptr) {
-		*out_capabilities = std::move(best_capabilities);
+		out_capabilities = std::move(best_capabilities);
 	}
 }
 
-static void VulkanInitSubgroupSizeControl(vk::PhysicalDevice physical_device, GraphicContext* ctx) {
+static void VulkanInitSubgroupSizeControl(vk::PhysicalDevice physical_device) {
 	EXIT_IF(physical_device == nullptr);
-	EXIT_IF(ctx == nullptr);
+	auto& graphics = g_window_ctx->graphic_ctx;
 
 	vk::PhysicalDeviceSubgroupSizeControlProperties subgroup_size_control {};
 	subgroup_size_control.sType = vk::StructureType::ePhysicalDeviceSubgroupSizeControlProperties;
@@ -547,28 +544,26 @@ static void VulkanInitSubgroupSizeControl(vk::PhysicalDevice physical_device, Gr
 
 	physical_device.getFeatures2(&features2);
 
-	ctx->subgroup_size                 = properties11.subgroupSize;
-	ctx->min_subgroup_size             = subgroup_size_control.minSubgroupSize;
-	ctx->max_subgroup_size             = subgroup_size_control.maxSubgroupSize;
-	ctx->required_subgroup_size_stages = subgroup_size_control.requiredSubgroupSizeStages;
-	ctx->subgroup_size_control_enabled = features13.subgroupSizeControl == VK_TRUE &&
-	                                     subgroup_size_control.minSubgroupSize <= 64 &&
-	                                     subgroup_size_control.maxSubgroupSize >= 64;
+	graphics.subgroup_size                 = properties11.subgroupSize;
+	graphics.min_subgroup_size             = subgroup_size_control.minSubgroupSize;
+	graphics.max_subgroup_size             = subgroup_size_control.maxSubgroupSize;
+	graphics.required_subgroup_size_stages = subgroup_size_control.requiredSubgroupSizeStages;
+	graphics.subgroup_size_control_enabled = features13.subgroupSizeControl == VK_TRUE &&
+	                                         subgroup_size_control.minSubgroupSize <= 64 &&
+	                                         subgroup_size_control.maxSubgroupSize >= 64;
 
 	LOGF("Vulkan subgroup: default=%u min=%u max=%u stages=0x%08x size_control=%s\n",
-	     ctx->subgroup_size, ctx->min_subgroup_size, ctx->max_subgroup_size,
-	     static_cast<vk::ShaderStageFlags::MaskType>(ctx->required_subgroup_size_stages),
-	     ctx->subgroup_size_control_enabled ? "true" : "false");
+	     graphics.subgroup_size, graphics.min_subgroup_size, graphics.max_subgroup_size,
+	     static_cast<vk::ShaderStageFlags::MaskType>(graphics.required_subgroup_size_stages),
+	     graphics.subgroup_size_control_enabled ? "true" : "false");
 }
 
 static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, vk::SurfaceKHR surface,
-                                     const VulkanExtensions* r, const VulkanQueues& queues,
-                                     const std::vector<const char*>& device_extensions,
-                                     GraphicContext*                 ctx) {
+                                     const VulkanExtensions& r, const VulkanQueues& queues,
+                                     const std::vector<const char*>& device_extensions) {
 	EXIT_IF(physical_device == nullptr);
-	EXIT_IF(r == nullptr);
+	auto& graphics = g_window_ctx->graphic_ctx;
 	EXIT_IF(surface == nullptr);
-	EXIT_IF(ctx == nullptr);
 
 	std::vector<vk::DeviceQueueCreateInfo> queue_create_info(queues.family_count);
 	std::vector<std::vector<float>>        queue_priority(queues.family_count);
@@ -599,8 +594,8 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, vk::Sur
 	color_write_ext.colorWriteEnable = VK_TRUE;
 
 	vk::PhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable {};
-	depth_clip_enable.sType           = vk::StructureType::ePhysicalDeviceDepthClipEnableFeaturesEXT;
-	depth_clip_enable.pNext           = &color_write_ext;
+	depth_clip_enable.sType = vk::StructureType::ePhysicalDeviceDepthClipEnableFeaturesEXT;
+	depth_clip_enable.pNext = &color_write_ext;
 	depth_clip_enable.depthClipEnable = VK_TRUE;
 
 	vk::PhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control {};
@@ -646,12 +641,13 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, vk::Sur
 	device_features.shaderImageGatherExtended            = VK_TRUE;
 	device_features.independentBlend                     = VK_TRUE;
 	device_features.tessellationShader                   = VK_TRUE;
-	device_features.sampleRateShading = supported_features2.features.sampleRateShading;
-	ctx->sample_rate_shading_enabled  = device_features.sampleRateShading == VK_TRUE;
+	device_features.sampleRateShading    = supported_features2.features.sampleRateShading;
+	graphics.sample_rate_shading_enabled = device_features.sampleRateShading == VK_TRUE;
 	device_features.vertexPipelineStoresAndAtomics =
 	    supported_features2.features.vertexPipelineStoresAndAtomics;
 
-	if (ctx->subgroup_size_control_enabled && supported_features13.subgroupSizeControl == VK_TRUE) {
+	if (graphics.subgroup_size_control_enabled &&
+	    supported_features13.subgroupSizeControl == VK_TRUE) {
 		subgroup_size_control.subgroupSizeControl = VK_TRUE;
 	}
 
@@ -685,9 +681,9 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, vk::Sur
 	create_info.pQueueCreateInfos    = queue_create_info.data();
 	create_info.queueCreateInfoCount = queue_create_info_num;
 	create_info.enabledLayerCount =
-	    (r->enable_validation_layers ? static_cast<uint32_t>(r->required_layers.size()) : 0);
+	    (r.enable_validation_layers ? static_cast<uint32_t>(r.required_layers.size()) : 0);
 	create_info.ppEnabledLayerNames =
-	    (r->enable_validation_layers ? r->required_layers.data() : nullptr);
+	    (r.enable_validation_layers ? r.required_layers.data() : nullptr);
 	create_info.enabledExtensionCount   = static_cast<uint32_t>(device_extensions.size());
 	create_info.ppEnabledExtensionNames = device_extensions.data();
 	create_info.pEnabledFeatures        = &device_features;
@@ -703,9 +699,8 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, vk::Sur
 	return device;
 }
 
-static void VulkanGetExtensions(SDL_Window* window, VulkanExtensions* r) {
+static void VulkanGetExtensions(SDL_Window* window, VulkanExtensions& r) {
 	EXIT_IF(window == nullptr);
-	EXIT_IF(r == nullptr);
 
 	uint32_t required_extensions_count = 0;
 
@@ -714,65 +709,65 @@ static void VulkanGetExtensions(SDL_Window* window, VulkanExtensions* r) {
 	EXIT_NOT_IMPLEMENTED(sdl_result == SDL_FALSE);
 	EXIT_NOT_IMPLEMENTED(required_extensions_count == 0);
 
-	r->required_extensions =
+	r.required_extensions =
 	    std::vector<const char*>(required_extensions_count); // @suppress("Ambiguous problem")
-	std::memset(r->required_extensions.data(), 0,
-	            sizeof(const char*) * r->required_extensions.size());
+	std::memset(r.required_extensions.data(), 0,
+	            sizeof(const char*) * r.required_extensions.size());
 
 	sdl_result = SDL_Vulkan_GetInstanceExtensions(window, &required_extensions_count,
-	                                              r->required_extensions.data());
+	                                              r.required_extensions.data());
 
 	EXIT_NOT_IMPLEMENTED(sdl_result == SDL_FALSE);
 	EXIT_NOT_IMPLEMENTED(required_extensions_count == 0);
-	EXIT_NOT_IMPLEMENTED(required_extensions_count != r->required_extensions.size());
+	EXIT_NOT_IMPLEMENTED(required_extensions_count != r.required_extensions.size());
 
-	r->available_extensions =
+	r.available_extensions =
 	    EnumerateVulkan<vk::ExtensionProperties>( // @suppress("Ambiguous problem")
 	        "vkEnumerateInstanceExtensionProperties",
 	        [](uint32_t* count, vk::ExtensionProperties* values) {
 		        return vk::enumerateInstanceExtensionProperties(nullptr, count, values);
 	        });
 
-	r->enable_validation_layers = Config::VulkanValidationEnabled();
+	r.enable_validation_layers = Config::VulkanValidationEnabled();
 
-	if (HasExtension(r->available_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
-		r->required_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	if (HasExtension(r.available_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
+		r.required_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 	} else {
-		r->enable_validation_layers = false;
+		r.enable_validation_layers = false;
 	}
 
-	for (const char* ext: r->required_extensions) {
+	for (const char* ext: r.required_extensions) {
 		LOGF("Vulkan required extension: %s\n", ext);
 	}
 
-	for (const auto& ext: r->available_extensions) {
+	for (const auto& ext: r.available_extensions) {
 		LOGF("Vulkan available extension: %s, version = %u\n", ext.extensionName.data(),
 		     ext.specVersion);
 	}
 
-	r->available_layers = EnumerateVulkan<vk::LayerProperties>( // @suppress("Ambiguous problem")
+	r.available_layers = EnumerateVulkan<vk::LayerProperties>( // @suppress("Ambiguous problem")
 	    "vkEnumerateInstanceLayerProperties", [](uint32_t* count, vk::LayerProperties* values) {
 		    return vk::enumerateInstanceLayerProperties(count, values);
 	    });
 
-	for (const auto& l: r->available_layers) {
+	for (const auto& l: r.available_layers) {
 		LOGF("Vulkan available layer: %s, specVersion = %u, implVersion = %u, %s\n",
 		     l.layerName.data(), l.specVersion, l.implementationVersion, l.description.data());
 	}
 
-	r->required_layers = {"VK_LAYER_KHRONOS_validation"};
+	r.required_layers = {"VK_LAYER_KHRONOS_validation"};
 
-	if (r->enable_validation_layers) {
-		for (const char* l: r->required_layers) {
-			if (!HasLayer(r->available_layers, l)) {
+	if (r.enable_validation_layers) {
+		for (const char* l: r.required_layers) {
+			if (!HasLayer(r.available_layers, l)) {
 				LOGF("no validation layer: %s\n", l);
-				r->enable_validation_layers = false;
+				r.enable_validation_layers = false;
 				break;
 			}
 		}
 	}
 
-	if (r->enable_validation_layers) {
+	if (r.enable_validation_layers) {
 		auto available_extensions = EnumerateVulkan<vk::ExtensionProperties>(
 		    "vkEnumerateInstanceExtensionProperties",
 		    [](uint32_t* count, vk::ExtensionProperties* values) {
@@ -786,9 +781,9 @@ static void VulkanGetExtensions(SDL_Window* window, VulkanExtensions* r) {
 		}
 
 		if (HasExtension(available_extensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) {
-			r->required_extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+			r.required_extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
 		} else {
-			r->enable_validation_layers = false;
+			r.enable_validation_layers = false;
 		}
 	}
 }
@@ -870,28 +865,30 @@ static VKAPI_ATTR vk::Result VKAPI_CALL VulkanCreateDebugUtilsMessengerEXT(
 	return vk::Result::eErrorExtensionNotPresent;
 }
 
-static void VulkanCreateQueues(GraphicContext* ctx, const VulkanQueues& queues) {
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ctx->device == nullptr);
+static void VulkanCreateQueues(const VulkanQueues& queues) {
+	auto& graphics = g_window_ctx->graphic_ctx;
+	EXIT_IF(graphics.device == nullptr);
 	EXIT_IF(queues.graphics.size() != 1);
 	EXIT_IF(queues.present.size() != 1);
 	EXIT_IF(!(queues.compute.size() >= 1 &&
 	          queues.compute.size() <= GraphicContext::QUEUE_COMPUTE_NUM));
 
-	auto get_queue = [ctx](int id, const QueueInfo& info) {
-		ctx->queues[id].family = info.family;
-		ctx->queues[id].index  = info.index;
-		EXIT_IF(ctx->queues[id].vk_queue != nullptr);
-		ctx->device.getQueue(ctx->queues[id].family, ctx->queues[id].index,
-		                     &ctx->queues[id].vk_queue);
-		EXIT_NOT_IMPLEMENTED(ctx->queues[id].vk_queue == nullptr);
+	auto get_queue = [&graphics](int id, const QueueInfo& info) {
+		graphics.queues[id].family = info.family;
+		graphics.queues[id].index  = info.index;
+		EXIT_IF(graphics.queues[id].vk_queue != nullptr);
+		graphics.device.getQueue(graphics.queues[id].family, graphics.queues[id].index,
+		                         &graphics.queues[id].vk_queue);
+		EXIT_NOT_IMPLEMENTED(graphics.queues[id].vk_queue == nullptr);
 	};
 
 	get_queue(GraphicContext::QUEUE_GFX, queues.graphics[0]);
-	ctx->queues[GraphicContext::QUEUE_UTIL].family = ctx->queues[GraphicContext::QUEUE_GFX].family;
-	ctx->queues[GraphicContext::QUEUE_UTIL].index  = ctx->queues[GraphicContext::QUEUE_GFX].index;
-	ctx->queues[GraphicContext::QUEUE_UTIL].vk_queue =
-	    ctx->queues[GraphicContext::QUEUE_GFX].vk_queue;
+	graphics.queues[GraphicContext::QUEUE_UTIL].family =
+	    graphics.queues[GraphicContext::QUEUE_GFX].family;
+	graphics.queues[GraphicContext::QUEUE_UTIL].index =
+	    graphics.queues[GraphicContext::QUEUE_GFX].index;
+	graphics.queues[GraphicContext::QUEUE_UTIL].vk_queue =
+	    graphics.queues[GraphicContext::QUEUE_GFX].vk_queue;
 	LOGF("Vulkan queue: using graphics queue for utility submissions to preserve resource "
 	     "ordering\n");
 	get_queue(GraphicContext::QUEUE_PRESENT, queues.present[0]);
@@ -902,14 +899,14 @@ static void VulkanCreateQueues(GraphicContext* ctx, const VulkanQueues& queues) 
 	}
 
 	for (int id = 0; id < GraphicContext::QUEUES_NUM; id++) {
-		auto& queue = ctx->queues[id];
+		auto& queue = graphics.queues[id];
 		if (queue.vk_queue == nullptr) {
 			continue;
 		}
 		EXIT_IF(queue.mutex != nullptr);
 
 		for (int other_id = 0; other_id < id; other_id++) {
-			auto& other = ctx->queues[other_id];
+			auto& other = graphics.queues[other_id];
 			if (other.vk_queue != queue.vk_queue) {
 				continue;
 			}
@@ -921,7 +918,7 @@ static void VulkanCreateQueues(GraphicContext* ctx, const VulkanQueues& queues) 
 		}
 
 		if (queue.mutex == nullptr) {
-			queue.mutex = &ctx->queue_mutexes[id];
+			queue.mutex = &graphics.queue_mutexes[id];
 		}
 	}
 }
@@ -946,12 +943,12 @@ static void VulkanCheckInstanceVersion() {
 	}
 }
 
-void VulkanCreate(WindowContext* ctx) {
-	EXIT_IF(ctx->window == nullptr);
-	EXIT_IF(ctx->graphic_ctx.instance != nullptr);
-	EXIT_IF(ctx->graphic_ctx.physical_device != nullptr);
-	EXIT_IF(ctx->graphic_ctx.device != nullptr);
-	EXIT_IF(ctx->surface_capabilities != nullptr);
+void VulkanCreate(WindowContext& window) {
+	EXIT_IF(window.window == nullptr);
+	EXIT_IF(window.graphic_ctx.instance != nullptr);
+	EXIT_IF(window.graphic_ctx.physical_device != nullptr);
+	EXIT_IF(window.graphic_ctx.device != nullptr);
+	EXIT_IF(window.surface_capabilities != nullptr);
 
 	auto get_instance_proc_addr =
 	    reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
@@ -961,7 +958,7 @@ void VulkanCreate(WindowContext* ctx) {
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(get_instance_proc_addr);
 
 	VulkanExtensions r;
-	VulkanGetExtensions(ctx->window, &r);
+	VulkanGetExtensions(window.window, r);
 	VulkanCheckInstanceVersion();
 
 	vk::ApplicationInfo app_info {};
@@ -1025,31 +1022,31 @@ void VulkanCreate(WindowContext* ctx) {
 	inst_info.ppEnabledLayerNames =
 	    (r.enable_validation_layers ? r.required_layers.data() : nullptr);
 
-	const vk::Result result = vk::createInstance(&inst_info, nullptr, &ctx->graphic_ctx.instance);
+	const vk::Result result = vk::createInstance(&inst_info, nullptr, &window.graphic_ctx.instance);
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eErrorIncompatibleDriver:
 			EXIT("Unable to find a compatible Vulkan Driver");
 		default: EXIT("Could not create a Vulkan instance (for unknown reasons)");
 	}
-	VULKAN_HPP_DEFAULT_DISPATCHER.init(ctx->graphic_ctx.instance);
+	VULKAN_HPP_DEFAULT_DISPATCHER.init(window.graphic_ctx.instance);
 
 	if (r.enable_validation_layers) {
 		dbg_create_info.pNext = nullptr;
-		if (VulkanCreateDebugUtilsMessengerEXT(ctx->graphic_ctx.instance, &dbg_create_info, nullptr,
-		                                       &ctx->graphic_ctx.debug_messenger) !=
+		if (VulkanCreateDebugUtilsMessengerEXT(window.graphic_ctx.instance, &dbg_create_info,
+		                                       nullptr, &window.graphic_ctx.debug_messenger) !=
 		    vk::Result::eSuccess) {
 			EXIT("Could not create debug messenger");
 		}
 	}
 
 	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
-	if (SDL_Vulkan_CreateSurface(ctx->window,
-	                             static_cast<vk::Instance::CType>(ctx->graphic_ctx.instance),
+	if (SDL_Vulkan_CreateSurface(window.window,
+	                             static_cast<vk::Instance::CType>(window.graphic_ctx.instance),
 	                             &native_surface) == SDL_FALSE) {
 		EXIT("Could not create a Vulkan surface");
 	}
-	ctx->surface = native_surface;
+	window.surface = native_surface;
 
 	std::vector<const char*> device_extensions = {
 	    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME,
@@ -1062,21 +1059,23 @@ void VulkanCreate(WindowContext* ctx) {
 	}
 #endif
 
-	ctx->surface_capabilities = new SurfaceCapabilities {};
+	window.surface_capabilities = new SurfaceCapabilities {};
 
 	VulkanQueues queues;
 
-	VulkanFindPhysicalDevice(ctx->graphic_ctx.instance, ctx->surface, device_extensions,
-	                         ctx->surface_capabilities, &ctx->graphic_ctx.physical_device, &queues);
+	VulkanFindPhysicalDevice(window.graphic_ctx.instance, window.surface, device_extensions,
+	                         *window.surface_capabilities, window.graphic_ctx.physical_device,
+	                         queues);
 
-	if (ctx->graphic_ctx.physical_device == nullptr) {
+	if (window.graphic_ctx.physical_device == nullptr) {
 		EXIT("Could not find suitable device");
 	}
 
-	ctx->graphic_ctx.physical_device.getProperties(&ctx->graphic_ctx.physical_device_properties);
-	ctx->graphic_ctx.physical_device.getMemoryProperties(
-	    &ctx->graphic_ctx.physical_device_memory_properties);
-	const auto& device_properties = ctx->graphic_ctx.GetPhysicalDeviceProperties();
+	window.graphic_ctx.physical_device.getProperties(
+	    &window.graphic_ctx.physical_device_properties);
+	window.graphic_ctx.physical_device.getMemoryProperties(
+	    &window.graphic_ctx.physical_device_memory_properties);
+	const auto& device_properties = window.graphic_ctx.GetPhysicalDeviceProperties();
 
 	LOGF("Select device: %s\n", device_properties.deviceName.data());
 
@@ -1084,40 +1083,40 @@ void VulkanCreate(WindowContext* ctx) {
 		auto available_extensions = EnumerateVulkan<vk::ExtensionProperties>(
 		    "vkEnumerateDeviceExtensionProperties",
 		    [&](uint32_t* count, vk::ExtensionProperties* values) {
-			    return ctx->graphic_ctx.physical_device.enumerateDeviceExtensionProperties(
+			    return window.graphic_ctx.physical_device.enumerateDeviceExtensionProperties(
 			        nullptr, count, values);
 		    });
 
 		if (HasExtension(available_extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
 			device_extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
-			ctx->graphic_ctx.memory_budget_ext_enabled = true;
+			window.graphic_ctx.memory_budget_ext_enabled = true;
 		}
 		if (HasExtension(available_extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)) {
 			device_extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
 		}
 	}
 
-	memcpy(ctx->device_name, device_properties.deviceName, sizeof(ctx->device_name));
-	std::snprintf(ctx->processor_name, sizeof(ctx->processor_name), "%s",
+	memcpy(window.device_name, device_properties.deviceName, sizeof(window.device_name));
+	std::snprintf(window.processor_name, sizeof(window.processor_name), "%s",
 	              Common::GetSystemInfo().ProcessorName.c_str());
 
-	VulkanInitSubgroupSizeControl(ctx->graphic_ctx.physical_device, &ctx->graphic_ctx);
+	VulkanInitSubgroupSizeControl(window.graphic_ctx.physical_device);
 
-	ctx->graphic_ctx.device = VulkanCreateDevice(ctx->graphic_ctx.physical_device, ctx->surface, &r,
-	                                             queues, device_extensions, &ctx->graphic_ctx);
-	if (ctx->graphic_ctx.device == nullptr) {
+	window.graphic_ctx.device = VulkanCreateDevice(window.graphic_ctx.physical_device,
+	                                               window.surface, r, queues, device_extensions);
+	if (window.graphic_ctx.device == nullptr) {
 		EXIT("Could not create device");
 	}
-	VULKAN_HPP_DEFAULT_DISPATCHER.init(ctx->graphic_ctx.device);
+	VULKAN_HPP_DEFAULT_DISPATCHER.init(window.graphic_ctx.device);
 
-	if (!VulkanCreateAllocator(&ctx->graphic_ctx)) {
+	if (!window.graphic_ctx.CreateAllocator()) {
 		EXIT("Could not create Vulkan memory allocator");
 	}
 
-	VulkanCreateQueues(&ctx->graphic_ctx, queues);
+	VulkanCreateQueues(queues);
 
-	ctx->swapchain = VulkanCreateSwapchain(&ctx->graphic_ctx, 2);
-	RenderDocSetActiveWindow(ctx->graphic_ctx.instance, ctx->window);
+	window.swapchain = VulkanCreateSwapchain(2);
+	RenderDocSetActiveWindow(window.graphic_ctx.instance, window.window);
 }
 
 } // namespace Libs::Graphics

@@ -172,16 +172,16 @@ public:
 	~FlipQueue() { KYTY_NOT_IMPLEMENTED; }
 	KYTY_CLASS_NO_COPY(FlipQueue);
 
-	bool     Reserve(VideoOutConfig* cfg, int index, int64_t flip_arg, FlipRequestSource source,
-	                 uint64_t* request_id);
-	void     Prepare(uint64_t request_id, Graphics::CommandBuffer* buffer);
-	uint64_t PrepareNextCpu(Graphics::CommandBuffer* buffer);
+	bool     Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRequestSource source,
+	                 uint64_t& request_id);
+	void     Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer);
+	uint64_t PrepareNextCpu(Graphics::CommandBuffer& buffer);
 	void     Complete(uint64_t request_id);
 	void     WaitForSubmitSlot();
 	bool     Flip(uint32_t micros);
-	bool     HasPending(VideoOutConfig* cfg, int start_index, int count);
-	void     GetFlipStatus(VideoOutConfig* cfg, VideoOutFlipStatus* out);
-	void     Wait(VideoOutConfig* cfg, int index);
+	bool     HasPending(VideoOutConfig& cfg, int start_index, int count);
+	void     GetFlipStatus(VideoOutConfig& cfg, VideoOutFlipStatus& out);
+	void     Wait(VideoOutConfig& cfg, int index);
 
 private:
 	enum class RequestState { Reserved, Recording, Ready, Presenting };
@@ -225,26 +225,15 @@ public:
 
 	void Init(uint32_t width, uint32_t height);
 
-	Graphics::GraphicContext* GetGraphicCtx() {
-		Common::LockGuard lock(m_mutex);
-
-		if (m_graphic_ctx == nullptr) {
-			m_graphic_ctx = Graphics::WindowGetGraphicContext();
-		}
-
-		return m_graphic_ctx;
-	}
-
 	FlipQueue& GetFlipQueue() { return m_flip_queue; }
 
 	void VblankBegin();
 	void VblankEnd();
 
 private:
-	Common::Mutex             m_mutex;
-	VideoOutConfig            m_video_out_ctx[VIDEO_OUT_NUM_MAX];
-	Graphics::GraphicContext* m_graphic_ctx = nullptr;
-	FlipQueue                 m_flip_queue;
+	Common::Mutex  m_mutex;
+	VideoOutConfig m_video_out_ctx[VIDEO_OUT_NUM_MAX];
+	FlipQueue      m_flip_queue;
 };
 
 static VideoOutContext* g_video_out_context = nullptr;
@@ -438,14 +427,12 @@ static void WaitForNextVblank() {
 	} while (next_vblank_ticks <= now);
 }
 
-static bool IsFlipDue(VideoOutConfig* cfg) {
-	EXIT_IF(cfg == nullptr);
+static bool IsFlipDue(VideoOutConfig& cfg) {
+	Common::LockGuard lock(cfg.mutex);
 
-	Common::LockGuard lock(cfg->mutex);
+	const int interval = cfg.flip_rate + 1;
 
-	const int interval = cfg->flip_rate + 1;
-
-	return interval <= 1 || (cfg->vblank_status.count % static_cast<uint64_t>(interval)) == 0;
+	return interval <= 1 || (cfg.vblank_status.count % static_cast<uint64_t>(interval)) == 0;
 }
 
 static bool IsValidBufferIndex(int index) {
@@ -461,8 +448,8 @@ static bool IsValidFlipMode(int mode) {
 }
 
 static int ReserveFlipRequest(int handle, int index, int flip_mode, int64_t flip_arg,
-                              FlipRequestSource source, uint64_t* request_id) {
-	EXIT_IF(g_video_out_context == nullptr || request_id == nullptr);
+                              FlipRequestSource source, uint64_t& request_id) {
+	EXIT_IF(g_video_out_context == nullptr);
 
 	auto* video_out = g_video_out_context->Get(handle);
 	if (video_out == nullptr) {
@@ -481,7 +468,7 @@ static int ReserveFlipRequest(int handle, int index, int flip_mode, int64_t flip
 	     (video_out->unregistering[index] || video_out->buffers[index].buffer_vulkan == nullptr))) {
 		return VIDEO_OUT_ERROR_INVALID_INDEX;
 	}
-	if (!g_video_out_context->GetFlipQueue().Reserve(video_out, index, flip_arg, source,
+	if (!g_video_out_context->GetFlipQueue().Reserve(*video_out, index, flip_arg, source,
 	                                                 request_id)) {
 		return VIDEO_OUT_ERROR_FLIP_QUEUE_FULL;
 	}
@@ -502,7 +489,7 @@ static Graphics::VideoOutInfo MakeVideoOutInfo(const VideoOutBufferAttribute2& a
 		EXIT("unsupported or invalid video-out surface attributes\n");
 	}
 	Graphics::VideoOutPixelFormatInfo pixel_format {};
-	if (!Graphics::DecodeVideoOutPixelFormat(attribute.pixel_format, &pixel_format)) {
+	if (!Graphics::DecodeVideoOutPixelFormat(attribute.pixel_format, pixel_format)) {
 		EXIT("unsupported video-out pixel format: 0x%016" PRIx64 "\n", attribute.pixel_format);
 	}
 	const auto tile_mode =
@@ -511,7 +498,7 @@ static Graphics::VideoOutInfo MakeVideoOutInfo(const VideoOutBufferAttribute2& a
 	    Graphics::TileGetTexturePitch(pixel_format.guest_format, attribute.width, 1, tile_mode);
 	Graphics::TileSizeAlign total {};
 	Graphics::TileGetTextureTotalSize(pixel_format.guest_format, attribute.width, attribute.height,
-	                                  1, pitch, 1, tile_mode, false, &total);
+	                                  1, pitch, 1, tile_mode, false, total);
 	if (total.size == 0 || total.align != 65536 || (address & (total.align - 1u)) != 0) {
 		EXIT("invalid video-out surface footprint or alignment\n");
 	}
@@ -606,7 +593,7 @@ void VideoOutContext::Close(int handle) {
 		EXIT("video-out handle is already closing\n");
 	}
 	config.closing = true;
-	if (m_flip_queue.HasPending(&config, VIDEO_OUT_BUFFER_INDEX_BLACK,
+	if (m_flip_queue.HasPending(config, VIDEO_OUT_BUFFER_INDEX_BLACK,
 	                            VIDEO_OUT_BUFFER_NUM_MAX - VIDEO_OUT_BUFFER_INDEX_BLACK)) {
 		EXIT("cannot close video-out handle with pending flips\n");
 	}
@@ -629,10 +616,7 @@ void VideoOutContext::Close(int handle) {
 		}
 	}
 	if (!images.empty()) {
-		if (Graphics::g_render_ctx == nullptr) {
-			EXIT("cannot unregister video-out surfaces without a render context\n");
-		}
-		Graphics::g_render_ctx->GetTextureCache()->UnregisterVideoOutSurfaces(images);
+		Graphics::GetRenderContext().GetTextureCache().UnregisterVideoOutSurfaces(images);
 	}
 	for (auto& buffer: config.buffers) {
 		buffer = VideoOutBufferInfo {};
@@ -722,8 +706,8 @@ Presentation::DisplayBufferImage VideoOutContext::FindImage(const void* buffer,
 					ret.size  = ctx.buffers[j].buffer_size;
 					ret.pitch = ctx.buffers[j].buffer_pitch;
 					ret.index = j - set.start_index;
-					Graphics::g_render_ctx->GetTextureCache()->RefreshVideoOut(ret.image,
-					                                                           render_target);
+					Graphics::GetRenderContext().GetTextureCache().RefreshVideoOut(*ret.image,
+					                                                               render_target);
 					return ret;
 				}
 			}
@@ -732,9 +716,8 @@ Presentation::DisplayBufferImage VideoOutContext::FindImage(const void* buffer,
 	return ret;
 }
 
-bool FlipQueue::Reserve(VideoOutConfig* cfg, int index, int64_t flip_arg, FlipRequestSource source,
-                        uint64_t* request_id) {
-	EXIT_IF(cfg == nullptr || request_id == nullptr);
+bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRequestSource source,
+                        uint64_t& request_id) {
 	Common::LockGuard lock(m_mutex);
 
 	if (m_requests.size() + m_cpu_requests.size() >= VIDEO_OUT_FLIP_QUEUE_CAPACITY) {
@@ -744,7 +727,7 @@ bool FlipQueue::Reserve(VideoOutConfig* cfg, int index, int64_t flip_arg, FlipRe
 
 	Request r {};
 	r.id         = m_next_request_id++;
-	r.cfg        = cfg;
+	r.cfg        = &cfg;
 	r.index      = index;
 	r.flip_arg   = flip_arg;
 	r.submit_ptc = LibKernel::KernelGetProcessTimeCounter();
@@ -752,20 +735,18 @@ bool FlipQueue::Reserve(VideoOutConfig* cfg, int index, int64_t flip_arg, FlipRe
 	r.state      = RequestState::Reserved;
 
 	pending.push_back(r);
-	*request_id = r.id;
+	request_id = r.id;
 
-	cfg->flip_status.flipPendingNum = static_cast<int>(m_requests.size() + m_cpu_requests.size());
-	cfg->flip_status.submitProcessTimeCounter = r.submit_ptc;
+	cfg.flip_status.flipPendingNum = static_cast<int>(m_requests.size() + m_cpu_requests.size());
+	cfg.flip_status.submitProcessTimeCounter = r.submit_ptc;
 	if (source == FlipRequestSource::GpuEop) {
-		cfg->flip_status.gcQueueNum++;
+		cfg.flip_status.gcQueueNum++;
 	}
 
 	return true;
 }
 
-void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer* buffer) {
-	EXIT_IF(buffer == nullptr);
-
+void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	VideoOutConfig* cfg   = nullptr;
 	int             index = 0;
 	{
@@ -813,9 +794,9 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer* buffer) {
 			}
 		}
 	}
-	auto* frame = special ? Graphics::WindowPrepareBlankFrame(buffer, width, height,
+	auto& frame = special ? Graphics::WindowPrepareBlankFrame(buffer, width, height,
 	                                                          index == VIDEO_OUT_BUFFER_INDEX_BLACK)
-	                      : Graphics::WindowPrepareFrame(buffer, source);
+	                      : Graphics::WindowPrepareFrame(buffer, *source);
 
 	Common::LockGuard lock(m_mutex);
 	auto request = std::find_if(m_requests.begin(), m_requests.end(),
@@ -824,10 +805,10 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer* buffer) {
 	    request->frame != nullptr) {
 		EXIT("video-out request changed while recording, id=%" PRIu64 "\n", request_id);
 	}
-	request->frame = frame;
+	request->frame = &frame;
 }
 
-uint64_t FlipQueue::PrepareNextCpu(Graphics::CommandBuffer* buffer) {
+uint64_t FlipQueue::PrepareNextCpu(Graphics::CommandBuffer& buffer) {
 	uint64_t request_id = 0;
 	{
 		Common::LockGuard lock(m_mutex);
@@ -862,11 +843,11 @@ void FlipQueue::WaitForSubmitSlot() {
 	}
 }
 
-void FlipQueue::Wait(VideoOutConfig* cfg, int index) {
+void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 	Common::LockGuard lock(m_mutex);
 
-	auto has_request = [this, cfg, index] {
-		auto matches = [cfg, index](const auto& r) { return r.cfg == cfg && r.index == index; };
+	auto has_request = [this, &cfg, index] {
+		auto matches = [&cfg, index](const auto& r) { return r.cfg == &cfg && r.index == index; };
 		return std::any_of(m_requests.begin(), m_requests.end(), matches) ||
 		       std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
 	};
@@ -875,13 +856,13 @@ void FlipQueue::Wait(VideoOutConfig* cfg, int index) {
 	}
 }
 
-bool FlipQueue::HasPending(VideoOutConfig* cfg, int start_index, int count) {
-	if (cfg == nullptr || count <= 0 || start_index > INT_MAX - count) {
+bool FlipQueue::HasPending(VideoOutConfig& cfg, int start_index, int count) {
+	if (count <= 0 || start_index > INT_MAX - count) {
 		EXIT("invalid video-out pending-flip query range\n");
 	}
 	Common::LockGuard lock(m_mutex);
 	auto              matches = [&](const auto& request) {
-		return request.cfg == cfg && request.index >= start_index &&
+		return request.cfg == &cfg && request.index >= start_index &&
 		       request.index < start_index + count;
 	};
 	return std::any_of(m_requests.begin(), m_requests.end(), matches) ||
@@ -910,7 +891,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 	m_processing = true;
 	auto r       = m_requests.front();
 	m_mutex.Unlock();
-	if (!IsFlipDue(r.cfg)) {
+	if (!IsFlipDue(*r.cfg)) {
 		Common::LockGuard lock(m_mutex);
 		m_processing = false;
 		return false;
@@ -924,7 +905,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 	m_requests.front().state = RequestState::Presenting;
 	m_mutex.Unlock();
 
-	Graphics::WindowPresentFrame(r.frame);
+	Graphics::WindowPresentFrame(*r.frame);
 
 	m_mutex.Lock();
 	if (m_requests.empty() || m_requests.front().id != r.id ||
@@ -962,13 +943,10 @@ bool FlipQueue::Flip(uint32_t micros) {
 	return true;
 }
 
-void FlipQueue::GetFlipStatus(VideoOutConfig* cfg, VideoOutFlipStatus* out) {
-	EXIT_IF(cfg == nullptr);
-	EXIT_IF(out == nullptr);
-
+void FlipQueue::GetFlipStatus(VideoOutConfig& cfg, VideoOutFlipStatus& out) {
 	Common::LockGuard lock(m_mutex);
 
-	*out = cfg->flip_status;
+	out = cfg.flip_status;
 }
 
 bool VideoOutFlipWindow(uint32_t micros) {
@@ -1116,10 +1094,10 @@ KYTY_SYSV_ABI int VideoOutAddOutputModeEvent(LibKernel::EventQueue::KernelEqueue
 	return RegisterVideoOutEvent(handle, eq, VideoOutEventKind::OutputMode, udata);
 }
 
-static int RegisterBuffersInternal(VideoOutConfig* ctx, int set_id, int start_index,
+static int RegisterBuffersInternal(VideoOutConfig& ctx, int set_id, int start_index,
                                    const void* const* addresses, int buffer_num,
                                    const std::vector<Graphics::VideoOutInfo>& infos) {
-	if (ctx == nullptr || addresses == nullptr || buffer_num <= 0 ||
+	if (addresses == nullptr || buffer_num <= 0 ||
 	    infos.size() != static_cast<size_t>(buffer_num)) {
 		EXIT("invalid internal video-out buffer registration arguments\n");
 	}
@@ -1128,31 +1106,29 @@ static int RegisterBuffersInternal(VideoOutConfig* ctx, int set_id, int start_in
 	}
 	Graphics::WindowWaitForGraphicInitialized();
 	Graphics::GraphicsRenderCreateContext();
-	auto*             graphic_ctx = g_video_out_context->GetGraphicCtx();
-	Common::LockGuard lock(ctx->mutex);
-	if (ctx->closing) {
+	Common::LockGuard lock(ctx.mutex);
+	if (ctx.closing) {
 		EXIT("cannot register buffers on a closing video-out handle\n");
 	}
-	if (std::any_of(ctx->buffers_sets.begin(), ctx->buffers_sets.end(),
+	if (std::any_of(ctx.buffers_sets.begin(), ctx.buffers_sets.end(),
 	                [set_id](const auto& set) { return set.set_id == set_id; })) {
 		return VIDEO_OUT_ERROR_INVALID_INDEX;
 	}
 	for (int i = 0; i < buffer_num; i++) {
-		if (ctx->unregistering[start_index + i]) {
+		if (ctx.unregistering[start_index + i]) {
 			EXIT("video-out buffer registration raced with unregistration\n");
 		}
-		if (ctx->buffers[start_index + i].buffer != nullptr) {
+		if (ctx.buffers[start_index + i].buffer != nullptr) {
 			return VIDEO_OUT_ERROR_SLOT_OCCUPIED;
 		}
 	}
-	auto images =
-	    Graphics::g_render_ctx->GetTextureCache()->RegisterVideoOutSurfaces(graphic_ctx, infos);
+	auto images = Graphics::GetRenderContext().GetTextureCache().RegisterVideoOutSurfaces(infos);
 	if (images.size() != infos.size()) {
 		EXIT("video-out texture cache returned an incomplete surface set\n");
 	}
-	ctx->buffers_sets.push_back({start_index, buffer_num, set_id});
+	ctx.buffers_sets.push_back({start_index, buffer_num, set_id});
 	for (int i = 0; i < buffer_num; i++) {
-		auto& dst         = ctx->buffers[i + start_index];
+		auto& dst         = ctx.buffers[i + start_index];
 		dst.set_id        = set_id;
 		dst.buffer        = addresses[i];
 		dst.buffer_size   = infos[i].size;
@@ -1243,8 +1219,8 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 		infos.push_back(MakeVideoOutInfo(*attribute, data_address, metadata_address, compression));
 	}
 
-	return RegisterBuffersInternal(ctx, set_index, buffer_index_start, addresses.data(), buffer_num,
-	                               infos);
+	return RegisterBuffersInternal(*ctx, set_index, buffer_index_start, addresses.data(),
+	                               buffer_num, infos);
 }
 
 KYTY_SYSV_ABI int VideoOutSubmitChangeBufferAttribute2(int handle, int set_index,
@@ -1309,10 +1285,10 @@ KYTY_SYSV_ABI int VideoOutUnregisterBuffers(int handle, int set_index) {
 		}
 		images.push_back(ctx->buffers[i].buffer_vulkan);
 	}
-	if (g_video_out_context->GetFlipQueue().HasPending(ctx, set_it->start_index, set_it->num)) {
+	if (g_video_out_context->GetFlipQueue().HasPending(*ctx, set_it->start_index, set_it->num)) {
 		EXIT("cannot unregister video-out buffers with pending flips\n");
 	}
-	Graphics::g_render_ctx->GetTextureCache()->UnregisterVideoOutSurfaces(images);
+	Graphics::GetRenderContext().GetTextureCache().UnregisterVideoOutSurfaces(images);
 	for (int i = set_it->start_index; i < set_it->start_index + set_it->num; i++) {
 		ctx->buffers[i]       = VideoOutBufferInfo {};
 		ctx->unregistering[i] = false;
@@ -1341,7 +1317,7 @@ KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64
 
 	uint64_t  request_id = 0;
 	const int result =
-	    ReserveFlipRequest(handle, index, flip_mode, flip_arg, FlipRequestSource::Cpu, &request_id);
+	    ReserveFlipRequest(handle, index, flip_mode, flip_arg, FlipRequestSource::Cpu, request_id);
 	if (result == VIDEO_OUT_ERROR_INVALID_VALUE) {
 		LOGF("\t unsupported flip_mode = %d\n", flip_mode);
 	}
@@ -1357,33 +1333,32 @@ KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64
 
 namespace Libs::Presentation {
 
-int DisplayBufferSubmitFlipFromGpu(Graphics::CommandBuffer* buffer, int handle, int index,
-                                   int flip_mode, int64_t flip_arg, uint64_t* request_id) {
-	EXIT_IF(VideoOut::g_video_out_context == nullptr || Graphics::g_render_ctx == nullptr ||
-	        buffer == nullptr || request_id == nullptr);
+int DisplayBufferSubmitFlipFromGpu(Graphics::CommandBuffer& buffer, int handle, int index,
+                                   int flip_mode, int64_t flip_arg, uint64_t& request_id) {
+	EXIT_IF(VideoOut::g_video_out_context == nullptr || buffer.IsInvalid());
 
 	const int result = VideoOut::ReserveFlipRequest(
 	    handle, index, flip_mode, flip_arg, VideoOut::FlipRequestSource::GpuEop, request_id);
 	if (result != OK) {
 		return result;
 	}
-	VideoOut::g_video_out_context->GetFlipQueue().Prepare(*request_id, buffer);
+	VideoOut::g_video_out_context->GetFlipQueue().Prepare(request_id, buffer);
 
 	return OK;
 }
 
-uint64_t DisplayBufferPrepareNextFlipOnGpu(Graphics::CommandBuffer* buffer) {
-	EXIT_IF(VideoOut::g_video_out_context == nullptr || Graphics::g_render_ctx == nullptr);
+uint64_t DisplayBufferPrepareNextFlipOnGpu(Graphics::CommandBuffer& buffer) {
+	EXIT_IF(VideoOut::g_video_out_context == nullptr);
 	return VideoOut::g_video_out_context->GetFlipQueue().PrepareNextCpu(buffer);
 }
 
 void DisplayBufferCompleteFlipFromGpu(uint64_t request_id) {
-	EXIT_IF(VideoOut::g_video_out_context == nullptr || Graphics::g_render_ctx == nullptr);
+	EXIT_IF(VideoOut::g_video_out_context == nullptr);
 	VideoOut::g_video_out_context->GetFlipQueue().Complete(request_id);
 }
 
 void DisplayBufferWaitForFlipQueueSlot() {
-	EXIT_IF(VideoOut::g_video_out_context == nullptr || Graphics::g_render_ctx == nullptr);
+	EXIT_IF(VideoOut::g_video_out_context == nullptr);
 	VideoOut::g_video_out_context->GetFlipQueue().WaitForSubmitSlot();
 }
 
@@ -1398,7 +1373,7 @@ void VideoOutWaitFlipDone(int handle, int index) {
 	EXIT_IF(ctx == nullptr);
 
 	EXIT_NOT_IMPLEMENTED(!IsValidBufferIndex(index));
-	g_video_out_context->GetFlipQueue().Wait(ctx, index);
+	g_video_out_context->GetFlipQueue().Wait(*ctx, index);
 }
 
 KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) {
@@ -1415,7 +1390,7 @@ KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) 
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 
-	g_video_out_context->GetFlipQueue().GetFlipStatus(ctx, status);
+	g_video_out_context->GetFlipQueue().GetFlipStatus(*ctx, *status);
 
 	LOGF("\t count = %" PRIu64 "\n"
 	     "\t processTime = %" PRIu64 "\n"
@@ -1443,7 +1418,7 @@ KYTY_SYSV_ABI int VideoOutIsFlipPending(int handle) {
 	}
 
 	VideoOutFlipStatus status {};
-	g_video_out_context->GetFlipQueue().GetFlipStatus(ctx, &status);
+	g_video_out_context->GetFlipQueue().GetFlipStatus(*ctx, status);
 
 	LOGF("\t flipPendingNum = %d\n", status.flipPendingNum);
 

@@ -58,21 +58,21 @@ bool ImageBinding(const ImageResource& image, DescriptorBindingKind& result) {
 	}
 }
 
-bool CollectValue(const ScalarProvenance& provenance, uint32_t id, std::vector<uint8_t>* visited,
-                  std::set<uint32_t>* registers) {
+bool CollectValue(const ScalarProvenance& provenance, uint32_t id, std::vector<uint8_t>& visited,
+	              std::set<uint32_t>& registers) {
 	if (id <= ScalarProvenance::Unknown) {
 		return true;
 	}
 	if (id >= provenance.values.size()) {
 		return false;
 	}
-	if ((*visited)[id] != 0) {
+	if (visited[id] != 0) {
 		return true;
 	}
-	(*visited)[id]    = 1;
+	visited[id]       = 1;
 	const auto& value = provenance.values[id];
 	if (value.op == ScalarValueOp::UserData) {
-		registers->insert(value.imm);
+		registers.insert(value.imm);
 		return true;
 	}
 	if (value.op == ScalarValueOp::Phi) {
@@ -92,7 +92,7 @@ bool CollectValue(const ScalarProvenance& provenance, uint32_t id, std::vector<u
 }
 
 bool CollectSource(const Program& program, uint32_t source, bool allow_unknown,
-                   std::vector<uint8_t>* visited, std::set<uint32_t>* registers) {
+	               std::vector<uint8_t>& visited, std::set<uint32_t>& registers) {
 	if (allow_unknown && source == ScalarProvenance::Unknown) {
 		return true;
 	}
@@ -112,49 +112,49 @@ bool CollectUserData(const Program& program, std::vector<uint32_t>& result) {
 	std::set<uint32_t>   registers;
 	std::vector<uint8_t> visited(program.provenance.values.size());
 	for (const auto& buffer: program.info.buffers) {
-		if (!CollectSource(program, buffer.source, false, &visited, &registers)) {
+		if (!CollectSource(program, buffer.source, false, visited, registers)) {
 			return false;
 		}
 	}
 	for (const auto& image: program.info.images) {
-		if (!CollectSource(program, image.source, false, &visited, &registers)) {
+		if (!CollectSource(program, image.source, false, visited, registers)) {
 			return false;
 		}
 	}
 	for (const auto& sampler: program.info.samplers) {
-		if (!CollectSource(program, sampler.source, false, &visited, &registers)) {
+		if (!CollectSource(program, sampler.source, false, visited, registers)) {
 			return false;
 		}
 	}
 	for (const auto& address: program.info.addresses) {
-		if (!CollectSource(program, address.source, true, &visited, &registers)) {
+		if (!CollectSource(program, address.source, true, visited, registers)) {
 			return false;
 		}
 	}
 	for (const auto& read: program.srt.reads) {
-		if (!CollectValue(program.provenance, read.value, &visited, &registers)) {
+		if (!CollectValue(program.provenance, read.value, visited, registers)) {
 			return false;
 		}
 	}
 	for (const auto read: program.srt.dynamic_reads) {
-		if (!CollectValue(program.provenance, read, &visited, &registers)) {
+		if (!CollectValue(program.provenance, read, visited, registers)) {
 			return false;
 		}
 	}
 	for (const auto source: program.srt.dynamic_sources) {
-		if (!CollectSource(program, source, true, &visited, &registers)) {
+		if (!CollectSource(program, source, true, visited, registers)) {
 			return false;
 		}
 	}
 	for (const auto& block: program.blocks) {
 		for (const auto& inst: block.instructions) {
 			if (inst.op == Opcode::SLoadDword && inst.memory.kind == ResourceKind::ScalarBuffer &&
-			    !CollectValue(program.provenance, inst.scalar_value, &visited, &registers)) {
+			    !CollectValue(program.provenance, inst.scalar_value, visited, registers)) {
 				return false;
 			}
 			for (uint32_t i = 0; i < inst.src_count; i++) {
-				if (!CollectValue(program.provenance, inst.scalar_sources[i], &visited,
-				                  &registers)) {
+				if (!CollectValue(program.provenance, inst.scalar_sources[i], visited,
+				                  registers)) {
 					return false;
 				}
 			}
@@ -164,10 +164,10 @@ bool CollectUserData(const Program& program, std::vector<uint32_t>& result) {
 	return true;
 }
 
-void AddBinding(BindingLayout* layout, DescriptorBindingKind kind,
+void AddBinding(BindingLayout& layout, DescriptorBindingKind kind,
                 std::vector<uint32_t> resources = {}) {
-	layout->descriptors.push_back(
-	    {kind, static_cast<uint32_t>(layout->descriptors.size()), std::move(resources)});
+	layout.descriptors.push_back(
+	    {kind, static_cast<uint32_t>(layout.descriptors.size()), std::move(resources)});
 }
 
 bool UsesGds(const Program& program) {
@@ -183,12 +183,11 @@ bool UsesGds(const Program& program) {
 
 } // namespace
 
-bool AllocateBindings(Program* program, const BindingLayoutOptions& options, std::string* error) {
-	if (program == nullptr || !program->shader_info_complete || program->binding_layout_complete) {
+bool AllocateBindings(Program& program, const BindingLayoutOptions& options, std::string* error) {
+	if (!program.shader_info_complete || program.binding_layout_complete) {
 		if (error != nullptr) {
-			*error = program == nullptr               ? "invalid binding-layout program"
-			         : !program->shader_info_complete ? "shader info is not ready"
-			                                          : "binding layout already allocated";
+			*error = !program.shader_info_complete ? "shader info is not ready"
+			                                      : "binding layout already allocated";
 		}
 		return false;
 	}
@@ -208,25 +207,25 @@ bool AllocateBindings(Program* program, const BindingLayoutOptions& options, std
 	BindingLayout next;
 	next.descriptor_set       = options.descriptor_set;
 	next.push_constant_offset = options.push_constant_offset;
-	if (!CollectUserData(*program, next.user_data_registers)) {
+	if (!CollectUserData(program, next.user_data_registers)) {
 		if (error != nullptr) {
 			*error = "shader plan contains an invalid scalar provenance reference";
 		}
 		return false;
 	}
 
-	if (!program->info.buffers.empty()) {
-		std::vector<uint32_t> resources(program->info.buffers.size());
+	if (!program.info.buffers.empty()) {
+		std::vector<uint32_t> resources(program.info.buffers.size());
 		for (uint32_t i = 0; i < resources.size(); i++) {
 			resources[i] = i;
 		}
-		AddBinding(&next, DescriptorBindingKind::Buffers, std::move(resources));
+		AddBinding(next, DescriptorBindingKind::Buffers, std::move(resources));
 	}
 
 	std::array<std::vector<uint32_t>, ImageBindingKinds.size()> image_groups;
-	for (uint32_t i = 0; i < program->info.images.size(); i++) {
+	for (uint32_t i = 0; i < program.info.images.size(); i++) {
 		DescriptorBindingKind kind;
-		if (!ImageBinding(program->info.images[i], kind)) {
+		if (!ImageBinding(program.info.images[i], kind)) {
 			if (error != nullptr) {
 				*error = "shader info contains an invalid image binding class";
 			}
@@ -243,29 +242,29 @@ bool AllocateBindings(Program* program, const BindingLayoutOptions& options, std
 	}
 	for (uint32_t i = 0; i < image_groups.size(); i++) {
 		if (!image_groups[i].empty()) {
-			AddBinding(&next, ImageBindingKinds[i], std::move(image_groups[i]));
+			AddBinding(next, ImageBindingKinds[i], std::move(image_groups[i]));
 		}
 	}
 
-	if (!program->info.samplers.empty()) {
-		std::vector<uint32_t> resources(program->info.samplers.size());
+	if (!program.info.samplers.empty()) {
+		std::vector<uint32_t> resources(program.info.samplers.size());
 		for (uint32_t i = 0; i < resources.size(); i++) {
 			resources[i] = i;
 		}
-		AddBinding(&next, DescriptorBindingKind::Samplers, std::move(resources));
+		AddBinding(next, DescriptorBindingKind::Samplers, std::move(resources));
 	}
-	if (UsesGds(*program)) {
-		AddBinding(&next, DescriptorBindingKind::Gds);
+	if (UsesGds(program)) {
+		AddBinding(next, DescriptorBindingKind::Gds);
 	}
-	if (!program->info.addresses.empty()) {
-		std::vector<uint32_t> resources(program->info.addresses.size());
+	if (!program.info.addresses.empty()) {
+		std::vector<uint32_t> resources(program.info.addresses.size());
 		for (uint32_t i = 0; i < resources.size(); i++) {
 			resources[i] = i;
 		}
-		AddBinding(&next, DescriptorBindingKind::AddressMemory, std::move(resources));
+		AddBinding(next, DescriptorBindingKind::AddressMemory, std::move(resources));
 	}
-	if (!program->srt.reads.empty()) {
-		AddBinding(&next, DescriptorBindingKind::FlattenedSrt);
+	if (!program.srt.reads.empty()) {
+		AddBinding(next, DescriptorBindingKind::FlattenedSrt);
 	}
 
 	const auto available_push_dwords = (MaxPushConstantBytes - options.push_constant_offset) / 4u;
@@ -273,11 +272,11 @@ bool AllocateBindings(Program* program, const BindingLayoutOptions& options, std
 	if (next.user_data_registers.size() <= push_limit) {
 		next.push_constant_size = static_cast<uint32_t>(next.user_data_registers.size() * 4u);
 	} else {
-		AddBinding(&next, DescriptorBindingKind::UserData);
+		AddBinding(next, DescriptorBindingKind::UserData);
 	}
 
-	program->bindings                = std::move(next);
-	program->binding_layout_complete = true;
+	program.bindings                = std::move(next);
+	program.binding_layout_complete = true;
 	return true;
 }
 

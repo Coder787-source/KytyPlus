@@ -40,7 +40,7 @@ void CheckRejected(const ShaderMappedData& data, const char* text) {
 	output.vertex_attrib_reg     = 41;
 	output.input_semantics_count = 7;
 	std::string error;
-	Check(!ShaderReadVertexMetadata(data, 64, &output, &error), text);
+	Check(!ShaderReadVertexMetadata(data, 64, output, &error), text);
 	Check(!error.empty(), "metadata rejection omitted its diagnostic");
 	Check(output.vertex_buffer_reg == 37 && output.vertex_attrib_reg == 41 &&
 	          output.input_semantics_count == 7,
@@ -51,7 +51,7 @@ void TestValidAndInvalidMetadata() {
 	Fixture fixture;
 	ShaderVertexMetadata output;
 	std::string error;
-	Check(ShaderReadVertexMetadata(fixture.mapped, 64, &output, &error),
+	Check(ShaderReadVertexMetadata(fixture.mapped, 64, output, &error),
 	      "valid AGC vertex metadata was rejected");
 	Check(output.vertex_buffer_reg == 2 && output.vertex_attrib_reg == 4 &&
 	          output.input_semantics_count == 1,

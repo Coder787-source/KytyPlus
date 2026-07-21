@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace Libs::Graphics::Rt {
+namespace Libs::Graphics {
 namespace {
 
 bool ExtensionAvailable(const std::vector<vk::ExtensionProperties>& available, const char* name) {
@@ -25,10 +25,9 @@ void AppendExtensionIfMissing(std::vector<const char*>& extensions, const char* 
 
 } // namespace
 
-void AppendHardwareRayTracingDeviceExtensions(
+void GraphicContext::AppendHardwareRayTracingDeviceExtensions(
     const std::vector<vk::ExtensionProperties>& available_extensions,
-    std::vector<const char*>* device_extensions, GraphicContext* ctx) {
-	EXIT_IF(device_extensions == nullptr || ctx == nullptr);
+    std::vector<const char*>&                   device_extensions) {
 
 	const char* required[] = {
 	    VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
@@ -40,27 +39,27 @@ void AppendHardwareRayTracingDeviceExtensions(
 		if (!ExtensionAvailable(available_extensions, extension)) {
 			LOGF("Vulkan RT: extension %s is unavailable; hardware ray tracing disabled\n",
 			     extension);
-			ctx->rt_extensions_enabled = false;
+			rt_extensions_enabled = false;
 			return;
 		}
 	}
 	for (const auto* extension: required) {
-		AppendExtensionIfMissing(*device_extensions, extension);
+		AppendExtensionIfMissing(device_extensions, extension);
 	}
 	if (ExtensionAvailable(available_extensions, VK_KHR_SPIRV_1_4_EXTENSION_NAME)) {
-		AppendExtensionIfMissing(*device_extensions, VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+		AppendExtensionIfMissing(device_extensions, VK_KHR_SPIRV_1_4_EXTENSION_NAME);
 	}
 	if (ExtensionAvailable(available_extensions, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME)) {
-		AppendExtensionIfMissing(*device_extensions, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+		AppendExtensionIfMissing(device_extensions, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
 	}
 
-	ctx->rt_extensions_enabled = true;
+	rt_extensions_enabled = true;
 	LOGF("Vulkan RT: enabling hardware ray query extensions\n");
 }
 
-void LoadHardwareRayTracingFunctions(GraphicContext* ctx) {
-	EXIT_IF(ctx == nullptr || ctx->device == nullptr);
-	if (!ctx->rt_extensions_enabled) {
+void GraphicContext::LoadHardwareRayTracingFunctions() const {
+	EXIT_IF(device == nullptr);
+	if (!rt_extensions_enabled) {
 		return;
 	}
 
@@ -75,4 +74,4 @@ void LoadHardwareRayTracingFunctions(GraphicContext* ctx) {
 	}
 }
 
-} // namespace Libs::Graphics::Rt
+} // namespace Libs::Graphics

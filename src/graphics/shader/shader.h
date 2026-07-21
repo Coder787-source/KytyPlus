@@ -42,8 +42,8 @@ struct ShaderStageRuntime {
 // Resolves an immutable native shader plan against current user data. The prior stage is preserved
 // if any ReadConst, snapshot, or specialization check fails.
 bool ShaderMaterializeStageRuntime(std::shared_ptr<const ShaderRecompiler::IR::Program> program,
-                                   std::span<const uint32_t> user_data, uint64_t shader_base,
-                                   ShaderStageRuntime* stage, std::string* error);
+	                               std::span<const uint32_t> user_data, uint64_t shader_base,
+	                               ShaderStageRuntime& stage, std::string* error);
 
 struct ShaderId {
 	uint32_t              hash0 = 0;
@@ -216,33 +216,33 @@ struct ShaderMappedData {
 void ShaderInit();
 void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
 
-void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo* info);
-void     ShaderDbgDumpInputInfo(const ShaderPixelInputInfo* info);
-void     ShaderDbgDumpInputInfo(const ShaderComputeInputInfo* info);
-ShaderId ShaderGetIdVS(const HW::VertexShaderInfo* regs, const ShaderVertexInputInfo* input_info,
+void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);
+void     ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info);
+void     ShaderDbgDumpInputInfo(const ShaderComputeInputInfo& info);
+ShaderId ShaderGetIdVS(const HW::VertexShaderInfo& regs, const ShaderVertexInputInfo& input_info,
                        bool include_bind_specialization);
-ShaderId ShaderGetIdPS(const HW::PixelShaderInfo* regs, const ShaderPixelInputInfo* input_info,
+ShaderId ShaderGetIdPS(const HW::PixelShaderInfo& regs, const ShaderPixelInputInfo& input_info,
                        bool include_bind_specialization);
-ShaderId ShaderGetIdCS(const HW::ComputeShaderInfo* regs, const ShaderComputeInputInfo* input_info,
+ShaderId ShaderGetIdCS(const HW::ComputeShaderInfo& regs, const ShaderComputeInputInfo& input_info,
                        bool include_bind_specialization);
 // Returned SPIR-V spans are read-only views backed by the shader program cache.
-bool ShaderCompileInfoVS(const HW::VertexShaderInfo* regs, const HW::ShaderRegisters* sh,
-                         ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo* input_info,
-                         std::span<const uint32_t>* spirv);
-bool ShaderCompileInfoPS(const HW::PixelShaderInfo* regs, const HW::ShaderRegisters* sh,
-                         ShaderLaneMaskMode lane_mask_mode, const ShaderVertexInputInfo* vs_info,
+bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
+                         ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& input_info,
+                         std::span<const uint32_t>& spirv);
+bool ShaderCompileInfoPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
+                         ShaderLaneMaskMode lane_mask_mode, const ShaderVertexInputInfo& vs_info,
                          std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
-                         ShaderPixelInputInfo* input_info, std::span<const uint32_t>* spirv);
-bool ShaderCompileInfoCS(const HW::ComputeShaderInfo* regs, const HW::ShaderRegisters* sh,
-                         ShaderComputeInputInfo* input_info, std::span<const uint32_t>* spirv);
-bool ShaderCompileSpirvVS(const HW::VertexShaderInfo* regs, const HW::ShaderRegisters* sh,
-                          ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo* input_info,
-                          std::vector<uint32_t>* spirv);
-bool ShaderCompileSpirvPS(const HW::PixelShaderInfo* regs, const HW::ShaderRegisters* sh,
-                          ShaderLaneMaskMode lane_mask_mode, ShaderPixelInputInfo* input_info,
-                          std::vector<uint32_t>* spirv);
-bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo* regs, const HW::ShaderRegisters* sh,
-                          ShaderComputeInputInfo* input_info, std::vector<uint32_t>* spirv);
+                         ShaderPixelInputInfo& input_info, std::span<const uint32_t>& spirv);
+bool ShaderCompileInfoCS(const HW::ComputeShaderInfo& regs, const HW::ShaderRegisters& sh,
+                         ShaderComputeInputInfo& input_info, std::span<const uint32_t>& spirv);
+bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
+                          ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& input_info,
+                          std::vector<uint32_t>& spirv);
+bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
+                          ShaderLaneMaskMode lane_mask_mode, ShaderPixelInputInfo& input_info,
+                          std::vector<uint32_t>& spirv);
+bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderRegisters& sh,
+                          ShaderComputeInputInfo& input_info, std::vector<uint32_t>& spirv);
 bool ShaderAddressValid(uint64_t addr);
 
 } // namespace Libs::Graphics

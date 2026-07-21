@@ -25,8 +25,9 @@ static bool RenderTargetMaskHasMrt(uint32_t mask) {
 	return (mask & ~0x0fu) != 0;
 }
 
-static bool RenderTargetMaskHasBoundMrt(const HW::Context& hw) {
-	const auto mask = hw.GetRenderTargetMask();
+static bool RenderTargetMaskHasBoundMrt(const RenderCommandBuffer& buffer) {
+	const auto& hw   = buffer.GetRegisters();
+	const auto  mask = hw.GetRenderTargetMask();
 
 	if (!RenderTargetMaskHasMrt(mask)) {
 		return false;
@@ -42,8 +43,9 @@ static bool RenderTargetMaskHasBoundMrt(const HW::Context& hw) {
 	return bound_targets > 1;
 }
 
-uint32_t render_target_first_bound_slot(const HW::Context& hw) {
-	const auto mask = hw.GetRenderTargetMask();
+uint32_t render_target_first_bound_slot(const RenderCommandBuffer& buffer) {
+	const auto& hw   = buffer.GetRegisters();
+	const auto  mask = hw.GetRenderTargetMask();
 	for (uint32_t i = 0; i < 8; i++) {
 		if (render_target_mask_slot(mask, i) != 0 && hw.GetRenderTarget(i).base.addr != 0) {
 			return i;
@@ -1241,8 +1243,9 @@ ScissorRect calc_final_scissor(const HW::ScreenViewport& vp, const HW::ScanModeC
 	return ScissorRectClamp(final, extent.width, extent.height);
 }
 
-void hw_check(const HW::Context& hw) {
-	const auto  rt_slot = render_target_first_bound_slot(hw);
+void hw_check(const RenderCommandBuffer& buffer) {
+	const auto& hw      = buffer.GetRegisters();
+	const auto  rt_slot = render_target_first_bound_slot(buffer);
 	const auto& rt      = hw.GetRenderTarget(rt_slot);
 	const auto& bc      = hw.GetBlendControl(rt_slot);
 	const auto& bclr    = hw.GetBlendColor();
@@ -1291,7 +1294,7 @@ void hw_check(const HW::Context& hw) {
 	AaCheck(aa, ac);
 	log_phase("done");
 
-	if (RenderTargetMaskHasBoundMrt(hw)) {
+	if (RenderTargetMaskHasBoundMrt(buffer)) {
 		LOGF("MRT render target mask: 0x%08" PRIx32 "\n", hw.GetRenderTargetMask());
 		for (uint32_t i = 0; i < 8; i++) {
 			const auto& mrt = hw.GetRenderTarget(i);
@@ -1312,8 +1315,9 @@ void hw_check(const HW::Context& hw) {
 	// EXIT_NOT_IMPLEMENTED(hw.GetStencilClearValue() != 0);
 }
 
-void hw_print(const HW::Context& hw) {
-	const auto  rt_slot = render_target_first_bound_slot(hw);
+void hw_print(const RenderCommandBuffer& buffer) {
+	const auto& hw      = buffer.GetRegisters();
+	const auto  rt_slot = render_target_first_bound_slot(buffer);
 	const auto& rt      = hw.GetRenderTarget(rt_slot);
 	const auto& bc      = hw.GetBlendControl(rt_slot);
 	const auto& bclr    = hw.GetBlendColor();

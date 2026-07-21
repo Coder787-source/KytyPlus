@@ -32,14 +32,14 @@ struct GpuTileInfo {
 	uint32_t        surface_z           = 0;
 };
 
-using GpuTileRecord = std::function<void(CommandBuffer*, VulkanBuffer*)>;
+using GpuTileRecord = std::function<void(CommandBuffer&, VulkanBuffer&)>;
 
-void GpuDetile(GraphicContext* ctx, const void* tiled, void* linear, uint64_t tiled_capacity,
+void GpuDetile(const void* tiled, void* linear, uint64_t tiled_capacity,
                uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
                const GpuTileRecord& after = {});
-void GpuTile(GraphicContext* ctx, const void* linear, void* tiled, uint64_t tiled_capacity,
+void GpuTile(const void* linear, void* tiled, uint64_t tiled_capacity,
              uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
              const GpuTileRecord& before = {});
-void GpuTileRelease(GraphicContext* ctx);
+void GpuTileRelease();
 
 } // namespace Libs::Graphics

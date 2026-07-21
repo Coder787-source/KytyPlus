@@ -216,12 +216,12 @@ ValidateStorageImageResource(const ShaderRecompiler::IR::ImageResource& resource
 namespace ImageViewOps {
 
 [[nodiscard]] vk::ImageAspectFlags DepthAspectMask(vk::Format format);
-[[nodiscard]] bool                 FormatSupportsStorage(GraphicContext* ctx, vk::Format format);
+[[nodiscard]] bool FormatSupportsStorage(vk::Format format);
 
-void CreateRenderTargetViews(GraphicContext* ctx, RenderTextureVulkanImage* image);
-void CreateDepthViews(GraphicContext* ctx, DepthStencilVulkanImage* image);
-void CreateVideoOutViews(GraphicContext* ctx, VideoOutVulkanImage* image);
-void DestroyViews(GraphicContext* ctx, VulkanImage* image);
+void CreateRenderTargetViews(RenderTextureVulkanImage& image);
+void CreateDepthViews(DepthStencilVulkanImage& image);
+void CreateVideoOutViews(VideoOutVulkanImage& image);
+void DestroyViews(VulkanImage& image);
 
 } // namespace ImageViewOps
 

@@ -9,12 +9,8 @@
 
 namespace Libs::Graphics {
 
-class CommandBuffer;
+class RenderCommandBuffer;
 struct VulkanImage;
-
-namespace HW {
-class Context;
-} // namespace HW
 
 enum class RenderColorType {
 	NoColorOutput,
@@ -39,8 +35,8 @@ struct RenderColorInfo {
 	vk::ClearColorValue             color_clear_value {};
 };
 
-void ResolveRenderColorTarget(uint64_t submit_id, CommandBuffer* buffer, const HW::Context& hw,
-                              RenderColorInfo* r, uint32_t render_target_slice_offset = 0,
+void ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer, RenderColorInfo& r,
+                              uint32_t render_target_slice_offset    = 0,
                               uint32_t render_target_slot            = UINT32_MAX,
                               bool     ignore_target_mask            = false,
                               bool     reuse_existing_render_texture = false);

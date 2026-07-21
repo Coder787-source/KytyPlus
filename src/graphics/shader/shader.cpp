@@ -135,14 +135,13 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 	(*g_shader_map)[addr] = data;
 }
 
-static bool ShaderGetMappedData(uint64_t addr, ShaderMappedData* data) {
+static bool ShaderGetMappedData(uint64_t addr, ShaderMappedData& data) {
 	EXIT_IF(g_shader_map == nullptr);
-	EXIT_IF(data == nullptr);
 
 	std::scoped_lock lock(g_shader_map_mutex);
 
 	if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end()) {
-		*data = iter->second;
+		data = iter->second;
 		return true;
 	}
 
@@ -219,7 +218,7 @@ static const ShaderBinaryInfo* GetBinaryInfo(const uint32_t* code) {
 static std::span<const uint32_t> ShaderGetMappedCode(uint64_t shader_addr, const char* label,
                                                      uint64_t shader_hash) {
 	ShaderMappedData data;
-	if (!ShaderGetMappedData(shader_addr, &data)) {
+	if (!ShaderGetMappedData(shader_addr, data)) {
 		EXIT("%s hash=0x%016" PRIx64 " shader=0x%016" PRIx64 " is missing from ShaderMap\n", label,
 		     shader_hash, shader_addr);
 	}
@@ -435,10 +434,7 @@ static void cs_check(const HW::CsStageRegisters& cs, const HW::ShaderRegisters& 
 }
 #endif
 
-static void GetNextGenFallbackShaderId(uint64_t addr, uint32_t* hash0, uint32_t* crc32) {
-	EXIT_IF(hash0 == nullptr);
-	EXIT_IF(crc32 == nullptr);
-
+static void GetNextGenFallbackShaderId(uint64_t addr, uint32_t& hash0, uint32_t& crc32) {
 	auto x = addr;
 	x ^= x >> 33u;
 	x *= 0xff51afd7ed558ccdull;
@@ -446,28 +442,26 @@ static void GetNextGenFallbackShaderId(uint64_t addr, uint32_t* hash0, uint32_t*
 	x *= 0xc4ceb9fe1a85ec53ull;
 	x ^= x >> 33u;
 
-	*hash0 = static_cast<uint32_t>((x >> 32u) & 0xffffffffu);
-	*crc32 = static_cast<uint32_t>(x & 0xffffffffu);
+	hash0 = static_cast<uint32_t>((x >> 32u) & 0xffffffffu);
+	crc32 = static_cast<uint32_t>(x & 0xffffffffu);
 }
 
-static void ShaderDetectBuffers(ShaderVertexInputInfo* info) {
+static void ShaderDetectBuffers(ShaderVertexInputInfo& info) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_IF(info == nullptr);
+	info.buffers_num = 0;
 
-	info->buffers_num = 0;
-
-	for (int ri = 0; ri < info->resources_num; ri++) {
-		const auto& r = info->resources[ri];
+	for (int ri = 0; ri < info.resources_num; ri++) {
+		const auto& r = info.resources[ri];
 
 		bool merged = false;
-		for (int bi = 0; bi < info->buffers_num; bi++) {
-			auto& b = info->buffers[bi];
+		for (int bi = 0; bi < info.buffers_num; bi++) {
+			auto& b = info.buffers[bi];
 
 			uint64_t stride = b.stride;
 
 			if (stride == r.Stride() &&
-			    b.fetch_index == static_cast<uint32_t>(info->resources_dst[ri].fetch_index)) {
+			    b.fetch_index == static_cast<uint32_t>(info.resources_dst[ri].fetch_index)) {
 				uint64_t rbase   = r.Base48();
 				uint64_t base    = std::min(rbase, b.addr);
 				uint64_t offset1 = rbase - base;
@@ -485,21 +479,21 @@ static void ShaderDetectBuffers(ShaderVertexInputInfo* info) {
 		}
 
 		if (!merged) {
-			EXIT_NOT_IMPLEMENTED(info->buffers_num >= ShaderVertexInputInfo::RES_MAX);
-			int bi                            = info->buffers_num++;
-			info->buffers[bi].addr            = r.Base48();
-			info->buffers[bi].stride          = r.Stride();
-			info->buffers[bi].num_records     = r.NumRecords();
-			info->buffers[bi].fetch_index     = info->resources_dst[ri].fetch_index;
-			info->buffers[bi].attr_num        = 1;
-			info->buffers[bi].attr_indices[0] = ri;
+			EXIT_NOT_IMPLEMENTED(info.buffers_num >= ShaderVertexInputInfo::RES_MAX);
+			int bi                           = info.buffers_num++;
+			info.buffers[bi].addr            = r.Base48();
+			info.buffers[bi].stride          = r.Stride();
+			info.buffers[bi].num_records     = r.NumRecords();
+			info.buffers[bi].fetch_index     = info.resources_dst[ri].fetch_index;
+			info.buffers[bi].attr_num        = 1;
+			info.buffers[bi].attr_indices[0] = ri;
 		}
 	}
 
-	for (int bi = 0; bi < info->buffers_num; bi++) {
-		auto& b = info->buffers[bi];
+	for (int bi = 0; bi < info.buffers_num; bi++) {
+		auto& b = info.buffers[bi];
 		for (int ri = 0; ri < b.attr_num; ri++) {
-			b.attr_offsets[ri] = info->resources[b.attr_indices[ri]].Base48() - b.addr;
+			b.attr_offsets[ri] = info.resources[b.attr_indices[ri]].Base48() - b.addr;
 		}
 	}
 }
@@ -610,13 +604,13 @@ static uint32_t VertexAttribFormatToBufferFormat(uint32_t format) {
 	return format;
 }
 
-static void ShaderApplyAttribSemantics(ShaderVertexInputInfo* info,
+static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
                                        const ShaderSemantic*  input_semantics,
                                        uint32_t num_input_semantics, const uint32_t* attrib,
                                        const uint32_t* buffer) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_IF(info == nullptr || attrib == nullptr || buffer == nullptr);
+	EXIT_IF(attrib == nullptr || buffer == nullptr);
 
 	for (uint32_t i = 0; i < num_input_semantics; i++) {
 		const auto& in = input_semantics[i];
@@ -647,10 +641,10 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo* info,
 
 		const auto* sharp = &buffer[index * 4];
 
-		EXIT_NOT_IMPLEMENTED(info->resources_num >= ShaderVertexInputInfo::RES_MAX);
+		EXIT_NOT_IMPLEMENTED(info.resources_num >= ShaderVertexInputInfo::RES_MAX);
 
-		auto& r           = info->resources[info->resources_num];
-		auto& rd          = info->resources_dst[info->resources_num];
+		auto& r           = info.resources[info.resources_num];
+		auto& rd          = info.resources_dst[info.resources_num];
 		rd.register_start = static_cast<int>(reg);
 		rd.registers_num  = static_cast<int>(size);
 		rd.attr_id        = static_cast<int>(in.semantic);
@@ -675,7 +669,7 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo* info,
 			r.UpdateAddress48(r.Base48() + offset);
 		}
 
-		info->resources_num++;
+		info.resources_num++;
 	}
 }
 
@@ -735,23 +729,21 @@ static uint32_t ShaderCalcPsSystemInputBase(const HW::ShaderRegisters& regs) {
 	return reg;
 }
 
-static bool ShaderGetStaticInputInfoVS(const HW::VertexShaderInfo* regs,
-                                       const HW::ShaderRegisters* sh, ShaderVertexInputInfo* info) {
+static bool ShaderGetStaticInputInfoVS(const HW::VertexShaderInfo& regs,
+                                       const HW::ShaderRegisters& sh, ShaderVertexInputInfo& info) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_IF(info == nullptr || regs == nullptr || sh == nullptr);
+	info = {};
 
-	*info = {};
+	info.export_count = static_cast<int>(sh.GetExportCount());
 
-	info->export_count = static_cast<int>(sh->GetExportCount());
+	EXIT_NOT_IMPLEMENTED(regs.es_regs.data_addr == 0 || regs.gs_regs.chksum == 0);
 
-	EXIT_NOT_IMPLEMENTED(regs->es_regs.data_addr == 0 || regs->gs_regs.chksum == 0);
-
-	uint64_t                shader_addr   = regs->es_regs.data_addr;
-	const HW::UserSgprInfo& user_sgpr     = regs->gs_user_sgpr;
-	auto                    user_sgpr_num = regs->gs_regs.rsrc2.user_sgpr;
+	uint64_t                shader_addr   = regs.es_regs.data_addr;
+	const HW::UserSgprInfo& user_sgpr     = regs.gs_user_sgpr;
+	auto                    user_sgpr_num = regs.gs_regs.rsrc2.user_sgpr;
 	ShaderMappedData        data;
-	if (!ShaderGetMappedData(shader_addr, &data)) {
+	if (!ShaderGetMappedData(shader_addr, data)) {
 		LOGF("ShaderGetInputInfoVS(): shader=0x%016" PRIx64 " is missing from ShaderMap\n",
 		     shader_addr);
 		return false;
@@ -760,22 +752,22 @@ static bool ShaderGetStaticInputInfoVS(const HW::VertexShaderInfo* regs,
 	if (data.user_data == nullptr) {
 		LOGF("ShaderGetInputInfoVS(): no AGC user data for shader=0x%016" PRIx64 " es=0x%016" PRIx64
 		     " gs=0x%016" PRIx64 " chksum=0x%016" PRIx64 " user_sgpr_num=%u\n",
-		     shader_addr, regs->es_regs.data_addr, regs->gs_regs.data_addr, regs->gs_regs.chksum,
+		     shader_addr, regs.es_regs.data_addr, regs.gs_regs.data_addr, regs.gs_regs.chksum,
 		     static_cast<uint32_t>(user_sgpr_num));
 	}
 	ShaderVertexMetadata metadata;
 	std::string          metadata_error;
-	if (!ShaderReadVertexMetadata(data, HW::UserSgprInfo::SGPRS_MAX, &metadata, &metadata_error)) {
+	if (!ShaderReadVertexMetadata(data, HW::UserSgprInfo::SGPRS_MAX, metadata, &metadata_error)) {
 		LOGF("ShaderGetInputInfoVS(): invalid AGC metadata shader=0x%016" PRIx64 ": %s\n",
 		     shader_addr, metadata_error.c_str());
 		return false;
 	}
 
 	if (metadata.vertex_buffer_reg >= 0) {
-		info->fetch_external   = false;
-		info->fetch_embedded   = true;
-		info->fetch_attrib_reg = metadata.vertex_attrib_reg;
-		info->fetch_buffer_reg = metadata.vertex_buffer_reg;
+		info.fetch_external   = false;
+		info.fetch_embedded   = true;
+		info.fetch_attrib_reg = metadata.vertex_attrib_reg;
+		info.fetch_buffer_reg = metadata.vertex_buffer_reg;
 
 		const auto* attrib = reinterpret_cast<const uint32_t*>(
 		    static_cast<uint64_t>(user_sgpr.value[metadata.vertex_attrib_reg]) |
@@ -797,76 +789,68 @@ static bool ShaderGetStaticInputInfoVS(const HW::VertexShaderInfo* regs,
 }
 
 static void ShaderGetStaticInputInfoPS(
-    const HW::PixelShaderInfo* regs, const HW::ShaderRegisters* sh,
-    const ShaderVertexInputInfo*                        vs_info,
+    const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
+    const ShaderVertexInputInfo&                        vs_info,
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
-    ShaderPixelInputInfo*                               ps_info) {
+    ShaderPixelInputInfo&                               ps_info) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_IF(vs_info == nullptr);
-	EXIT_IF(ps_info == nullptr);
-	EXIT_IF(regs == nullptr);
-	EXIT_IF(sh == nullptr);
+	ps_info = {};
 
-	*ps_info = {};
+	ps_info.input_num                    = sh.ps_in_control;
+	ps_info.ps_system_input_base         = ShaderCalcPsSystemInputBase(sh);
+	const uint32_t active_inputs         = sh.ps_input_ena & sh.ps_input_addr;
+	ps_info.ps_pos_x                     = (active_inputs & 0x00000100u) != 0;
+	ps_info.ps_pos_y                     = (active_inputs & 0x00000200u) != 0;
+	ps_info.ps_pos_xy                    = ps_info.ps_pos_x && ps_info.ps_pos_y;
+	ps_info.ps_pos_z                     = (active_inputs & 0x00000400u) != 0;
+	ps_info.ps_pos_w                     = (active_inputs & 0x00000800u) != 0;
+	ps_info.ps_front_face                = (active_inputs & 0x00001000u) != 0;
+	ps_info.ps_sample_shading            = (active_inputs & 0x00000011u) != 0;
+	ps_info.ps_no_perspective            = (sh.ps_input_ena & sh.ps_input_addr & 0x00000020u) != 0;
+	ps_info.ps_pixel_kill_enable         = sh.db_shader_control.shader_kill_enable;
+	ps_info.ps_depth_export_enable       = sh.db_shader_control.shader_z_export_enable;
+	ps_info.ps_sample_mask_export_enable = sh.db_shader_control.shader_mask_export_enable;
+	ps_info.ps_early_z =
+	    (sh.db_shader_control.shader_z_behavior == 1 && !sh.db_shader_control.shader_kill_enable &&
+	     !sh.db_shader_control.shader_z_export_enable &&
+	     !sh.db_shader_control.shader_mask_export_enable);
+	ps_info.ps_execute_on_noop = sh.db_shader_control.shader_execute_on_noop;
 
-	ps_info->input_num              = sh->ps_in_control;
-	ps_info->ps_system_input_base   = ShaderCalcPsSystemInputBase(*sh);
-	const uint32_t active_inputs    = sh->ps_input_ena & sh->ps_input_addr;
-	ps_info->ps_pos_x               = (active_inputs & 0x00000100u) != 0;
-	ps_info->ps_pos_y               = (active_inputs & 0x00000200u) != 0;
-	ps_info->ps_pos_xy              = ps_info->ps_pos_x && ps_info->ps_pos_y;
-	ps_info->ps_pos_z               = (active_inputs & 0x00000400u) != 0;
-	ps_info->ps_pos_w               = (active_inputs & 0x00000800u) != 0;
-	ps_info->ps_front_face          = (active_inputs & 0x00001000u) != 0;
-	ps_info->ps_sample_shading      = (active_inputs & 0x00000011u) != 0;
-	ps_info->ps_no_perspective      = (sh->ps_input_ena & sh->ps_input_addr & 0x00000020u) != 0;
-	ps_info->ps_pixel_kill_enable   = sh->db_shader_control.shader_kill_enable;
-	ps_info->ps_depth_export_enable = sh->db_shader_control.shader_z_export_enable;
-	ps_info->ps_sample_mask_export_enable = sh->db_shader_control.shader_mask_export_enable;
-	ps_info->ps_early_z                   = (sh->db_shader_control.shader_z_behavior == 1 &&
-	                                         !sh->db_shader_control.shader_kill_enable &&
-	                                         !sh->db_shader_control.shader_z_export_enable &&
-	                                         !sh->db_shader_control.shader_mask_export_enable);
-	ps_info->ps_execute_on_noop           = sh->db_shader_control.shader_execute_on_noop;
-
-	for (uint32_t i = 0; i < ps_info->input_num; i++) {
-		ps_info->interpolator_settings[i] = sh->ps_interpolator_settings[i];
+	for (uint32_t i = 0; i < ps_info.input_num; i++) {
+		ps_info.interpolator_settings[i] = sh.ps_interpolator_settings[i];
 	}
 
-	ps_info->descriptor_set =
-	    vs_info->stage.program != nullptr && !vs_info->stage.program->bindings.descriptors.empty()
+	ps_info.descriptor_set =
+	    vs_info.stage.program != nullptr && !vs_info.stage.program->bindings.descriptors.empty()
 	        ? 1
 	        : 0;
 
 	for (int i = 0; i < 8; i++) {
-		ps_info->target_output_mode[i]    = sh->target_output_mode[i];
-		ps_info->target_export_mapping[i] = sh->target_output_mode[i] != 0
-		                                        ? target_export_mapping[i]
-		                                        : Prospero::ColorComponentMapping {};
+		ps_info.target_output_mode[i]    = sh.target_output_mode[i];
+		ps_info.target_export_mapping[i] = sh.target_output_mode[i] != 0
+		                                       ? target_export_mapping[i]
+		                                       : Prospero::ColorComponentMapping {};
 	}
-	ps_info->mrt_output_mask = 0;
+	ps_info.mrt_output_mask = 0;
 }
 
-static void ShaderGetStaticInputInfoCS(const HW::ComputeShaderInfo* regs,
-                                       const HW::ShaderRegisters* /*sh*/,
-                                       ShaderComputeInputInfo* info) {
-	EXIT_IF(info == nullptr);
-	EXIT_IF(regs == nullptr);
+static void ShaderGetStaticInputInfoCS(const HW::ComputeShaderInfo& regs,
+                                       const HW::ShaderRegisters& /*sh*/,
+                                       ShaderComputeInputInfo& info) {
+	info = {};
 
-	*info = {};
+	info.threads_num[0] = regs.cs_regs.num_thread_x;
+	info.threads_num[1] = regs.cs_regs.num_thread_y;
+	info.threads_num[2] = regs.cs_regs.num_thread_z;
+	info.group_id[0]    = regs.cs_regs.tgid_x_en != 0;
+	info.group_id[1]    = regs.cs_regs.tgid_y_en != 0;
+	info.group_id[2]    = regs.cs_regs.tgid_z_en != 0;
+	info.wave_size      = regs.cs_regs.wave_size;
+	info.thread_ids_num = regs.cs_regs.tidig_comp_cnt + 1;
+	info.tg_size_en     = regs.cs_regs.tg_size_en != 0;
 
-	info->threads_num[0] = regs->cs_regs.num_thread_x;
-	info->threads_num[1] = regs->cs_regs.num_thread_y;
-	info->threads_num[2] = regs->cs_regs.num_thread_z;
-	info->group_id[0]    = regs->cs_regs.tgid_x_en != 0;
-	info->group_id[1]    = regs->cs_regs.tgid_y_en != 0;
-	info->group_id[2]    = regs->cs_regs.tgid_z_en != 0;
-	info->wave_size      = regs->cs_regs.wave_size;
-	info->thread_ids_num = regs->cs_regs.tidig_comp_cnt + 1;
-	info->tg_size_en     = regs->cs_regs.tg_size_en != 0;
-
-	info->workgroup_register = regs->cs_regs.user_sgpr;
+	info.workgroup_register = regs.cs_regs.user_sgpr;
 }
 
 static ShaderStageProgramKey MakeShaderStageProgramKey(ShaderType stage, uint64_t shader_hash,
@@ -882,24 +866,24 @@ static ShaderStageProgramKey MakeShaderStageProgramKey(ShaderType stage, uint64_
 	return key;
 }
 
-static void ApplyVertexOutputs(ShaderVertexInputInfo*               info,
+static void ApplyVertexOutputs(ShaderVertexInputInfo&               info,
                                const ShaderRecompiler::IR::Program& program) {
-	info->export_count      = 0;
-	info->param_export_mask = 0;
+	info.export_count      = 0;
+	info.param_export_mask = 0;
 	for (const auto& output: program.info.outputs) {
 		if (output.kind == ShaderRecompiler::IR::StageOutputKind::Parameter && output.index < 32) {
-			info->param_export_mask |= 1u << output.index;
-			info->export_count = std::max(info->export_count, static_cast<int>(output.index + 1));
+			info.param_export_mask |= 1u << output.index;
+			info.export_count = std::max(info.export_count, static_cast<int>(output.index + 1));
 		}
 	}
 }
 
-static void ApplyPixelOutputs(ShaderPixelInputInfo*                info,
+static void ApplyPixelOutputs(ShaderPixelInputInfo&                info,
                               const ShaderRecompiler::IR::Program& program) {
-	info->mrt_output_mask = 0;
+	info.mrt_output_mask = 0;
 	for (const auto& output: program.info.outputs) {
 		if (output.kind == ShaderRecompiler::IR::StageOutputKind::Mrt && output.index < 8) {
-			info->mrt_output_mask |= 1u << output.index;
+			info.mrt_output_mask |= 1u << output.index;
 		}
 	}
 }
@@ -920,14 +904,13 @@ static bool LogPermutationMismatch(const ShaderProgramPermutation& permutation, 
 }
 
 static bool TryUseVertexPermutation(const ShaderProgramPermutation& permutation,
-                                    const HW::VertexShaderInfo* regs, ShaderVertexInputInfo* info,
+                                    const HW::VertexShaderInfo& regs, ShaderVertexInputInfo& info,
                                     uint64_t shader_hash) {
-	EXIT_IF(regs == nullptr || info == nullptr);
 	std::string error;
 	if (!ShaderMaterializeStageRuntime(
 	        permutation.program,
-	        std::span<const uint32_t>(regs->gs_user_sgpr.value, regs->gs_regs.rsrc2.user_sgpr),
-	        regs->es_regs.data_addr, &info->stage, &error)) {
+	        std::span<const uint32_t>(regs.gs_user_sgpr.value, regs.gs_regs.rsrc2.user_sgpr),
+	        regs.es_regs.data_addr, info.stage, &error)) {
 		return LogPermutationMismatch(permutation, "VS", shader_hash, error);
 	}
 	ApplyVertexOutputs(info, *permutation.program);
@@ -935,14 +918,13 @@ static bool TryUseVertexPermutation(const ShaderProgramPermutation& permutation,
 }
 
 static bool TryUsePixelPermutation(const ShaderProgramPermutation& permutation,
-                                   const HW::PixelShaderInfo* regs, ShaderPixelInputInfo* info,
+                                   const HW::PixelShaderInfo& regs, ShaderPixelInputInfo& info,
                                    uint64_t shader_hash) {
-	EXIT_IF(regs == nullptr || info == nullptr);
 	std::string error;
 	if (!ShaderMaterializeStageRuntime(
 	        permutation.program,
-	        std::span<const uint32_t>(regs->ps_user_sgpr.value, regs->ps_regs.rsrc2.user_sgpr),
-	        regs->ps_regs.data_addr, &info->stage, &error)) {
+	        std::span<const uint32_t>(regs.ps_user_sgpr.value, regs.ps_regs.rsrc2.user_sgpr),
+	        regs.ps_regs.data_addr, info.stage, &error)) {
 		return LogPermutationMismatch(permutation, "PS", shader_hash, error);
 	}
 	ApplyPixelOutputs(info, *permutation.program);
@@ -950,14 +932,13 @@ static bool TryUsePixelPermutation(const ShaderProgramPermutation& permutation,
 }
 
 static bool TryUseComputePermutation(const ShaderProgramPermutation& permutation,
-                                     const HW::ComputeShaderInfo*    regs,
-                                     ShaderComputeInputInfo* info, uint64_t shader_hash) {
-	EXIT_IF(regs == nullptr || info == nullptr);
+                                     const HW::ComputeShaderInfo&    regs,
+                                     ShaderComputeInputInfo& info, uint64_t shader_hash) {
 	std::string error;
 	if (!ShaderMaterializeStageRuntime(
 	        permutation.program,
-	        std::span<const uint32_t>(regs->cs_user_sgpr.value, regs->cs_regs.user_sgpr),
-	        regs->cs_regs.data_addr, &info->stage, &error)) {
+	        std::span<const uint32_t>(regs.cs_user_sgpr.value, regs.cs_regs.user_sgpr),
+	        regs.cs_regs.data_addr, info.stage, &error)) {
 		return LogPermutationMismatch(permutation, "CS", shader_hash, error);
 	}
 	return true;
@@ -1001,39 +982,39 @@ static std::string ShaderDescribeSpecialization(const ShaderRecompiler::IR::Prog
 	return ret;
 }
 
-static void ShaderAppendNativeSpecialization(std::vector<uint32_t>*               ids,
+static void ShaderAppendNativeSpecialization(std::vector<uint32_t>&               ids,
                                              const ShaderRecompiler::IR::Program& program) {
-	EXIT_IF(ids == nullptr || !program.binding_layout_complete);
-	ids->push_back(static_cast<uint32_t>(program.lane_mask_mode));
-	ids->push_back(program.bindings.descriptor_set);
-	ids->push_back(program.bindings.push_constant_offset);
-	ids->push_back(program.bindings.push_constant_size);
-	ids->push_back(static_cast<uint32_t>(program.bindings.user_data_registers.size()));
-	ids->insert(ids->end(), program.bindings.user_data_registers.begin(),
+	EXIT_IF(!program.binding_layout_complete);
+	ids.push_back(static_cast<uint32_t>(program.lane_mask_mode));
+	ids.push_back(program.bindings.descriptor_set);
+	ids.push_back(program.bindings.push_constant_offset);
+	ids.push_back(program.bindings.push_constant_size);
+	ids.push_back(static_cast<uint32_t>(program.bindings.user_data_registers.size()));
+	ids.insert(ids.end(), program.bindings.user_data_registers.begin(),
 	            program.bindings.user_data_registers.end());
-	ids->push_back(static_cast<uint32_t>(program.bindings.descriptors.size()));
+	ids.push_back(static_cast<uint32_t>(program.bindings.descriptors.size()));
 	for (const auto& binding: program.bindings.descriptors) {
-		ids->push_back(static_cast<uint32_t>(binding.kind));
-		ids->push_back(binding.binding);
-		ids->push_back(static_cast<uint32_t>(binding.resources.size()));
-		ids->insert(ids->end(), binding.resources.begin(), binding.resources.end());
+		ids.push_back(static_cast<uint32_t>(binding.kind));
+		ids.push_back(binding.binding);
+		ids.push_back(static_cast<uint32_t>(binding.resources.size()));
+		ids.insert(ids.end(), binding.resources.begin(), binding.resources.end());
 	}
-	ids->push_back(static_cast<uint32_t>(program.info.buffers.size()));
+	ids.push_back(static_cast<uint32_t>(program.info.buffers.size()));
 	for (const auto& buffer: program.info.buffers) {
-		ids->push_back(buffer.packed_stride);
-		ids->push_back(buffer.descriptor_format);
+		ids.push_back(buffer.packed_stride);
+		ids.push_back(buffer.descriptor_format);
 	}
-	ids->push_back(static_cast<uint32_t>(program.info.images.size()));
+	ids.push_back(static_cast<uint32_t>(program.info.images.size()));
 	for (const auto& image: program.info.images) {
-		ids->push_back(static_cast<uint32_t>(image.kind));
-		ids->push_back(static_cast<uint32_t>(image.dimension));
-		ids->push_back(static_cast<uint32_t>(image.mip_mode));
-		ids->push_back(image.storage_swizzle);
+		ids.push_back(static_cast<uint32_t>(image.kind));
+		ids.push_back(static_cast<uint32_t>(image.dimension));
+		ids.push_back(static_cast<uint32_t>(image.mip_mode));
+		ids.push_back(image.storage_swizzle);
 	}
-	ids->push_back(static_cast<uint32_t>(program.info.addresses.size()));
+	ids.push_back(static_cast<uint32_t>(program.info.addresses.size()));
 	for (const auto& address: program.info.addresses) {
-		ids->push_back(static_cast<uint32_t>(address.specialized_base));
-		ids->push_back(static_cast<uint32_t>(address.specialized_base >> 32u));
+		ids.push_back(static_cast<uint32_t>(address.specialized_base));
+		ids.push_back(static_cast<uint32_t>(address.specialized_base >> 32u));
 	}
 }
 
@@ -1073,16 +1054,15 @@ static std::span<const uint32_t> AddShaderProgramPermutation(const char* stage,
 	return spirv;
 }
 
-bool ShaderCompileInfoVS(const HW::VertexShaderInfo* regs, const HW::ShaderRegisters* sh,
-                         ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo* info,
-                         std::span<const uint32_t>* spirv) {
-	EXIT_IF(spirv == nullptr);
-	*spirv = {};
+bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
+                         ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& info,
+                         std::span<const uint32_t>& spirv) {
+	spirv = {};
 
 	if (!ShaderGetStaticInputInfoVS(regs, sh, info)) {
 		return false;
 	}
-	const auto shader_hash = regs->gs_regs.chksum;
+	const auto shader_hash = regs.gs_regs.chksum;
 	const auto program_id  = ShaderGetIdVS(regs, info, false);
 	const auto key =
 	    MakeShaderStageProgramKey(ShaderType::Vertex, shader_hash, program_id, lane_mask_mode);
@@ -1092,9 +1072,9 @@ bool ShaderCompileInfoVS(const HW::VertexShaderInfo* regs, const HW::ShaderRegis
 		if (auto iter = g_shader_program_cache.find(key); iter != g_shader_program_cache.end()) {
 			for (const auto& permutation: iter->second) {
 				if (TryUseVertexPermutation(*permutation, regs, info, shader_hash)) {
-					*spirv = MakeShaderSpirvView(permutation->spirv);
+					spirv = MakeShaderSpirvView(permutation->spirv);
 					LogShaderProgramCacheHit("VS", shader_hash,
-					                         static_cast<uint64_t>(spirv->size()));
+					                         static_cast<uint64_t>(spirv.size()));
 					return true;
 				}
 			}
@@ -1102,27 +1082,26 @@ bool ShaderCompileInfoVS(const HW::VertexShaderInfo* regs, const HW::ShaderRegis
 	}
 
 	std::vector<uint32_t> compiled_spirv;
-	if (!ShaderCompileSpirvVS(regs, sh, lane_mask_mode, info, &compiled_spirv)) {
+	if (!ShaderCompileSpirvVS(regs, sh, lane_mask_mode, info, compiled_spirv)) {
 		return false;
 	}
 
 	ShaderProgramPermutation permutation {};
 	permutation.spirv   = std::move(compiled_spirv);
-	permutation.program = info->stage.program;
-	*spirv = AddShaderProgramPermutation("VS", shader_hash, key, std::move(permutation));
+	permutation.program = info.stage.program;
+	spirv = AddShaderProgramPermutation("VS", shader_hash, key, std::move(permutation));
 	return true;
 }
 
-bool ShaderCompileInfoPS(const HW::PixelShaderInfo* regs, const HW::ShaderRegisters* sh,
-                         ShaderLaneMaskMode lane_mask_mode, const ShaderVertexInputInfo* vs_info,
+bool ShaderCompileInfoPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
+                         ShaderLaneMaskMode lane_mask_mode, const ShaderVertexInputInfo& vs_info,
                          std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
-                         ShaderPixelInputInfo* ps_info, std::span<const uint32_t>* spirv) {
-	EXIT_IF(spirv == nullptr);
-	*spirv = {};
+                         ShaderPixelInputInfo& ps_info, std::span<const uint32_t>& spirv) {
+	spirv = {};
 
 	ShaderGetStaticInputInfoPS(regs, sh, vs_info, target_export_mapping, ps_info);
 	const auto shader_hash =
-	    regs->ps_regs.chksum != 0 ? regs->ps_regs.chksum : regs->ps_regs.data_addr;
+	    regs.ps_regs.chksum != 0 ? regs.ps_regs.chksum : regs.ps_regs.data_addr;
 	const auto program_id = ShaderGetIdPS(regs, ps_info, false);
 	const auto key =
 	    MakeShaderStageProgramKey(ShaderType::Pixel, shader_hash, program_id, lane_mask_mode);
@@ -1132,9 +1111,9 @@ bool ShaderCompileInfoPS(const HW::PixelShaderInfo* regs, const HW::ShaderRegist
 		if (auto iter = g_shader_program_cache.find(key); iter != g_shader_program_cache.end()) {
 			for (const auto& permutation: iter->second) {
 				if (TryUsePixelPermutation(*permutation, regs, ps_info, shader_hash)) {
-					*spirv = MakeShaderSpirvView(permutation->spirv);
+					spirv = MakeShaderSpirvView(permutation->spirv);
 					LogShaderProgramCacheHit("PS", shader_hash,
-					                         static_cast<uint64_t>(spirv->size()));
+					                         static_cast<uint64_t>(spirv.size()));
 					return true;
 				}
 			}
@@ -1142,24 +1121,23 @@ bool ShaderCompileInfoPS(const HW::PixelShaderInfo* regs, const HW::ShaderRegist
 	}
 
 	std::vector<uint32_t> compiled_spirv;
-	if (!ShaderCompileSpirvPS(regs, sh, lane_mask_mode, ps_info, &compiled_spirv)) {
+	if (!ShaderCompileSpirvPS(regs, sh, lane_mask_mode, ps_info, compiled_spirv)) {
 		return false;
 	}
 
 	ShaderProgramPermutation permutation {};
 	permutation.spirv   = std::move(compiled_spirv);
-	permutation.program = ps_info->stage.program;
-	*spirv = AddShaderProgramPermutation("PS", shader_hash, key, std::move(permutation));
+	permutation.program = ps_info.stage.program;
+	spirv = AddShaderProgramPermutation("PS", shader_hash, key, std::move(permutation));
 	return true;
 }
 
-bool ShaderCompileInfoCS(const HW::ComputeShaderInfo* regs, const HW::ShaderRegisters* sh,
-                         ShaderComputeInputInfo* info, std::span<const uint32_t>* spirv) {
-	EXIT_IF(spirv == nullptr);
-	*spirv = {};
+bool ShaderCompileInfoCS(const HW::ComputeShaderInfo& regs, const HW::ShaderRegisters& sh,
+                         ShaderComputeInputInfo& info, std::span<const uint32_t>& spirv) {
+	spirv = {};
 
 	ShaderGetStaticInputInfoCS(regs, sh, info);
-	const auto shader_hash = regs->cs_regs.data_addr;
+	const auto shader_hash = regs.cs_regs.data_addr;
 	const auto program_id  = ShaderGetIdCS(regs, info, false);
 	const auto key         = MakeShaderStageProgramKey(ShaderType::Compute, shader_hash, program_id,
 	                                                   ShaderLaneMaskMode::NativeWave);
@@ -1169,9 +1147,9 @@ bool ShaderCompileInfoCS(const HW::ComputeShaderInfo* regs, const HW::ShaderRegi
 		if (auto iter = g_shader_program_cache.find(key); iter != g_shader_program_cache.end()) {
 			for (const auto& permutation: iter->second) {
 				if (TryUseComputePermutation(*permutation, regs, info, shader_hash)) {
-					*spirv = MakeShaderSpirvView(permutation->spirv);
+					spirv = MakeShaderSpirvView(permutation->spirv);
 					LogShaderProgramCacheHit("CS", shader_hash,
-					                         static_cast<uint64_t>(spirv->size()));
+					                         static_cast<uint64_t>(spirv.size()));
 					return true;
 				}
 			}
@@ -1179,19 +1157,19 @@ bool ShaderCompileInfoCS(const HW::ComputeShaderInfo* regs, const HW::ShaderRegi
 	}
 
 	std::vector<uint32_t> compiled_spirv;
-	if (!ShaderCompileSpirvCS(regs, sh, info, &compiled_spirv)) {
+	if (!ShaderCompileSpirvCS(regs, sh, info, compiled_spirv)) {
 		return false;
 	}
 
 	ShaderProgramPermutation permutation {};
 	permutation.spirv   = std::move(compiled_spirv);
-	permutation.program = info->stage.program;
-	*spirv = AddShaderProgramPermutation("CS", shader_hash, key, std::move(permutation));
+	permutation.program = info.stage.program;
+	spirv = AddShaderProgramPermutation("CS", shader_hash, key, std::move(permutation));
 	return true;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void ShaderDbgDumpInputInfo(const ShaderVertexInputInfo* info) {
+void ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info) {
 	KYTY_PROFILER_BLOCK("ShaderDbgDumpInputInfo(Vs)");
 
 	LOGF("ShaderDbgDumpInputInfo()\n");
@@ -1200,14 +1178,14 @@ void ShaderDbgDumpInputInfo(const ShaderVertexInputInfo* info) {
 	     "\t fetch_embedded = %s\n"
 	     "\t param_export_mask = 0x%08" PRIx32 "\n"
 	     "\t export_count   = %d\n",
-	     info->fetch_external ? "true" : "false", info->fetch_embedded ? "true" : "false",
-	     info->param_export_mask, info->export_count);
+	     info.fetch_external ? "true" : "false", info.fetch_embedded ? "true" : "false",
+	     info.param_export_mask, info.export_count);
 
-	for (int i = 0; i < info->resources_num; i++) {
+	for (int i = 0; i < info.resources_num; i++) {
 		LOGF("\t input %d\n", i);
 
-		const auto& r  = info->resources[i];
-		const auto& rd = info->resources_dst[i];
+		const auto& r  = info.resources[i];
+		const auto& rd = info.resources_dst[i];
 
 		LOGF("\t\t register_start   = %d\n"
 		     "\t\t registers_num    = %d\n"
@@ -1231,10 +1209,10 @@ void ShaderDbgDumpInputInfo(const ShaderVertexInputInfo* info) {
 		LOGF("\t\t AddTid()         = %s\n", r.AddTid() ? "true" : "false");
 	}
 
-	for (int i = 0; i < info->buffers_num; i++) {
+	for (int i = 0; i < info.buffers_num; i++) {
 		LOGF("\t buffer %d\n", i);
 
-		const auto& r = info->buffers[i];
+		const auto& r = info.buffers[i];
 		LOGF("\t\t addr        = %" PRIx64 "\n"
 		     "\t\t stride      = %" PRIu32 "\n"
 		     "\t\t num_records = %" PRIu32 "\n"
@@ -1249,7 +1227,7 @@ void ShaderDbgDumpInputInfo(const ShaderVertexInputInfo* info) {
 	}
 }
 
-void ShaderDbgDumpInputInfo(const ShaderPixelInputInfo* info) {
+void ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info) {
 	KYTY_PROFILER_BLOCK("ShaderDbgDumpInputInfo(Ps)");
 
 	LOGF("ShaderDbgDumpInputInfo()\n");
@@ -1266,19 +1244,19 @@ void ShaderDbgDumpInputInfo(const ShaderPixelInputInfo* info) {
 	     "\t ps_pixel_kill_enable = %s\n"
 	     "\t ps_early_z           = %s\n"
 	     "\t ps_execute_on_noop   = %s\n",
-	     info->input_num, info->ps_system_input_base, info->ps_pos_x ? "true" : "false",
-	     info->ps_pos_y ? "true" : "false", info->ps_pos_z ? "true" : "false",
-	     info->ps_pos_w ? "true" : "false", info->ps_front_face ? "true" : "false",
-	     info->ps_sample_shading ? "true" : "false", info->ps_no_perspective ? "true" : "false",
-	     info->ps_pixel_kill_enable ? "true" : "false", info->ps_early_z ? "true" : "false",
-	     info->ps_execute_on_noop ? "true" : "false");
+	     info.input_num, info.ps_system_input_base, info.ps_pos_x ? "true" : "false",
+	     info.ps_pos_y ? "true" : "false", info.ps_pos_z ? "true" : "false",
+	     info.ps_pos_w ? "true" : "false", info.ps_front_face ? "true" : "false",
+	     info.ps_sample_shading ? "true" : "false", info.ps_no_perspective ? "true" : "false",
+	     info.ps_pixel_kill_enable ? "true" : "false", info.ps_early_z ? "true" : "false",
+	     info.ps_execute_on_noop ? "true" : "false");
 
-	for (uint32_t i = 0; i < info->input_num; i++) {
-		LOGF("\t interpolator_settings[%u] = %u\n", i, info->interpolator_settings[i]);
+	for (uint32_t i = 0; i < info.input_num; i++) {
+		LOGF("\t interpolator_settings[%u] = %u\n", i, info.interpolator_settings[i]);
 	}
 }
 
-void ShaderDbgDumpInputInfo(const ShaderComputeInputInfo* info) {
+void ShaderDbgDumpInputInfo(const ShaderComputeInputInfo& info) {
 	LOGF("ShaderDbgDumpInputInfo()\n");
 
 	LOGF("\t workgroup_register = %d\n"
@@ -1286,10 +1264,10 @@ void ShaderDbgDumpInputInfo(const ShaderComputeInputInfo* info) {
 	     "\t wave_size          = %u\n"
 	     "\t threads_num        = {%u, %u, %u}\n"
 	     "\t tg_size_en         = %s\n",
-	     info->workgroup_register, info->thread_ids_num, info->wave_size, info->threads_num[0],
-	     info->threads_num[1], info->threads_num[2], info->tg_size_en ? "true" : "false");
-	LOGF("\t threadgroup_id     = {%s, %s, %s}\n", info->group_id[0] ? "true" : "false",
-	     info->group_id[1] ? "true" : "false", info->group_id[2] ? "true" : "false");
+	     info.workgroup_register, info.thread_ids_num, info.wave_size, info.threads_num[0],
+	     info.threads_num[1], info.threads_num[2], info.tg_size_en ? "true" : "false");
+	LOGF("\t threadgroup_id     = {%s, %s, %s}\n", info.group_id[0] ? "true" : "false",
+	     info.group_id[1] ? "true" : "false", info.group_id[2] ? "true" : "false");
 }
 
 static bool ShaderRecompilerTextDumpEnabled() {
@@ -1387,39 +1365,34 @@ static void DumpShaderRecompilerOriginal(const char* type, uint64_t shader_hash,
 	}
 }
 
-bool ShaderCompileSpirvVS(const HW::VertexShaderInfo* regs, const HW::ShaderRegisters* sh,
-                          ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo* input_info,
-                          std::vector<uint32_t>* spirv) {
+bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
+                          ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& input_info,
+                          std::vector<uint32_t>& spirv) {
 	KYTY_PROFILER_FUNCTION(profiler::colors::Amber300);
 
-	EXIT_IF(regs == nullptr);
-	EXIT_IF(sh == nullptr);
-	EXIT_IF(input_info == nullptr);
-	EXIT_IF(spirv == nullptr);
+	EXIT_NOT_IMPLEMENTED(regs.es_regs.data_addr == 0 || regs.gs_regs.chksum == 0);
 
-	EXIT_NOT_IMPLEMENTED(regs->es_regs.data_addr == 0 || regs->gs_regs.chksum == 0);
-
-	const uint64_t shader_addr = regs->es_regs.data_addr;
-	const auto code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler VS", regs->gs_regs.chksum);
+	const uint64_t shader_addr = regs.es_regs.data_addr;
+	const auto code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler VS", regs.gs_regs.chksum);
 
 	ShaderRecompiler::CompileOptions options;
 	options.stage                = ShaderType::Vertex;
 	options.lane_mask_mode       = lane_mask_mode;
-	options.shader_hash          = regs->gs_regs.chksum;
+	options.shader_hash          = regs.gs_regs.chksum;
 	options.shader_base          = shader_addr;
 	options.user_data_base       = 8;
-	options.user_data_count      = regs->gs_regs.rsrc2.user_sgpr;
-	options.user_data            = regs->gs_user_sgpr.value;
+	options.user_data_count      = regs.gs_regs.rsrc2.user_sgpr;
+	options.user_data            = regs.gs_user_sgpr.value;
 	options.descriptor_set       = 0;
 	options.push_constant_offset = 0;
-	options.vertex_input_info    = input_info;
+	options.vertex_input_info    = &input_info;
 	options.dump_ir              = ShaderRecompilerTextDumpEnabled();
 	options.early_dump           = options.dump_ir;
 	options.dump_label           = "ShaderRecompiler VS";
 
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
-	if (!ShaderRecompiler::TryRecompile(code, options, &result, &error)) {
+	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
 		ExitShaderRecompilerFailure("ShaderRecompiler VS", options.shader_hash, error.c_str());
 	}
 	DumpShaderRecompilerOriginal("vs", options.shader_hash, code, result.decoded_dump);
@@ -1429,37 +1402,31 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo* regs, const HW::ShaderRegi
 		                            "SPIR-V validation failed");
 	}
 
-	input_info->stage.program =
+	input_info.stage.program =
 	    std::make_shared<const ShaderRecompiler::IR::Program>(std::move(result.program));
-	input_info->stage.resources =
+	input_info.stage.resources =
 	    std::make_shared<const ShaderRecompiler::IR::ResourceSnapshot>(std::move(result.resources));
-	ApplyVertexOutputs(input_info, *input_info->stage.program);
-	*spirv = std::move(result.spirv);
-	DumpShaderRecompilerSpirv("vs", options.shader_hash, *spirv);
+	ApplyVertexOutputs(input_info, *input_info.stage.program);
+	spirv = std::move(result.spirv);
+	DumpShaderRecompilerSpirv("vs", options.shader_hash, spirv);
 
 	if (options.dump_ir) {
 		if (!options.early_dump) {
 			LOGF("ShaderRecompiler VS decoded RDNA2:\n%s", result.decoded_dump.c_str());
 			LOGF("ShaderRecompiler VS IR:\n%s", result.ir_dump.c_str());
 		}
-		LOGF("ShaderRecompiler VS SPIR-V words=%" PRIu64 "\n",
-		     static_cast<uint64_t>(spirv->size()));
+		LOGF("ShaderRecompiler VS SPIR-V words=%" PRIu64 "\n", static_cast<uint64_t>(spirv.size()));
 	}
 	return true;
 }
 
-bool ShaderCompileSpirvPS(const HW::PixelShaderInfo* regs, const HW::ShaderRegisters* sh,
-                          ShaderLaneMaskMode lane_mask_mode, ShaderPixelInputInfo* input_info,
-                          std::vector<uint32_t>* spirv) {
+bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
+                          ShaderLaneMaskMode lane_mask_mode, ShaderPixelInputInfo& input_info,
+                          std::vector<uint32_t>& spirv) {
 	KYTY_PROFILER_FUNCTION(profiler::colors::Blue300);
 
-	EXIT_IF(regs == nullptr);
-	EXIT_IF(sh == nullptr);
-	EXIT_IF(input_info == nullptr);
-	EXIT_IF(spirv == nullptr);
-
-	const uint64_t shader_addr = regs->ps_regs.data_addr;
-	const uint64_t shader_hash = regs->ps_regs.chksum != 0 ? regs->ps_regs.chksum : shader_addr;
+	const uint64_t shader_addr = regs.ps_regs.data_addr;
+	const uint64_t shader_hash = regs.ps_regs.chksum != 0 ? regs.ps_regs.chksum : shader_addr;
 	const auto     code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler PS", shader_hash);
 
 	ShaderRecompiler::CompileOptions options;
@@ -1467,18 +1434,18 @@ bool ShaderCompileSpirvPS(const HW::PixelShaderInfo* regs, const HW::ShaderRegis
 	options.lane_mask_mode       = lane_mask_mode;
 	options.shader_hash          = shader_hash;
 	options.shader_base          = shader_addr;
-	options.user_data_count      = regs->ps_regs.rsrc2.user_sgpr;
-	options.user_data            = regs->ps_user_sgpr.value;
-	options.descriptor_set       = input_info->descriptor_set;
+	options.user_data_count      = regs.ps_regs.rsrc2.user_sgpr;
+	options.user_data            = regs.ps_user_sgpr.value;
+	options.descriptor_set       = input_info.descriptor_set;
 	options.push_constant_offset = 0;
-	options.pixel_input_info     = input_info;
+	options.pixel_input_info     = &input_info;
 	options.dump_ir              = ShaderRecompilerTextDumpEnabled();
 	options.early_dump           = options.dump_ir;
 	options.dump_label           = "ShaderRecompiler PS";
 
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
-	if (!ShaderRecompiler::TryRecompile(code, options, &result, &error)) {
+	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
 		ExitShaderRecompilerFailure("ShaderRecompiler PS", options.shader_hash, error.c_str());
 	}
 	DumpShaderRecompilerOriginal("ps", options.shader_hash, code, result.decoded_dump);
@@ -1487,54 +1454,48 @@ bool ShaderCompileSpirvPS(const HW::PixelShaderInfo* regs, const HW::ShaderRegis
 		ExitShaderRecompilerFailure("ShaderRecompiler PS", options.shader_hash,
 		                            "SPIR-V validation failed");
 	}
-	input_info->stage.program =
+	input_info.stage.program =
 	    std::make_shared<const ShaderRecompiler::IR::Program>(std::move(result.program));
-	input_info->stage.resources =
+	input_info.stage.resources =
 	    std::make_shared<const ShaderRecompiler::IR::ResourceSnapshot>(std::move(result.resources));
-	ApplyPixelOutputs(input_info, *input_info->stage.program);
-	*spirv = std::move(result.spirv);
-	DumpShaderRecompilerSpirv("ps", options.shader_hash, *spirv);
+	ApplyPixelOutputs(input_info, *input_info.stage.program);
+	spirv = std::move(result.spirv);
+	DumpShaderRecompilerSpirv("ps", options.shader_hash, spirv);
 
 	if (options.dump_ir) {
 		if (!options.early_dump) {
 			LOGF("ShaderRecompiler PS decoded RDNA2:\n%s", result.decoded_dump.c_str());
 			LOGF("ShaderRecompiler PS IR:\n%s", result.ir_dump.c_str());
 		}
-		LOGF("ShaderRecompiler PS SPIR-V words=%" PRIu64 "\n",
-		     static_cast<uint64_t>(spirv->size()));
+		LOGF("ShaderRecompiler PS SPIR-V words=%" PRIu64 "\n", static_cast<uint64_t>(spirv.size()));
 	}
 	return true;
 }
 
-bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo* regs, const HW::ShaderRegisters* sh,
-                          ShaderComputeInputInfo* input_info, std::vector<uint32_t>* spirv) {
+bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderRegisters& sh,
+                          ShaderComputeInputInfo& input_info, std::vector<uint32_t>& spirv) {
 	KYTY_PROFILER_FUNCTION(profiler::colors::CyanA700);
 
-	EXIT_IF(regs == nullptr);
-	EXIT_IF(sh == nullptr);
-	EXIT_IF(input_info == nullptr);
-	EXIT_IF(spirv == nullptr);
-
-	const uint64_t shader_addr = regs->cs_regs.data_addr;
+	const uint64_t shader_addr = regs.cs_regs.data_addr;
 	const auto     code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler CS", shader_addr);
 
 	ShaderRecompiler::CompileOptions options;
 	options.stage                = ShaderType::Compute;
 	options.shader_hash          = shader_addr;
 	options.shader_base          = shader_addr;
-	options.user_data_count      = regs->cs_regs.user_sgpr;
-	options.user_data            = regs->cs_user_sgpr.value;
+	options.user_data_count      = regs.cs_regs.user_sgpr;
+	options.user_data            = regs.cs_user_sgpr.value;
 	options.descriptor_set       = 0;
 	options.push_constant_offset = 0;
-	options.compute_input_info   = input_info;
-	options.wave_size            = input_info->wave_size;
+	options.compute_input_info   = &input_info;
+	options.wave_size            = input_info.wave_size;
 	options.dump_ir              = ShaderRecompilerTextDumpEnabled();
 	options.early_dump           = options.dump_ir;
 	options.dump_label           = "ShaderRecompiler CS";
 
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
-	if (!ShaderRecompiler::TryRecompile(code, options, &result, &error)) {
+	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
 		ExitShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash, error.c_str());
 	}
 	DumpShaderRecompilerOriginal("cs", options.shader_hash, code, result.decoded_dump);
@@ -1543,12 +1504,12 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo* regs, const HW::ShaderReg
 		ExitShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash,
 		                            "SPIR-V validation failed");
 	}
-	input_info->stage.program =
+	input_info.stage.program =
 	    std::make_shared<const ShaderRecompiler::IR::Program>(std::move(result.program));
-	input_info->stage.resources =
+	input_info.stage.resources =
 	    std::make_shared<const ShaderRecompiler::IR::ResourceSnapshot>(std::move(result.resources));
-	*spirv = std::move(result.spirv);
-	DumpShaderRecompilerSpirv("cs", options.shader_hash, *spirv);
+	spirv = std::move(result.spirv);
+	DumpShaderRecompilerSpirv("cs", options.shader_hash, spirv);
 
 	if (options.dump_ir) {
 		if (!options.early_dump) {
@@ -1556,12 +1517,12 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo* regs, const HW::ShaderReg
 			LOGF("ShaderRecompiler CS IR:\n%s", result.ir_dump.c_str());
 		}
 		LOGF("ShaderRecompiler CS SPIR-V words=%" PRIu64 " wave_size=%u\n",
-		     static_cast<uint64_t>(spirv->size()), options.wave_size);
+		     static_cast<uint64_t>(spirv.size()), options.wave_size);
 	}
 	return true;
 }
 
-ShaderId ShaderGetIdVS(const HW::VertexShaderInfo* regs, const ShaderVertexInputInfo* input_info,
+ShaderId ShaderGetIdVS(const HW::VertexShaderInfo& regs, const ShaderVertexInputInfo& input_info,
                        bool include_bind_specialization) {
 	KYTY_PROFILER_FUNCTION();
 
@@ -1569,19 +1530,19 @@ ShaderId ShaderGetIdVS(const HW::VertexShaderInfo* regs, const ShaderVertexInput
 
 	ret.ids.reserve(64);
 
-	EXIT_NOT_IMPLEMENTED(regs->es_regs.data_addr == 0 || regs->gs_regs.chksum == 0);
+	EXIT_NOT_IMPLEMENTED(regs.es_regs.data_addr == 0 || regs.gs_regs.chksum == 0);
 
-	ret.hash0 = (regs->gs_regs.chksum >> 32u) & 0xffffffffu;
-	ret.crc32 = regs->gs_regs.chksum & 0xffffffffu;
+	ret.hash0 = (regs.gs_regs.chksum >> 32u) & 0xffffffffu;
+	ret.crc32 = regs.gs_regs.chksum & 0xffffffffu;
 
-	ret.ids.push_back(static_cast<uint32_t>(input_info->fetch_external));
-	ret.ids.push_back(static_cast<uint32_t>(input_info->fetch_embedded));
-	ret.ids.push_back(input_info->resources_num);
-	ret.ids.push_back(input_info->export_count);
+	ret.ids.push_back(static_cast<uint32_t>(input_info.fetch_external));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.fetch_embedded));
+	ret.ids.push_back(input_info.resources_num);
+	ret.ids.push_back(input_info.export_count);
 
-	for (int i = 0; i < input_info->resources_num; i++) {
-		const auto& r  = input_info->resources[i];
-		const auto& rd = input_info->resources_dst[i];
+	for (int i = 0; i < input_info.resources_num; i++) {
+		const auto& r  = input_info.resources[i];
+		const auto& rd = input_info.resources_dst[i];
 
 		ret.ids.push_back(rd.register_start);
 		ret.ids.push_back(rd.registers_num);
@@ -1597,10 +1558,10 @@ ShaderId ShaderGetIdVS(const HW::VertexShaderInfo* regs, const ShaderVertexInput
 		ret.ids.push_back(static_cast<uint32_t>(r.AddTid()));
 	}
 
-	ret.ids.push_back(input_info->buffers_num);
+	ret.ids.push_back(input_info.buffers_num);
 
-	for (int i = 0; i < input_info->buffers_num; i++) {
-		const auto& r = input_info->buffers[i];
+	for (int i = 0; i < input_info.buffers_num; i++) {
+		const auto& r = input_info.buffers[i];
 		ret.ids.push_back(r.attr_num);
 		ret.ids.push_back(r.stride);
 		ret.ids.push_back(r.fetch_index);
@@ -1611,14 +1572,14 @@ ShaderId ShaderGetIdVS(const HW::VertexShaderInfo* regs, const ShaderVertexInput
 	}
 
 	if (include_bind_specialization) {
-		EXIT_IF(!input_info->stage);
-		ShaderAppendNativeSpecialization(&ret.ids, *input_info->stage.program);
+		EXIT_IF(!input_info.stage);
+		ShaderAppendNativeSpecialization(ret.ids, *input_info.stage.program);
 	}
 
 	return ret;
 }
 
-ShaderId ShaderGetIdPS(const HW::PixelShaderInfo* regs, const ShaderPixelInputInfo* input_info,
+ShaderId ShaderGetIdPS(const HW::PixelShaderInfo& regs, const ShaderPixelInputInfo& input_info,
                        bool include_bind_specialization) {
 	KYTY_PROFILER_FUNCTION();
 
@@ -1626,50 +1587,50 @@ ShaderId ShaderGetIdPS(const HW::PixelShaderInfo* regs, const ShaderPixelInputIn
 
 	ret.ids.reserve(64);
 
-	ret.hash0 = (regs->ps_regs.chksum >> 32u) & 0xffffffffu;
-	ret.crc32 = regs->ps_regs.chksum & 0xffffffffu;
+	ret.hash0 = (regs.ps_regs.chksum >> 32u) & 0xffffffffu;
+	ret.crc32 = regs.ps_regs.chksum & 0xffffffffu;
 
-	ret.ids.push_back(input_info->descriptor_set);
-	ret.ids.push_back(input_info->input_num);
-	ret.ids.push_back(input_info->ps_system_input_base);
-	ret.ids.push_back(static_cast<uint32_t>(input_info->ps_pos_x));
-	ret.ids.push_back(static_cast<uint32_t>(input_info->ps_pos_y));
-	ret.ids.push_back(static_cast<uint32_t>(input_info->ps_pos_z));
-	ret.ids.push_back(static_cast<uint32_t>(input_info->ps_pos_w));
-	ret.ids.push_back(static_cast<uint32_t>(input_info->ps_front_face));
-	ret.ids.push_back(static_cast<uint32_t>(input_info->ps_pixel_kill_enable));
-	ret.ids.push_back(static_cast<uint32_t>(input_info->ps_sample_mask_export_enable));
-	ret.ids.push_back(static_cast<uint32_t>(input_info->ps_early_z));
-	ret.ids.push_back(static_cast<uint32_t>(input_info->ps_execute_on_noop));
+	ret.ids.push_back(input_info.descriptor_set);
+	ret.ids.push_back(input_info.input_num);
+	ret.ids.push_back(input_info.ps_system_input_base);
+	ret.ids.push_back(static_cast<uint32_t>(input_info.ps_pos_x));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.ps_pos_y));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.ps_pos_z));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.ps_pos_w));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.ps_front_face));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.ps_pixel_kill_enable));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.ps_sample_mask_export_enable));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.ps_early_z));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.ps_execute_on_noop));
 
-	for (auto mode: input_info->target_output_mode) {
+	for (auto mode: input_info.target_output_mode) {
 		ret.ids.push_back(mode);
 	}
-	for (uint32_t base = 0; base < input_info->target_export_mapping.size(); base += 4u) {
+	for (uint32_t base = 0; base < input_info.target_export_mapping.size(); base += 4u) {
 		uint32_t packed = 0;
 		for (uint32_t i = 0; i < 4u; i++) {
-			packed |= static_cast<uint32_t>(input_info->target_export_mapping[base + i].packed)
+			packed |= static_cast<uint32_t>(input_info.target_export_mapping[base + i].packed)
 			          << (i * 8u);
 		}
 		ret.ids.push_back(packed);
 	}
-	ret.ids.push_back(input_info->mrt_output_mask);
+	ret.ids.push_back(input_info.mrt_output_mask);
 
-	for (uint32_t i = 0; i < input_info->input_num; i++) {
-		ret.ids.push_back(input_info->interpolator_settings[i]);
+	for (uint32_t i = 0; i < input_info.input_num; i++) {
+		ret.ids.push_back(input_info.interpolator_settings[i]);
 	}
 
 	if (include_bind_specialization) {
-		EXIT_IF(!input_info->stage);
-		ShaderAppendNativeSpecialization(&ret.ids, *input_info->stage.program);
+		EXIT_IF(!input_info.stage);
+		ShaderAppendNativeSpecialization(ret.ids, *input_info.stage.program);
 	}
 
 	return ret;
 }
 
-ShaderId ShaderGetIdCS(const HW::ComputeShaderInfo* regs, const ShaderComputeInputInfo* input_info,
+ShaderId ShaderGetIdCS(const HW::ComputeShaderInfo& regs, const ShaderComputeInputInfo& input_info,
                        bool include_bind_specialization) {
-	const auto* src = reinterpret_cast<const uint32_t*>(regs->cs_regs.data_addr);
+	const auto* src = reinterpret_cast<const uint32_t*>(regs.cs_regs.data_addr);
 
 	EXIT_NOT_IMPLEMENTED(src == nullptr);
 
@@ -1683,27 +1644,27 @@ ShaderId ShaderGetIdCS(const HW::ComputeShaderInfo* regs, const ShaderComputeInp
 		ret.crc32 = header->crc32;
 		ret.ids.push_back(header->length);
 	} else {
-		GetNextGenFallbackShaderId(regs->cs_regs.data_addr, &ret.hash0, &ret.crc32);
-		ret.ids.push_back(static_cast<uint32_t>(regs->cs_regs.data_addr & 0xffffffffu));
-		ret.ids.push_back(static_cast<uint32_t>((regs->cs_regs.data_addr >> 32u) & 0xffffffffu));
+		GetNextGenFallbackShaderId(regs.cs_regs.data_addr, ret.hash0, ret.crc32);
+		ret.ids.push_back(static_cast<uint32_t>(regs.cs_regs.data_addr & 0xffffffffu));
+		ret.ids.push_back(static_cast<uint32_t>((regs.cs_regs.data_addr >> 32u) & 0xffffffffu));
 	}
 
-	ret.ids.push_back(input_info->workgroup_register);
-	ret.ids.push_back(input_info->wave_size);
-	ret.ids.push_back(input_info->thread_ids_num);
+	ret.ids.push_back(input_info.workgroup_register);
+	ret.ids.push_back(input_info.wave_size);
+	ret.ids.push_back(input_info.thread_ids_num);
 
 	for (int i = 0; i < 3; i++) {
-		ret.ids.push_back(input_info->threads_num[i]);
-		ret.ids.push_back(static_cast<uint32_t>(input_info->group_id[i]));
+		ret.ids.push_back(input_info.threads_num[i]);
+		ret.ids.push_back(static_cast<uint32_t>(input_info.group_id[i]));
 	}
-	ret.ids.push_back(static_cast<uint32_t>(input_info->dispatch_thread_dimensions));
-	for (uint32_t dim: input_info->dispatch_threads_num) {
+	ret.ids.push_back(static_cast<uint32_t>(input_info.dispatch_thread_dimensions));
+	for (uint32_t dim: input_info.dispatch_threads_num) {
 		ret.ids.push_back(dim);
 	}
 
 	if (include_bind_specialization) {
-		EXIT_IF(!input_info->stage);
-		ShaderAppendNativeSpecialization(&ret.ids, *input_info->stage.program);
+		EXIT_IF(!input_info.stage);
+		ShaderAppendNativeSpecialization(ret.ids, *input_info.stage.program);
 	}
 
 	return ret;

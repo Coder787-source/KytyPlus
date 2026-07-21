@@ -33,6 +33,7 @@ struct VulkanFramebuffer;
 struct RenderDepthInfo;
 struct RenderColorInfo;
 class BufferCache;
+class RenderContext;
 
 struct HtileClearTarget {
 	uint64_t address = 0;
@@ -68,7 +69,7 @@ private:
 
 class CommandBuffer {
 public:
-	explicit CommandBuffer(int queue): m_queue(queue) { Allocate(); }
+	explicit CommandBuffer(int queue);
 	~CommandBuffer() { Free(); }
 
 	KYTY_CLASS_NO_COPY(CommandBuffer);
@@ -85,17 +86,18 @@ public:
 	                          vk::Semaphore signal_semaphore);
 	void SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0 = 0, uint32_t arg1 = 0,
 	                  uint32_t arg2 = 0, uint32_t arg3 = 0, uint64_t arg4 = 0);
-	void BeginRenderPass(VulkanFramebuffer* framebuffer, RenderColorInfo* colors,
-	                     uint32_t color_count, RenderDepthInfo* depth) const;
+	void BeginRenderPass(VulkanFramebuffer& framebuffer, RenderColorInfo* colors,
+	                     uint32_t color_count, RenderDepthInfo& depth) const;
 	void EndRenderPass() const;
 	void WaitForFenceOnly();
 	void WaitForFence();
 	void WaitForFenceAndReset();
-	void DeleteAfterFence(VulkanBuffer* buffer);
+	void DeleteAfterFence(VulkanBuffer& buffer);
 	void RetainResourceUntilFence(std::shared_ptr<void> resource);
-	void RecycleDescriptorAfterFence(VulkanDescriptorSet* set);
+	void RecycleDescriptorAfterFence(VulkanDescriptorSet& set);
 
 	[[nodiscard]] vk::CommandBuffer Handle() const;
+	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
 	[[nodiscard]] int               GetQueue() const { return m_queue; }
 	[[nodiscard]] bool              IsExecute() const { return m_execute; }
 	[[nodiscard]] uint64_t GetRecordingGeneration() const { return m_recording_generation; }
@@ -111,6 +113,7 @@ private:
 	void                        DeleteBuffersAfterFence();
 	void                        RecycleDescriptorsAfterFence();
 
+	GraphicContext&                   m_graphics;
 	VulkanCommandPool*                m_pool                 = nullptr;
 	uint32_t                          m_index                = static_cast<uint32_t>(-1);
 	int                               m_queue                = -1;
@@ -131,34 +134,49 @@ private:
 	HostStreamBuffer                  m_host_stream;
 };
 
-void RenderDrawIndex(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
-                     HW::UserConfig* ucfg, HW::Shader* sh_ctx, uint32_t index_type_and_size,
+class RenderCommandBuffer final: public CommandBuffer {
+public:
+	RenderCommandBuffer(int queue, HW::Context& registers, HW::UserConfig& user_config,
+	                    HW::Shader& shaders)
+	    : CommandBuffer(queue), m_registers(registers), m_user_config(user_config),
+	      m_shaders(shaders) {}
+
+	[[nodiscard]] HW::Context&    GetRegisters() const noexcept { return m_registers; }
+	[[nodiscard]] HW::UserConfig& GetUserConfig() const noexcept { return m_user_config; }
+	[[nodiscard]] HW::Shader&     GetShaders() const noexcept { return m_shaders; }
+
+private:
+	HW::Context&    m_registers;
+	HW::UserConfig& m_user_config;
+	HW::Shader&     m_shaders;
+};
+
+void RenderDrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t index_type_and_size,
                      uint32_t index_count, const void* index_addr, uint32_t flags, uint32_t type,
                      uint32_t instance_count = 1, uint32_t render_target_slice_offset = 0,
                      int32_t vertex_offset_add = 0, uint32_t first_instance = 0);
-void RenderDrawIndexAuto(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
-                         HW::UserConfig* ucfg, HW::Shader* sh_ctx, uint32_t index_count,
+void RenderDrawIndexAuto(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t index_count,
                          uint32_t flags, uint32_t render_target_slice_offset = 0,
                          uint32_t instance_count = 1, uint32_t first_vertex = 0,
                          uint32_t first_instance = 0);
-void RenderDispatchDirect(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
-                          HW::Shader* sh_ctx, uint32_t thread_group_x, uint32_t thread_group_y,
-                          uint32_t thread_group_z, uint32_t mode);
+void RenderDispatchDirect(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t thread_group_x,
+                          uint32_t thread_group_y, uint32_t thread_group_z, uint32_t mode);
 
 void GraphicsRenderInit();
 void GraphicsRenderCreateContext();
+void GraphicsRenderSetContext(RenderContext& context);
 void GraphicsRenderReleaseThreadCommandPools();
 
 [[nodiscard]] bool ResolveComputeImageClear(const ShaderComputeInputInfo& input, uint32_t group_x,
                                             uint32_t group_y, uint32_t group_z, uint32_t mode,
-                                            ShaderBufferResource* descriptor,
-                                            uint32_t* packed_clear, uint64_t* size);
+                                            ShaderBufferResource& descriptor,
+                                            uint32_t& packed_clear, uint64_t& size);
 [[nodiscard]] bool ResolveHtileClearTarget(const HW::DepthRenderTarget& target,
-                                           uint64_t descriptor_size, HtileClearTarget* resolved);
+                                           uint64_t descriptor_size, HtileClearTarget& resolved);
 
-void GraphicsRenderMemoryBarrier(CommandBuffer* buffer);
-void GraphicsRenderTextureBarrier(CommandBuffer* buffer, uint64_t vaddr, uint64_t size);
-void GraphicsRenderDepthStencilBarrier(CommandBuffer* buffer, uint64_t vaddr, uint64_t size);
+void GraphicsRenderMemoryBarrier(CommandBuffer& buffer);
+void GraphicsRenderTextureBarrier(CommandBuffer& buffer, uint64_t vaddr, uint64_t size);
+void GraphicsRenderDepthStencilBarrier(CommandBuffer& buffer, uint64_t vaddr, uint64_t size);
 
 } // namespace Libs::Graphics
 

@@ -9,21 +9,19 @@ namespace Libs::Graphics {
 
 struct DepthStencilVulkanImage;
 struct GpuTextureVulkanImage;
-struct GraphicContext;
-
 class Tiler final {
 public:
 	Tiler() = default;
 	KYTY_CLASS_NO_COPY(Tiler);
 
-	void DetileImage(GraphicContext* ctx, GpuTextureVulkanImage* image, const ImageInfo& info,
+	void DetileImage(GpuTextureVulkanImage& image, const ImageInfo& info,
 	                 const BufferImageCopySource& source, bool refresh, bool storage) const;
-	void DetileImage(GraphicContext* ctx, DepthStencilVulkanImage* image,
-	                 const DepthTargetInfo& info, const BufferImageCopySource& source, bool refresh,
+	void DetileImage(DepthStencilVulkanImage& image, const DepthTargetInfo& info,
+	                 const BufferImageCopySource& source, bool refresh,
 	                 uint32_t base_layer = 0) const;
-	void DetileStencil(GraphicContext* ctx, DepthStencilVulkanImage* image,
-	                   const DepthTargetInfo& info, const BufferImageCopySource& source,
-	                   bool refresh, uint32_t base_layer = 0) const;
+	void DetileStencil(DepthStencilVulkanImage& image, const DepthTargetInfo& info,
+	                   const BufferImageCopySource& source, bool refresh,
+	                   uint32_t base_layer = 0) const;
 };
 
 } // namespace Libs::Graphics

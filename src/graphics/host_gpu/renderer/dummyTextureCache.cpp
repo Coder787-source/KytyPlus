@@ -4,6 +4,8 @@
 #include "graphics/host_gpu/renderer/image.h"
 #include "graphics/host_gpu/transfer.h"
 
+#include <algorithm>
+
 namespace Libs::Graphics {
 
 namespace {
@@ -16,15 +18,17 @@ namespace {
 
 DummyTextureCache::~DummyTextureCache() {
 	Common::LockGuard lock(m_mutex);
-	if (m_ctx == nullptr) {
+	const auto        populated = [](const auto& slots) {
+		return std::ranges::any_of(slots, [](const auto& slot) { return slot.image != nullptr; });
+	};
+	if (!populated(m_sampled) && !populated(m_storage)) {
 		return;
 	}
-
-	Transfer::WaitForGraphicsIdle(m_ctx);
-	const auto destroy = [this](auto& slots) {
+	Transfer::WaitForGraphicsIdle();
+	const auto destroy = [](auto& slots) {
 		for (auto& slot: slots) {
 			if (slot.image != nullptr) {
-				ImageOps::Destroy(m_ctx, slot.image);
+				ImageOps::Destroy(*slot.image);
 				slot.image = nullptr;
 			}
 		}
@@ -33,26 +37,15 @@ DummyTextureCache::~DummyTextureCache() {
 	destroy(m_storage);
 }
 
-VulkanImage* DummyTextureCache::Get(GraphicContext* ctx, Usage usage, bool uint_format,
-                                    bool image_3d) {
+VulkanImage& DummyTextureCache::Get(Usage usage, bool uint_format, bool image_3d) {
 	Common::LockGuard lock(m_mutex);
-	if (ctx == nullptr) {
-		EXIT("TextureCache: dummy texture requires a graphics context\n");
-	}
-	if (m_ctx != nullptr && m_ctx != ctx) {
-		EXIT("TextureCache: dummy texture context changed, previous=%p current=%p usage=%u\n",
-		     static_cast<const void*>(m_ctx), static_cast<const void*>(ctx),
-		     static_cast<uint32_t>(usage));
-	}
-	m_ctx = ctx;
-
-	auto& slots = usage == Usage::Storage ? m_storage : m_sampled;
-	auto& slot  = slots[DummyTextureIndex(uint_format, image_3d)];
+	auto&             slots = usage == Usage::Storage ? m_storage : m_sampled;
+	auto&             slot  = slots[DummyTextureIndex(uint_format, image_3d)];
 	if (slot.image == nullptr) {
-		slot.image =
-		    ImageOps::CreateDummyTexture(ctx, uint_format, image_3d, usage == Usage::Storage);
+		slot.image = ImageOps::CreateDummyTexture(uint_format, image_3d,
+		                                          usage == Usage::Storage);
 	}
-	return slot.image;
+	return *slot.image;
 }
 
 } // namespace Libs::Graphics

@@ -5,18 +5,18 @@
 
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
 
-bool DecodeVop2(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction* inst,
+bool DecodeVop2(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction& inst,
                 std::string* error);
-bool DecodeVop1(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction* inst,
+bool DecodeVop1(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction& inst,
                 std::string* error);
-bool DecodeVopc(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction* inst,
+bool DecodeVopc(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction& inst,
                 std::string* error);
-bool DecodeVop3(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction* inst,
+bool DecodeVop3(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction& inst,
                 std::string* error);
 bool DecodeVop3p(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index,
-                 Instruction* inst, std::string* error);
+                 Instruction& inst, std::string* error);
 bool DecodeVintrp(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index,
-                  Instruction* inst, std::string* error);
+                  Instruction& inst, std::string* error);
 
 } // namespace Libs::Graphics::ShaderRecompiler::Decoder
 

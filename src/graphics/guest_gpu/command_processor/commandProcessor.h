@@ -20,15 +20,18 @@ class CommandScheduler {
 public:
 	static constexpr int BuffersNum = 8;
 
+	CommandScheduler(HW::Context& registers, HW::UserConfig& user_config, HW::Shader& shaders)
+	    : m_registers(registers), m_user_config(user_config), m_shaders(shaders) {}
+
 	void SetQueue(int queue) { m_queue = queue; }
 	int  Queue() const { return m_queue; }
 	bool Active() const { return m_current >= 0 && m_current < BuffersNum; }
 	void CheckActive() const { EXIT_IF(!Active()); }
 
-	CommandBuffer* Current() const {
+	RenderCommandBuffer& Current() const {
 		CheckActive();
 		EXIT_IF(m_buffers[m_current] == nullptr);
-		return m_buffers[m_current];
+		return *m_buffers[m_current];
 	}
 
 	void Init() {
@@ -37,10 +40,10 @@ public:
 		}
 		for (auto& buf: m_buffers) {
 			EXIT_IF(buf != nullptr);
-			buf = new CommandBuffer(m_queue);
+			buf = new RenderCommandBuffer(m_queue, m_registers, m_user_config, m_shaders);
 		}
 		m_current = 0;
-		Current()->Begin();
+		Current().Begin();
 	}
 
 	void Flush() {
@@ -48,18 +51,17 @@ public:
 		BeginNext();
 	}
 
-	CommandBuffer* FlushAndGetSubmitted() {
-		auto* submitted = SubmitCurrent();
+	CommandBuffer& FlushAndGetSubmitted() {
+		auto& submitted = SubmitCurrent();
 		BeginNext();
 		return submitted;
 	}
 
-	void CopyBuffers(std::array<CommandBuffer*, BuffersNum>* out) const {
-		EXIT_IF(out == nullptr);
+	void CopyBuffers(std::array<CommandBuffer*, BuffersNum>& out) const {
 		for (int i = 0; i < BuffersNum; i++) {
 			auto* buf = m_buffers[i];
 			EXIT_IF(buf == nullptr);
-			(*out)[i] = buf;
+			out[i] = buf;
 		}
 	}
 
@@ -81,27 +83,30 @@ public:
 		if (!Active()) {
 			return;
 		}
-		Current()->WaitForFenceAndReset();
-		Current()->Begin();
+		Current().WaitForFenceAndReset();
+		Current().Begin();
 	}
 
 private:
-	CommandBuffer* SubmitCurrent() {
-		auto* submitted = Current();
-		submitted->End();
-		submitted->Execute();
+	CommandBuffer& SubmitCurrent() {
+		auto& submitted = Current();
+		submitted.End();
+		submitted.Execute();
 		return submitted;
 	}
 
 	void BeginNext() {
 		m_current = (m_current + 1) % BuffersNum;
-		Current()->WaitForFenceAndReset();
-		Current()->Begin();
+		Current().WaitForFenceAndReset();
+		Current().Begin();
 	}
 
-	CommandBuffer* m_buffers[BuffersNum] = {};
-	int            m_current             = -1;
-	int            m_queue               = -1;
+	RenderCommandBuffer* m_buffers[BuffersNum] = {};
+	int                  m_current             = -1;
+	int                  m_queue               = -1;
+	HW::Context&         m_registers;
+	HW::UserConfig&      m_user_config;
+	HW::Shader&          m_shaders;
 };
 
 class CommandProcessor {
@@ -113,7 +118,7 @@ public:
 		int64_t flip_arg  = 0;
 	};
 
-	CommandProcessor() = default;
+	CommandProcessor(): m_scheduler(m_ctx, m_ucfg, m_sh_ctx) {}
 	~CommandProcessor() { KYTY_NOT_IMPLEMENTED; }
 
 	KYTY_CLASS_NO_COPY(CommandProcessor);
@@ -145,9 +150,9 @@ public:
 	void RunLock() { m_run_mutex.Lock(); }
 	void RunUnlock() { m_run_mutex.Unlock(); }
 
-	HW::Context*    GetCtx() { return &m_ctx; }
-	HW::UserConfig* GetUcfg() { return &m_ucfg; }
-	HW::Shader*     GetShCtx() { return &m_sh_ctx; }
+	HW::Context&    GetCtx() { return m_ctx; }
+	HW::UserConfig& GetUcfg() { return m_ucfg; }
+	HW::Shader&     GetShCtx() { return m_sh_ctx; }
 
 	void SetIndexType(uint32_t index_type_and_size);
 	void SetIndexBaseAddress(uint64_t index_base_addr);
@@ -244,12 +249,9 @@ private:
 	                      uint32_t interrupt_context_id);
 	void FinishCommandProcessors();
 
-	CommandBuffer*      CurrentBuffer() { return m_scheduler.Current(); }
-	void                CheckBuffer() const { m_scheduler.CheckActive(); }
-	GpuResourceManager* GetGpuResources() const {
-		EXIT_IF(g_render_ctx == nullptr);
-		return g_render_ctx->GetGpuResources();
-	}
+	RenderCommandBuffer& CurrentBuffer() { return m_scheduler.Current(); }
+	void                 CheckBuffer() const { m_scheduler.CheckActive(); }
+	GpuResourceManager&  GetGpuResources() const { return GetRenderContext().GetGpuResources(); }
 
 	HW::Context      m_ctx;
 	HW::UserConfig   m_ucfg;

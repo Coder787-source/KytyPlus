@@ -41,9 +41,9 @@ struct WindowContext {
 extern WindowContext* g_window_ctx;
 
 void VulkanGetSurfaceCapabilities(vk::PhysicalDevice physical_device, vk::SurfaceKHR surface,
-                                  SurfaceCapabilities* capabilities);
-VulkanSwapchain* VulkanCreateSwapchain(GraphicContext* ctx, uint32_t image_count);
-void             VulkanCreate(WindowContext* ctx);
+                                  SurfaceCapabilities& capabilities);
+VulkanSwapchain* VulkanCreateSwapchain(uint32_t image_count);
+void             VulkanCreate(WindowContext& window);
 
 void WindowUpdateIcon();
 void WindowUpdateTitle();

@@ -15,17 +15,15 @@ namespace Libs::Graphics {
 
 VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
                                                        uint32_t         requested_color_count,
-                                                       RenderDepthInfo* depth) {
+                                                       RenderDepthInfo& depth) {
 	KYTY_PROFILER_FUNCTION();
 
 	Common::LockGuard lock(m_mutex);
 
 	EXIT_IF(colors == nullptr);
-	EXIT_IF(depth == nullptr);
-	EXIT_IF(g_render_ctx == nullptr);
 	EXIT_IF(requested_color_count > RENDER_COLOR_ATTACHMENTS_MAX);
 
-	bool with_depth = (depth->format != vk::Format::eUndefined && depth->vulkan_buffer != nullptr);
+	bool with_depth = (depth.format != vk::Format::eUndefined && depth.vulkan_buffer != nullptr);
 	bool with_color[RENDER_COLOR_ATTACHMENTS_MAX] = {};
 	uint32_t     color_count                      = 0;
 	VulkanImage* first_color                      = nullptr;
@@ -58,16 +56,16 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 		color_count++;
 	}
 	if (with_depth) {
-		if (depth->samples != depth->vulkan_buffer->samples) {
+		if (depth.samples != depth.vulkan_buffer->samples) {
 			EXIT("Framebuffer: depth attachment sample identity mismatch, requested=%u image=%u\n",
-			     depth->samples, depth->vulkan_buffer->samples);
+			     depth.samples, depth.vulkan_buffer->samples);
 		}
 		if (attachment_samples == 0) {
-			attachment_samples = depth->samples;
-		} else if (attachment_samples != depth->samples) {
+			attachment_samples = depth.samples;
+		} else if (attachment_samples != depth.samples) {
 			EXIT(
 			    "Framebuffer: mixed color/depth sample counts are unsupported, color=%u depth=%u\n",
-			    attachment_samples, depth->samples);
+			    attachment_samples, depth.samples);
 		}
 	}
 	if (!with_depth && color_count == 0) {
@@ -87,29 +85,29 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	    (with_depth && depth_layout == vk::ImageLayout::eDepthStencilReadOnlyOptimal);
 
 	if (with_depth && first_color != nullptr &&
-	    (first_color_extent.width != depth->vulkan_buffer->extent.width ||
-	     first_color_extent.height != depth->vulkan_buffer->extent.height)) {
+	    (first_color_extent.width != depth.vulkan_buffer->extent.width ||
+	     first_color_extent.height != depth.vulkan_buffer->extent.height)) {
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
 			LOGF("Framebuffer: temporary: dropping mismatched PS5 depth attachment color=%ux%u "
 			     "depth=%ux%u format=%s\n",
 			     first_color_extent.width, first_color_extent.height,
-			     depth->vulkan_buffer->extent.width, depth->vulkan_buffer->extent.height,
-			     VulkanToString(depth->format).c_str());
+			     depth.vulkan_buffer->extent.width, depth.vulkan_buffer->extent.height,
+			     VulkanToString(depth.format).c_str());
 		}
-		depth->format                   = vk::Format::eUndefined;
-		depth->vulkan_buffer            = nullptr;
-		depth->vulkan_view              = nullptr;
-		depth->depth_test_enable        = false;
-		depth->depth_write_enable       = false;
-		depth->depth_bounds_test_enable = false;
-		depth->stencil_test_enable      = false;
-		depth->depth_clear_enable       = false;
-		depth->depth_load_clear_enable  = false;
-		depth->stencil_clear_enable     = false;
-		with_depth                      = false;
-		depth_layout                    = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-		depth_read_only                 = false;
+		depth.format                   = vk::Format::eUndefined;
+		depth.vulkan_buffer            = nullptr;
+		depth.vulkan_view              = nullptr;
+		depth.depth_test_enable        = false;
+		depth.depth_write_enable       = false;
+		depth.depth_bounds_test_enable = false;
+		depth.stencil_test_enable      = false;
+		depth.depth_clear_enable       = false;
+		depth.depth_load_clear_enable  = false;
+		depth.stencil_clear_enable     = false;
+		with_depth                     = false;
+		depth_layout                   = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+		depth_read_only                = false;
 	}
 
 	for (auto& f: m_framebuffers) {
@@ -125,22 +123,21 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 			        (i < color_count && with_color[i] && colors[i].color_clear_enable) &&
 			    f.color_layout[i] == color_layout[i];
 		}
-		if (color_match &&
-		    f.depth_id == (with_depth ? depth->vulkan_buffer->memory.unique_id : 0) &&
-		    f.depth_view == (with_depth ? depth->vulkan_view : nullptr) &&
-		    f.depth_clear_enable == depth->depth_load_clear_enable &&
-		    f.stencil_clear_enable == depth->stencil_clear_enable &&
+		if (color_match && f.depth_id == (with_depth ? depth.vulkan_buffer->memory.unique_id : 0) &&
+		    f.depth_view == (with_depth ? depth.vulkan_view : nullptr) &&
+		    f.depth_clear_enable == depth.depth_load_clear_enable &&
+		    f.stencil_clear_enable == depth.stencil_clear_enable &&
 		    f.depth_read_only == depth_read_only) {
 			return f.framebuffer;
 		}
 	}
 
 	EXIT_NOT_IMPLEMENTED(with_depth && first_color != nullptr &&
-	                     (first_color_extent.width != depth->vulkan_buffer->extent.width ||
-	                      first_color_extent.height != depth->vulkan_buffer->extent.height));
+	                     (first_color_extent.width != depth.vulkan_buffer->extent.width ||
+	                      first_color_extent.height != depth.vulkan_buffer->extent.height));
 
 	if (first_color == nullptr) {
-		first_color_extent = depth->vulkan_buffer->extent;
+		first_color_extent = depth.vulkan_buffer->extent;
 	}
 
 	auto* framebuffer        = new VulkanFramebuffer;
@@ -151,10 +148,6 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 		framebuffer->color_layout[i] = color_layout[i];
 	}
 	framebuffer->depth_layout = depth_layout;
-
-	auto* gctx = g_render_ctx->GetGraphicCtx();
-
-	EXIT_IF(gctx == nullptr);
 
 	vk::AttachmentDescription attachments[RENDER_COLOR_ATTACHMENTS_MAX + 1] = {};
 	for (uint32_t i = 0; i < color_count; i++) {
@@ -172,14 +165,14 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 
 	const uint32_t depth_attachment       = color_count;
 	attachments[depth_attachment].flags   = {};
-	attachments[depth_attachment].format  = depth->format;
+	attachments[depth_attachment].format  = depth.format;
 	attachments[depth_attachment].samples = vulkan_sample_count(attachment_samples);
 	attachments[depth_attachment].loadOp =
-	    (depth->depth_load_clear_enable ? vk::AttachmentLoadOp::eClear
-	                                    : vk::AttachmentLoadOp::eLoad);
+	    (depth.depth_load_clear_enable ? vk::AttachmentLoadOp::eClear
+	                                   : vk::AttachmentLoadOp::eLoad);
 	attachments[depth_attachment].storeOp = vk::AttachmentStoreOp::eStore;
 	attachments[depth_attachment].stencilLoadOp =
-	    (depth->stencil_clear_enable ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad);
+	    (depth.stencil_clear_enable ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad);
 	attachments[depth_attachment].stencilStoreOp = vk::AttachmentStoreOp::eStore;
 	attachments[depth_attachment].initialLayout  = depth_layout;
 	attachments[depth_attachment].finalLayout    = depth_layout;
@@ -246,7 +239,7 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	render_pass_info.pDependencies   = dependencies;
 
 	auto result =
-	    gctx->device.createRenderPass(&render_pass_info, nullptr, &framebuffer->render_pass);
+	    m_graphics.device.createRenderPass(&render_pass_info, nullptr, &framebuffer->render_pass);
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
 	vk::Format color_formats[RENDER_COLOR_ATTACHMENTS_MAX] = {};
@@ -254,7 +247,7 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 		color_formats[i] = colors[i].format;
 	}
 	framebuffer->render_pass_id = render_pass_compat_id(
-	    color_count, color_formats, with_depth, depth->format, depth_layout, attachment_samples);
+	    color_count, color_formats, with_depth, depth.format, depth_layout, attachment_samples);
 
 	EXIT_NOT_IMPLEMENTED(framebuffer->render_pass == nullptr);
 
@@ -266,10 +259,10 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 		views[i] = colors[i].vulkan_view;
 	}
 	if (with_depth) {
-		if (depth->vulkan_view == nullptr) {
+		if (depth.vulkan_view == nullptr) {
 			EXIT("Framebuffer: depth attachment view is missing\n");
 		}
-		views[color_count] = depth->vulkan_view;
+		views[color_count] = depth.vulkan_view;
 	}
 
 	vk::FramebufferCreateInfo framebuffer_info {};
@@ -283,7 +276,8 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	framebuffer_info.height          = first_color_extent.height;
 	framebuffer_info.layers          = 1;
 
-	result = gctx->device.createFramebuffer(&framebuffer_info, nullptr, &framebuffer->framebuffer);
+	result =
+	    m_graphics.device.createFramebuffer(&framebuffer_info, nullptr, &framebuffer->framebuffer);
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
 	EXIT_NOT_IMPLEMENTED(framebuffer->framebuffer == nullptr);
@@ -298,10 +292,10 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 		    (i < color_count && with_color[i] && colors[i].color_clear_enable);
 		fnew.color_layout[i] = color_layout[i];
 	}
-	fnew.depth_id             = (with_depth ? depth->vulkan_buffer->memory.unique_id : 0);
-	fnew.depth_view           = (with_depth ? depth->vulkan_view : nullptr);
-	fnew.depth_clear_enable   = depth->depth_load_clear_enable;
-	fnew.stencil_clear_enable = depth->stencil_clear_enable;
+	fnew.depth_id             = (with_depth ? depth.vulkan_buffer->memory.unique_id : 0);
+	fnew.depth_view           = (with_depth ? depth.vulkan_view : nullptr);
+	fnew.depth_clear_enable   = depth.depth_load_clear_enable;
+	fnew.stencil_clear_enable = depth.stencil_clear_enable;
 	fnew.depth_read_only      = depth_read_only;
 
 	bool updated = false;
@@ -321,28 +315,21 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	return framebuffer;
 }
 
-void FramebufferCache::FreeFramebufferByColor(VulkanImage* image) {
-	EXIT_IF(g_render_ctx == nullptr);
-	EXIT_IF(image == nullptr);
-
+void FramebufferCache::FreeFramebufferByColor(VulkanImage& image) {
 	Common::LockGuard lock(m_mutex);
 
 	for (auto& f: m_framebuffers) {
 		bool uses_image = false;
 		for (auto image_id: f.image_id) {
-			if (image_id == image->memory.unique_id) {
+			if (image_id == image.memory.unique_id) {
 				uses_image = true;
 				break;
 			}
 		}
 		if (f.framebuffer != nullptr && uses_image) {
-			auto* gctx = g_render_ctx->GetGraphicCtx();
+			m_graphics.device.destroyFramebuffer(f.framebuffer->framebuffer, nullptr);
 
-			EXIT_IF(gctx == nullptr);
-
-			gctx->device.destroyFramebuffer(f.framebuffer->framebuffer, nullptr);
-
-			gctx->device.destroyRenderPass(f.framebuffer->render_pass, nullptr);
+			m_graphics.device.destroyRenderPass(f.framebuffer->render_pass, nullptr);
 
 			delete f.framebuffer;
 
@@ -351,21 +338,14 @@ void FramebufferCache::FreeFramebufferByColor(VulkanImage* image) {
 	}
 }
 
-void FramebufferCache::FreeFramebufferByDepth(DepthStencilVulkanImage* image) {
-	EXIT_IF(g_render_ctx == nullptr);
-	EXIT_IF(image == nullptr);
-
+void FramebufferCache::FreeFramebufferByDepth(DepthStencilVulkanImage& image) {
 	Common::LockGuard lock(m_mutex);
 
 	for (auto& f: m_framebuffers) {
-		if (f.framebuffer != nullptr && f.depth_id == image->memory.unique_id) {
-			auto* gctx = g_render_ctx->GetGraphicCtx();
+		if (f.framebuffer != nullptr && f.depth_id == image.memory.unique_id) {
+			m_graphics.device.destroyFramebuffer(f.framebuffer->framebuffer, nullptr);
 
-			EXIT_IF(gctx == nullptr);
-
-			gctx->device.destroyFramebuffer(f.framebuffer->framebuffer, nullptr);
-
-			gctx->device.destroyRenderPass(f.framebuffer->render_pass, nullptr);
+			m_graphics.device.destroyRenderPass(f.framebuffer->render_pass, nullptr);
 
 			delete f.framebuffer;
 

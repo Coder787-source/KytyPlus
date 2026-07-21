@@ -23,8 +23,11 @@
 #include <atomic>
 #include <cstring>
 #include <memory>
+#include <mutex>
 namespace Libs::Graphics {
 static std::atomic<uint64_t> g_command_buffer_submit_seq = 0;
+static bool                  g_render_initialized        = false;
+static std::mutex            g_render_init_mutex;
 
 static void RequireValidQueueId(int queue_id) {
 	EXIT_IF(queue_id < 0 || queue_id >= GraphicContext::QUEUES_NUM);
@@ -65,8 +68,17 @@ private:
 	std::array<VulkanCommandPool*, GraphicContext::QUEUES_NUM> m_pools {};
 };
 
-RenderContext*                  g_render_ctx = nullptr;
+static RenderContext*           g_render_ctx = nullptr;
 static thread_local CommandPool g_command_pool;
+
+bool HasRenderContext() noexcept {
+	return g_render_ctx != nullptr;
+}
+
+RenderContext& GetRenderContext() {
+	EXIT_IF(g_render_ctx == nullptr);
+	return *g_render_ctx;
+}
 
 FenceResourceRetainer::~FenceResourceRetainer() {
 	if (!m_resources.empty()) {
@@ -90,9 +102,9 @@ void FenceResourceRetainer::ReleaseAfterFence() noexcept {
 }
 
 void GraphicsRenderInit() {
-	EXIT_IF(g_render_ctx != nullptr);
-
-	g_render_ctx = new RenderContext;
+	std::scoped_lock lock(g_render_init_mutex);
+	EXIT_IF(g_render_initialized || g_render_ctx != nullptr);
+	g_render_initialized = true;
 }
 
 void GraphicsRenderReleaseThreadCommandPools() {
@@ -102,32 +114,43 @@ void GraphicsRenderReleaseThreadCommandPools() {
 }
 
 void GraphicsRenderCreateContext() {
-	EXIT_IF(g_render_ctx == nullptr);
+	std::scoped_lock lock(g_render_init_mutex);
+	EXIT_IF(!g_render_initialized);
+	if (g_render_ctx == nullptr) {
+		g_render_ctx = new RenderContext(WindowGetGraphicContext());
+	}
+}
 
-	g_render_ctx->SetGraphicCtx(WindowGetGraphicContext());
+void GraphicsRenderSetContext(RenderContext& context) {
+	std::scoped_lock lock(g_render_init_mutex);
+	EXIT_IF(!g_render_initialized || g_render_ctx != nullptr);
+	g_render_ctx = &context;
+}
+
+CommandBuffer::CommandBuffer(int queue)
+    : m_graphics(GetRenderContext().GetGraphics()), m_queue(queue), m_host_stream(m_graphics) {
+	Allocate();
 }
 
 void CommandPool::Create(int queue_id) {
 	RequireValidQueueId(queue_id);
-	EXIT_IF(g_render_ctx == nullptr);
 
-	auto*  ctx  = g_render_ctx->GetGraphicCtx();
-	auto*& pool = m_pools[queue_id];
+	auto&  graphics = GetRenderContext().GetGraphics();
+	auto*& pool     = m_pools[queue_id];
 	EXIT_IF(pool != nullptr);
 
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ctx->device == nullptr);
-	EXIT_IF(ctx->queues[queue_id].family == static_cast<uint32_t>(-1));
+	EXIT_IF(graphics.device == nullptr);
+	EXIT_IF(graphics.queues[queue_id].family == static_cast<uint32_t>(-1));
 
 	pool = new VulkanCommandPool;
 
 	vk::CommandPoolCreateInfo pool_info {};
 	pool_info.sType            = vk::StructureType::eCommandPoolCreateInfo;
 	pool_info.pNext            = nullptr;
-	pool_info.queueFamilyIndex = ctx->queues[queue_id].family;
+	pool_info.queueFamilyIndex = graphics.queues[queue_id].family;
 	pool_info.flags            = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
 
-	const auto result = ctx->device.createCommandPool(&pool_info, nullptr, &pool->pool);
+	const auto result = graphics.device.createCommandPool(&pool_info, nullptr, &pool->pool);
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess || pool->pool == nullptr);
 
 	pool->buffers_count = 8;
@@ -142,7 +165,7 @@ void CommandPool::Create(int queue_id) {
 	alloc_info.level              = vk::CommandBufferLevel::ePrimary;
 	alloc_info.commandBufferCount = pool->buffers_count;
 
-	if (ctx->device.allocateCommandBuffers(&alloc_info, pool->buffers.get()) !=
+	if (graphics.device.allocateCommandBuffers(&alloc_info, pool->buffers.get()) !=
 	    vk::Result::eSuccess) {
 		EXIT("Can't allocate command buffers");
 	}
@@ -155,7 +178,7 @@ void CommandPool::Create(int queue_id) {
 		fence_info.pNext = nullptr;
 		fence_info.flags = vk::FenceCreateFlagBits::eSignaled;
 
-		if (ctx->device.createFence(&fence_info, nullptr, &pool->fences[i]) !=
+		if (graphics.device.createFence(&fence_info, nullptr, &pool->fences[i]) !=
 		    vk::Result::eSuccess) {
 			EXIT("Can't create fence");
 		}
@@ -165,7 +188,7 @@ void CommandPool::Create(int queue_id) {
 		semaphore_info.pNext = nullptr;
 		semaphore_info.flags = {};
 
-		if (ctx->device.createSemaphore(&semaphore_info, nullptr, &pool->semaphores[i]) !=
+		if (graphics.device.createSemaphore(&semaphore_info, nullptr, &pool->semaphores[i]) !=
 		    vk::Result::eSuccess) {
 			EXIT("Can't create semaphore");
 		}
@@ -177,21 +200,21 @@ void CommandPool::Create(int queue_id) {
 }
 
 void CommandPool::DeleteAll() {
-	auto* ctx = g_render_ctx->GetGraphicCtx();
+	auto& graphics = GetRenderContext().GetGraphics();
 
 	for (auto& pool: m_pools) {
 		if (pool != nullptr) {
-			EXIT_IF(ctx == nullptr);
-			EXIT_IF(ctx->device == nullptr);
+			EXIT_IF(graphics.device == nullptr);
 
 			for (uint32_t i = 0; i < pool->buffers_count; i++) {
-				ctx->device.destroySemaphore(pool->semaphores[i], nullptr);
-				ctx->device.destroyFence(pool->fences[i], nullptr);
+				graphics.device.destroySemaphore(pool->semaphores[i], nullptr);
+				graphics.device.destroyFence(pool->fences[i], nullptr);
 			}
 
-			ctx->device.freeCommandBuffers(pool->pool, pool->buffers_count, pool->buffers.get());
+			graphics.device.freeCommandBuffers(pool->pool, pool->buffers_count,
+			                                   pool->buffers.get());
 
-			ctx->device.destroyCommandPool(pool->pool, nullptr);
+			graphics.device.destroyCommandPool(pool->pool, nullptr);
 
 			delete pool;
 			pool = nullptr;
@@ -200,8 +223,6 @@ void CommandPool::DeleteAll() {
 }
 
 bool CommandBuffer::IsInvalid() const {
-	EXIT_IF(g_render_ctx == nullptr);
-
 	if (m_pool != nullptr) {
 		Common::LockGuard lock(m_pool->mutex);
 
@@ -255,10 +276,8 @@ void CommandBuffer::Free() {
 	EXIT_NOT_IMPLEMENTED(!IsInvalid());
 }
 
-void CommandBuffer::DeleteAfterFence(VulkanBuffer* buffer) {
-	EXIT_IF(buffer == nullptr);
-
-	m_delete_after_fence.push_back(buffer);
+void CommandBuffer::DeleteAfterFence(VulkanBuffer& buffer) {
+	m_delete_after_fence.push_back(&buffer);
 }
 
 void CommandBuffer::RetainResourceUntilFence(std::shared_ptr<void> resource) {
@@ -268,15 +287,13 @@ void CommandBuffer::RetainResourceUntilFence(std::shared_ptr<void> resource) {
 	m_fence_resources.Retain(std::move(resource));
 }
 
-void CommandBuffer::RecycleDescriptorAfterFence(VulkanDescriptorSet* set) {
-	EXIT_IF(set == nullptr);
-
-	m_descriptor_sets_after_fence.push_back(set);
+void CommandBuffer::RecycleDescriptorAfterFence(VulkanDescriptorSet& set) {
+	m_descriptor_sets_after_fence.push_back(&set);
 }
 
 void CommandBuffer::RecycleDescriptorsAfterFence() {
 	for (auto* set: m_descriptor_sets_after_fence) {
-		g_render_ctx->GetDescriptorCache()->Recycle(set);
+		GetRenderContext().GetDescriptorCache().Recycle(*set);
 	}
 	m_descriptor_sets_after_fence.clear();
 }
@@ -351,12 +368,11 @@ void CommandBuffer::Submit(vk::Semaphore wait_semaphore, vk::PipelineStageFlags 
 	submit_info.signalSemaphoreCount = has_signal ? 1u : 0u;
 	submit_info.pSignalSemaphores    = has_signal ? &signal_semaphore : nullptr;
 
-	auto* ctx = g_render_ctx->GetGraphicCtx();
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ctx->device == nullptr);
-	const auto& queue = ctx->queues[m_queue];
+	auto& graphics = GetRenderContext().GetGraphics();
+	EXIT_IF(graphics.device == nullptr);
+	const auto& queue = graphics.queues[m_queue];
 
-	auto result = ctx->device.resetFences(1, &fence);
+	auto result = graphics.device.resetFences(1, &fence);
 	if (result != vk::Result::eSuccess) {
 		LOGF("vkResetFences failed before submit: %s (%d)\n", VulkanToString(result).c_str(),
 		     static_cast<int>(result));
@@ -412,7 +428,7 @@ void CommandBuffer::WaitForFenceOnly() {
 	if (!m_execute || m_fence_waited) {
 		return;
 	}
-	auto device = g_render_ctx->GetGraphicCtx()->device;
+	auto device = GetRenderContext().GetGraphics().device;
 	auto result = device.waitForFences(1, &m_pool->fences[m_index], VK_TRUE, UINT64_MAX);
 	if (result != vk::Result::eSuccess) {
 		LOGF("vkWaitForFences failed: %s (%d), queue=%d index=%u submit_seq=%" PRIu64
@@ -456,21 +472,20 @@ void CommandBuffer::ReleaseResourcesAfterFence() {
 
 void CommandBuffer::DeleteBuffersAfterFence() {
 	for (auto* buffer: m_delete_after_fence) {
-		VulkanDeleteBuffer(g_render_ctx->GetGraphicCtx(), buffer);
+		GetRenderContext().GetGraphics().DeleteBuffer(*buffer);
 		delete buffer;
 	}
 	m_delete_after_fence.clear();
 }
 
-void CommandBuffer::BeginRenderPass(VulkanFramebuffer* framebuffer, RenderColorInfo* colors,
-                                    uint32_t requested_color_count, RenderDepthInfo* depth) const {
+void CommandBuffer::BeginRenderPass(VulkanFramebuffer& framebuffer, RenderColorInfo* colors,
+                                    uint32_t requested_color_count, RenderDepthInfo& depth) const {
 	auto buffer = Handle();
 
-	EXIT_IF(framebuffer == nullptr);
 	EXIT_IF(colors == nullptr);
 	EXIT_IF(requested_color_count > RENDER_COLOR_ATTACHMENTS_MAX);
 
-	bool with_depth = (depth->format != vk::Format::eUndefined && depth->vulkan_buffer != nullptr);
+	bool with_depth = (depth.format != vk::Format::eUndefined && depth.vulkan_buffer != nullptr);
 	uint32_t color_count = 0;
 	for (uint32_t i = 0; i < requested_color_count; i++) {
 		if (colors[i].vulkan_buffer == nullptr) {
@@ -486,22 +501,22 @@ void CommandBuffer::BeginRenderPass(VulkanFramebuffer* framebuffer, RenderColorI
 	for (uint32_t i = 0; i < color_count; i++) {
 		clears[i].color = colors[i].color_clear_value;
 	}
-	clears[color_count].depthStencil = {depth->depth_clear_value, depth->stencil_clear_value};
+	clears[color_count].depthStencil = {depth.depth_clear_value, depth.stencil_clear_value};
 
-	vk::Extent2D extent = (with_color ? colors[0].extent : depth->vulkan_buffer->extent);
+	vk::Extent2D extent = (with_color ? colors[0].extent : depth.vulkan_buffer->extent);
 
 	vk::RenderPassBeginInfo render_pass_info {};
 	render_pass_info.sType             = vk::StructureType::eRenderPassBeginInfo;
 	render_pass_info.pNext             = nullptr;
-	render_pass_info.renderPass        = framebuffer->render_pass;
-	render_pass_info.framebuffer       = framebuffer->framebuffer;
+	render_pass_info.renderPass        = framebuffer.render_pass;
+	render_pass_info.framebuffer       = framebuffer.framebuffer;
 	render_pass_info.renderArea.offset = {0, 0};
 	render_pass_info.renderArea.extent = extent;
 	render_pass_info.clearValueCount   = color_count + (with_depth ? 1u : 0u);
 	render_pass_info.pClearValues      = clears;
 
 	for (uint32_t i = 0; i < color_count; i++) {
-		const auto color_initial_layout = framebuffer->color_layout[i];
+		const auto color_initial_layout = framebuffer.color_layout[i];
 		if (colors[i].vulkan_buffer->layout != color_initial_layout) {
 			if (graphics_debug_dump_enabled()) {
 				LOGF("BeginRenderPass: color%u initial barrier image=%p mem=%" PRIu64 " %s -> %s\n",
@@ -543,10 +558,9 @@ void CommandBuffer::BeginRenderPass(VulkanFramebuffer* framebuffer, RenderColorI
 	}
 
 	const auto depth_layout =
-	    (with_depth && framebuffer != nullptr ? framebuffer->depth_layout
-	                                          : vk::ImageLayout::eDepthStencilAttachmentOptimal);
+	    with_depth ? framebuffer.depth_layout : vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
-	if (with_depth && depth->vulkan_buffer->layout != depth_layout) {
+	if (with_depth && depth.vulkan_buffer->layout != depth_layout) {
 		vk::ImageMemoryBarrier image_memory_barrier {};
 		image_memory_barrier.sType = vk::StructureType::eImageMemoryBarrier;
 		image_memory_barrier.pNext = nullptr;
@@ -556,24 +570,24 @@ void CommandBuffer::BeginRenderPass(VulkanFramebuffer* framebuffer, RenderColorI
 		    (depth_layout == vk::ImageLayout::eDepthStencilReadOnlyOptimal
 		         ? vk::AccessFlagBits::eMemoryRead
 		         : vk::AccessFlagBits::eMemoryWrite);
-		image_memory_barrier.oldLayout           = depth->vulkan_buffer->layout;
+		image_memory_barrier.oldLayout           = depth.vulkan_buffer->layout;
 		image_memory_barrier.newLayout           = depth_layout;
 		image_memory_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		image_memory_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		image_memory_barrier.image               = depth->vulkan_buffer->image;
+		image_memory_barrier.image               = depth.vulkan_buffer->image;
 		image_memory_barrier.subresourceRange.aspectMask =
-		    ImageViewOps::DepthAspectMask(depth->vulkan_buffer->format);
+		    ImageViewOps::DepthAspectMask(depth.vulkan_buffer->format);
 		image_memory_barrier.subresourceRange.baseMipLevel   = 0;
 		image_memory_barrier.subresourceRange.levelCount     = 1;
 		image_memory_barrier.subresourceRange.baseArrayLayer = 0;
-		image_memory_barrier.subresourceRange.layerCount     = depth->vulkan_buffer->layers;
+		image_memory_barrier.subresourceRange.layerCount     = depth.vulkan_buffer->layers;
 
 		buffer.pipelineBarrier(
 		    vk::PipelineStageFlagBits::eAllGraphics | vk::PipelineStageFlagBits::eComputeShader,
 		    vk::PipelineStageFlagBits::eAllGraphics | vk::PipelineStageFlagBits::eComputeShader,
 		    vk::DependencyFlags {}, 0, nullptr, 0, nullptr, 1, &image_memory_barrier);
 
-		depth->vulkan_buffer->layout = image_memory_barrier.newLayout;
+		depth.vulkan_buffer->layout = image_memory_barrier.newLayout;
 	}
 
 	buffer.beginRenderPass(&render_pass_info, vk::SubpassContents::eInline);
@@ -586,8 +600,8 @@ void CommandBuffer::BeginRenderPass(VulkanFramebuffer* framebuffer, RenderColorI
 		}
 	}
 	if (with_depth) {
-		depth->vulkan_buffer->initial_depth_clear_pending   = false;
-		depth->vulkan_buffer->initial_stencil_clear_pending = false;
+		depth.vulkan_buffer->initial_depth_clear_pending   = false;
+		depth.vulkan_buffer->initial_stencil_clear_pending = false;
 	}
 }
 

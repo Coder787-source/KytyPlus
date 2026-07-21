@@ -13,20 +13,23 @@ namespace Libs::Graphics {
 
 class GdsBuffer {
 public:
-	GdsBuffer() { EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread()); }
+	explicit GdsBuffer(GraphicContext& graphics): m_graphics(graphics) {
+		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+	}
 	~GdsBuffer() { KYTY_NOT_IMPLEMENTED; }
 	KYTY_CLASS_NO_COPY(GdsBuffer);
 
-	void Clear(GraphicContext* ctx, uint64_t dw_offset, uint32_t dw_num, uint32_t clear_value);
-	void Read(GraphicContext* ctx, uint32_t* dst, uint32_t dw_offset, uint32_t dw_size);
+	void Clear(uint64_t dw_offset, uint32_t dw_num, uint32_t clear_value);
+	void Read(uint32_t* dst, uint32_t dw_offset, uint32_t dw_size);
 
-	VulkanBuffer* GetBuffer(GraphicContext* ctx);
+	VulkanBuffer& GetBuffer();
 
 private:
 	static constexpr uint64_t DW_SIZE = 0x3000;
 
-	void Init(GraphicContext* ctx);
+	void Init();
 
+	GraphicContext&               m_graphics;
 	Common::Mutex                 m_mutex;
 	std::unique_ptr<VulkanBuffer> m_buffer;
 };

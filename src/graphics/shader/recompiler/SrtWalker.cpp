@@ -3,6 +3,7 @@
 #include "graphics/shader/recompiler/ScalarProvenance.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <fmt/format.h>
 
@@ -26,8 +27,8 @@ std::string Diagnostic(const Program& program, uint32_t pc, const std::string& m
 	                   StageName(program.stage), pc, message);
 }
 
-bool AddSignedAddress(uint64_t base, int64_t offset, uint64_t* result) {
-	if (result == nullptr || base > AddressMask) {
+bool AddSignedAddress(uint64_t base, int64_t offset, uint64_t& result) {
+	if (base > AddressMask) {
 		return false;
 	}
 	if (offset < 0) {
@@ -35,69 +36,66 @@ bool AddSignedAddress(uint64_t base, int64_t offset, uint64_t* result) {
 		if (magnitude > base) {
 			return false;
 		}
-		*result = base - magnitude;
+		result = base - magnitude;
 		return true;
 	}
 	const auto magnitude = static_cast<uint64_t>(offset);
 	if (magnitude > AddressMask - base) {
 		return false;
 	}
-	*result = base + magnitude;
+	result = base + magnitude;
 	return true;
 }
 
-bool ApplyOperation(ScalarValueOp op, const uint32_t args[3], uint32_t* result) {
-	if (result == nullptr) {
-		return false;
-	}
+bool ApplyOperation(ScalarValueOp op, const std::array<uint32_t, 3>& args, uint32_t& result) {
 	const auto shift = args[1] & 31u;
 	switch (op) {
-		case ScalarValueOp::Add: *result = args[0] + args[1]; break;
-		case ScalarValueOp::AddCarry: *result = args[0] + args[1] + (args[2] & 1u); break;
+		case ScalarValueOp::Add: result = args[0] + args[1]; break;
+		case ScalarValueOp::AddCarry: result = args[0] + args[1] + (args[2] & 1u); break;
 		case ScalarValueOp::Carry:
-			*result = static_cast<uint32_t>(
+			result = static_cast<uint32_t>(
 			    (static_cast<uint64_t>(args[0]) + args[1] + (args[2] & 1u)) >> 32u);
 			break;
-		case ScalarValueOp::Sub: *result = args[0] - args[1]; break;
-		case ScalarValueOp::SubBorrow: *result = args[0] - args[1] - (args[2] & 1u); break;
+		case ScalarValueOp::Sub: result = args[0] - args[1]; break;
+		case ScalarValueOp::SubBorrow: result = args[0] - args[1] - (args[2] & 1u); break;
 		case ScalarValueOp::Borrow:
-			*result = static_cast<uint64_t>(args[1]) + (args[2] & 1u) > args[0] ? 1u : 0u;
+			result = static_cast<uint64_t>(args[1]) + (args[2] & 1u) > args[0] ? 1u : 0u;
 			break;
-		case ScalarValueOp::Mul: *result = args[0] * args[1]; break;
-		case ScalarValueOp::And: *result = args[0] & args[1]; break;
-		case ScalarValueOp::AndNot: *result = args[0] & ~args[1]; break;
-		case ScalarValueOp::Or: *result = args[0] | args[1]; break;
-		case ScalarValueOp::OrNot: *result = args[0] | ~args[1]; break;
-		case ScalarValueOp::Xor: *result = args[0] ^ args[1]; break;
-		case ScalarValueOp::Not: *result = ~args[0]; break;
-		case ScalarValueOp::ShiftLeft: *result = args[0] << shift; break;
-		case ScalarValueOp::ShiftRight: *result = args[0] >> shift; break;
+		case ScalarValueOp::Mul: result = args[0] * args[1]; break;
+		case ScalarValueOp::And: result = args[0] & args[1]; break;
+		case ScalarValueOp::AndNot: result = args[0] & ~args[1]; break;
+		case ScalarValueOp::Or: result = args[0] | args[1]; break;
+		case ScalarValueOp::OrNot: result = args[0] | ~args[1]; break;
+		case ScalarValueOp::Xor: result = args[0] ^ args[1]; break;
+		case ScalarValueOp::Not: result = ~args[0]; break;
+		case ScalarValueOp::ShiftLeft: result = args[0] << shift; break;
+		case ScalarValueOp::ShiftRight: result = args[0] >> shift; break;
 		case ScalarValueOp::ShiftRightArithmetic:
-			*result = static_cast<uint32_t>(static_cast<int32_t>(args[0]) >> shift);
+			result = static_cast<uint32_t>(static_cast<int32_t>(args[0]) >> shift);
 			break;
 		case ScalarValueOp::BitFieldMaskU32: {
 			const auto count  = args[0] & 31u;
 			const auto offset = args[1] & 31u;
-			*result           = ((uint32_t {1} << count) - 1u) << offset;
+			result            = ((uint32_t {1} << count) - 1u) << offset;
 			break;
 		}
 		case ScalarValueOp::BitFieldMaskU64Low:
 		case ScalarValueOp::BitFieldMaskU64High: {
 			const auto count = args[0] & 63u;
 			const auto value = ((uint64_t {1} << count) - 1u) << (args[1] & 63u);
-			*result = op == ScalarValueOp::BitFieldMaskU64Low ? static_cast<uint32_t>(value)
-			                                                  : static_cast<uint32_t>(value >> 32u);
+			result = op == ScalarValueOp::BitFieldMaskU64Low ? static_cast<uint32_t>(value)
+			                                                 : static_cast<uint32_t>(value >> 32u);
 			break;
 		}
-		case ScalarValueOp::Add3: *result = args[0] + args[1] + args[2]; break;
-		case ScalarValueOp::ShiftLeftAdd: *result = (args[0] << shift) + args[2]; break;
+		case ScalarValueOp::Add3: result = args[0] + args[1] + args[2]; break;
+		case ScalarValueOp::ShiftLeftAdd: result = (args[0] << shift) + args[2]; break;
 		case ScalarValueOp::ShiftLeftAddCarry:
-			*result =
+			result =
 			    static_cast<uint32_t>(((static_cast<uint64_t>(args[0]) << shift) + args[2]) >> 32u);
 			break;
-		case ScalarValueOp::AddShiftLeft: *result = (args[0] + args[1]) << (args[2] & 31u); break;
-		case ScalarValueOp::XorAdd: *result = (args[0] ^ args[1]) + args[2]; break;
-		case ScalarValueOp::ShiftLeftOr: *result = (args[0] << shift) | args[2]; break;
+		case ScalarValueOp::AddShiftLeft: result = (args[0] + args[1]) << (args[2] & 31u); break;
+		case ScalarValueOp::XorAdd: result = (args[0] ^ args[1]) + args[2]; break;
+		case ScalarValueOp::ShiftLeftOr: result = (args[0] << shift) | args[2]; break;
 		default: return false;
 	}
 	return true;
@@ -138,13 +136,13 @@ public:
 				if (count == 0 || count > 3 || value.op == ScalarValueOp::ReadConst) {
 					return Dynamic(id);
 				}
-				uint32_t args[3] = {};
+				std::array<uint32_t, 3> args {};
 				for (uint32_t i = 0; i < count; i++) {
 					if (!Fold(value.args[i], args[i])) {
 						return Dynamic(id);
 					}
 				}
-				if (!ApplyOperation(value.op, args, &out)) {
+				if (!ApplyOperation(value.op, args, out)) {
 					return Dynamic(id);
 				}
 				break;
@@ -169,13 +167,13 @@ private:
 
 class PlanBuilder {
 public:
-	explicit PlanBuilder(Program* program): m_program(program), m_folder(program->provenance) {
-		m_state.resize(program->provenance.values.size());
+	explicit PlanBuilder(Program& program): m_program(program), m_folder(program.provenance) {
+		m_state.resize(program.provenance.values.size());
 	}
 
 	bool Run(std::string* error) {
-		m_program->srt = {};
-		for (const auto& block: m_program->blocks) {
+		m_program.srt = {};
+		for (const auto& block: m_program.blocks) {
 			for (const auto& inst: block.instructions) {
 				if (!CollectDescriptor(inst.memory.resource_source, inst.pc, error) ||
 				    !CollectDescriptor(inst.memory.sampler_source, inst.pc, error)) {
@@ -183,11 +181,11 @@ public:
 				}
 			}
 		}
-		for (const auto& block: m_program->blocks) {
+		for (const auto& block: m_program.blocks) {
 			for (const auto& inst: block.instructions) {
 				if (inst.op == Opcode::SLoadDword && inst.scalar_value < m_state.size() &&
 				    m_state[inst.scalar_value] == 0) {
-					const auto& value   = m_program->provenance.values[inst.scalar_value];
+					const auto& value   = m_program.provenance.values[inst.scalar_value];
 					uint32_t    ignored = 0;
 					if (value.op == ScalarValueOp::ReadConst &&
 					    m_folder.Fold(value.args[2], ignored) &&
@@ -203,20 +201,20 @@ public:
 private:
 	bool Fail(uint32_t pc, std::string* error, const std::string& message) const {
 		if (error != nullptr) {
-			*error = Diagnostic(*m_program, pc, message);
+			*error = Diagnostic(m_program, pc, message);
 		}
 		return false;
 	}
 
 	bool CollectDescriptor(uint32_t source, uint32_t use_pc, std::string* error) {
-		const auto* descriptor = GetDescriptorSource(*m_program, source);
+		const auto* descriptor = GetDescriptorSource(m_program, source);
 		if (descriptor == nullptr) {
 			if (source <= ScalarProvenance::Unknown) {
 				return source == ScalarProvenance::Undefined || AddDynamicSource(source);
 			}
 			return Fail(use_pc, error, fmt::format("invalid descriptor source {}", source));
 		}
-		if (!DescriptorSourceResolved(*m_program, source) ||
+		if (!DescriptorSourceResolved(m_program, source) ||
 		    DescriptorNeedsControlFlow(*descriptor)) {
 			MarkDescriptor(*descriptor);
 			return AddDynamicSource(source);
@@ -240,7 +238,7 @@ private:
 			return;
 		}
 		m_state[id]       = 2;
-		const auto& value = m_program->provenance.values[id];
+		const auto& value = m_program.provenance.values[id];
 		if (value.op == ScalarValueOp::Phi) {
 			for (const auto arg: value.phi_args) {
 				MarkValue(arg);
@@ -253,21 +251,21 @@ private:
 	}
 
 	bool DescriptorNeedsControlFlow(const DescriptorValue& descriptor) {
-		std::vector<uint8_t> visited(m_program->provenance.values.size());
+		std::vector<uint8_t> visited(m_program.provenance.values.size());
 		for (uint32_t i = 0; i < descriptor.dword_count; i++) {
-			if (ValueNeedsControlFlow(descriptor.dwords[i], &visited)) {
+			if (ValueNeedsControlFlow(descriptor.dwords[i], visited)) {
 				return true;
 			}
 		}
 		return false;
 	}
 
-	bool ValueNeedsControlFlow(uint32_t id, std::vector<uint8_t>* visited) {
-		if (id >= m_program->provenance.values.size() || (*visited)[id] != 0) {
+	bool ValueNeedsControlFlow(uint32_t id, std::vector<uint8_t>& visited) {
+		if (id >= m_program.provenance.values.size() || visited[id] != 0) {
 			return false;
 		}
-		(*visited)[id]    = 1;
-		const auto& value = m_program->provenance.values[id];
+		visited[id]       = 1;
+		const auto& value = m_program.provenance.values[id];
 		if (value.op == ScalarValueOp::Phi) {
 			uint32_t ignored = 0;
 			return !m_folder.Fold(id, ignored);
@@ -281,15 +279,15 @@ private:
 	}
 
 	bool AddDynamicSource(uint32_t source) {
-		if (std::find(m_program->srt.dynamic_sources.begin(), m_program->srt.dynamic_sources.end(),
-		              source) == m_program->srt.dynamic_sources.end()) {
-			m_program->srt.dynamic_sources.push_back(source);
+		if (std::find(m_program.srt.dynamic_sources.begin(), m_program.srt.dynamic_sources.end(),
+		              source) == m_program.srt.dynamic_sources.end()) {
+			m_program.srt.dynamic_sources.push_back(source);
 		}
 		return true;
 	}
 
 	bool CollectValue(uint32_t id, uint32_t use_pc, std::string* error) {
-		if (id >= m_program->provenance.values.size()) {
+		if (id >= m_program.provenance.values.size()) {
 			return Fail(use_pc, error, fmt::format("invalid scalar value {}", id));
 		}
 		if (m_state[id] == 2) {
@@ -299,7 +297,7 @@ private:
 			return Fail(use_pc, error, fmt::format("cyclic scalar value {}", id));
 		}
 		m_state[id]       = 1;
-		const auto& value = m_program->provenance.values[id];
+		const auto& value = m_program.provenance.values[id];
 		if (value.op == ScalarValueOp::Phi) {
 			for (const auto arg: value.phi_args) {
 				if (!CollectValue(arg, use_pc, error)) {
@@ -317,17 +315,17 @@ private:
 			const auto offset_arg = value.op == ScalarValueOp::ReadConst ? 2u : 4u;
 			uint32_t   ignored    = 0;
 			if (m_folder.Fold(value.args[offset_arg], ignored)) {
-				m_program->srt.reads.push_back(
-				    {id, static_cast<uint32_t>(m_program->srt.reads.size()), use_pc});
+				m_program.srt.reads.push_back(
+				    {id, static_cast<uint32_t>(m_program.srt.reads.size()), use_pc});
 			} else {
-				m_program->srt.dynamic_reads.push_back(id);
+				m_program.srt.dynamic_reads.push_back(id);
 			}
 		}
 		m_state[id] = 2;
 		return true;
 	}
 
-	Program*             m_program;
+	Program&             m_program;
 	ConstantFolder       m_folder;
 	std::vector<uint8_t> m_state;
 };
@@ -395,7 +393,7 @@ public:
 			}
 			case ScalarValueOp::ReadConst:
 			case ScalarValueOp::ReadConstBuffer:
-				if (!Read(value, &out, error)) {
+				if (!Read(value, out, error)) {
 					return false;
 				}
 				break;
@@ -403,7 +401,7 @@ public:
 			case ScalarValueOp::Unknown:
 				return Fail(error, fmt::format("scalar value {} is unresolved", id));
 			default:
-				if (!EvaluateOperation(value, &out, error)) {
+				if (!EvaluateOperation(value, out, error)) {
 					return false;
 				}
 				break;
@@ -422,13 +420,13 @@ private:
 		return false;
 	}
 
-	bool EvaluateOperation(const ScalarValue& value, uint32_t* result, std::string* error) {
+	bool EvaluateOperation(const ScalarValue& value, uint32_t& result, std::string* error) {
 		const auto count = ScalarValueArgCount(value.op);
 		if (count == 0 || count > 3) {
 			return Fail(error, fmt::format("unsupported scalar operation {}",
 			                               static_cast<uint32_t>(value.op)));
 		}
-		uint32_t args[3] = {};
+		std::array<uint32_t, 3> args {};
 		for (uint32_t i = 0; i < count; i++) {
 			if (!Evaluate(value.args[i], args[i], error)) {
 				return false;
@@ -439,7 +437,7 @@ private:
 		                               static_cast<uint32_t>(value.op)));
 	}
 
-	bool Read(const ScalarValue& value, uint32_t* result, std::string* error) {
+	bool Read(const ScalarValue& value, uint32_t& result, std::string* error) {
 		const bool buffer = value.op == ScalarValueOp::ReadConstBuffer;
 		uint32_t   lo     = 0;
 		uint32_t   hi     = 0;
@@ -478,7 +476,7 @@ private:
 			const auto base_aligned      = base & ~uint64_t {3};
 			const auto immediate_aligned = immediate & ~int64_t {3};
 			const auto relative = immediate_aligned + static_cast<int64_t>(offset & ~uint32_t {3});
-			if (!AddSignedAddress(base_aligned, relative, &address)) {
+			if (!AddSignedAddress(base_aligned, relative, address)) {
 				return Fail(error,
 				            fmt::format("ReadConst pc=0x{:08x} address base=0x{:016x} offset={} "
 				                        "is outside the 48-bit address space",
@@ -486,12 +484,12 @@ private:
 			}
 		}
 		if (m_runtime.read_memory != nullptr &&
-		    !m_runtime.read_memory(m_runtime.userdata, address, result)) {
+		    !m_runtime.read_memory(m_runtime.userdata, address, &result)) {
 			return Fail(
 			    error, fmt::format("ReadConst pc=0x{:08x} failed at 0x{:016x}", value.pc, address));
 		}
 		if (m_runtime.read_memory == nullptr) {
-			std::memcpy(result, reinterpret_cast<const void*>(address), sizeof(*result));
+			std::memcpy(&result, reinterpret_cast<const void*>(address), sizeof(result));
 		}
 		return true;
 	}
@@ -505,71 +503,53 @@ private:
 
 } // namespace
 
-bool FoldScalarConstant(const ScalarProvenance& provenance, uint32_t value, uint32_t* result) {
-	if (result == nullptr) {
-		return false;
-	}
+bool FoldScalarConstant(const ScalarProvenance& provenance, uint32_t value, uint32_t& result) {
 	ConstantFolder folder(provenance);
-	return folder.Fold(value, *result);
+	return folder.Fold(value, result);
 }
 
-bool BuildSrtPlan(Program* program, std::string* error) {
-	if (program == nullptr) {
-		if (error != nullptr) {
-			*error = "invalid SRT program";
-		}
-		return false;
-	}
-	if (program->resource_tracking_complete) {
+bool BuildSrtPlan(Program& program, std::string* error) {
+	if (program.resource_tracking_complete) {
 		if (error != nullptr) {
 			*error = "cannot rebuild SRT plan after resource tracking";
 		}
 		return false;
 	}
-	if (program->srt_patching_complete) {
+	if (program.srt_patching_complete) {
 		if (error != nullptr) {
 			*error = "cannot rebuild SRT plan after SRT patching";
 		}
 		return false;
 	}
-	program->srt_plan_complete = false;
+	program.srt_plan_complete = false;
 	if (!PlanBuilder(program).Run(error)) {
 		return false;
 	}
-	program->srt_plan_complete = true;
+	program.srt_plan_complete = true;
 	return true;
 }
 
 bool EvaluateDescriptorSource(const Program& program, uint32_t source, uint32_t use_pc,
-                              const SrtRuntime& runtime, DescriptorValue* result,
-                              std::string* error) {
-	if (result == nullptr) {
-		if (error != nullptr) {
-			*error = Diagnostic(program, use_pc, "invalid descriptor result");
-		}
-		return false;
-	}
+	                          const SrtRuntime& runtime, DescriptorValue& result,
+	                          std::string* error) {
 	const DescriptorSourceRequest request {source, use_pc};
 	std::vector<DescriptorValue>  results;
-	if (!EvaluateDescriptorSources(program, std::span {&request, 1}, runtime, &results, error)) {
+	if (!EvaluateDescriptorSources(program, std::span {&request, 1}, runtime, results, error)) {
 		return false;
 	}
-	*result = results[0];
+	result = results[0];
 	return true;
 }
 
 static bool EvaluateRuntimeSourcesImpl(const Program&                           program,
-                                       std::span<const DescriptorSourceRequest> requests,
-                                       const SrtRuntime&                        runtime,
-                                       std::vector<DescriptorValue>*            results,
-                                       std::vector<uint32_t>* flat, bool evaluate_flat,
-                                       std::string* error) {
-	if (results == nullptr || flat == nullptr || !program.srt_plan_complete) {
+	                                   std::span<const DescriptorSourceRequest> requests,
+	                                   const SrtRuntime&                        runtime,
+	                                   std::vector<DescriptorValue>&            results,
+	                                   std::vector<uint32_t>& flat, bool evaluate_flat,
+	                                   std::string* error) {
+	if (!program.srt_plan_complete) {
 		if (error != nullptr) {
-			*error = Diagnostic(program, 0,
-			                    results == nullptr || flat == nullptr
-			                        ? "invalid runtime evaluation output"
-			                        : "SRT plan is not ready");
+			*error = Diagnostic(program, 0, "SRT plan is not ready");
 		}
 		return false;
 	}
@@ -614,44 +594,32 @@ static bool EvaluateRuntimeSourcesImpl(const Program&                           
 			}
 		}
 	}
-	*results = std::move(evaluated);
+	results = std::move(evaluated);
 	if (evaluate_flat) {
-		*flat = std::move(flattened);
+		flat = std::move(flattened);
 	}
 	return true;
 }
 
 bool EvaluateDescriptorSources(const Program&                           program,
-                               std::span<const DescriptorSourceRequest> requests,
-                               const SrtRuntime& runtime, std::vector<DescriptorValue>* results,
-                               std::string* error) {
-	if (results == nullptr) {
-		if (error != nullptr) {
-			*error = Diagnostic(program, 0, "invalid descriptor results");
-		}
-		return false;
-	}
+	                           std::span<const DescriptorSourceRequest> requests,
+	                           const SrtRuntime& runtime, std::vector<DescriptorValue>& results,
+	                           std::string* error) {
 	std::vector<uint32_t> ignored;
-	return EvaluateRuntimeSourcesImpl(program, requests, runtime, results, &ignored, false, error);
+	return EvaluateRuntimeSourcesImpl(program, requests, runtime, results, ignored, false, error);
 }
 
 bool EvaluateRuntimeSources(const Program&                           program,
-                            std::span<const DescriptorSourceRequest> requests,
-                            const SrtRuntime& runtime, std::vector<DescriptorValue>* results,
-                            std::vector<uint32_t>* flat, std::string* error) {
+	                        std::span<const DescriptorSourceRequest> requests,
+	                        const SrtRuntime& runtime, std::vector<DescriptorValue>& results,
+	                        std::vector<uint32_t>& flat, std::string* error) {
 	return EvaluateRuntimeSourcesImpl(program, requests, runtime, results, flat, true, error);
 }
 
-bool WalkSrt(const Program& program, const SrtRuntime& runtime, std::vector<uint32_t>* flat,
-             std::string* error) {
-	if (flat == nullptr) {
-		if (error != nullptr) {
-			*error = Diagnostic(program, 0, "invalid SRT walker output");
-		}
-		return false;
-	}
+bool WalkSrt(const Program& program, const SrtRuntime& runtime, std::vector<uint32_t>& flat,
+	         std::string* error) {
 	std::vector<DescriptorValue> ignored;
-	return EvaluateRuntimeSources(program, {}, runtime, &ignored, flat, error);
+	return EvaluateRuntimeSources(program, {}, runtime, ignored, flat, error);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

@@ -23,22 +23,21 @@ constexpr int AGC_USER_INTERRUPT_EVENT = 0x1800;
 
 class RenderContext {
 public:
-	RenderContext() { EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread()); }
+	explicit RenderContext(GraphicContext& graphics);
 	~RenderContext() { KYTY_NOT_IMPLEMENTED; }
 	KYTY_CLASS_NO_COPY(RenderContext);
 
-	void            SetGraphicCtx(GraphicContext* ctx);
-	GraphicContext* GetGraphicCtx();
+	[[nodiscard]] GraphicContext& GetGraphics() const noexcept { return m_graphics; }
 
 	Common::Mutex&      GetMutex() { return m_mutex; }
-	PipelineCache*      GetPipelineCache() { return &m_pipeline_cache; }
-	DescriptorCache*    GetDescriptorCache() { return &m_descriptor_cache; }
-	FramebufferCache*   GetFramebufferCache() { return &m_framebuffer_cache; }
-	SamplerCache*       GetSamplerCache() { return &m_sampler_cache; }
-	GdsBuffer*          GetGdsBuffer() { return &m_gds_buffer; }
-	GpuResourceManager* GetGpuResources() { return &m_gpu_resources; }
-	BufferCache*        GetBufferCache() { return m_gpu_resources.GetBufferCache(); }
-	TextureCache*       GetTextureCache() { return m_gpu_resources.GetTextureCache(); }
+	PipelineCache&      GetPipelineCache() { return m_pipeline_cache; }
+	DescriptorCache&    GetDescriptorCache() { return m_descriptor_cache; }
+	FramebufferCache&   GetFramebufferCache() { return m_framebuffer_cache; }
+	SamplerCache&       GetSamplerCache() { return m_sampler_cache; }
+	GdsBuffer&          GetGdsBuffer() { return m_gds_buffer; }
+	GpuResourceManager& GetGpuResources() { return m_gpu_resources; }
+	BufferCache&        GetBufferCache() { return m_gpu_resources.GetBufferCache(); }
+	TextureCache&       GetTextureCache() { return m_gpu_resources.GetTextureCache(); }
 
 	void AddEopEq(LibKernel::EventQueue::KernelEqueue eq, int id);
 	void DeleteEopEq(LibKernel::EventQueue::KernelEqueue eq, int id);
@@ -51,13 +50,12 @@ private:
 		uint32_t                            count = 0;
 	};
 
+	GraphicContext&    m_graphics;
 	Common::Mutex      m_mutex;
-	Common::Mutex      m_graphic_ctx_mutex;
 	PipelineCache      m_pipeline_cache;
 	DescriptorCache    m_descriptor_cache;
 	FramebufferCache   m_framebuffer_cache;
 	SamplerCache       m_sampler_cache;
-	GraphicContext*    m_graphic_ctx = nullptr;
 	GdsBuffer          m_gds_buffer;
 	GpuResourceManager m_gpu_resources;
 
@@ -65,7 +63,8 @@ private:
 	std::vector<EopEqRegistration> m_eop_eqs;
 };
 
-extern RenderContext* g_render_ctx;
+[[nodiscard]] bool           HasRenderContext() noexcept;
+[[nodiscard]] RenderContext& GetRenderContext();
 
 } // namespace Libs::Graphics
 

@@ -83,8 +83,8 @@ struct TextureImageCreateParams {
 
 vk::ComponentSwizzle TextureGetComponentSwizzle(uint8_t s);
 vk::ComponentMapping TextureGetComponentMapping(uint32_t swizzle);
-bool                 TextureCheckFormat(GraphicContext* ctx, vk::ImageCreateInfo* image_info);
-bool TextureCheckStorageSwizzle(vk::ImageCreateInfo* image_info, vk::ComponentMapping* components);
+bool                 TextureCheckFormat(vk::ImageCreateInfo& image_info);
+bool TextureCheckStorageSwizzle(vk::ImageCreateInfo& image_info, vk::ComponentMapping& components);
 vk::ImageUsageFlags    TextureGetUsage(TextureFormatUsage usage);
 vk::ImageUsageFlags    TextureGetViewUsage(TextureFormatUsage usage);
 vk::Format             TextureGetFormat(uint32_t fmt);
@@ -99,9 +99,9 @@ bool     TextureIs3DTexture(uint64_t type);
 bool     TextureIsCubeTexture(uint64_t type);
 bool     TextureIsLayeredTexture(uint64_t type);
 bool     TextureCanCreateCubeView(uint64_t type, uint32_t base_array, uint32_t layer_count);
-vk::ComponentMapping TextureCreateImage(GraphicContext* ctx, VulkanImage* image,
+vk::ComponentMapping TextureCreateImage(VulkanImage& image,
                                         const TextureImageCreateParams& params);
-void TextureCreateImageViews(GraphicContext* ctx, VulkanImage* vk_obj,
+void TextureCreateImageViews(VulkanImage& vk_obj,
                              vk::ComponentMapping components, uint64_t type, uint32_t base_array,
                              uint32_t base_level, uint32_t level_count, uint32_t depth,
                              bool allow_cube_view, TextureFormatUsage view_usage);
@@ -125,8 +125,8 @@ std::vector<ImageBufferCopy>
 TextureBuildDownloadRegions(const std::vector<BufferImageCopy>& upload_regions);
 bool TextureBuildGpuTileInfos(uint64_t size, const std::vector<BufferImageCopy>& regions,
                               const TextureUploadLayout& layout, uint32_t fmt, uint32_t depth,
-                              uint64_t levels, std::vector<GpuTileInfo>* infos);
-void TextureUploadGuestImage(GraphicContext* ctx, VulkanImage* vk_obj, const void* src_data,
+                              uint64_t levels, std::vector<GpuTileInfo>& infos);
+void TextureUploadGuestImage(VulkanImage& vk_obj, const void* src_data,
                              uint64_t size, const std::vector<BufferImageCopy>& regions,
                              const TextureUploadLayout& layout, uint32_t fmt, uint64_t width,
                              uint64_t height, uint32_t depth, uint64_t levels, const char* owner,

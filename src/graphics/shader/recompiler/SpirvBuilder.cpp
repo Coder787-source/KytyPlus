@@ -8,15 +8,15 @@ namespace Libs::Graphics::ShaderRecompiler::Spirv {
 static constexpr size_t InitialSpirvSectionReserve         = 4096;
 static constexpr size_t InitialSpirvFunctionSectionReserve = 450000;
 
-static void AppendInstructionWords(std::vector<uint32_t>* section, const uint32_t* words,
+static void AppendInstructionWords(std::vector<uint32_t>& section, const uint32_t* words,
                                    size_t words_num) {
 	if (words_num == 0) {
 		return;
 	}
 	const auto opcode     = words[0];
 	const auto word_count = static_cast<uint32_t>(words_num);
-	section->push_back((word_count << 16u) | opcode);
-	section->insert(section->end(), words + 1, words + words_num);
+	section.push_back((word_count << 16u) | opcode);
+	section.insert(section.end(), words + 1, words + words_num);
 }
 
 Builder::Builder() {
@@ -30,7 +30,7 @@ uint32_t Builder::AllocateId() {
 	return m_next_id++;
 }
 
-void Builder::AppendString(std::vector<uint32_t>* words, const char* text) {
+void Builder::AppendString(std::vector<uint32_t>& words, const char* text) {
 	const auto len        = text != nullptr ? std::strlen(text) : 0;
 	const auto word_count = (len + 1u + 3u) / 4u;
 	for (size_t i = 0; i < word_count; i++) {
@@ -42,76 +42,76 @@ void Builder::AppendString(std::vector<uint32_t>* words, const char* text) {
 				        << (byte * 8u);
 			}
 		}
-		words->push_back(word);
+		words.push_back(word);
 	}
 }
 
-void Builder::AppendInstruction(std::vector<uint32_t>* section, uint32_t opcode,
+void Builder::AppendInstruction(std::vector<uint32_t>& section, uint32_t opcode,
                                 const std::vector<uint32_t>& operands) {
 	const uint32_t word_count = static_cast<uint32_t>(operands.size() + 1u);
-	section->push_back((word_count << 16u) | opcode);
-	section->insert(section->end(), operands.begin(), operands.end());
+	section.push_back((word_count << 16u) | opcode);
+	section.insert(section.end(), operands.begin(), operands.end());
 }
 
-void Builder::AppendInstruction(std::vector<uint32_t>* section, uint32_t opcode,
+void Builder::AppendInstruction(std::vector<uint32_t>& section, uint32_t opcode,
                                 std::initializer_list<uint32_t> operands) {
 	const uint32_t word_count = static_cast<uint32_t>(operands.size() + 1u);
-	section->push_back((word_count << 16u) | opcode);
-	section->insert(section->end(), operands.begin(), operands.end());
+	section.push_back((word_count << 16u) | opcode);
+	section.insert(section.end(), operands.begin(), operands.end());
 }
 
 void Builder::AddCapability(std::initializer_list<uint32_t> operands) {
-	AppendInstruction(&m_capabilities, 17u, operands);
+	AppendInstruction(m_capabilities, 17u, operands);
 }
 
 void Builder::AddExtension(const char* name) {
 	std::vector<uint32_t> operands;
-	AppendString(&operands, name);
-	AppendInstruction(&m_extensions, 10u, operands);
+	AppendString(operands, name);
+	AppendInstruction(m_extensions, 10u, operands);
 }
 
 void Builder::AddExtInstImport(uint32_t id, const char* name) {
 	std::vector<uint32_t> operands = {id};
-	AppendString(&operands, name);
-	AppendInstruction(&m_ext_inst_imports, 11u, operands);
+	AppendString(operands, name);
+	AppendInstruction(m_ext_inst_imports, 11u, operands);
 }
 
 void Builder::AddMemoryModel(std::initializer_list<uint32_t> operands) {
-	AppendInstruction(&m_memory_model, 14u, operands);
+	AppendInstruction(m_memory_model, 14u, operands);
 }
 
 void Builder::AddEntryPoint(uint32_t execution_model, uint32_t entry_point, const char* name,
                             const std::vector<uint32_t>& interfaces) {
 	std::vector<uint32_t> operands = {execution_model, entry_point};
-	AppendString(&operands, name);
+	AppendString(operands, name);
 	operands.insert(operands.end(), interfaces.begin(), interfaces.end());
-	AppendInstruction(&m_entry_points, 15u, operands);
+	AppendInstruction(m_entry_points, 15u, operands);
 }
 
 void Builder::AddExecutionMode(std::initializer_list<uint32_t> operands) {
-	AppendInstruction(&m_execution_modes, 16u, operands);
+	AppendInstruction(m_execution_modes, 16u, operands);
 }
 
 void Builder::AddName(uint32_t target, const char* name) {
 	std::vector<uint32_t> operands = {target};
-	AppendString(&operands, name);
-	AppendInstruction(&m_debug, 5u, operands);
+	AppendString(operands, name);
+	AppendInstruction(m_debug, 5u, operands);
 }
 
 void Builder::AddAnnotation(std::initializer_list<uint32_t> words) {
-	AppendInstructionWords(&m_annotations, words.begin(), words.size());
+	AppendInstructionWords(m_annotations, words.begin(), words.size());
 }
 
 void Builder::AddType(std::initializer_list<uint32_t> words) {
-	AppendInstructionWords(&m_types, words.begin(), words.size());
+	AppendInstructionWords(m_types, words.begin(), words.size());
 }
 
 void Builder::AddFunction(std::initializer_list<uint32_t> words) {
-	AppendInstructionWords(&m_functions, words.begin(), words.size());
+	AppendInstructionWords(m_functions, words.begin(), words.size());
 }
 
 void Builder::AddFunction(const std::vector<uint32_t>& words) {
-	AppendInstructionWords(&m_functions, words.data(), words.size());
+	AppendInstructionWords(m_functions, words.data(), words.size());
 }
 
 std::vector<uint32_t> Builder::Build() const {

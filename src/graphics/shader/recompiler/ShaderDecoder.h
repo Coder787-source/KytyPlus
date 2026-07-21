@@ -656,16 +656,16 @@ struct Program {
 	std::vector<Instruction>  instructions;
 };
 
-bool DecodeProgram(std::span<const uint32_t> code, Program* program, std::string* error);
+bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string* error);
 
-bool DecodeScalarSource(uint32_t code, uint32_t pc, Operand* operand, std::string* error);
-bool DecodeScalarDestination(uint32_t code, uint32_t pc, Operand* operand, std::string* error);
-bool DecodeVectorGpr(uint32_t reg, Operand* operand, std::string* error);
-bool ReadLiteralOperands(std::span<const uint32_t> code, uint32_t word_index, Instruction* inst,
+bool DecodeScalarSource(uint32_t code, uint32_t pc, Operand& operand, std::string* error);
+bool DecodeScalarDestination(uint32_t code, uint32_t pc, Operand& operand, std::string* error);
+bool DecodeVectorGpr(uint32_t reg, Operand& operand, std::string* error);
+bool ReadLiteralOperands(std::span<const uint32_t> code, uint32_t word_index, Instruction& inst,
                          std::string* error);
-void SetRawWords(Instruction* inst, std::span<const uint32_t> code, uint32_t word_index,
+void SetRawWords(Instruction& inst, std::span<const uint32_t> code, uint32_t word_index,
                  uint32_t word_count);
-void SetUnsupported(Instruction* inst, Family family, uint32_t opcode_id, const char* reason);
+void SetUnsupported(Instruction& inst, Family family, uint32_t opcode_id, const char* reason);
 std::string FamilyToString(Family family);
 std::string OpcodeToString(Opcode opcode);
 std::string OperandToString(const Operand& operand);

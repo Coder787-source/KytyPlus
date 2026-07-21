@@ -76,13 +76,12 @@ std::vector<uint32_t> LayoutKey(DescriptorCache::Stage               stage,
 	return key;
 }
 
-vk::ImageLayout SampledLayout(const VulkanImage* image) {
-	EXIT_IF(image == nullptr);
-	switch (image->layout) {
+vk::ImageLayout SampledLayout(const VulkanImage& image) {
+	switch (image.layout) {
 		case vk::ImageLayout::eTransferDstOptimal:
 		case vk::ImageLayout::eTransferSrcOptimal:
 		case vk::ImageLayout::eColorAttachmentOptimal: return vk::ImageLayout::eGeneral;
-		default: return image->layout;
+		default: return image.layout;
 	}
 }
 
@@ -103,9 +102,8 @@ vk::DescriptorImageInfo MakeDescriptorImageInfo(const DescriptorCache::TextureBi
 } // namespace
 
 vk::DescriptorSetLayout
-DescriptorCache::GetDescriptorSetLayoutInternal(GraphicContext* gctx, Stage stage,
+DescriptorCache::GetDescriptorSetLayoutInternal(Stage                                stage,
                                                 const ShaderRecompiler::IR::Program& program) {
-	EXIT_IF(gctx == nullptr);
 	const auto key = LayoutKey(stage, program);
 	if (const auto found = m_descriptor_set_layouts.find(key);
 	    found != m_descriptor_set_layouts.end()) {
@@ -127,15 +125,14 @@ DescriptorCache::GetDescriptorSetLayoutInternal(GraphicContext* gctx, Stage stag
 	info.bindingCount              = static_cast<uint32_t>(bindings.size());
 	info.pBindings                 = bindings.data();
 	vk::DescriptorSetLayout layout = nullptr;
-	const auto result = gctx->device.createDescriptorSetLayout(&info, nullptr, &layout);
+	const auto result = m_graphics.device.createDescriptorSetLayout(&info, nullptr, &layout);
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess || layout == nullptr);
 	m_descriptor_set_layouts.emplace(key, layout);
 	return layout;
 }
 
-void DescriptorCache::CreatePool(GraphicContext* gctx) {
+void DescriptorCache::CreatePool() {
 	KYTY_PROFILER_FUNCTION();
-	EXIT_IF(gctx == nullptr);
 	constexpr uint32_t           MaxSets = 512;
 	const vk::DescriptorPoolSize sizes[] = {
 	    {vk::DescriptorType::eStorageBuffer,
@@ -152,7 +149,7 @@ void DescriptorCache::CreatePool(GraphicContext* gctx) {
 	info.maxSets       = MaxSets;
 	const auto pool_id = static_cast<int>(m_pools.size());
 	auto&      pool    = m_pools.emplace_back();
-	const auto result  = gctx->device.createDescriptorPool(&info, nullptr, &pool.pool);
+	const auto result  = m_graphics.device.createDescriptorPool(&info, nullptr, &pool.pool);
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess || pool.pool == nullptr);
 	pool.next_free_pool = m_first_free_pool;
 	m_first_free_pool   = pool_id;
@@ -161,10 +158,8 @@ void DescriptorCache::CreatePool(GraphicContext* gctx) {
 VulkanDescriptorSet* DescriptorCache::Allocate(Stage                                stage,
                                                const ShaderRecompiler::IR::Program& program) {
 	KYTY_PROFILER_FUNCTION();
-	auto* gctx = g_render_ctx->GetGraphicCtx();
-	EXIT_IF(gctx == nullptr);
 	Common::LockGuard lock(m_mutex);
-	const auto        layout = GetDescriptorSetLayoutInternal(gctx, stage, program);
+	const auto        layout = GetDescriptorSetLayoutInternal(stage, program);
 	EXIT_IF(layout == nullptr);
 	auto& free_sets = m_free_sets_by_layout[layout];
 	if (!free_sets.empty()) {
@@ -186,7 +181,8 @@ VulkanDescriptorSet* DescriptorCache::Allocate(Stage                            
 			info.descriptorPool     = pool.pool;
 			info.descriptorSetCount = Batch;
 			info.pSetLayouts        = layouts.data();
-			if (gctx->device.allocateDescriptorSets(&info, sets.data()) == vk::Result::eSuccess) {
+			if (m_graphics.device.allocateDescriptorSets(&info, sets.data()) ==
+			    vk::Result::eSuccess) {
 				free_sets.reserve(free_sets.size() + Batch - 1u);
 				for (uint32_t i = 0; i + 1u < Batch; i++) {
 					free_sets.push_back(new VulkanDescriptorSet {sets[i], layout, pool_id});
@@ -196,18 +192,18 @@ VulkanDescriptorSet* DescriptorCache::Allocate(Stage                            
 			m_first_free_pool = pool.next_free_pool;
 			break;
 		}
-		CreatePool(gctx);
+		CreatePool();
 	}
 	return nullptr;
 }
 
-void DescriptorCache::Recycle(VulkanDescriptorSet* set) {
-	EXIT_IF(set == nullptr || set->set == nullptr || set->layout == nullptr);
+void DescriptorCache::Recycle(VulkanDescriptorSet& set) {
+	EXIT_IF(set.set == nullptr || set.layout == nullptr);
 	Common::LockGuard lock(m_mutex);
-	m_free_sets_by_layout[set->layout].push_back(set);
+	m_free_sets_by_layout[set.layout].push_back(&set);
 }
 
-VulkanDescriptorSet* DescriptorCache::GetDescriptor(Stage                                stage,
+VulkanDescriptorSet& DescriptorCache::GetDescriptor(Stage                                stage,
                                                     const ShaderRecompiler::IR::Program& program,
                                                     const NativeDescriptors&             data) {
 	KYTY_PROFILER_FUNCTION();
@@ -215,8 +211,6 @@ VulkanDescriptorSet* DescriptorCache::GetDescriptor(Stage                       
 	        data.images.size() != program.info.images.size() ||
 	        data.samplers.size() != program.info.samplers.size() ||
 	        data.addresses.size() != program.info.addresses.size());
-	auto* gctx = g_render_ctx->GetGraphicCtx();
-	EXIT_IF(gctx == nullptr);
 	auto* set = Allocate(stage, program);
 	EXIT_NOT_IMPLEMENTED(set == nullptr);
 
@@ -268,7 +262,7 @@ VulkanDescriptorSet* DescriptorCache::GetDescriptor(Stage                       
 					const auto& texture = data.images.at(resource);
 					image_infos.push_back(MakeDescriptorImageInfo(
 					    texture,
-					    IsSampledImage(binding.kind) ? SampledLayout(texture.image) : layout));
+					    IsSampledImage(binding.kind) ? SampledLayout(*texture.image) : layout));
 				}
 				break;
 			}
@@ -281,17 +275,15 @@ VulkanDescriptorSet* DescriptorCache::GetDescriptor(Stage                       
 		}
 		writes.push_back(write);
 	}
-	gctx->device.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0,
-	                                  nullptr);
-	return set;
+	m_graphics.device.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0,
+	                                       nullptr);
+	return *set;
 }
 
 vk::DescriptorSetLayout
 DescriptorCache::GetDescriptorSetLayout(Stage stage, const ShaderRecompiler::IR::Program& program) {
-	auto* gctx = g_render_ctx->GetGraphicCtx();
-	EXIT_IF(gctx == nullptr);
 	Common::LockGuard lock(m_mutex);
-	return GetDescriptorSetLayoutInternal(gctx, stage, program);
+	return GetDescriptorSetLayoutInternal(stage, program);
 }
 
 } // namespace Libs::Graphics

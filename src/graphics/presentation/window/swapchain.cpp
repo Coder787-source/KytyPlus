@@ -138,16 +138,15 @@ static PreparedFramePool* GetPreparedFramePool() {
 	return pool;
 }
 
-static void ConfigurePreparedFrame(PreparedFrame* frame, vk::Extent2D extent, vk::Format format) {
-	EXIT_IF(frame == nullptr);
+static void ConfigurePreparedFrame(PreparedFrame& frame, vk::Extent2D extent, vk::Format format) {
 	EXIT_IF(g_window_ctx == nullptr);
 	if (extent.width == 0 || extent.height == 0 || format == vk::Format::eUndefined) {
 		EXIT("unsupported prepared frame, extent=%ux%u format=%d\n", extent.width, extent.height,
 		     static_cast<int>(format));
 	}
 
-	auto*      ctx        = &g_window_ctx->graphic_ctx;
-	auto&      dst        = frame->image;
+	auto&      graphics   = g_window_ctx->graphic_ctx;
+	auto&      dst        = frame.image;
 	const bool compatible = dst.image != nullptr && dst.extent.width == extent.width &&
 	                        dst.extent.height == extent.height && dst.format == format;
 	if (compatible) {
@@ -155,7 +154,7 @@ static void ConfigurePreparedFrame(PreparedFrame* frame, vk::Extent2D extent, vk
 	}
 	if (dst.image != nullptr) {
 		EXIT_IF(!dst.view_cache.views.empty());
-		VulkanDeleteImage(ctx, &dst);
+		graphics.DeleteImage(dst);
 		dst.memory = {};
 	}
 
@@ -178,7 +177,7 @@ static void ConfigurePreparedFrame(PreparedFrame* frame, vk::Extent2D extent, vk
 	create.usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
 	create.sharingMode = vk::SharingMode::eExclusive;
 	create.samples     = vk::SampleCountFlagBits::e1;
-	if (!VulkanCreateImage(ctx, create, &dst)) {
+	if (!graphics.CreateImage(create, dst)) {
 		EXIT("failed to allocate prepared presentation image, extent=%ux%u format=%d\n",
 		     dst.extent.width, dst.extent.height, static_cast<int>(dst.format));
 	}
@@ -188,28 +187,22 @@ VulkanSwapchain::~VulkanSwapchain() = default;
 
 [[maybe_unused]] static vk::SwapchainKHR VulkanCreateSwapchainInternal(
     vk::Device device, vk::SurfaceKHR surface, uint32_t width, uint32_t height,
-    uint32_t image_count, SurfaceCapabilities* r, vk::Format* swapchain_format,
-    vk::Extent2D* swapchain_extent, std::unique_ptr<vk::Image[]>* swapchain_images,
-    std::unique_ptr<vk::ImageView[]>* swapchain_image_views, uint32_t* swapchain_images_count) {
+    uint32_t image_count, SurfaceCapabilities& r, vk::Format& swapchain_format,
+    vk::Extent2D& swapchain_extent, std::unique_ptr<vk::Image[]>& swapchain_images,
+    std::unique_ptr<vk::ImageView[]>& swapchain_image_views, uint32_t& swapchain_images_count) {
 	EXIT_IF(device == nullptr);
 	EXIT_IF(surface == nullptr);
-	EXIT_IF(r == nullptr);
-	EXIT_IF(swapchain_format == nullptr);
-	EXIT_IF(swapchain_extent == nullptr);
-	EXIT_IF(swapchain_images == nullptr);
-	EXIT_IF(swapchain_image_views == nullptr);
-	EXIT_IF(swapchain_images_count == nullptr);
 
-	EXIT_NOT_IMPLEMENTED(r->formats.empty());
+	EXIT_NOT_IMPLEMENTED(r.formats.empty());
 
 	vk::Extent2D extent {};
-	extent.width  = std::clamp(width, r->capabilities.minImageExtent.width,
-	                           r->capabilities.maxImageExtent.width);
-	extent.height = std::clamp(height, r->capabilities.minImageExtent.height,
-	                           r->capabilities.maxImageExtent.height);
+	extent.width =
+	    std::clamp(width, r.capabilities.minImageExtent.width, r.capabilities.maxImageExtent.width);
+	extent.height = std::clamp(height, r.capabilities.minImageExtent.height,
+	                           r.capabilities.maxImageExtent.height);
 
 	image_count =
-	    std::clamp(image_count, r->capabilities.minImageCount, r->capabilities.maxImageCount);
+	    std::clamp(image_count, r.capabilities.minImageCount, r.capabilities.maxImageCount);
 
 	vk::SwapchainCreateInfoKHR create_info {};
 	create_info.sType         = vk::StructureType::eSwapchainCreateInfoKHR;
@@ -218,14 +211,14 @@ VulkanSwapchain::~VulkanSwapchain() = default;
 	create_info.surface       = surface;
 	create_info.minImageCount = image_count;
 
-	if (r->format_unorm_bgra32) {
+	if (r.format_unorm_bgra32) {
 		create_info.imageFormat     = vk::Format::eB8G8R8A8Unorm;
 		create_info.imageColorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
-	} else if (r->format_srgb_bgra32) {
+	} else if (r.format_srgb_bgra32) {
 		create_info.imageFormat     = vk::Format::eB8G8R8A8Srgb;
 		create_info.imageColorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
 	} else {
-		const auto& format          = r->formats[0];
+		const auto& format          = r.formats[0];
 		create_info.imageFormat     = format.format;
 		create_info.imageColorSpace = format.colorSpace;
 	}
@@ -237,14 +230,14 @@ VulkanSwapchain::~VulkanSwapchain() = default;
 	create_info.imageSharingMode      = vk::SharingMode::eExclusive;
 	create_info.queueFamilyIndexCount = 0;
 	create_info.pQueueFamilyIndices   = nullptr;
-	create_info.preTransform          = r->capabilities.currentTransform;
+	create_info.preTransform          = r.capabilities.currentTransform;
 	create_info.compositeAlpha        = vk::CompositeAlphaFlagBitsKHR::eOpaque;
 	create_info.presentMode           = vk::PresentModeKHR::eFifo;
 	create_info.clipped               = VK_TRUE;
 	create_info.oldSwapchain          = nullptr;
 
-	*swapchain_format = create_info.imageFormat;
-	*swapchain_extent = extent;
+	swapchain_format = create_info.imageFormat;
+	swapchain_extent = extent;
 
 	vk::SwapchainKHR swapchain = nullptr;
 
@@ -258,19 +251,19 @@ VulkanSwapchain::~VulkanSwapchain() = default;
 	    });
 	EXIT_NOT_IMPLEMENTED(images.empty());
 
-	*swapchain_images_count = static_cast<uint32_t>(images.size());
-	*swapchain_images       = std::make_unique<vk::Image[]>(images.size());
-	std::copy(images.begin(), images.end(), swapchain_images->get());
+	swapchain_images_count = static_cast<uint32_t>(images.size());
+	swapchain_images       = std::make_unique<vk::Image[]>(images.size());
+	std::copy(images.begin(), images.end(), swapchain_images.get());
 
-	*swapchain_image_views = std::make_unique<vk::ImageView[]>(*swapchain_images_count);
-	for (uint32_t i = 0; i < *swapchain_images_count; i++) {
+	swapchain_image_views = std::make_unique<vk::ImageView[]>(swapchain_images_count);
+	for (uint32_t i = 0; i < swapchain_images_count; i++) {
 		vk::ImageViewCreateInfo create_info {};
 		create_info.sType                           = vk::StructureType::eImageViewCreateInfo;
 		create_info.pNext                           = nullptr;
 		create_info.flags                           = {};
-		create_info.image                           = (*swapchain_images)[i];
+		create_info.image                           = (swapchain_images)[i];
 		create_info.viewType                        = vk::ImageViewType::e2D;
-		create_info.format                          = *swapchain_format;
+		create_info.format                          = swapchain_format;
 		create_info.components.r                    = vk::ComponentSwizzle::eIdentity;
 		create_info.components.g                    = vk::ComponentSwizzle::eIdentity;
 		create_info.components.b                    = vk::ComponentSwizzle::eIdentity;
@@ -282,19 +275,19 @@ VulkanSwapchain::~VulkanSwapchain() = default;
 		create_info.subresourceRange.levelCount     = 1;
 
 		RequireVulkanSuccess(
-		    device.createImageView(&create_info, nullptr, &((*swapchain_image_views)[i])),
+		    device.createImageView(&create_info, nullptr, &((swapchain_image_views)[i])),
 		    "vkCreateImageView");
-		EXIT_IF((*swapchain_image_views)[i] == nullptr);
+		EXIT_IF((swapchain_image_views)[i] == nullptr);
 	}
 
 	return swapchain;
 }
 
-VulkanSwapchain* VulkanCreateSwapchain(GraphicContext* ctx, uint32_t image_count) {
+VulkanSwapchain* VulkanCreateSwapchain(uint32_t image_count) {
 	EXIT_IF(g_window_ctx == nullptr);
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ctx->screen_width == 0);
-	EXIT_IF(ctx->screen_height == 0);
+	auto& graphics = g_window_ctx->graphic_ctx;
+	EXIT_IF(graphics.screen_width == 0);
+	EXIT_IF(graphics.screen_height == 0);
 
 	Common::LockGuard lock(g_window_ctx->mutex);
 
@@ -302,9 +295,9 @@ VulkanSwapchain* VulkanCreateSwapchain(GraphicContext* ctx, uint32_t image_count
 	auto* s               = swapchain_owner.get();
 
 	s->swapchain = VulkanCreateSwapchainInternal(
-	    ctx->device, g_window_ctx->surface, ctx->screen_width, ctx->screen_height, image_count,
-	    g_window_ctx->surface_capabilities, &s->swapchain_format, &s->swapchain_extent,
-	    &s->swapchain_images, &s->swapchain_image_views, &s->swapchain_images_count);
+	    graphics.device, g_window_ctx->surface, graphics.screen_width, graphics.screen_height,
+	    image_count, *g_window_ctx->surface_capabilities, s->swapchain_format, s->swapchain_extent,
+	    s->swapchain_images, s->swapchain_image_views, s->swapchain_images_count);
 	if (s->swapchain == nullptr) {
 		EXIT("Could not create swapchain");
 	}
@@ -320,12 +313,12 @@ VulkanSwapchain* VulkanCreateSwapchain(GraphicContext* ctx, uint32_t image_count
 	s->image_acquired_semaphores  = std::make_unique<vk::Semaphore[]>(s->swapchain_images_count);
 	s->render_complete_semaphores = std::make_unique<vk::Semaphore[]>(s->swapchain_images_count);
 	for (uint32_t i = 0; i < s->swapchain_images_count; i++) {
-		auto result =
-		    ctx->device.createSemaphore(&semaphore_info, nullptr, &s->image_acquired_semaphores[i]);
+		auto result = graphics.device.createSemaphore(&semaphore_info, nullptr,
+		                                              &s->image_acquired_semaphores[i]);
 		EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
-		result = ctx->device.createSemaphore(&semaphore_info, nullptr,
-		                                     &s->render_complete_semaphores[i]);
+		result = graphics.device.createSemaphore(&semaphore_info, nullptr,
+		                                         &s->render_complete_semaphores[i]);
 		EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 	}
 	GetPreparedFramePool()->EnsureCapacity(s->swapchain_images_count, s->swapchain_format);
@@ -333,38 +326,39 @@ VulkanSwapchain* VulkanCreateSwapchain(GraphicContext* ctx, uint32_t image_count
 	return swapchain_owner.release();
 }
 
-static void VulkanDeleteSwapchain(GraphicContext* ctx, VulkanSwapchain* s) {
-	if (ctx == nullptr || s == nullptr) {
+static void VulkanDeleteSwapchain(VulkanSwapchain* s) {
+	if (s == nullptr) {
 		return;
 	}
-	auto swapchain_owner = std::unique_ptr<VulkanSwapchain>(s);
+	auto  swapchain_owner = std::unique_ptr<VulkanSwapchain>(s);
+	auto& graphics        = g_window_ctx->graphic_ctx;
 
-	Transfer::WaitForGraphicsIdle(ctx);
+	Transfer::WaitForGraphicsIdle();
 
 	if (s->image_acquired_semaphores != nullptr) {
 		for (uint32_t i = 0; i < s->swapchain_images_count; i++) {
 			if (s->image_acquired_semaphores[i] != nullptr) {
-				ctx->device.destroySemaphore(s->image_acquired_semaphores[i], nullptr);
+				graphics.device.destroySemaphore(s->image_acquired_semaphores[i], nullptr);
 			}
 		}
 	}
 	if (s->render_complete_semaphores != nullptr) {
 		for (uint32_t i = 0; i < s->swapchain_images_count; i++) {
 			if (s->render_complete_semaphores[i] != nullptr) {
-				ctx->device.destroySemaphore(s->render_complete_semaphores[i], nullptr);
+				graphics.device.destroySemaphore(s->render_complete_semaphores[i], nullptr);
 			}
 		}
 	}
 	if (s->swapchain_image_views != nullptr) {
 		for (uint32_t i = 0; i < s->swapchain_images_count; i++) {
 			if (s->swapchain_image_views[i] != nullptr) {
-				ctx->device.destroyImageView(s->swapchain_image_views[i], nullptr);
+				graphics.device.destroyImageView(s->swapchain_image_views[i], nullptr);
 			}
 		}
 	}
 
 	if (s->swapchain != nullptr) {
-		ctx->device.destroySwapchainKHR(s->swapchain, nullptr);
+		graphics.device.destroySwapchainKHR(s->swapchain, nullptr);
 	}
 }
 
@@ -382,7 +376,7 @@ static void VulkanRefreshSurfaceSize() {
 	}
 
 	VulkanGetSurfaceCapabilities(g_window_ctx->graphic_ctx.physical_device, g_window_ctx->surface,
-	                             g_window_ctx->surface_capabilities);
+	                             *g_window_ctx->surface_capabilities);
 }
 
 static void VulkanRecreateSwapchain() {
@@ -390,61 +384,60 @@ static void VulkanRecreateSwapchain() {
 
 	LOGF("Recreating Vulkan swapchain\n");
 	VulkanRefreshSurfaceSize();
-	VulkanDeleteSwapchain(&g_window_ctx->graphic_ctx, g_window_ctx->swapchain);
-	g_window_ctx->swapchain = VulkanCreateSwapchain(&g_window_ctx->graphic_ctx, 2);
+	VulkanDeleteSwapchain(g_window_ctx->swapchain);
+	g_window_ctx->swapchain = VulkanCreateSwapchain(2);
 }
 
-static void ValidatePreparedCommand(CommandBuffer* buffer) {
-	if (buffer == nullptr || buffer->IsInvalid() ||
-	    buffer->GetQueue() != GraphicContext::QUEUE_GFX) {
+static void ValidatePreparedCommand(CommandBuffer& buffer) {
+	if (buffer.IsInvalid() || buffer.GetQueue() != GraphicContext::QUEUE_GFX) {
 		EXIT("prepared frames must be recorded on the graphics queue\n");
 	}
-	EXIT_IF(g_render_ctx == nullptr);
 }
 
-PreparedFrame* WindowPrepareFrame(CommandBuffer* buffer, VideoOutVulkanImage* image) {
+PreparedFrame& WindowPrepareFrame(CommandBuffer& buffer, VideoOutVulkanImage& image) {
 	KYTY_PROFILER_FUNCTION();
 	ValidatePreparedCommand(buffer);
-	if (image->format == vk::Format::eUndefined) {
-		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(image));
+	if (image.format == vk::Format::eUndefined) {
+		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}
 
 	auto*             frame = GetPreparedFramePool()->Acquire();
-	Common::LockGuard render_lock(g_render_ctx->GetMutex());
-	g_render_ctx->GetTextureCache()->RefreshVideoOut(image);
-	ConfigurePreparedFrame(frame, image->extent, image->format);
-	const std::array copies {ImageImageCopy {
-	    .src_image = image, .width = image->extent.width, .height = image->extent.height}};
-	Transfer::CopyImage(buffer, copies, &frame->image, vk::ImageLayout::eTransferSrcOptimal);
-	return frame;
+	Common::LockGuard render_lock(GetRenderContext().GetMutex());
+	GetRenderContext().GetTextureCache().RefreshVideoOut(image);
+	ConfigurePreparedFrame(*frame, image.extent, image.format);
+	ImageImageCopy copy {image};
+	copy.width  = image.extent.width;
+	copy.height = image.extent.height;
+	const std::array copies {copy};
+	Transfer::CopyImage(buffer, copies, frame->image, vk::ImageLayout::eTransferSrcOptimal);
+	return *frame;
 }
 
-PreparedFrame* WindowPrepareBlankFrame(CommandBuffer* buffer, uint32_t width, uint32_t height,
+PreparedFrame& WindowPrepareBlankFrame(CommandBuffer& buffer, uint32_t width, uint32_t height,
                                        bool opaque) {
 	KYTY_PROFILER_FUNCTION();
 	ValidatePreparedCommand(buffer);
 	auto*             pool   = GetPreparedFramePool();
 	auto              format = pool->GetFormat();
 	auto*             frame  = pool->Acquire();
-	Common::LockGuard render_lock(g_render_ctx->GetMutex());
-	ConfigurePreparedFrame(frame, {width, height}, format);
+	Common::LockGuard render_lock(GetRenderContext().GetMutex());
+	ConfigurePreparedFrame(*frame, {width, height}, format);
 	vk::ClearColorValue clear {};
 	clear.float32[3] = opaque ? 1.0f : 0.0f;
-	Transfer::ClearColorImage(buffer, &frame->image, clear);
-	return frame;
+	Transfer::ClearColorImage(buffer, frame->image, clear);
+	return *frame;
 }
 
-void WindowPresentFrame(PreparedFrame* frame) {
+void WindowPresentFrame(PreparedFrame& frame) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_IF(frame == nullptr);
 	EXIT_IF(g_window_ctx == nullptr);
 	EXIT_IF(g_window_ctx->swapchain == nullptr);
 	struct ReleaseScope {
 		PreparedFrame* frame;
 		~ReleaseScope() { GetPreparedFramePool()->Release(frame); }
 	};
-	ReleaseScope release {frame};
+	ReleaseScope release {&frame};
 
 	if (g_window_ctx->window_hidden) {
 		WindowUpdateIcon();
@@ -478,17 +471,17 @@ void WindowPresentFrame(PreparedFrame* frame) {
 		default: EXIT("vkAcquireNextImageKHR failed: %s\n", VulkanToString(result).c_str());
 	}
 	EXIT_NOT_IMPLEMENTED(swapchain->current_index == static_cast<uint32_t>(-1));
-	if (frame->present_commands == nullptr) {
-		frame->present_commands = std::make_unique<CommandBuffer>(GraphicContext::QUEUE_GFX);
+	if (frame.present_commands == nullptr) {
+		frame.present_commands = std::make_unique<CommandBuffer>(GraphicContext::QUEUE_GFX);
 	}
-	frame->present_commands->WaitForFenceAndReset();
-	auto& buffer = *frame->present_commands;
+	frame.present_commands->WaitForFenceAndReset();
+	auto& buffer = *frame.present_commands;
 
 	auto vk_buffer = buffer.Handle();
 
 	buffer.Begin();
 
-	Transfer::BlitToSwapchain(&buffer, &frame->image, swapchain);
+	Transfer::BlitToSwapchain(buffer, frame.image, *swapchain);
 
 	vk::ImageMemoryBarrier pre_present_barrier {};
 	pre_present_barrier.sType                           = vk::StructureType::eImageMemoryBarrier;

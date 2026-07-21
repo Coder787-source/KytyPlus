@@ -339,7 +339,7 @@ static bool IsUniformZeroExecWrite(const IR::Program& program, const IR::Instruc
 		return false;
 	}
 	uint32_t count = 0;
-	return IR::FoldScalarConstant(program.provenance, inst.scalar_sources[0], &count) &&
+	return IR::FoldScalarConstant(program.provenance, inst.scalar_sources[0], count) &&
 	       (count & 63u) == 0u;
 }
 
@@ -408,16 +408,12 @@ bool ProgramRequiresExactSubgroupSize(const IR::Program& program) {
 }
 
 bool EmitProgram(const IR::Program& program, const IR::ResourceSnapshot& resources,
-                 const ShaderVertexInputInfo*  vertex_input_info,
-                 const ShaderPixelInputInfo*   pixel_input_info,
-                 const ShaderComputeInputInfo* compute_input_info, std::vector<uint32_t>* spirv,
-                 std::string* error) {
+	             const ShaderVertexInputInfo*  vertex_input_info,
+	             const ShaderPixelInputInfo*   pixel_input_info,
+	             const ShaderComputeInputInfo* compute_input_info, std::vector<uint32_t>& spirv,
+	             std::string* error) {
 	using namespace Emitter;
 
-	if (spirv == nullptr) {
-		SetError(error, "invalid SPIR-V output");
-		return false;
-	}
 	if (program.stage != ShaderType::Compute && program.stage != ShaderType::Vertex &&
 	    program.stage != ShaderType::Pixel) {
 		SetError(error, "binary SPIR-V emitter supports compute, vertex, and pixel shaders");
@@ -438,9 +434,7 @@ bool EmitProgram(const IR::Program& program, const IR::ResourceSnapshot& resourc
 		return false;
 	}
 
-	EmitterState state;
-	state.program              = &program;
-	state.resources            = &resources;
+	EmitterState state(program, resources);
 	state.vertex_input_info    = vertex_input_info;
 	state.pixel_input_info     = pixel_input_info;
 	state.compute_input_info   = compute_input_info;
@@ -454,8 +448,8 @@ bool EmitProgram(const IR::Program& program, const IR::ResourceSnapshot& resourc
 	state.outputs.reserve(InitialEmitterVectorReserve);
 	state.interface_variables.reserve(InitialEmitterVectorReserve);
 	state.reachable_blocks.reserve(InitialEmitterVectorReserve);
-	CollectRegisters(program, &state.registers);
-	CopyProgramInputsAndOutputs(&state, program);
+	CollectRegisters(program, state.registers);
+	CopyProgramInputsAndOutputs(state, program);
 	state.needs_subgroup_ballot              = ProgramNeedsSubgroupBallot(program);
 	state.needs_subgroup_shuffle             = ProgramNeedsSubgroupShuffle(program);
 	state.needs_subgroup_local_invocation_id = ProgramNeedsSubgroupLocalInvocationId(program);
@@ -463,15 +457,15 @@ bool EmitProgram(const IR::Program& program, const IR::ResourceSnapshot& resourc
 	state.needs_image_gather_extended        = ProgramNeedsImageGatherExtended(program);
 	state.needs_function_lds                 = ProgramNeedsFunctionLds(program);
 	state.needs_pixel_valid_mask             = ProgramNeedsPixelValidMask(program);
-	ComputeReachableBlocks(&state, program);
-	AllocateInputVariables(&state);
-	AllocateOutputVariables(&state);
-	AllocateDescriptorVariables(&state);
-	EmitHeaderAndTypes(&state);
-	AllocateRegisterVariables(&state);
-	AllocateBlockLabels(&state, program);
-	AllocateDispatcherState(&state, program);
-	EmitFunction(&state, program);
+	ComputeReachableBlocks(state, program);
+	AllocateInputVariables(state);
+	AllocateOutputVariables(state);
+	AllocateDescriptorVariables(state);
+	EmitHeaderAndTypes(state);
+	AllocateRegisterVariables(state);
+	AllocateBlockLabels(state, program);
+	AllocateDispatcherState(state, program);
+	EmitFunction(state, program);
 
 	ReportReserveExceeded(program, "registers", state.registers.size());
 	ReportReserveExceeded(program, "inputs", state.inputs.size());
@@ -484,7 +478,7 @@ bool EmitProgram(const IR::Program& program, const IR::ResourceSnapshot& resourc
 		SetError(error, "SPIR-V builder returned an empty module");
 		return false;
 	}
-	*spirv = std::move(binary);
+	spirv = std::move(binary);
 	return true;
 }
 

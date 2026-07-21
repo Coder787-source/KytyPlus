@@ -140,20 +140,20 @@ bool ScalarMemoryLoad(Opcode op) {
 	return op == Opcode::SLoadDword || op == Opcode::SBufferLoadDword;
 }
 
-bool ValueResolved(const ScalarProvenance& provenance, uint32_t id, std::vector<uint8_t>* visited) {
+bool ValueResolved(const ScalarProvenance& provenance, uint32_t id, std::vector<uint8_t>& visited) {
 	if (id <= ScalarProvenance::Unknown || id >= provenance.values.size()) {
 		return false;
 	}
-	if ((*visited)[id] == 1) {
+	if (visited[id] == 1) {
 		return false;
 	}
-	if ((*visited)[id] == 2) {
+	if (visited[id] == 2) {
 		return true;
 	}
-	if ((*visited)[id] == 3) {
+	if (visited[id] == 3) {
 		return false;
 	}
-	(*visited)[id]       = 1;
+	visited[id]          = 1;
 	const auto& value    = provenance.values[id];
 	bool        resolved = true;
 	if (value.op == ScalarValueOp::Phi) {
@@ -167,13 +167,13 @@ bool ValueResolved(const ScalarProvenance& provenance, uint32_t id, std::vector<
 			resolved = ValueResolved(provenance, value.args[i], visited);
 		}
 	}
-	(*visited)[id] = resolved ? 2 : 3;
+	visited[id] = resolved ? 2 : 3;
 	return resolved;
 }
 
 class Builder {
 public:
-	explicit Builder(Program* program): m_program(program), m_graph(program->provenance) {}
+	explicit Builder(Program& program): m_program(program), m_graph(program.provenance) {}
 
 	bool Run(std::string* error) {
 		m_graph = {};
@@ -181,7 +181,7 @@ public:
 		m_graph.values[ScalarProvenance::Undefined].op = ScalarValueOp::Undefined;
 		m_graph.values[ScalarProvenance::Unknown].op   = ScalarValueOp::Unknown;
 
-		const auto block_count = m_program->blocks.size();
+		const auto block_count = m_program.blocks.size();
 		m_entry.resize(block_count);
 		m_exit.resize(block_count);
 		m_phi.resize(block_count);
@@ -200,8 +200,8 @@ public:
 		m_user_data.Fill(ScalarProvenance::Undefined);
 		for (uint32_t reg = 0; reg < ScalarRegisters; reg++) {
 			m_user_data.regs[reg] =
-			    reg >= m_program->user_data_base &&
-			            reg - m_program->user_data_base < m_program->user_data_count
+			    reg >= m_program.user_data_base &&
+			            reg - m_program.user_data_base < m_program.user_data_count
 			        ? InternValue({ScalarValueOp::UserData, 0, reg})
 			        : ScalarProvenance::Unknown;
 		}
@@ -211,7 +211,7 @@ public:
 		if (block_count == 0) {
 			return true;
 		}
-		for (const auto& block: m_program->blocks) {
+		for (const auto& block: m_program.blocks) {
 			for (const auto predecessor: block.predecessors) {
 				if (predecessor >= block_count) {
 					return Fail(error, fmt::format("scalar provenance has invalid predecessor {}",
@@ -238,20 +238,20 @@ public:
 			const bool entry_changed = next_entry != m_entry[block_index];
 			m_entry[block_index]     = next_entry;
 
-			auto       next_exit = Execute(m_program->blocks[block_index], next_entry, false);
+			auto       next_exit = Execute(m_program.blocks[block_index], next_entry, false);
 			const bool was_ready = m_exit_ready[block_index];
 			if (was_ready && !entry_changed && next_exit == m_exit[block_index]) {
 				continue;
 			}
 			m_exit[block_index]       = next_exit;
 			m_exit_ready[block_index] = true;
-			for (const auto successor: m_program->blocks[block_index].successors) {
+			for (const auto successor: m_program.blocks[block_index].successors) {
 				Queue(successor);
 			}
 		}
 
 		for (size_t block = 0; block < block_count; block++) {
-			Execute(m_program->blocks[block], m_entry[block], true);
+			Execute(m_program.blocks[block], m_entry[block], true);
 		}
 		return true;
 	}
@@ -366,40 +366,37 @@ private:
 		return InternValue(std::move(node));
 	}
 
-	bool ConstantOperand(const Operand& operand, const ScalarState& state, uint32_t* value) {
-		if (value == nullptr) {
-			return false;
-		}
+	bool ConstantOperand(const Operand& operand, const ScalarState& state, uint32_t& value) {
 		const auto id = OperandValue(operand, state);
 		if (id >= m_graph.values.size() || m_graph.values[id].op != ScalarValueOp::Constant) {
 			return false;
 		}
-		*value = m_graph.values[id].imm;
+		value = m_graph.values[id].imm;
 		return true;
 	}
 
 	uint32_t ReadVectorLane(const Instruction& inst, const ScalarState& state) {
 		if (inst.src_count < 2 || inst.src[0].kind != OperandKind::Register ||
 		    inst.src[0].reg.file != RegisterFile::Vector ||
-		    (m_program->wave_size != 32 && m_program->wave_size != 64)) {
+		    (m_program.wave_size != 32 && m_program.wave_size != 64)) {
 			return ScalarProvenance::Unknown;
 		}
 		uint32_t lane = 0;
-		if (!ConstantOperand(inst.src[1], state, &lane)) {
+		if (!ConstantOperand(inst.src[1], state, lane)) {
 			return ScalarProvenance::Unknown;
 		}
 		const auto found = state.vector_lanes.find(
-		    VectorLaneKey(inst.src[0].reg.index, lane % m_program->wave_size));
+		    VectorLaneKey(inst.src[0].reg.index, lane % m_program.wave_size));
 		return found != state.vector_lanes.end() ? found->second : ScalarProvenance::Unknown;
 	}
 
-	void ClearVectorLanes(uint32_t reg, ScalarState* state) {
-		const auto first = state->vector_lanes.lower_bound(VectorLaneKey(reg, 0));
-		const auto last = state->vector_lanes.lower_bound((static_cast<uint64_t>(reg) + 1u) << 32u);
-		state->vector_lanes.erase(first, last);
+	void ClearVectorLanes(uint32_t reg, ScalarState& state) {
+		const auto first = state.vector_lanes.lower_bound(VectorLaneKey(reg, 0));
+		const auto last = state.vector_lanes.lower_bound((static_cast<uint64_t>(reg) + 1u) << 32u);
+		state.vector_lanes.erase(first, last);
 	}
 
-	void WriteVectorDestination(const Instruction& inst, ScalarState* state) {
+	void WriteVectorDestination(const Instruction& inst, ScalarState& state) {
 		if (inst.dst.kind != OperandKind::Register || inst.dst.reg.file != RegisterFile::Vector) {
 			return;
 		}
@@ -410,8 +407,8 @@ private:
 			for (uint32_t i = 0; i < inst.src_count; i++) {
 				uint32_t src_reg = 0;
 				if (VectorRegister(inst.src[i], src_reg) &&
-				    state->address_bases[src_reg] > ScalarProvenance::Unknown) {
-					address_base = state->address_bases[src_reg];
+				    state.address_bases[src_reg] > ScalarProvenance::Unknown) {
+					address_base = state.address_bases[src_reg];
 					break;
 				}
 			}
@@ -419,16 +416,16 @@ private:
 				for (uint32_t i = 0; i < inst.src_count; i++) {
 					uint32_t src_reg = 0;
 					if (ScalarRegister(inst.src[i], src_reg) &&
-					    state->regs[src_reg] > ScalarProvenance::Unknown) {
-						address_base = state->regs[src_reg];
+				    state.regs[src_reg] > ScalarProvenance::Unknown) {
+					address_base = state.regs[src_reg];
 						break;
 					}
 				}
 			}
 		}
-		state->address_bases[reg] = ScalarProvenance::Unknown;
+		state.address_bases[reg] = ScalarProvenance::Unknown;
 		if (inst.op == Opcode::MoveRelDestU32) {
-			state->vector_lanes.clear();
+			state.vector_lanes.clear();
 			return;
 		}
 		if (inst.op != Opcode::WriteLaneU32) {
@@ -438,24 +435,24 @@ private:
 			}
 			for (uint32_t i = 0; i < dwords && reg <= UINT32_MAX - i; i++) {
 				ClearVectorLanes(reg + i, state);
-				if (reg + i < state->address_bases.size()) {
-					state->address_bases[reg + i] = ScalarProvenance::Unknown;
+				if (reg + i < state.address_bases.size()) {
+					state.address_bases[reg + i] = ScalarProvenance::Unknown;
 				}
 			}
-			state->address_bases[reg] = address_base;
+			state.address_bases[reg] = address_base;
 			return;
 		}
-		if (inst.src_count < 2 || (m_program->wave_size != 32 && m_program->wave_size != 64)) {
+		if (inst.src_count < 2 || (m_program.wave_size != 32 && m_program.wave_size != 64)) {
 			ClearVectorLanes(reg, state);
 			return;
 		}
 		uint32_t lane = 0;
-		if (!ConstantOperand(inst.src[1], *state, &lane)) {
+		if (!ConstantOperand(inst.src[1], state, lane)) {
 			ClearVectorLanes(reg, state);
 			return;
 		}
-		state->vector_lanes[VectorLaneKey(reg, lane % m_program->wave_size)] =
-		    OperandValue(inst.src[0], *state);
+		state.vector_lanes[VectorLaneKey(reg, lane % m_program.wave_size)] =
+		    OperandValue(inst.src[0], state);
 	}
 
 	uint32_t ReadConst(const Instruction& inst, const ScalarState& state, bool buffer) {
@@ -514,31 +511,31 @@ private:
 		}
 	}
 
-	void UpdateScc(const Instruction& inst, const ScalarState& before, ScalarState* state) {
+	void UpdateScc(const Instruction& inst, const ScalarState& before, ScalarState& state) {
 		switch (inst.op) {
 			case Opcode::ScalarAddCarryU32:
-				state->scc = Define(inst, ScalarValueOp::Carry, before);
+				state.scc = Define(inst, ScalarValueOp::Carry, before);
 				break;
 			case Opcode::ScalarSubBorrowU32:
-			case Opcode::ScalarSubBorrowCarryU32: state->scc = DefineBorrow(inst, before); break;
+			case Opcode::ScalarSubBorrowCarryU32: state.scc = DefineBorrow(inst, before); break;
 			case Opcode::ScalarShiftLeftAddCarryU32:
-				state->scc = Define(inst, ScalarValueOp::ShiftLeftAddCarry, before);
+				state.scc = Define(inst, ScalarValueOp::ShiftLeftAddCarry, before);
 				break;
 			default: break;
 		}
 	}
 
-	void WriteDestination(const Instruction& inst, ScalarState* state) {
+	void WriteDestination(const Instruction& inst, ScalarState& state) {
 		if (inst.dst.kind == OperandKind::Register && inst.dst.reg.file == RegisterFile::Scc) {
-			state->scc = inst.op == Opcode::MoveU32 && inst.src_count != 0
-			                 ? OperandValue(inst.src[0], *state)
+			state.scc = inst.op == Opcode::MoveU32 && inst.src_count != 0
+			                ? OperandValue(inst.src[0], state)
 			                 : ScalarProvenance::Unknown;
 			return;
 		}
 		if (inst.dst.kind == OperandKind::Register && inst.dst.reg.file == RegisterFile::M0) {
-			const auto before = *state;
+			const auto before = state;
 			const auto op     = Operation(inst.op);
-			state->m0         = inst.op == Opcode::MoveU32 && inst.src_count != 0
+			state.m0          = inst.op == Opcode::MoveU32 && inst.src_count != 0
 			                        ? OperandValue(inst.src[0], before)
 			                    : op != ScalarValueOp::Unknown ? Define(inst, op, before)
 			                                                   : ScalarProvenance::Unknown;
@@ -551,10 +548,10 @@ private:
 			return;
 		}
 
-		const auto before = *state;
-		state->regs[dst]  = ScalarProvenance::Unknown;
+		const auto before = state;
+		state.regs[dst]   = ScalarProvenance::Unknown;
 		if (PairDwordOpcode(inst.op) && dst + 1 < ScalarRegisters) {
-			state->regs[dst + 1] = ScalarProvenance::Unknown;
+			state.regs[dst + 1] = ScalarProvenance::Unknown;
 		}
 
 		uint32_t value = ScalarProvenance::Unknown;
@@ -582,10 +579,10 @@ private:
 				if (inst.src_count != 0 && dst + 1 < ScalarRegisters) {
 					if (ScalarRegister(inst.src[0], src) && src + 1 < ScalarRegisters) {
 						value                = before.regs[src];
-						state->regs[dst + 1] = before.regs[src + 1];
+						state.regs[dst + 1] = before.regs[src + 1];
 					} else {
 						value                = OperandValue(inst.src[0], before);
-						state->regs[dst + 1] = Constant(
+						state.regs[dst + 1] = Constant(
 						    inst.src[0].kind == OperandKind::ImmediateU32 && inst.src[0].sext_64
 						        ? UINT32_MAX
 						        : 0u);
@@ -596,7 +593,7 @@ private:
 			case Opcode::BitFieldMaskU64:
 				value = Define(inst, ScalarValueOp::BitFieldMaskU64Low, before);
 				if (dst + 1 < ScalarRegisters) {
-					state->regs[dst + 1] = Define(inst, ScalarValueOp::BitFieldMaskU64High, before);
+					state.regs[dst + 1] = Define(inst, ScalarValueOp::BitFieldMaskU64High, before);
 				}
 				break;
 			case Opcode::SLoadDword: value = ReadConst(inst, before, false); break;
@@ -610,12 +607,12 @@ private:
 				break;
 			}
 		}
-		state->regs[dst] = value;
+		state.regs[dst] = value;
 		UpdateScc(inst, before, state);
 
 		uint32_t dst2 = 0;
 		if (ScalarRegister(inst.dst2, dst2)) {
-			state->regs[dst2] =
+			state.regs[dst2] =
 			    inst.src_count > 1 ? OperandValue(inst.src[1], before) : ScalarProvenance::Unknown;
 		}
 	}
@@ -663,57 +660,57 @@ private:
 		return AddDescriptor(descriptor);
 	}
 
-	void AttachSources(Instruction* inst, const ScalarState& state) {
-		inst->memory.resource_source = 0;
-		inst->memory.sampler_source  = 0;
-		if (inst->op == Opcode::SLoadDword) {
-			inst->memory.resource_source = AddDescriptor(state, inst->memory.resource, 2);
+	void AttachSources(Instruction& inst, const ScalarState& state) {
+		inst.memory.resource_source = 0;
+		inst.memory.sampler_source  = 0;
+		if (inst.op == Opcode::SLoadDword) {
+			inst.memory.resource_source = AddDescriptor(state, inst.memory.resource, 2);
 			return;
 		}
-		if (inst->memory.kind == ResourceKind::Flat || inst->memory.kind == ResourceKind::Global ||
-		    inst->memory.kind == ResourceKind::Scratch) {
-			inst->memory.resource_source = ScalarProvenance::Unknown;
-			if (inst->memory.kind == ResourceKind::Flat) {
-				inst->memory.resource_source = AddFlatAddressDescriptor(*inst, state);
+		if (inst.memory.kind == ResourceKind::Flat || inst.memory.kind == ResourceKind::Global ||
+		    inst.memory.kind == ResourceKind::Scratch) {
+			inst.memory.resource_source = ScalarProvenance::Unknown;
+			if (inst.memory.kind == ResourceKind::Flat) {
+				inst.memory.resource_source = AddFlatAddressDescriptor(inst, state);
 			}
-			for (uint32_t i = 0; i < inst->src_count; i++) {
-				const auto& source = inst->src[i];
-				if (inst->memory.resource_source == ScalarProvenance::Unknown &&
+			for (uint32_t i = 0; i < inst.src_count; i++) {
+				const auto& source = inst.src[i];
+				if (inst.memory.resource_source == ScalarProvenance::Unknown &&
 				    source.kind == OperandKind::Register &&
 				    source.reg.file == RegisterFile::Scalar) {
-					inst->memory.resource_source = AddDescriptor(state, source.reg.index, 2);
+					inst.memory.resource_source = AddDescriptor(state, source.reg.index, 2);
 					break;
 				}
 			}
 			return;
 		}
-		if (inst->memory.kind == ResourceKind::Buffer ||
-		    (inst->memory.kind == ResourceKind::ScalarBuffer &&
-		     inst->op == Opcode::SBufferLoadDword)) {
-			const auto base              = inst->memory.resource * 4u;
-			inst->memory.resource_source = AddDescriptor(state, base, 4);
+		if (inst.memory.kind == ResourceKind::Buffer ||
+		    (inst.memory.kind == ResourceKind::ScalarBuffer &&
+		     inst.op == Opcode::SBufferLoadDword)) {
+			const auto base              = inst.memory.resource * 4u;
+			inst.memory.resource_source = AddDescriptor(state, base, 4);
 			return;
 		}
-		if (inst->memory.kind == ResourceKind::Image ||
-		    inst->memory.kind == ResourceKind::ImageUint ||
-		    inst->memory.kind == ResourceKind::StorageImage ||
-		    inst->memory.kind == ResourceKind::StorageImageUint) {
-			inst->memory.resource_source = AddDescriptor(state, inst->memory.resource * 4u, 8);
-			if (inst->op == Opcode::ImageSample || inst->op == Opcode::ImageGather4 ||
-			    inst->op == Opcode::ImageGetLod) {
-				inst->memory.sampler_source = AddDescriptor(state, inst->memory.sampler * 4u, 4);
+		if (inst.memory.kind == ResourceKind::Image ||
+		    inst.memory.kind == ResourceKind::ImageUint ||
+		    inst.memory.kind == ResourceKind::StorageImage ||
+		    inst.memory.kind == ResourceKind::StorageImageUint) {
+			inst.memory.resource_source = AddDescriptor(state, inst.memory.resource * 4u, 8);
+			if (inst.op == Opcode::ImageSample || inst.op == Opcode::ImageGather4 ||
+			    inst.op == Opcode::ImageGetLod) {
+				inst.memory.sampler_source = AddDescriptor(state, inst.memory.sampler * 4u, 4);
 			}
 		}
 	}
 
-	void AttachScalarSources(Instruction* inst, const ScalarState& state) {
-		std::fill(std::begin(inst->scalar_sources), std::end(inst->scalar_sources),
+	void AttachScalarSources(Instruction& inst, const ScalarState& state) {
+		std::fill(std::begin(inst.scalar_sources), std::end(inst.scalar_sources),
 		          ScalarProvenance::Undefined);
-		for (uint32_t i = 0; i < inst->src_count; i++) {
-			const auto& source = inst->src[i];
+		for (uint32_t i = 0; i < inst.src_count; i++) {
+			const auto& source = inst.src[i];
 			if (source.kind == OperandKind::Register && source.reg.file != RegisterFile::Vector &&
 			    source.reg.file != RegisterFile::Exec) {
-				inst->scalar_sources[i] = OperandValue(source, state);
+				inst.scalar_sources[i] = OperandValue(source, state);
 			}
 		}
 	}
@@ -729,11 +726,11 @@ private:
 					auto& component_inst = block.instructions[index + component];
 					if (attach_sources) {
 						component_inst.scalar_value = ScalarProvenance::Undefined;
-						AttachScalarSources(&component_inst, before);
-						AttachSources(&component_inst, before);
+						AttachScalarSources(component_inst, before);
+						AttachSources(component_inst, before);
 					}
 					auto component_state = before;
-					WriteDestination(component_inst, &component_state);
+					WriteDestination(component_inst, component_state);
 					uint32_t dst = 0;
 					ScalarRegister(component_inst.dst, dst);
 					state.regs[dst] = component_state.regs[dst];
@@ -746,11 +743,11 @@ private:
 			}
 			if (attach_sources) {
 				inst.scalar_value = ScalarProvenance::Undefined;
-				AttachScalarSources(&inst, state);
-				AttachSources(&inst, state);
+				AttachScalarSources(inst, state);
+				AttachSources(inst, state);
 			}
-			WriteVectorDestination(inst, &state);
-			WriteDestination(inst, &state);
+			WriteVectorDestination(inst, state);
+			WriteDestination(inst, state);
 			if (attach_sources) {
 				uint32_t dst = 0;
 				if (ScalarRegister(inst.dst, dst)) {
@@ -765,7 +762,7 @@ private:
 	ScalarState MergeEntry(size_t block_index) {
 		ScalarState result;
 		result.Fill(ScalarProvenance::Undefined);
-		const auto& block = m_program->blocks[block_index];
+		const auto& block = m_program.blocks[block_index];
 		const auto  merge = [&](uint32_t initial, auto predecessor_value, uint32_t* phi) {
 			std::vector<uint32_t> incoming;
 			if (initial != ScalarProvenance::Undefined) {
@@ -845,7 +842,7 @@ private:
 		}
 	}
 
-	Program*                          m_program;
+	Program&                          m_program;
 	ScalarProvenance&                 m_graph;
 	ScalarState                       m_user_data;
 	std::vector<ScalarState>          m_entry;
@@ -860,40 +857,34 @@ private:
 
 } // namespace
 
-bool BuildScalarProvenance(Program* program, std::string* error) {
-	if (program == nullptr) {
-		if (error != nullptr) {
-			*error = "invalid scalar provenance program";
-		}
-		return false;
-	}
-	if (program->resource_tracking_complete) {
+bool BuildScalarProvenance(Program& program, std::string* error) {
+	if (program.resource_tracking_complete) {
 		if (error != nullptr) {
 			*error = "cannot rebuild scalar provenance after resource tracking";
 		}
 		return false;
 	}
-	if (program->user_data_count > 64) {
+	if (program.user_data_count > 64) {
 		if (error != nullptr) {
 			*error = "scalar provenance user-data count exceeds 64 SGPRs";
 		}
 		return false;
 	}
-	if (program->user_data_base > ScalarRegisters ||
-	    program->user_data_count > ScalarRegisters - program->user_data_base) {
+	if (program.user_data_base > ScalarRegisters ||
+	    program.user_data_count > ScalarRegisters - program.user_data_base) {
 		if (error != nullptr) {
 			*error = "scalar provenance user-data window is out of range";
 		}
 		return false;
 	}
-	if (program->srt_patching_complete) {
+	if (program.srt_patching_complete) {
 		if (error != nullptr) {
 			*error = "cannot rebuild scalar provenance after SRT patching";
 		}
 		return false;
 	}
-	program->srt               = {};
-	program->srt_plan_complete = false;
+	program.srt               = {};
+	program.srt_plan_complete = false;
 	return Builder(program).Run(error);
 }
 
@@ -911,7 +902,7 @@ bool DescriptorSourceResolved(const Program& program, uint32_t source) {
 	}
 	std::vector<uint8_t> visited(program.provenance.values.size());
 	for (uint32_t i = 0; i < descriptor->dword_count; i++) {
-		if (!ValueResolved(program.provenance, descriptor->dwords[i], &visited)) {
+		if (!ValueResolved(program.provenance, descriptor->dwords[i], visited)) {
 			return false;
 		}
 	}

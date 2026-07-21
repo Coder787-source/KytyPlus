@@ -11,7 +11,7 @@ struct BindingLayoutOptions {
 	uint32_t max_push_dwords      = 32;
 };
 
-bool AllocateBindings(Program* program, const BindingLayoutOptions& options, std::string* error);
+bool AllocateBindings(Program& program, const BindingLayoutOptions& options, std::string* error);
 
 const DescriptorBinding* FindBinding(const BindingLayout& layout, DescriptorBindingKind kind);
 

@@ -16,6 +16,9 @@
 namespace Libs::Graphics {
 
 class CommandBuffer;
+struct VulkanBuffer;
+struct VulkanImage;
+struct VulkanMemory;
 
 struct VulkanSwapchain {
 	~VulkanSwapchain();
@@ -43,6 +46,20 @@ struct VulkanCommandPool {
 };
 
 struct GraphicContext: public VulkanInstance {
+	[[nodiscard]] bool CreateAllocator();
+	void               DestroyAllocator();
+	void               LogMemoryBudget() const;
+	void               CreateBuffer(uint64_t size, VulkanBuffer& buffer);
+	void               DeleteBuffer(VulkanBuffer& buffer);
+	[[nodiscard]] bool CreateImage(const vk::ImageCreateInfo& info, VulkanImage& image);
+	void               DeleteImage(VulkanImage& image);
+	void               MapMemory(VulkanMemory& memory, void*& data);
+	void               UnmapMemory(VulkanMemory& memory);
+	void               AppendHardwareRayTracingDeviceExtensions(
+	    const std::vector<vk::ExtensionProperties>& available_extensions,
+	    std::vector<const char*>&                   device_extensions);
+	void LoadHardwareRayTracingFunctions() const;
+
 	uint32_t                              screen_width  = 0;
 	uint32_t                              screen_height = 0;
 	std::array<Common::Mutex, QUEUES_NUM> queue_mutexes;

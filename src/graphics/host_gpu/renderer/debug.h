@@ -9,6 +9,8 @@
 
 namespace Libs::Graphics {
 
+class RenderCommandBuffer;
+
 namespace HW {
 class Context;
 class Shader;
@@ -26,7 +28,7 @@ struct ScissorRect {
 };
 
 uint32_t                 render_target_mask_slot(uint32_t mask, uint32_t slot);
-uint32_t                 render_target_first_bound_slot(const HW::Context& hw);
+uint32_t                 render_target_first_bound_slot(const RenderCommandBuffer& buffer);
 bool                     graphics_debug_dump_enabled();
 void                     uc_print(const char* func, const HW::UserConfig& uc);
 void                     uc_check(const HW::UserConfig& uc);
@@ -34,8 +36,8 @@ void                     sh_print(const char* func, const HW::Shader& uc);
 void                     sh_check(const HW::Shader& uc);
 std::vector<std::string> rt_print(const char* func, const HW::RenderTarget& rt);
 bool                     RenderIsColorTileModeLinear(uint32_t tile_mode);
-void                     hw_print(const HW::Context& hw);
-void                     hw_check(const HW::Context& hw);
+void                     hw_print(const RenderCommandBuffer& buffer);
+void                     hw_check(const RenderCommandBuffer& buffer);
 void                     LogDrawPhase(const char* draw_name, const char* phase);
 ScissorRect calc_final_scissor(const HW::ScreenViewport& vp, const HW::ScanModeControl& smc,
                                vk::Extent2D extent);

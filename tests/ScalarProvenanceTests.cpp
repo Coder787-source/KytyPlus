@@ -141,7 +141,7 @@ void TestPerUseDescriptorDefinitions() {
 	instructions.push_back(BufferUse(20, 0));
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto* before = GetDescriptorSource(program, instructions[0].memory.resource_source);
 	const auto* after  = GetDescriptorSource(program, instructions[5].memory.resource_source);
 	Check(before != nullptr && after != nullptr, "descriptor sources were not attached");
@@ -170,7 +170,7 @@ void TestCfgPhi() {
 	program.blocks[3].instructions.push_back(BufferUse(12, 0));
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto* source =
 	    GetDescriptorSource(program, program.blocks[3].instructions[0].memory.resource_source);
 	Check(source != nullptr, "merged descriptor source was not attached");
@@ -180,7 +180,7 @@ void TestCfgPhi() {
 	Check(Value(program, phi.phi_args[0]).op == ScalarValueOp::Constant &&
 	          Value(program, phi.phi_args[1]).op == ScalarValueOp::Constant,
 	      "provenance phi does not reference both constant definitions");
-	Check(BuildSrtPlan(&program, &error) && program.srt.dynamic_sources.size() == 1 &&
+	Check(BuildSrtPlan(program, &error) && program.srt.dynamic_sources.size() == 1 &&
 	          program.srt.dynamic_sources[0] ==
 	              program.blocks[3].instructions[0].memory.resource_source,
 	      "acyclic control-flow descriptor phi was not classified dynamic");
@@ -213,7 +213,7 @@ void TestDiamondReadPathsAreDynamic() {
 	program.blocks[3].instructions = {BufferUse(12, 0)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	const auto source = program.blocks[3].instructions[0].memory.resource_source;
 	Check(program.srt.reads.empty() && program.srt.dynamic_reads.empty() &&
 	          program.srt.dynamic_sources.size() == 1 && program.srt.dynamic_sources[0] == source,
@@ -228,7 +228,7 @@ void TestDiamondReadPathsAreDynamic() {
 	ReadCounter      counter;
 	DescriptorValue  descriptor;
 	const SrtRuntime runtime {user_data, 0, CountedHostMemory, &counter};
-	Check(!EvaluateDescriptorSource(program, source, 12, runtime, &descriptor, &error) &&
+	Check(!EvaluateDescriptorSource(program, source, 12, runtime, descriptor, &error) &&
 	          counter.reads == 0 && error.find("GPU-dynamic") != std::string::npos,
 	      "dynamic descriptor evaluation touched an inactive read path");
 }
@@ -253,14 +253,14 @@ void TestEquivalentConstantPhiIsStatic() {
 	program.blocks[3].instructions = {BufferUse(12, 0)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	const auto source = program.blocks[3].instructions[0].memory.resource_source;
 	Check(program.srt.dynamic_sources.empty(),
 	      "equivalent constant phi was unnecessarily classified dynamic");
 	const std::array<uint32_t, 4> user_data = {};
 	DescriptorValue               descriptor;
 	const SrtRuntime              runtime {user_data, 0, nullptr, nullptr};
-	Check(EvaluateDescriptorSource(program, source, 12, runtime, &descriptor, &error) &&
+	Check(EvaluateDescriptorSource(program, source, 12, runtime, descriptor, &error) &&
 	          descriptor.dwords[0] == 2,
 	      "equivalent constant phi did not evaluate as one static value");
 }
@@ -274,7 +274,7 @@ void TestWideMoveInvalidatesAndCopiesBothDwords() {
 	instructions.push_back(BufferUse(8, 0));
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto* source = GetDescriptorSource(program, instructions.back().memory.resource_source);
 	Check(source != nullptr &&
 	          DescriptorSourceResolved(program, instructions.back().memory.resource_source),
@@ -308,7 +308,7 @@ void TestScalarCarryChain() {
 	program.blocks[0].instructions = {low, high, BufferUse(8, 4)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto* source =
 	    GetDescriptorSource(program, program.blocks[0].instructions.back().memory.resource_source);
 	Check(source != nullptr, "carry-chain descriptor source was not attached");
@@ -336,7 +336,7 @@ void TestReadConstDefinition() {
 	program.blocks[0].instructions.push_back(BufferUse(8, 16));
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto* source =
 	    GetDescriptorSource(program, program.blocks[0].instructions[1].memory.resource_source);
 	Check(source != nullptr, "read-constant descriptor source was not attached");
@@ -369,7 +369,7 @@ void TestReadConstBufferAndValueNumbering() {
 	program.blocks[0].instructions.push_back(BufferUse(8, 16));
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto* source =
 	    GetDescriptorSource(program, program.blocks[0].instructions.back().memory.resource_source);
 	Check(source != nullptr, "ReadConstBuffer source was not attached");
@@ -419,7 +419,7 @@ void TestReadLaneDescriptorSpill() {
 	program.blocks[0].instructions.push_back(sample);
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	const auto source_id = program.blocks[0].instructions.back().memory.resource_source;
 	const auto* source   = GetDescriptorSource(program, source_id);
 	Check(source != nullptr && DescriptorSourceResolved(program, source_id),
@@ -431,7 +431,7 @@ void TestReadLaneDescriptorSpill() {
 	user_data[26] = sizeof(table);
 	DescriptorValue descriptor;
 	const SrtRuntime runtime {user_data, 0, ReadHostMemory, nullptr};
-	Check(EvaluateDescriptorSource(program, source_id, sample.pc, runtime, &descriptor, &error),
+	Check(EvaluateDescriptorSource(program, source_id, sample.pc, runtime, descriptor, &error),
 	      error.c_str());
 	Check(descriptor.dwords[0] == table[72],
 	      "readlane descriptor spill evaluated the overwritten scalar value");
@@ -452,7 +452,7 @@ void TestReadLaneVectorOverwriteInvalidatesSpill() {
 	                                  ReadLane(8, 0, 11, 0), BufferUse(12, 0)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto source = program.blocks[0].instructions.back().memory.resource_source;
 	Check(GetDescriptorSource(program, source) != nullptr &&
 	          !DescriptorSourceResolved(program, source),
@@ -475,7 +475,7 @@ void TestReadLanePhi() {
 	program.blocks[3].instructions = {ReadLane(8, 0, 11, 0), BufferUse(12, 0)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto* source =
 	    GetDescriptorSource(program, program.blocks[3].instructions.back().memory.resource_source);
 	Check(source != nullptr && Value(program, source->dwords[0]).op == ScalarValueOp::Phi &&
@@ -498,7 +498,7 @@ void TestReadLaneLoopConvergence() {
 	program.blocks[1].instructions = {ReadLane(4, 0, 11, 0), BufferUse(8, 0)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto source = program.blocks[1].instructions.back().memory.resource_source;
 	Check(DescriptorSourceResolved(program, source),
 	      "unchanged writelane spill did not converge across a loop backedge");
@@ -520,7 +520,7 @@ void TestReadLaneWideAndRelativeWritesInvalidateSpill() {
 		                                  ReadLane(8, 0, 12, 0), BufferUse(12, 0)};
 
 		std::string error;
-		Check(BuildScalarProvenance(&program, &error), error.c_str());
+		Check(BuildScalarProvenance(program, &error), error.c_str());
 		const auto source = program.blocks[0].instructions.back().memory.resource_source;
 		Check(!DescriptorSourceResolved(program, source), message);
 	};
@@ -539,7 +539,7 @@ void TestReadLaneModuloAndDynamicLane() {
 	modulo.blocks[0].instructions = {WriteLane(0, 11, 4, 33), ReadLane(4, 0, 11, 65),
 	                                 BufferUse(8, 0)};
 	std::string error;
-	Check(BuildScalarProvenance(&modulo, &error), error.c_str());
+	Check(BuildScalarProvenance(modulo, &error), error.c_str());
 	const auto* modulo_source =
 	    GetDescriptorSource(modulo, modulo.blocks[0].instructions.back().memory.resource_source);
 	Check(modulo_source != nullptr &&
@@ -554,7 +554,7 @@ void TestReadLaneModuloAndDynamicLane() {
 	auto write    = WriteLane(0, 11, 4, 0);
 	write.src[1]  = Sgpr(7);
 	dynamic.blocks[0].instructions = {write, ReadLane(4, 0, 11, 0), BufferUse(8, 0)};
-	Check(BuildScalarProvenance(&dynamic, &error), error.c_str());
+	Check(BuildScalarProvenance(dynamic, &error), error.c_str());
 	Check(!DescriptorSourceResolved(
 	          dynamic, dynamic.blocks[0].instructions.back().memory.resource_source),
 	      "dynamic writelane selector retained unsafe lane provenance");
@@ -569,7 +569,7 @@ void TestUnresolvedSourceIsMarked() {
 	program.blocks[0].instructions = {unknown, BufferUse(4, 0)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto source = program.blocks[0].instructions.back().memory.resource_source;
 	Check(GetDescriptorSource(program, source) != nullptr &&
 	          !DescriptorSourceResolved(program, source),
@@ -588,7 +588,7 @@ void TestUnsupportedWideWriteInvalidatesBothDwords() {
 	                                  BufferUse(12, 0)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto* source =
 	    GetDescriptorSource(program, program.blocks[0].instructions.back().memory.resource_source);
 	Check(source != nullptr && source->dwords[0] == ScalarProvenance::Unknown &&
@@ -611,12 +611,12 @@ void TestCyclicPhiIsUnresolved() {
 	program.blocks[1].instructions = {BufferUse(4, 0), increment};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error), error.c_str());
 	const auto source = program.blocks[1].instructions[0].memory.resource_source;
 	Check(GetDescriptorSource(program, source) != nullptr &&
 	          !DescriptorSourceResolved(program, source),
 	      "loop-carried cyclic descriptor provenance was incorrectly resolved");
-	Check(BuildSrtPlan(&program, &error) && program.srt.dynamic_sources.size() == 1 &&
+	Check(BuildSrtPlan(program, &error) && program.srt.dynamic_sources.size() == 1 &&
 	          program.srt.dynamic_sources[0] == source,
 	      "SRT planning did not isolate a cyclic descriptor as a dynamic source");
 }
@@ -655,14 +655,14 @@ void TestNestedSrtWalk() {
 	program.blocks[0].instructions.push_back(BufferUse(12, 16));
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	Check(program.srt.reads.size() == 3 && program.srt.dynamic_reads.empty(),
 	      "nested SRT reads were not compacted and deduplicated");
 	std::vector<uint32_t> user_data(64);
 	SetPointer(&user_data, 4, root.data());
 	std::vector<uint32_t> flat;
 	const SrtRuntime      runtime {user_data, 0, ReadHostMemory, nullptr};
-	Check(WalkSrt(program, runtime, &flat, &error), error.c_str());
+	Check(WalkSrt(program, runtime, flat, &error), error.c_str());
 	Check(flat.size() == 3 && flat.back() == child[1],
 	      "nested SRT walker read the wrong aligned dword");
 }
@@ -681,7 +681,7 @@ void TestDynamicReadIsNotFlattened() {
 	program.blocks[0].instructions = {load, BufferUse(4, 16)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	Check(program.srt.reads.empty() && program.srt.dynamic_reads.size() == 1,
 	      "dynamic ReadConst was assigned a flat-buffer offset");
 	std::vector<uint32_t> user_data(64);
@@ -690,7 +690,7 @@ void TestDynamicReadIsNotFlattened() {
 	DescriptorValue  descriptor;
 	const auto       source = program.blocks[0].instructions[1].memory.resource_source;
 	const SrtRuntime runtime {user_data, 0, ReadHostMemory, nullptr};
-	Check(EvaluateDescriptorSource(program, source, 4, runtime, &descriptor, &error),
+	Check(EvaluateDescriptorSource(program, source, 4, runtime, descriptor, &error),
 	      error.c_str());
 	Check(descriptor.dwords[0] == table[1], "dynamic ReadConst evaluated the wrong dword");
 }
@@ -709,13 +709,13 @@ void TestReadConstBufferWalk() {
 	program.blocks[0].instructions = {load, BufferUse(4, 16)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	std::vector<uint32_t> user_data(64);
 	SetPointer(&user_data, 4, table.data());
 	user_data[6] = 4;
 	std::vector<uint32_t> flat;
 	const SrtRuntime      runtime {user_data, 0, ReadHostMemory, nullptr};
-	Check(WalkSrt(program, runtime, &flat, &error), error.c_str());
+	Check(WalkSrt(program, runtime, flat, &error), error.c_str());
 	Check(flat.size() == 1 && flat[0] == table[0], "ReadConstBuffer walker result was wrong");
 }
 
@@ -739,14 +739,14 @@ void TestM0ScalarOffset() {
 	program.blocks[0].instructions = {set_m0, load, BufferUse(8, 16)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	Check(program.srt.reads.size() == 1 && program.srt.dynamic_reads.empty(),
 	      "constant M0 offset was not flattened");
 	std::vector<uint32_t> user_data(64);
 	SetPointer(&user_data, 4, table.data());
 	std::vector<uint32_t> flat;
 	const SrtRuntime      runtime {user_data, 0, ReadHostMemory, nullptr};
-	Check(WalkSrt(program, runtime, &flat, &error), error.c_str());
+	Check(WalkSrt(program, runtime, flat, &error), error.c_str());
 	Check(flat.size() == 1 && flat[0] == table[1], "M0 scalar offset evaluated incorrectly");
 }
 
@@ -775,12 +775,12 @@ void TestM0ArithmeticPreservesScc() {
 	                                  BufferUse(20, 16)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	const std::array<uint32_t, 1> user_data = {0xffffffffu};
 	const auto       source = program.blocks[0].instructions.back().memory.resource_source;
 	DescriptorValue  descriptor;
 	const SrtRuntime runtime {user_data, 0, nullptr, nullptr};
-	Check(EvaluateDescriptorSource(program, source, 20, runtime, &descriptor, &error),
+	Check(EvaluateDescriptorSource(program, source, 20, runtime, descriptor, &error),
 	      error.c_str());
 	Check(descriptor.dwords[0] == 6, "arithmetic M0 destination lost its SCC carry side effect");
 }
@@ -795,13 +795,13 @@ void TestShaderRelativePointer() {
 	program.blocks[0].instructions = {getpc_low, getpc_high, BufferUse(0x28, 0)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	const auto      source = program.blocks[0].instructions.back().memory.resource_source;
 	DescriptorValue descriptor;
 	const auto      shader_base             = reinterpret_cast<uint64_t>(table.data()) - 0x24;
 	const std::array<uint32_t, 4> user_data = {};
 	const SrtRuntime              runtime {user_data, shader_base, nullptr, nullptr};
-	Check(EvaluateDescriptorSource(program, source, 0x28, runtime, &descriptor, &error),
+	Check(EvaluateDescriptorSource(program, source, 0x28, runtime, descriptor, &error),
 	      error.c_str());
 	const auto expected = reinterpret_cast<uint64_t>(table.data());
 	Check(descriptor.dwords[0] == static_cast<uint32_t>(expected) &&
@@ -827,10 +827,10 @@ void TestSmemComponentAlignment() {
 	raw_load.memory.offset     = 2;
 	raw.blocks[0].instructions = {raw_load, BufferUse(12, 16)};
 	std::string error;
-	Check(BuildScalarProvenance(&raw, &error) && BuildSrtPlan(&raw, &error), error.c_str());
+	Check(BuildScalarProvenance(raw, &error) && BuildSrtPlan(raw, &error), error.c_str());
 	std::vector<uint32_t> flat;
 	const SrtRuntime      runtime {user_data, 0, ReadHostMemory, nullptr};
-	Check(WalkSrt(raw, runtime, &flat, &error), error.c_str());
+	Check(WalkSrt(raw, runtime, flat, &error), error.c_str());
 	Check(flat.size() == 1 && flat[0] == table[0],
 	      "raw S_LOAD did not clear each address component's low bits");
 
@@ -841,15 +841,15 @@ void TestSmemComponentAlignment() {
 	buffer_load.memory.resource   = 1;
 	buffer.blocks[0].instructions = {buffer_load, BufferUse(12, 16)};
 	user_data[6]                  = sizeof(table);
-	Check(BuildScalarProvenance(&buffer, &error) && BuildSrtPlan(&buffer, &error), error.c_str());
-	Check(WalkSrt(buffer, runtime, &flat, &error), error.c_str());
+	Check(BuildScalarProvenance(buffer, &error) && BuildSrtPlan(buffer, &error), error.c_str());
+	Check(WalkSrt(buffer, runtime, flat, &error), error.c_str());
 	Check(flat.size() == 1 && flat[0] == table[1],
 	      "S_BUFFER_LOAD did not align the summed final address");
 
 	buffer.blocks[0].instructions[0].src[0] = Imm(0);
 	user_data[4] += 2;
-	Check(BuildScalarProvenance(&buffer, &error) && BuildSrtPlan(&buffer, &error), error.c_str());
-	Check(WalkSrt(buffer, runtime, &flat, &error), error.c_str());
+	Check(BuildScalarProvenance(buffer, &error) && BuildSrtPlan(buffer, &error), error.c_str());
+	Check(WalkSrt(buffer, runtime, flat, &error), error.c_str());
 	Check(flat.size() == 1 && flat[0] == table[0],
 	      "S_BUFFER_LOAD did not clear the descriptor base low bits before "
 	      "addition");
@@ -874,16 +874,16 @@ void TestReadConstSignedAddress() {
 	program.blocks[0].instructions = {MoveImmediate(0, 20, 4), load, BufferUse(8, 16)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	std::vector<uint32_t> flat;
 	const SrtRuntime      runtime {user_data, 0, ReadHostMemory, nullptr};
-	Check(WalkSrt(program, runtime, &flat, &error), error.c_str());
+	Check(WalkSrt(program, runtime, flat, &error), error.c_str());
 	Check(flat.size() == 1 && flat[0] == table[0],
 	      "signed S_LOAD offset resolved the wrong SBASE-relative address");
 
 	user_data[4] = 0;
 	user_data[5] = 0;
-	Check(!WalkSrt(program, runtime, &flat, &error) &&
+	Check(!WalkSrt(program, runtime, flat, &error) &&
 	          error.find("outside the 48-bit address space") != std::string::npos,
 	      "signed S_LOAD address underflow did not fail closed");
 }
@@ -905,7 +905,7 @@ void TestReadConstBufferBounds() {
 	load.memory.offset             = sizeof(table);
 	program.blocks[0].instructions = {load, BufferUse(0x44, 16)};
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	std::vector<uint32_t> user_data(20);
 	SetPointer(&user_data, 4, table.data());
 	user_data[5] |= 4u << 16u;
@@ -913,7 +913,7 @@ void TestReadConstBufferBounds() {
 	ReadCounter           counter;
 	std::vector<uint32_t> flat;
 	const SrtRuntime      runtime {user_data, 0, CountedHostMemory, &counter};
-	Check(!WalkSrt(program, runtime, &flat, &error),
+	Check(!WalkSrt(program, runtime, flat, &error),
 	      "out-of-range S_BUFFER_LOAD unexpectedly succeeded");
 	Check(counter.reads == 0 && error.find("exceeds size=8") != std::string::npos &&
 	          error.find("hash=0x0000000000001234") != std::string::npos &&
@@ -943,12 +943,12 @@ void TestSubBorrowPointerChain() {
 	program.blocks[0].instructions = {low, high, MoveImmediate(8, 18, 0), MoveImmediate(12, 19, 0),
 	                                  BufferUse(16, 16)};
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	const std::array<uint32_t, 2> user_data = {2, 5};
 	DescriptorValue               descriptor;
 	const auto       source = program.blocks[0].instructions.back().memory.resource_source;
 	const SrtRuntime runtime {user_data, 0, nullptr, nullptr};
-	Check(EvaluateDescriptorSource(program, source, 16, runtime, &descriptor, &error),
+	Check(EvaluateDescriptorSource(program, source, 16, runtime, descriptor, &error),
 	      error.c_str());
 	Check(descriptor.dwords[0] == 0xfffffffeu && descriptor.dwords[1] == 4,
 	      "scalar subtraction/borrow pointer chain evaluated incorrectly");
@@ -978,12 +978,12 @@ void TestCommonScalarPointerOps() {
 	                                  binary(Opcode::IMulU32, 18, Sgpr(2), Imm(4)), add3,
 	                                  BufferUse(16, 16)};
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	const std::array<uint32_t, 4> user_data = {0xf0f0u, 0x0ff0u, 7u, 9u};
 	DescriptorValue               descriptor;
 	const auto       source = program.blocks[0].instructions.back().memory.resource_source;
 	const SrtRuntime runtime {user_data, 0, nullptr, nullptr};
-	Check(EvaluateDescriptorSource(program, source, 16, runtime, &descriptor, &error),
+	Check(EvaluateDescriptorSource(program, source, 16, runtime, descriptor, &error),
 	      error.c_str());
 	Check(descriptor.dwords[0] == (user_data[0] ^ user_data[1]) &&
 	          descriptor.dwords[1] == (user_data[0] & ~user_data[1]) &&
@@ -1005,12 +1005,12 @@ void TestBitFieldMaskDescriptor() {
 	                                  BufferUse(12, 28)};
 
 	std::string error;
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	DescriptorValue descriptor;
 	const SrtRuntime runtime {{}, 0, nullptr, nullptr};
 	Check(EvaluateDescriptorSource(program,
 	                               program.blocks[0].instructions.back().memory.resource_source,
-	                               16, runtime, &descriptor, &error),
+	                               16, runtime, descriptor, &error),
 	      error.c_str());
 	Check(descriptor.dwords[0] == 0x92u && descriptor.dwords[1] == 0x00fff000u &&
 	          descriptor.dwords[2] == 0x05500000u && descriptor.dwords[3] == 0,
@@ -1019,10 +1019,10 @@ void TestBitFieldMaskDescriptor() {
 	mask.src[0] = Imm(0);
 	program.blocks[0].instructions = {MoveImmediate(0, 28, 0x92u), mask, high,
 	                                  BufferUse(12, 28)};
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	Check(EvaluateDescriptorSource(program,
 	                               program.blocks[0].instructions.back().memory.resource_source,
-	                               12, runtime, &descriptor, &error),
+	                               12, runtime, descriptor, &error),
 	      error.c_str());
 	Check(descriptor.dwords[1] == 0, "zero-width bit-field mask was not zero");
 
@@ -1030,10 +1030,10 @@ void TestBitFieldMaskDescriptor() {
 	mask.src[1] = Imm(31);
 	program.blocks[0].instructions = {MoveImmediate(0, 28, 0x92u), mask, high,
 	                                  BufferUse(12, 28)};
-	Check(BuildScalarProvenance(&program, &error) && BuildSrtPlan(&program, &error), error.c_str());
+	Check(BuildScalarProvenance(program, &error) && BuildSrtPlan(program, &error), error.c_str());
 	Check(EvaluateDescriptorSource(program,
 	                               program.blocks[0].instructions.back().memory.resource_source,
-	                               12, runtime, &descriptor, &error),
+	                               12, runtime, descriptor, &error),
 	      error.c_str());
 	Check(descriptor.dwords[1] == 0x80000000u,
 	      "maximum bit-field mask count/offset evaluated incorrectly");

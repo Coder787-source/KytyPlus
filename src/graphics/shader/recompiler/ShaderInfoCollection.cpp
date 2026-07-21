@@ -12,10 +12,10 @@ bool HasInput(const ShaderInfo& info, StageInputKind kind, uint32_t location) {
 	});
 }
 
-void AddInput(ShaderInfo* info, StageInputKind kind, uint32_t location, uint32_t components,
+void AddInput(ShaderInfo& info, StageInputKind kind, uint32_t location, uint32_t components,
               std::string name) {
-	if (!HasInput(*info, kind, location)) {
-		info->inputs.push_back({kind, location, components, std::move(name)});
+	if (!HasInput(info, kind, location)) {
+		info.inputs.push_back({kind, location, components, std::move(name)});
 	}
 }
 
@@ -25,10 +25,10 @@ bool HasOutput(const ShaderInfo& info, StageOutputKind kind, uint32_t index) {
 	});
 }
 
-void AddOutput(ShaderInfo* info, StageOutputKind kind, uint32_t index, uint32_t location,
+void AddOutput(ShaderInfo& info, StageOutputKind kind, uint32_t index, uint32_t location,
                std::string name) {
-	if (!HasOutput(*info, kind, index)) {
-		info->outputs.push_back({kind, index, location, std::move(name)});
+	if (!HasOutput(info, kind, index)) {
+		info.outputs.push_back({kind, index, location, std::move(name)});
 	}
 }
 
@@ -87,7 +87,7 @@ bool ValidateOptions(const Program& program, const ShaderInfoOptions& options, s
 }
 
 void CollectVertexInputs(const Program& program, const ShaderVertexInputInfo* vertex,
-                         ShaderInfo* info) {
+	                     ShaderInfo& info) {
 	AddInput(info, StageInputKind::VertexIndex, 0, 1, "gl_VertexIndex");
 	AddInput(info, StageInputKind::InstanceIndex, 0, 1, "gl_InstanceIndex");
 	if (vertex == nullptr) {
@@ -114,7 +114,7 @@ void CollectVertexInputs(const Program& program, const ShaderVertexInputInfo* ve
 	}
 }
 
-void CollectPixelInputs(const ShaderPixelInputInfo* pixel, ShaderInfo* info) {
+void CollectPixelInputs(const ShaderPixelInputInfo* pixel, ShaderInfo& info) {
 	if (pixel == nullptr) {
 		return;
 	}
@@ -130,7 +130,7 @@ void CollectPixelInputs(const ShaderPixelInputInfo* pixel, ShaderInfo* info) {
 }
 
 void CollectComputeInputs(const Program& program, const ShaderComputeInputInfo* compute,
-                          ShaderInfo* info) {
+	                      ShaderInfo& info) {
 	if (compute != nullptr) {
 		if (compute->group_id[0] || compute->group_id[1] || compute->group_id[2]) {
 			AddInput(info, StageInputKind::WorkgroupId, 0, 3, "gl_WorkGroupID");
@@ -150,7 +150,7 @@ void CollectComputeInputs(const Program& program, const ShaderComputeInputInfo* 
 	}
 }
 
-void CollectOutputs(const Program& program, const ShaderPixelInputInfo* pixel, ShaderInfo* info) {
+void CollectOutputs(const Program& program, const ShaderPixelInputInfo* pixel, ShaderInfo& info) {
 	for (const auto& block: program.blocks) {
 		for (const auto& inst: block.instructions) {
 			if (inst.op != Opcode::Export) {
@@ -193,32 +193,30 @@ void CollectOutputs(const Program& program, const ShaderPixelInputInfo* pixel, S
 
 } // namespace
 
-bool CollectShaderInfo(Program* program, const ShaderInfoOptions& options, std::string* error) {
-	if (program == nullptr || !program->resource_tracking_complete ||
-	    program->shader_info_complete) {
+bool CollectShaderInfo(Program& program, const ShaderInfoOptions& options, std::string* error) {
+	if (!program.resource_tracking_complete || program.shader_info_complete) {
 		if (error != nullptr) {
-			*error = program == nullptr                     ? "invalid shader info program"
-			         : !program->resource_tracking_complete ? "shader resources were not tracked"
-			                                                : "shader info already collected";
+			*error = !program.resource_tracking_complete ? "shader resources were not tracked"
+			                                            : "shader info already collected";
 		}
 		return false;
 	}
-	if (!ValidateOptions(*program, options, error)) {
+	if (!ValidateOptions(program, options, error)) {
 		return false;
 	}
 
-	auto next = program->info;
+	auto next = program.info;
 	next.inputs.clear();
 	next.outputs.clear();
-	switch (program->stage) {
-		case ShaderType::Vertex: CollectVertexInputs(*program, options.vertex, &next); break;
-		case ShaderType::Pixel: CollectPixelInputs(options.pixel, &next); break;
-		case ShaderType::Compute: CollectComputeInputs(*program, options.compute, &next); break;
+	switch (program.stage) {
+		case ShaderType::Vertex: CollectVertexInputs(program, options.vertex, next); break;
+		case ShaderType::Pixel: CollectPixelInputs(options.pixel, next); break;
+		case ShaderType::Compute: CollectComputeInputs(program, options.compute, next); break;
 		default: return false;
 	}
-	CollectOutputs(*program, options.pixel, &next);
-	program->info                 = std::move(next);
-	program->shader_info_complete = true;
+	CollectOutputs(program, options.pixel, next);
+	program.info                 = std::move(next);
+	program.shader_info_complete = true;
 	return true;
 }
 

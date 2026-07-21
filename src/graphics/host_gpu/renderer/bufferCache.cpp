@@ -7,6 +7,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/objects/label.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/resourceMutex.h"
 #include "graphics/host_gpu/renderer/textureCache.h"
 #include "graphics/host_gpu/transfer.h"
@@ -38,22 +39,20 @@ constexpr uint64_t AlignReadbackCopySize(uint64_t size) noexcept {
 }
 
 struct SharedVulkanBufferOwner {
-	explicit SharedVulkanBufferOwner(GraphicContext* context): ctx(context) {
-		EXIT_IF(ctx == nullptr);
-	}
+	explicit SharedVulkanBufferOwner(GraphicContext& graphics): graphics(graphics) {}
 
 	~SharedVulkanBufferOwner() {
 		if (buffer.buffer != nullptr) {
-			VulkanDeleteBuffer(ctx, &buffer);
+			graphics.DeleteBuffer(buffer);
 		}
 	}
 
-	GraphicContext* ctx = nullptr;
+	GraphicContext& graphics;
 	VulkanBuffer    buffer;
 };
 
-std::shared_ptr<VulkanBuffer> MakeSharedVulkanBuffer(GraphicContext* ctx) {
-	auto owner = std::make_shared<SharedVulkanBufferOwner>(ctx);
+std::shared_ptr<VulkanBuffer> MakeSharedVulkanBuffer() {
+	auto owner = std::make_shared<SharedVulkanBufferOwner>(GetRenderContext().GetGraphics());
 	return {owner, &owner->buffer};
 }
 
@@ -149,21 +148,21 @@ bool PageOverlaps(uint64_t left, uint64_t left_size, uint64_t right, uint64_t ri
 }
 } // namespace
 
-bool MergeOverlappingBufferCacheRange(BufferCacheRange* merged,
+bool MergeOverlappingBufferCacheRange(BufferCacheRange& merged,
                                       BufferCacheRange  candidate) noexcept {
-	if (merged == nullptr || merged->address == 0 || merged->size == 0 || candidate.address == 0 ||
-	    candidate.size == 0 || merged->size > UINT64_MAX - merged->address ||
+	if (merged.address == 0 || merged.size == 0 || candidate.address == 0 || candidate.size == 0 ||
+	    merged.size > UINT64_MAX - merged.address ||
 	    candidate.size > UINT64_MAX - candidate.address) {
 		EXIT("BufferCache: invalid overlap-merge range\n");
 	}
-	const auto merged_end    = merged->address + merged->size;
+	const auto merged_end    = merged.address + merged.size;
 	const auto candidate_end = candidate.address + candidate.size;
-	if (merged->address >= candidate_end || candidate.address >= merged_end) {
+	if (merged.address >= candidate_end || candidate.address >= merged_end) {
 		return false;
 	}
-	const auto address = std::min(merged->address, candidate.address);
+	const auto address = std::min(merged.address, candidate.address);
 	const auto end     = std::max(merged_end, candidate_end);
-	*merged            = {.address = address, .size = end - address};
+	merged             = {.address = address, .size = end - address};
 	return true;
 }
 
@@ -175,7 +174,6 @@ struct BufferCache::CachedBuffer {
 	uint64_t                      vaddr      = 0;
 	uint64_t                      size       = 0;
 	uint64_t                      queue_mask = 0;
-	GraphicContext*               ctx        = nullptr;
 	std::shared_ptr<VulkanBuffer> buffer;
 };
 
@@ -220,10 +218,7 @@ struct BufferCache::ReadbackWorker {
 		}
 	}
 
-	void Prepare(GraphicContext* graphic_context) {
-		if (graphic_context == nullptr) {
-			EXIT("BufferCache: cannot prepare readback without a graphics context\n");
-		}
+	void Prepare() {
 		auto current = state.load(std::memory_order_acquire);
 		while (current == State::InitRequested ||
 		       (current == State::Claimed &&
@@ -236,15 +231,11 @@ struct BufferCache::ReadbackWorker {
 				EXIT("BufferCache: cannot prepare a stopping readback worker, state=%u\n",
 				     static_cast<uint32_t>(current));
 			}
-			if (ctx != graphic_context || command == nullptr || mapped == nullptr ||
-			    readback.buffer == nullptr) {
+			if (command == nullptr || mapped == nullptr || readback.buffer == nullptr) {
 				EXIT("BufferCache: initialized readback worker has invalid resources, state=%u "
-				     "ctx=%p requested=%p "
 				     "command=%p mapped=%p buffer=%p\n",
-				     static_cast<uint32_t>(current), static_cast<const void*>(ctx),
-				     static_cast<const void*>(graphic_context),
-				     static_cast<const void*>(command.get()), static_cast<const void*>(mapped),
-				     static_cast<const void*>(readback.buffer));
+				     static_cast<uint32_t>(current), static_cast<const void*>(command.get()),
+				     static_cast<const void*>(mapped), static_cast<const void*>(readback.buffer));
 			}
 			return;
 		}
@@ -253,7 +244,6 @@ struct BufferCache::ReadbackWorker {
 			EXIT("BufferCache: readback prepare requires uninitialized state, state=%u\n",
 			     static_cast<uint32_t>(expected));
 		}
-		ctx = graphic_context;
 		state.store(State::InitRequested, std::memory_order_release);
 		state.notify_all();
 		while ((current = state.load(std::memory_order_acquire)) != State::Idle) {
@@ -276,16 +266,15 @@ struct BufferCache::ReadbackWorker {
 		const bool submissions_prepaused_now = GraphicsRunSubmissionLockHeld() || command_thread;
 		const bool unsafe_gpu_lock = GraphicsRunGpuLockHeld() && !submissions_prepaused_now;
 		if (unsafe_gpu_lock || LabelInCallback() || g_cache_lock_owner != nullptr ||
-		    ctx == nullptr || command == nullptr || mapped == nullptr ||
-		    readback.buffer == nullptr) {
+		    command == nullptr || mapped == nullptr || readback.buffer == nullptr) {
 			EXIT("BufferCache: unsafe readback request context, command_thread=%d "
 			     "submission_lock=%d "
-			     "gpu_lock=%d label_callback=%d cache_lock=%p ctx=%p command=%p mapped=%p "
+			     "gpu_lock=%d label_callback=%d cache_lock=%p command=%p mapped=%p "
 			     "buffer=%p\n",
 			     command_thread, GraphicsRunSubmissionLockHeld(), GraphicsRunGpuLockHeld(),
 			     LabelInCallback(), static_cast<const void*>(g_cache_lock_owner),
-			     static_cast<const void*>(ctx), static_cast<const void*>(command.get()),
-			     static_cast<const void*>(mapped), static_cast<const void*>(readback.buffer));
+			     static_cast<const void*>(command.get()), static_cast<const void*>(mapped),
+			     static_cast<const void*>(readback.buffer));
 		}
 		State expected = State::Idle;
 		while (!state.compare_exchange_weak(expected, State::Claimed, std::memory_order_acq_rel)) {
@@ -386,48 +375,46 @@ struct BufferCache::ReadbackWorker {
 			if (current == State::Stopping) {
 				command.reset();
 				if (mapped != nullptr) {
-					VulkanUnmapMemory(ctx, &readback.memory);
+					cache.m_graphics.UnmapMemory(readback.memory);
 					mapped = nullptr;
 				}
 				if (readback.buffer != nullptr) {
-					VulkanDeleteBuffer(ctx, &readback);
+					cache.m_graphics.DeleteBuffer(readback);
 				}
 				state.store(State::Stopped, std::memory_order_release);
 				state.notify_all();
 				return;
 			}
 			if (current == State::InitRequested) {
-				if (ctx == nullptr || command != nullptr || mapped != nullptr ||
-				    readback.buffer != nullptr) {
-					EXIT("BufferCache: invalid resources before readback initialization, ctx=%p "
+				if (command != nullptr || mapped != nullptr || readback.buffer != nullptr) {
+					EXIT("BufferCache: invalid resources before readback initialization, "
 					     "command=%p mapped=%p buffer=%p\n",
-					     static_cast<const void*>(ctx), static_cast<const void*>(command.get()),
-					     static_cast<const void*>(mapped),
+					     static_cast<const void*>(command.get()), static_cast<const void*>(mapped),
 					     static_cast<const void*>(readback.buffer));
 				}
-				const auto family = ctx->queues[GraphicContext::QUEUE_UTIL].family;
+				const auto family = cache.m_graphics.queues[GraphicContext::QUEUE_UTIL].family;
 				if (family == static_cast<uint32_t>(-1) ||
-				    ctx->queues[GraphicContext::QUEUE_GFX].family != family) {
+				    cache.m_graphics.queues[GraphicContext::QUEUE_GFX].family != family) {
 					EXIT("BufferCache: utility and graphics queues must share a valid family, "
 					     "util=%u "
 					     "gfx=%u\n",
-					     family, ctx->queues[GraphicContext::QUEUE_GFX].family);
+					     family, cache.m_graphics.queues[GraphicContext::QUEUE_GFX].family);
 				}
 				for (int i = GraphicContext::QUEUE_COMPUTE_START;
 				     i < GraphicContext::QUEUE_COMPUTE_START + GraphicContext::QUEUE_COMPUTE_NUM;
 				     i++) {
-					if (ctx->queues[i].family != family) {
+					if (cache.m_graphics.queues[i].family != family) {
 						EXIT("BufferCache: compute queue %d family mismatch, expected=%u "
 						     "actual=%u\n",
-						     i, family, ctx->queues[i].family);
+						     i, family, cache.m_graphics.queues[i].family);
 					}
 				}
 				readback.usage           = vk::BufferUsageFlagBits::eTransferDst;
 				readback.memory.property = vk::MemoryPropertyFlagBits::eHostVisible |
 				                           vk::MemoryPropertyFlagBits::eHostCoherent |
 				                           vk::MemoryPropertyFlagBits::eHostCached;
-				VulkanCreateBuffer(ctx, READBACK_CAPACITY, &readback);
-				VulkanMapMemory(ctx, &readback.memory, &mapped);
+				cache.m_graphics.CreateBuffer(READBACK_CAPACITY, readback);
+				cache.m_graphics.MapMemory(readback.memory, mapped);
 				command = std::make_unique<CommandBuffer>(GraphicContext::QUEUE_UTIL);
 				state.store(State::Idle, std::memory_order_release);
 				state.notify_all();
@@ -528,7 +515,6 @@ struct BufferCache::ReadbackWorker {
 
 	BufferCache&                           cache;
 	std::atomic<State>                     state {State::Uninitialized};
-	GraphicContext*                        ctx = nullptr;
 	VulkanBuffer                           readback {};
 	void*                                  mapped = nullptr;
 	std::unique_ptr<CommandBuffer>         command;
@@ -542,8 +528,9 @@ struct BufferCache::ReadbackWorker {
 	std::thread                            thread;
 };
 
-BufferCache::BufferCache(PageManager& page_manager, ResourceMutex& resource_mutex)
-    : m_memory_tracker(page_manager), m_page_manager(page_manager),
+BufferCache::BufferCache(GraphicContext& graphics, PageManager& page_manager,
+                         ResourceMutex& resource_mutex)
+    : m_graphics(graphics), m_memory_tracker(page_manager), m_page_manager(page_manager),
       m_resource_mutex(resource_mutex) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	m_readback = std::make_unique<ReadbackWorker>(*this);
@@ -563,7 +550,7 @@ BufferCache::~BufferCache() {
 		}
 	}
 	if (!m_buffers.empty()) {
-		Transfer::WaitForGraphicsIdle(m_buffers.begin()->second->ctx);
+		Transfer::WaitForGraphicsIdle();
 	}
 	m_buffers.clear();
 }
@@ -629,8 +616,8 @@ void BufferCache::UnmapMemory(uint64_t vaddr, uint64_t size) {
 			    const auto ranges = m_gpu_modified_ranges.Intersections(address, bytes);
 			    for (const auto& range: ranges) {
 				    std::vector<uint8_t> data(range.size);
-				    Transfer::DownloadBuffer(cached->ctx, cached->buffer.get(),
-				                             range.address - begin, data.data(), range.size);
+				    Transfer::DownloadBuffer(*cached->buffer, range.address - begin, data.data(),
+				                             range.size);
 				    Libs::LibKernel::Memory::WriteBacking(range.address, data.data(), data.size());
 				    downloaded += range.size;
 			    }
@@ -659,19 +646,15 @@ void BufferCache::UnmapMemory(uint64_t vaddr, uint64_t size) {
 	}
 }
 
-std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  command,
-                                                             GraphicContext* ctx, uint64_t vaddr,
-                                                             uint64_t size, bool is_written,
-                                                             bool is_read, bool is_formatted) {
-	if (command == nullptr || command->IsInvalid() || command->IsExecute() || ctx == nullptr ||
-	    vaddr == 0 || size == 0 || size > UINT64_MAX - vaddr || command->GetQueue() < 0 ||
-	    command->GetQueue() >= 64) {
-		EXIT("BufferCache: invalid buffer request, command=%p queue=%d ctx=%p addr=0x%016" PRIx64
+BufferBinding BufferCache::ObtainBuffer(CommandBuffer& command, uint64_t vaddr, uint64_t size,
+                                        bool is_written, bool is_read, bool is_formatted) {
+	if (command.IsInvalid() || command.IsExecute() || vaddr == 0 || size == 0 ||
+	    size > UINT64_MAX - vaddr || command.GetQueue() < 0 || command.GetQueue() >= 64) {
+		EXIT("BufferCache: invalid buffer request, queue=%d addr=0x%016" PRIx64
 		     " size=0x%016" PRIx64 "\n",
-		     static_cast<const void*>(command), command == nullptr ? -1 : command->GetQueue(),
-		     static_cast<const void*>(ctx), vaddr, size);
+		     command.GetQueue(), vaddr, size);
 	}
-	const auto queue      = static_cast<uint32_t>(command->GetQueue());
+	const auto queue      = static_cast<uint32_t>(command.GetQueue());
 	const auto queue_mask = uint64_t {1} << queue;
 	ValidateGpuAccess(vaddr, size, is_read, is_written);
 	const auto      begin = AlignDown(vaddr);
@@ -688,13 +671,13 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 	    !texture_region.gpu_metadata_bytes) {
 		std::array<uint8_t, CACHING_PAGE_SIZE> guest_data;
 		if (Libs::LibKernel::Memory::TryReadBacking(vaddr, guest_data.data(), size)) {
-			VulkanBuffer*  stream_buffer    = nullptr;
-			vk::DeviceSize stream_offset    = 0;
-			vk::DeviceSize stream_range     = 0;
-			const auto     stream_alignment = std::max<uint64_t>(ctx->StorageMinAlignment(), 16);
-			if (UploadHostData(command, ctx, guest_data.data(), size, stream_alignment,
-			                   &stream_buffer, &stream_offset, &stream_range)) {
-				return {stream_buffer, stream_offset};
+			VulkanBuffer*  stream_buffer = nullptr;
+			vk::DeviceSize stream_offset = 0;
+			vk::DeviceSize stream_range  = 0;
+			const auto stream_alignment  = std::max<uint64_t>(m_graphics.StorageMinAlignment(), 16);
+			if (UploadHostData(command, guest_data.data(), size, stream_alignment, stream_buffer,
+			                   stream_offset, stream_range)) {
+				return {*stream_buffer, stream_offset};
 			}
 		}
 	}
@@ -728,7 +711,7 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 		}
 	}
 	if (is_written) {
-		m_readback->Prepare(ctx);
+		m_readback->Prepare();
 	}
 	FaultSafeCacheLock lock(this, m_mutex);
 
@@ -749,7 +732,7 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 		if (first != m_buffers.begin()) {
 			auto previous = std::prev(first);
 			if (MergeOverlappingBufferCacheRange(
-			        &merged, {previous->second->vaddr, previous->second->size})) {
+			        merged, {previous->second->vaddr, previous->second->size})) {
 				first = previous;
 			}
 		}
@@ -758,7 +741,7 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 				break;
 			}
 			if (MergeOverlappingBufferCacheRange(
-			        &merged, {candidate->second->vaddr, candidate->second->size})) {
+			        merged, {candidate->second->vaddr, candidate->second->size})) {
 				overlaps.push_back(candidate);
 			}
 		}
@@ -766,11 +749,10 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 		if (!overlaps.empty()) {
 			for (const auto& overlap: overlaps) {
 				auto& old = *overlap->second;
-				if (old.ctx != ctx || old.buffer == nullptr || old.buffer->buffer == nullptr) {
+				if (old.buffer == nullptr || old.buffer->buffer == nullptr) {
 					EXIT("BufferCache: invalid overlapping buffer owner, addr=0x%016" PRIx64
-					     " size=0x%016" PRIx64 " owner_ctx=%p requested_ctx=%p buffer=%p\n",
-					     old.vaddr, old.size, static_cast<const void*>(old.ctx),
-					     static_cast<const void*>(ctx), static_cast<const void*>(old.buffer.get()));
+					     " size=0x%016" PRIx64 " buffer=%p\n",
+					     old.vaddr, old.size, static_cast<const void*>(old.buffer.get()));
 				}
 				if (!CanMergeBufferCacheQueueMask(old.queue_mask, queue)) {
 					EXIT("BufferCache: cross-queue overlap merge is unsupported, "
@@ -786,8 +768,8 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 				    },
 				    [&]() noexcept {
 					    for (const auto& [upload_vaddr, upload_size]: uploads) {
-						    Transfer::UploadBuffer(ctx, Transfer::StagingBufferType::Vertex,
-						                           old.buffer.get(), upload_vaddr - old.vaddr,
+						    Transfer::UploadBuffer(Transfer::StagingBufferType::Vertex, *old.buffer,
+						                           upload_vaddr - old.vaddr,
 						                           reinterpret_cast<const void*>(upload_vaddr),
 						                           upload_size);
 					    }
@@ -797,16 +779,15 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 		auto cached    = std::make_unique<CachedBuffer>();
 		cached->vaddr  = merged.address;
 		cached->size   = merged.size;
-		cached->ctx    = ctx;
-		cached->buffer = MakeSharedVulkanBuffer(ctx);
+		cached->buffer = MakeSharedVulkanBuffer();
 		cached->buffer->usage =
 		    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst |
 		    vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer |
 		    vk::BufferUsageFlagBits::eStorageBuffer;
 		cached->buffer->memory.property = vk::MemoryPropertyFlagBits::eDeviceLocal;
-		VulkanCreateBuffer(ctx, cached->size, cached->buffer.get());
+		m_graphics.CreateBuffer(cached->size, *cached->buffer);
 		if (!overlaps.empty()) {
-			auto                                 vk_buffer = command->Handle();
+			auto                                 vk_buffer = command.Handle();
 			std::vector<vk::BufferMemoryBarrier> before;
 			before.reserve(overlaps.size() + 1);
 			for (const auto& overlap: overlaps) {
@@ -854,7 +835,7 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 			    vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands,
 			    vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &after, 0, nullptr);
 			for (const auto& overlap: overlaps) {
-				command->RetainResourceUntilFence(overlap->second->buffer);
+				command.RetainResourceUntilFence(overlap->second->buffer);
 				m_buffers.erase(overlap);
 			}
 		}
@@ -871,8 +852,8 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 	    },
 	    [&]() noexcept {
 		    for (const auto& [upload_vaddr, upload_size]: ranges) {
-			    Transfer::UploadBuffer(ctx, Transfer::StagingBufferType::Vertex,
-			                           cached.buffer.get(), upload_vaddr - cached.vaddr,
+			    Transfer::UploadBuffer(Transfer::StagingBufferType::Vertex, *cached.buffer,
+			                           upload_vaddr - cached.vaddr,
 			                           reinterpret_cast<const void*>(upload_vaddr), upload_size);
 		    }
 	    });
@@ -880,47 +861,46 @@ std::pair<VulkanBuffer*, uint64_t> BufferCache::ObtainBuffer(CommandBuffer*  com
 		m_gpu_modified_ranges.Add(vaddr, size);
 	}
 	cached.queue_mask |= queue_mask;
-	command->RetainResourceUntilFence(cached.buffer);
-	return {cached.buffer.get(), vaddr - cached.vaddr};
+	command.RetainResourceUntilFence(cached.buffer);
+	return {*cached.buffer, vaddr - cached.vaddr};
 }
 
-bool BufferCache::UploadHostData(CommandBuffer* command, GraphicContext* ctx, const void* src,
-                                 uint64_t size, uint64_t alignment, VulkanBuffer** out_buffer,
-                                 uint64_t* out_offset, uint64_t* out_range) {
-	if (command == nullptr || command->IsInvalid() || command->IsExecute() || ctx == nullptr) {
+bool BufferCache::UploadHostData(CommandBuffer& command, const void* src, uint64_t size,
+                                 uint64_t alignment, VulkanBuffer*& out_buffer,
+                                 uint64_t& out_offset, uint64_t& out_range) {
+	if (command.IsInvalid() || command.IsExecute()) {
 		EXIT("BufferCache: host stream upload requires a recording command buffer\n");
 	}
-	return command->m_host_stream.Copy(ctx, src, size, alignment, out_buffer, out_offset,
-	                                   out_range);
+	return command.m_host_stream.Copy(src, size, alignment, out_buffer, out_offset, out_range);
 }
 
-VulkanBuffer* BufferCache::ObtainNullBuffer(CommandBuffer* command, GraphicContext* ctx) {
-	if (command == nullptr || command->IsInvalid() || command->IsExecute() || ctx == nullptr) {
+VulkanBuffer& BufferCache::ObtainNullBuffer(CommandBuffer& command) {
+	if (command.IsInvalid() || command.IsExecute()) {
 		EXIT("BufferCache: null buffer requires a graphics context\n");
 	}
 	FaultSafeCacheLock lock(this, m_mutex);
 	if (m_null_buffer == nullptr) {
 		// robustBufferAccess makes every fetch safe; TODO: Use a
 		// persistent 16-byte fallback when Vulkan null vertex descriptors are unavailable.
-		auto buffer             = MakeSharedVulkanBuffer(ctx);
+		auto buffer             = MakeSharedVulkanBuffer();
 		buffer->usage           = vk::BufferUsageFlagBits::eStorageBuffer |
 		                          vk::BufferUsageFlagBits::eVertexBuffer |
 		                          vk::BufferUsageFlagBits::eIndexBuffer;
 		buffer->memory.property = vk::MemoryPropertyFlagBits::eHostVisible |
 		                          vk::MemoryPropertyFlagBits::eHostCoherent |
 		                          vk::MemoryPropertyFlagBits::eHostCached;
-		VulkanCreateBuffer(ctx, 16, buffer.get());
+		m_graphics.CreateBuffer(16, *buffer);
 		void* data = nullptr;
-		VulkanMapMemory(ctx, &buffer->memory, &data);
+		m_graphics.MapMemory(buffer->memory, data);
 		std::memset(data, 0, 16);
-		VulkanUnmapMemory(ctx, &buffer->memory);
+		m_graphics.UnmapMemory(buffer->memory);
 		m_null_buffer = std::move(buffer);
 	}
 
 	// The buffer remains cache-persistent, while every recorded consumer keeps the allocation
 	// alive until its own fence even if an unrelated command processor resets the global cache.
-	command->RetainResourceUntilFence(m_null_buffer);
-	return m_null_buffer.get();
+	command.RetainResourceUntilFence(m_null_buffer);
+	return *m_null_buffer;
 }
 
 BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t size) {
@@ -949,8 +929,8 @@ BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t
 		--owner;
 		auto&      cached = *owner->second;
 		const auto offset = address - cached.vaddr;
-		if (offset > cached.size || bytes > cached.size - offset || cached.ctx == nullptr ||
-		    cached.buffer == nullptr || cached.buffer->buffer == nullptr) {
+		if (offset > cached.size || bytes > cached.size - offset || cached.buffer == nullptr ||
+		    cached.buffer->buffer == nullptr) {
 			EXIT("BufferCache: GPU image-source bytes have no containing native buffer\n");
 		}
 		return cached;
@@ -964,14 +944,7 @@ BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t
 			     vaddr, size, GraphicsRunIsCommandProcessorThread(),
 			     GraphicsRunSubmissionLockHeld(), LabelInCallback());
 		}
-		std::vector<GraphicContext*> waited;
-		for (const auto& range: dirty_ranges) {
-			auto& owner = find_owner(range.address, range.size);
-			if (std::find(waited.begin(), waited.end(), owner.ctx) == waited.end()) {
-				Transfer::WaitForGraphicsIdle(owner.ctx);
-				waited.push_back(owner.ctx);
-			}
-		}
+		Transfer::WaitForGraphicsIdle();
 		auto     backing_writes = ReserveBackingWrites(m_page_manager, dirty_ranges);
 		uint64_t downloaded     = 0;
 		m_memory_tracker.ForEachDownloadRange<true>(
@@ -990,8 +963,7 @@ BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t
 				    auto&                owner         = find_owner(range.address, range.size);
 				    const auto           buffer_offset = range.address - owner.vaddr;
 				    std::vector<uint8_t> data(range.size);
-				    Transfer::DownloadBuffer(owner.ctx, owner.buffer.get(), buffer_offset,
-				                             data.data(), range.size);
+				    Transfer::DownloadBuffer(*owner.buffer, buffer_offset, data.data(), range.size);
 				    Libs::LibKernel::Memory::WriteBacking(range.address, data.data(), data.size());
 				    downloaded += range.size;
 			    }
@@ -1013,7 +985,7 @@ BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t
 	if (offset > cached.size || size > cached.size - offset) {
 		return {nullptr, 0, vaddr, size, true, cpu_modified};
 	}
-	if (cached.ctx == nullptr || cached.buffer == nullptr || cached.buffer->buffer == nullptr) {
+	if (cached.buffer == nullptr || cached.buffer->buffer == nullptr) {
 		EXIT("BufferCache: containing image source is inconsistent\n");
 	}
 	if (cpu_modified) {
@@ -1025,8 +997,8 @@ BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t
 		    },
 		    [&]() noexcept {
 			    for (const auto& [address, bytes]: uploads) {
-				    Transfer::UploadBuffer(cached.ctx, Transfer::StagingBufferType::Vertex,
-				                           cached.buffer.get(), address - cached.vaddr,
+				    Transfer::UploadBuffer(Transfer::StagingBufferType::Vertex, *cached.buffer,
+				                           address - cached.vaddr,
 				                           reinterpret_cast<const void*>(address), bytes);
 			    }
 		    });
@@ -1047,15 +1019,14 @@ BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t
 }
 
 namespace {
-vk::BufferMemoryBarrier MakeDmaBarrier(VulkanBuffer* buffer, uint64_t offset, uint64_t size,
+vk::BufferMemoryBarrier MakeDmaBarrier(VulkanBuffer& buffer, uint64_t offset, uint64_t size,
                                        vk::AccessFlags source, vk::AccessFlags destination) {
-	if (buffer == nullptr || buffer->buffer == nullptr || size == 0 ||
-	    offset > buffer->buffer_size || size > buffer->buffer_size - offset) {
+	if (buffer.buffer == nullptr || size == 0 || offset > buffer.buffer_size ||
+	    size > buffer.buffer_size - offset) {
 		EXIT("BufferCache: invalid DMA barrier, buffer=%p handle=%p offset=0x%016" PRIx64
 		     " size=0x%016" PRIx64 " buffer_size=0x%016" PRIx64 "\n",
-		     static_cast<const void*>(buffer),
-		     buffer == nullptr ? nullptr : static_cast<const void*>(buffer->buffer), offset, size,
-		     buffer == nullptr ? 0 : buffer->buffer_size);
+		     static_cast<const void*>(&buffer), static_cast<const void*>(buffer.buffer), offset,
+		     size, buffer.buffer_size);
 	}
 	vk::BufferMemoryBarrier barrier {};
 	barrier.sType               = vk::StructureType::eBufferMemoryBarrier;
@@ -1063,23 +1034,19 @@ vk::BufferMemoryBarrier MakeDmaBarrier(VulkanBuffer* buffer, uint64_t offset, ui
 	barrier.dstAccessMask       = destination;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.buffer              = buffer->buffer;
+	barrier.buffer              = buffer.buffer;
 	barrier.offset              = offset;
 	barrier.size                = size;
 	return barrier;
 }
 
-vk::CommandBuffer GetDmaCommandBuffer(CommandBuffer* command) {
-	if (command == nullptr) {
-		EXIT("BufferCache: invalid DMA command buffer, command=%p\n",
-		     static_cast<const void*>(command));
-	}
-	return command->Handle();
+vk::CommandBuffer GetDmaCommandBuffer(CommandBuffer& command) {
+	return command.Handle();
 }
 } // namespace
 
-void BufferCache::FillBuffer(CommandBuffer* command, GraphicContext* ctx, uint64_t vaddr,
-                             uint64_t size, uint32_t value) {
+void BufferCache::FillBuffer(CommandBuffer* command, uint64_t vaddr, uint64_t size,
+                             uint32_t value) {
 	if ((vaddr & 3u) != 0 || (size & 3u) != 0) {
 		EXIT("BufferCache: fill range must be dword aligned, addr=0x%016" PRIx64
 		     " size=0x%016" PRIx64 "\n",
@@ -1114,15 +1081,16 @@ void BufferCache::FillBuffer(CommandBuffer* command, GraphicContext* ctx, uint64
 			     vaddr, size);
 		}
 	}
-	const auto [dst, dst_offset] = ObtainBuffer(command, ctx, vaddr, size, true, false);
+	EXIT_IF(command == nullptr);
+	const auto [dst, dst_offset] = ObtainBuffer(*command, vaddr, size, true, false);
 	const auto before            = MakeDmaBarrier(
 	    dst, dst_offset, size, vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
 	    vk::AccessFlagBits::eTransferWrite);
-	const auto vk_buffer = GetDmaCommandBuffer(command);
+	const auto vk_buffer = GetDmaCommandBuffer(*command);
 	vk_buffer.pipelineBarrier(
 	    vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer,
 	    vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &before, 0, nullptr);
-	vk_buffer.fillBuffer(dst->buffer, dst_offset, size, value);
+	vk_buffer.fillBuffer(dst.buffer, dst_offset, size, value);
 	const auto after =
 	    MakeDmaBarrier(dst, dst_offset, size, vk::AccessFlagBits::eTransferWrite,
 	                   vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite);
@@ -1131,8 +1099,8 @@ void BufferCache::FillBuffer(CommandBuffer* command, GraphicContext* ctx, uint64
 	                          vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &after, 0, nullptr);
 }
 
-void BufferCache::CopyBuffer(CommandBuffer* command, GraphicContext* ctx, uint64_t dst_vaddr,
-                             uint64_t src_vaddr, uint64_t size) {
+void BufferCache::CopyBuffer(CommandBuffer* command, uint64_t dst_vaddr, uint64_t src_vaddr,
+                             uint64_t size) {
 	if (dst_vaddr == 0 || src_vaddr == 0 || size == 0 ||
 	    ((dst_vaddr | src_vaddr | size) & 3u) != 0 || size > UINT64_MAX - dst_vaddr ||
 	    size > UINT64_MAX - src_vaddr ||
@@ -1195,10 +1163,11 @@ void BufferCache::CopyBuffer(CommandBuffer* command, GraphicContext* ctx, uint64
 			     src_vaddr, dst_vaddr, size);
 		}
 	}
-	const auto [src, src_offset] = ObtainBuffer(command, ctx, src_vaddr, size, false, true);
+	EXIT_IF(command == nullptr);
+	const auto [src, src_offset] = ObtainBuffer(*command, src_vaddr, size, false, true);
 	const auto [dst, dst_offset] =
-	    ObtainBuffer(command, ctx, dst_vaddr, size, true, false, dst_image_transition);
-	if (src == dst && src_offset < dst_offset + size && dst_offset < src_offset + size) {
+	    ObtainBuffer(*command, dst_vaddr, size, true, false, dst_image_transition);
+	if (&src == &dst && src_offset < dst_offset + size && dst_offset < src_offset + size) {
 		EXIT("BufferCache: resolved Vulkan copy ranges overlap, src_offset=0x%016" PRIx64
 		     " dst_offset=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
 		     src_offset, dst_offset, size);
@@ -1210,12 +1179,12 @@ void BufferCache::CopyBuffer(CommandBuffer* command, GraphicContext* ctx, uint64
 	    MakeDmaBarrier(src, src_offset, size, vk::AccessFlagBits::eMemoryWrite,
 	                   vk::AccessFlagBits::eTransferRead),
 	};
-	const auto vk_buffer = GetDmaCommandBuffer(command);
+	const auto vk_buffer = GetDmaCommandBuffer(*command);
 	vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                          vk::PipelineStageFlagBits::eTransfer,
 	                          vk::DependencyFlagBits::eByRegion, 0, nullptr, 2, before, 0, nullptr);
 	const vk::BufferCopy copy {src_offset, dst_offset, size};
-	vk_buffer.copyBuffer(src->buffer, dst->buffer, 1, &copy);
+	vk_buffer.copyBuffer(src.buffer, dst.buffer, 1, &copy);
 	const vk::BufferMemoryBarrier after[] = {
 	    MakeDmaBarrier(dst, dst_offset, size, vk::AccessFlagBits::eTransferWrite,
 	                   vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite),

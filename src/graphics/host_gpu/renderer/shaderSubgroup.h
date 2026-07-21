@@ -19,11 +19,20 @@ struct ShaderSubgroupConfiguration {
 	uint32_t           required_size = 0;
 };
 
-ShaderLaneMaskMode SelectGraphicsLaneMaskMode(const GraphicContext& context,
-                                              uint32_t              guest_wave_size);
+struct ShaderSubgroupCapabilities {
+	explicit ShaderSubgroupCapabilities(const GraphicContext& graphics);
 
-ShaderSubgroupConfiguration ConfigureShaderSubgroup(const GraphicContext&                context,
-                                                    vk::ShaderStageFlagBits              stage,
+	uint32_t             subgroup_size     = 0;
+	uint32_t             min_subgroup_size = 0;
+	uint32_t             max_subgroup_size = 0;
+	vk::ShaderStageFlags required_subgroup_size_stages;
+	bool                 subgroup_size_control_enabled = false;
+};
+
+ShaderLaneMaskMode SelectGraphicsLaneMaskMode(uint32_t guest_wave_size);
+
+ShaderSubgroupConfiguration ConfigureShaderSubgroup(const ShaderSubgroupCapabilities& capabilities,
+                                                    vk::ShaderStageFlagBits           stage,
                                                     const ShaderRecompiler::IR::Program& program);
 
 } // namespace Libs::Graphics

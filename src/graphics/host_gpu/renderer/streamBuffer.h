@@ -18,17 +18,17 @@ struct VulkanBuffer;
 // backend with scheduler watches will not change descriptor/render call sites.
 class HostStreamBuffer final {
 public:
-	HostStreamBuffer();
+	explicit HostStreamBuffer(GraphicContext& graphics);
 	~HostStreamBuffer();
 	KYTY_CLASS_NO_COPY(HostStreamBuffer);
 
-	[[nodiscard]] bool Copy(GraphicContext* ctx, const void* src, uint64_t size, uint64_t alignment,
-	                        VulkanBuffer** out_buffer, uint64_t* out_offset, uint64_t* out_range);
+	[[nodiscard]] bool Copy(const void* src, uint64_t size, uint64_t alignment,
+	                        VulkanBuffer*& out_buffer, uint64_t& out_offset, uint64_t& out_range);
 	void               Reset() noexcept;
 	void               Release() noexcept;
 
 private:
-	void EnsureBuffer(GraphicContext* ctx);
+	void EnsureBuffer();
 
 	// Interim fence-scoped backend: one command processor's eight live command buffers reserve up
 	// to 128 MiB lazily. Additional active processors scale that aggregate until this backend is
@@ -36,7 +36,7 @@ private:
 	static constexpr uint64_t CAPACITY = 16ull * 1024ull * 1024ull;
 
 	mutable std::mutex            m_mutex;
-	GraphicContext*               m_ctx = nullptr;
+	GraphicContext&               m_graphics;
 	std::unique_ptr<VulkanBuffer> m_buffer;
 	void*                         m_mapped = nullptr;
 	uint64_t                      m_offset = 0;

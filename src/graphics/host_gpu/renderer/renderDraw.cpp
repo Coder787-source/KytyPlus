@@ -70,7 +70,7 @@ static std::atomic<uint32_t> g_mrt_state_log_count        = 0;
 static std::atomic<uint32_t> g_shader_stage_log_count     = 0;
 static std::atomic<uint32_t> g_framebuffer_skip_log_count = 0;
 
-static bool ResolveColorTargets(uint64_t submit_id, CommandBuffer* buffer, const HW::Context& hw,
+static bool ResolveColorTargets(uint64_t submit_id, RenderCommandBuffer& buffer,
                                 uint32_t render_target_slice_offset);
 
 static const char* RenderColorTypeName(RenderColorType type) {
@@ -87,8 +87,10 @@ static bool IsDualSourceBlendFactor(uint32_t factor) {
 }
 
 static void LogFramebufferSkip(const char* draw_name, const RenderColorInfo& color,
-                               const RenderDepthInfo& depth, const HW::Context* ctx,
-                               const HW::UserConfig* ucfg, uint32_t index_count, uint32_t flags) {
+                               const RenderDepthInfo& depth, const RenderCommandBuffer& buffer,
+                               uint32_t index_count, uint32_t flags) {
+	const auto& ctx  = buffer.GetRegisters();
+	const auto& ucfg = buffer.GetUserConfig();
 	if (!graphics_debug_dump_enabled()) {
 		return;
 	}
@@ -104,19 +106,17 @@ static void LogFramebufferSkip(const char* draw_name, const RenderColorInfo& col
 	    " prim=%u index_count=%u flags=0x%08" PRIx32 "\n",
 	    log_id, draw_name, RenderColorTypeName(color.type), color.base_addr, color.buffer_size,
 	    color.vulkan_buffer != nullptr ? "yes" : "no", VulkanToString(depth.format).c_str(),
-	    depth.vulkan_buffer != nullptr ? "yes" : "no", depth.vaddr_num,
-	    ctx != nullptr ? ctx->GetRenderTargetMask() : 0, ucfg != nullptr ? ucfg->GetPrimType() : 0,
-	    index_count, flags);
+	    depth.vulkan_buffer != nullptr ? "yes" : "no", depth.vaddr_num, ctx.GetRenderTargetMask(),
+	    ucfg.GetPrimType(), index_count, flags);
 }
 
-static void LogMrtState(const char* draw_name, const HW::Context* ctx,
+static void LogMrtState(const char* draw_name, const RenderCommandBuffer& buffer,
                         const ShaderPixelInputInfo& ps_input_info) {
-	EXIT_IF(ctx == nullptr);
-
-	const auto& sh_regs        = ctx->GetShaderRegisters();
-	const auto  rt_mask        = ctx->GetRenderTargetMask();
+	const auto& ctx            = buffer.GetRegisters();
+	const auto& sh_regs        = ctx.GetShaderRegisters();
+	const auto  rt_mask        = ctx.GetRenderTargetMask();
 	const auto  cb_shader_mask = sh_regs.m_cbShaderMask;
-	const auto& bc0            = ctx->GetBlendControl(0);
+	const auto& bc0            = ctx.GetBlendControl(0);
 
 	bool interesting = rt_mask != 0x0f || (cb_shader_mask & ~0x0fu) != 0 ||
 	                   IsDualSourceBlendFactor(bc0.color_srcblend) ||
@@ -125,7 +125,7 @@ static void LogMrtState(const char* draw_name, const HW::Context* ctx,
 	                                                 IsDualSourceBlendFactor(bc0.alpha_destblend)));
 
 	for (uint32_t i = 1; i < 8; i++) {
-		const auto& rt = ctx->GetRenderTarget(i);
+		const auto& rt = ctx.GetRenderTarget(i);
 		if (rt.base.addr != 0 || ps_input_info.target_output_mode[i] != 0 ||
 		    ((rt_mask >> (i * 4u)) & 0x0fu) != 0 || ((cb_shader_mask >> (i * 4u)) & 0x0fu) != 0) {
 			interesting = true;
@@ -148,8 +148,8 @@ static void LogMrtState(const char* draw_name, const HW::Context* ctx,
 	     bc0.separate_alpha_blend ? "true" : "false");
 
 	for (uint32_t i = 0; i < 8; i++) {
-		const auto& rt  = ctx->GetRenderTarget(i);
-		const auto& bc  = ctx->GetBlendControl(i);
+		const auto& rt  = ctx.GetRenderTarget(i);
+		const auto& bc  = ctx.GetBlendControl(i);
 		const auto  ctm = (rt_mask >> (i * 4u)) & 0x0fu;
 		const auto  csm = (cb_shader_mask >> (i * 4u)) & 0x0fu;
 
@@ -171,10 +171,11 @@ static void LogMrtState(const char* draw_name, const HW::Context* ctx,
 }
 
 static void LogDrawTargetState(const char* draw_name, const RenderColorInfo& color,
-                               const RenderDepthInfo& depth, const HW::Context* ctx,
-                               const HW::UserConfig*       ucfg,
+                               const RenderDepthInfo& depth, const RenderCommandBuffer& buffer,
                                const ShaderPixelInputInfo& ps_input_info, uint32_t index_count,
                                uint32_t flags) {
+	const auto& ctx  = buffer.GetRegisters();
+	const auto& ucfg = buffer.GetUserConfig();
 	if (color.type == RenderColorType::NoColorOutput) {
 		return;
 	}
@@ -184,13 +185,10 @@ static void LogDrawTargetState(const char* draw_name, const RenderColorInfo& col
 		return;
 	}
 
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ucfg == nullptr);
-
-	const auto& cc             = ctx->GetColorControl();
-	const auto& bc             = ctx->GetBlendControl(color.target_slot);
-	const auto& dc             = ctx->GetDepthControl();
-	const auto& vp             = ctx->GetScreenViewport();
+	const auto& cc             = ctx.GetColorControl();
+	const auto& bc             = ctx.GetBlendControl(color.target_slot);
+	const auto& dc             = ctx.GetDepthControl();
+	const auto& vp             = ctx.GetScreenViewport();
 	const auto& vp0            = vp.viewports[0];
 	const auto& ps_resources   = ps_input_info.stage.program->info;
 	const auto  sampled_images = std::count_if(
@@ -200,7 +198,7 @@ static void LogDrawTargetState(const char* draw_name, const RenderColorInfo& col
 	    });
 
 	vk::Extent2D extent = color.vulkan_buffer != nullptr ? color.extent : vk::Extent2D {};
-	auto         sc     = calc_final_scissor(vp, ctx->GetScanModeControl(), extent);
+	auto         sc     = calc_final_scissor(vp, ctx.GetScanModeControl(), extent);
 
 	LOGF(
 	    "DrawTargetState[%u]: frame=%d %s target=%s addr=0x%010" PRIx64
@@ -210,8 +208,8 @@ static void LogDrawTargetState(const char* draw_name, const RenderColorInfo& col
 	    " depth_test=%s depth_write=%s depth_func=%u depth_clear=%s viewport=(%.1f,%.1f %.1fx%.1f) "
 	    "scissor=(%d,%d)-(%d,%d)\n",
 	    log_id, GraphicsRunGetFrameNum(), draw_name, RenderColorTypeName(color.type),
-	    color.base_addr, extent.width, extent.height, ucfg->GetPrimType(), index_count, flags,
-	    ctx->GetRenderTargetMask(), color.color_clear_enable ? "true" : "false",
+	    color.base_addr, extent.width, extent.height, ucfg.GetPrimType(), index_count, flags,
+	    ctx.GetRenderTargetMask(), color.color_clear_enable ? "true" : "false",
 	    color.color_clear_value.float32[0], color.color_clear_value.float32[1],
 	    color.color_clear_value.float32[2], color.color_clear_value.float32[3], cc.mode, cc.op,
 	    bc.enable ? "true" : "false", bc.color_srcblend, bc.color_destblend, bc.color_comb_fcn,
@@ -223,7 +221,7 @@ static void LogDrawTargetState(const char* draw_name, const RenderColorInfo& col
 	    vp0.yoffset - vp0.yscale, vp0.xscale * 2.0f, vp0.yscale * 2.0f, sc.left, sc.top, sc.right,
 	    sc.bottom);
 
-	LogMrtState(draw_name, ctx, ps_input_info);
+	LogMrtState(draw_name, buffer, ps_input_info);
 }
 
 static void LogDrawInputState(const RenderColorInfo&       color,
@@ -305,11 +303,11 @@ static void LogDrawInputState(const RenderColorInfo&       color,
 	}
 }
 
-static void VulkanCmdSetColorWriteEnableEXT(GraphicContext* ctx, vk::CommandBuffer command_buffer,
-                                            uint32_t          attachment_count,
-                                            const vk::Bool32* p_color_write_enables) {
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ctx->device == nullptr);
+static void VulkanCmdSetColorWriteEnableEXT(const RenderCommandBuffer& buffer,
+                                            vk::CommandBuffer          command_buffer,
+                                            uint32_t                   attachment_count,
+                                            const vk::Bool32*          p_color_write_enables) {
+	EXIT_IF(buffer.GetGraphics().device == nullptr);
 
 	if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetColorWriteEnableEXT == nullptr) {
 		EXIT("vkCmdSetColorWriteEnableEXT not present\n");
@@ -317,11 +315,12 @@ static void VulkanCmdSetColorWriteEnableEXT(GraphicContext* ctx, vk::CommandBuff
 	command_buffer.setColorWriteEnableEXT(attachment_count, p_color_write_enables);
 }
 
-static PipelineDynamicParameters BuildGraphicsDynamicParams(const HW::Context&     ctx,
-                                                            const RenderColorInfo* colors,
-                                                            uint32_t               color_count,
-                                                            const RenderDepthInfo& depth) {
+static PipelineDynamicParameters BuildGraphicsDynamicParams(const RenderCommandBuffer& buffer,
+                                                            const RenderColorInfo*     colors,
+                                                            uint32_t                   color_count,
+                                                            const RenderDepthInfo&     depth) {
 	EXIT_IF(colors == nullptr);
+	const auto& ctx = buffer.GetRegisters();
 
 	PipelineDynamicParameters ret {};
 	ret.color_write_count   = color_count;
@@ -362,7 +361,7 @@ static PipelineDynamicParameters BuildGraphicsDynamicParams(const HW::Context&  
 	return ret;
 }
 
-static void SetDynamicParams(vk::CommandBuffer                vk_buffer,
+static void SetDynamicParams(const RenderCommandBuffer& buffer, vk::CommandBuffer vk_buffer,
                              const PipelineDynamicParameters& dynamic_params) {
 	KYTY_PROFILER_FUNCTION();
 
@@ -414,14 +413,12 @@ static void SetDynamicParams(vk::CommandBuffer                vk_buffer,
 	for (uint32_t i = 0; i < dynamic_params.color_write_count; i++) {
 		enable[i] = (dynamic_params.color_write_enable[i] ? VK_TRUE : VK_FALSE);
 	}
-	VulkanCmdSetColorWriteEnableEXT(g_render_ctx->GetGraphicCtx(), vk_buffer,
-	                                dynamic_params.color_write_count, enable);
+	VulkanCmdSetColorWriteEnableEXT(buffer, vk_buffer, dynamic_params.color_write_count, enable);
 }
 
-static bool DrawHasValidVertexShader(const HW::Shader* sh_ctx) {
-	EXIT_IF(sh_ctx == nullptr);
+static bool DrawHasValidVertexShader(const HW::Shader& sh_ctx) {
 
-	const auto& vs = sh_ctx->GetVs();
+	const auto& vs = sh_ctx.GetVs();
 	return vs.gs_regs.chksum != 0 && ShaderAddressValid(vs.es_regs.data_addr);
 }
 
@@ -432,16 +429,14 @@ static bool PixelShaderHasDepthOrCoverageSideEffects(const HW::ShaderRegisters& 
 	       db.shader_execute_on_noop;
 }
 
-static bool ShouldSkipGeShader(const HW::Context* ctx, const HW::UserConfig* ucfg,
-                               const HW::Shader* sh_ctx) {
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ucfg == nullptr);
-	EXIT_IF(sh_ctx == nullptr);
-
-	const auto& sh_regs     = ctx->GetShaderRegisters();
-	const auto& ge_cntl     = ucfg->GetGeControl();
-	const auto& vertex_info = sh_ctx->GetVs();
-	const auto  stages      = ctx->GetShaderStages();
+static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
+	const auto& ctx         = buffer.GetRegisters();
+	const auto& ucfg        = buffer.GetUserConfig();
+	const auto& sh_ctx      = buffer.GetShaders();
+	const auto& sh_regs     = ctx.GetShaderRegisters();
+	const auto& ge_cntl     = ucfg.GetGeControl();
+	const auto& vertex_info = sh_ctx.GetVs();
+	const auto  stages      = ctx.GetShaderStages();
 
 	const auto is_known_gs_out_prim_type = [](uint32_t value) {
 		switch (static_cast<Prospero::GsOutputPrimitiveType>(value)) {
@@ -511,11 +506,11 @@ struct DrawCallInfo {
 	uint32_t             first_instance = 0;
 };
 
-static bool DrawHasActivePixelShader(const HW::Context* ctx, const HW::Shader* sh_ctx,
+static bool DrawHasActivePixelShader(const RenderCommandBuffer& buffer,
                                      const DrawRenderState& state, const DrawCallInfo& draw) {
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(sh_ctx == nullptr);
 	EXIT_IF(draw.name == nullptr);
+	const auto& ctx    = buffer.GetRegisters();
+	const auto& sh_ctx = buffer.GetShaders();
 
 	const bool with_depth = (state.depth_info.format != vk::Format::eUndefined &&
 	                         state.depth_info.vulkan_buffer != nullptr);
@@ -523,8 +518,8 @@ static bool DrawHasActivePixelShader(const HW::Context* ctx, const HW::Shader* s
 		return true;
 	}
 
-	const auto& sh_regs = ctx->GetShaderRegisters();
-	const auto& ps      = sh_ctx->GetPs();
+	const auto& sh_regs = ctx.GetShaderRegisters();
+	const auto& ps      = sh_ctx.GetPs();
 	return ShaderAddressValid(ps.ps_regs.data_addr) &&
 	       PixelShaderHasDepthOrCoverageSideEffects(sh_regs);
 }
@@ -538,8 +533,9 @@ enum class CbColorMode : uint8_t {
 	DccDecompress      = 6,
 };
 
-static bool ConsumeMetadataColorOperation(const HW::Context& ctx) {
-	const auto mode = ctx.GetColorControl().mode;
+static bool ConsumeMetadataColorOperation(const RenderCommandBuffer& buffer) {
+	const auto& ctx  = buffer.GetRegisters();
+	const auto  mode = ctx.GetColorControl().mode;
 	// These AGC CB modes run color-buffer metadata/decompression operations. The shader is a
 	// dummy vehicle for the CB, and its exported color must not be applied as a normal draw.
 	// Kyty currently stores host images as expanded Vulkan images and does not track CMASK/DCC
@@ -570,176 +566,160 @@ static uint64_t VertexBufferDescriptorSize(const ShaderVertexInputBuffer& buffer
 	                           : buffer.num_records);
 }
 
-static void SetDrawDebugPhase(CommandBuffer* buffer, uint64_t submit_id, const DrawCallInfo& draw,
-                              uint32_t phase) {
-	EXIT_IF(buffer == nullptr);
+static void SetDrawDebugPhase(RenderCommandBuffer& buffer, uint64_t submit_id,
+                              const DrawCallInfo& draw, uint32_t phase) {
 	EXIT_IF(draw.name == nullptr);
 
-	buffer->SetDebugInfo(static_cast<uint32_t>(draw.debug_op), submit_id, phase, draw.index_count,
-	                     draw.flags, draw.instance_count, draw.first_instance);
+	buffer.SetDebugInfo(static_cast<uint32_t>(draw.debug_op), submit_id, phase, draw.index_count,
+	                    draw.flags, draw.instance_count, draw.first_instance);
 }
 
-static bool GetDrawTopology(const HW::UserConfig* ucfg, bool auto_draw, bool use_ngg_rectlist_draw,
-                            vk::PrimitiveTopology* topology) {
-	EXIT_IF(ucfg == nullptr);
-	EXIT_IF(topology == nullptr);
+static bool GetDrawTopology(const HW::UserConfig& ucfg, bool auto_draw, bool use_ngg_rectlist_draw,
+                            vk::PrimitiveTopology& topology) {
 
-	*topology = vk::PrimitiveTopology::ePointList;
+	topology = vk::PrimitiveTopology::ePointList;
 
-	switch (static_cast<Prospero::PrimitiveType>(ucfg->GetPrimType())) {
+	switch (static_cast<Prospero::PrimitiveType>(ucfg.GetPrimType())) {
 		case Prospero::PrimitiveType::kNone: return false;
 		case Prospero::PrimitiveType::kPointList:
-			*topology = vk::PrimitiveTopology::ePointList;
+			topology = vk::PrimitiveTopology::ePointList;
 			break;
-		case Prospero::PrimitiveType::kLineList:
-			*topology = vk::PrimitiveTopology::eLineList;
-			break;
+		case Prospero::PrimitiveType::kLineList: topology = vk::PrimitiveTopology::eLineList; break;
 		case Prospero::PrimitiveType::kLineStrip:
-			*topology = vk::PrimitiveTopology::eLineStrip;
+			topology = vk::PrimitiveTopology::eLineStrip;
 			break;
 		case Prospero::PrimitiveType::kTriList:
-			*topology = vk::PrimitiveTopology::eTriangleList;
+			topology = vk::PrimitiveTopology::eTriangleList;
 			break;
 		case Prospero::PrimitiveType::kTriFan:
-			*topology = vk::PrimitiveTopology::eTriangleFan;
+			topology = vk::PrimitiveTopology::eTriangleFan;
 			break;
 		case Prospero::PrimitiveType::kTriStrip:
-			*topology = vk::PrimitiveTopology::eTriangleStrip;
+			topology = vk::PrimitiveTopology::eTriangleStrip;
 			break;
 		case Prospero::PrimitiveType::kRectList:
-			*topology = (auto_draw && use_ngg_rectlist_draw ? vk::PrimitiveTopology::eTriangleStrip
-			                                                : vk::PrimitiveTopology::eTriangleList);
+			topology = (auto_draw && use_ngg_rectlist_draw ? vk::PrimitiveTopology::eTriangleStrip
+			                                               : vk::PrimitiveTopology::eTriangleList);
 			break;
 		case Prospero::PrimitiveType::kRectListLegacy:
 			if (!auto_draw) {
-				EXIT("unknown primitive type: %u\n", ucfg->GetPrimType());
+				EXIT("unknown primitive type: %u\n", ucfg.GetPrimType());
 			}
-			*topology = vk::PrimitiveTopology::eTriangleStrip;
+			topology = vk::PrimitiveTopology::eTriangleStrip;
 			break;
 		case Prospero::PrimitiveType::kQuadListLegacy:
-			*topology = vk::PrimitiveTopology::eTriangleFan;
+			topology = vk::PrimitiveTopology::eTriangleFan;
 			break;
-		default: EXIT("unknown primitive type: %u\n", ucfg->GetPrimType());
+		default: EXIT("unknown primitive type: %u\n", ucfg.GetPrimType());
 	}
 
 	return true;
 }
 
-static bool PrepareDrawRenderState(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
-                                   HW::UserConfig* ucfg, HW::Shader* sh_ctx,
+static bool PrepareDrawRenderState(uint64_t submit_id, RenderCommandBuffer& buffer,
                                    const DrawCallInfo& draw, uint32_t render_target_slice_offset,
                                    bool skip_null_framebuffer, bool log_setup_phases,
-                                   DrawRenderState* state) {
-	EXIT_IF(buffer == nullptr);
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ucfg == nullptr);
-	EXIT_IF(sh_ctx == nullptr);
+                                   DrawRenderState& state) {
 	EXIT_IF(draw.name == nullptr);
-	EXIT_IF(state == nullptr);
+	auto& ctx = buffer.GetRegisters();
 
 	if (log_setup_phases) {
 		LogDrawPhase(draw.name, "ResolveRenderDepthTarget");
 	}
-	ResolveRenderDepthTarget(submit_id, buffer, *ctx, &state->depth_info);
+	ResolveRenderDepthTarget(submit_id, buffer, state.depth_info);
 
-	if (ResolveColorTargets(submit_id, buffer, *ctx, render_target_slice_offset)) {
-		MarkRenderTargetGpuWritten(state->depth_info);
+	if (ResolveColorTargets(submit_id, buffer, render_target_slice_offset)) {
+		MarkRenderTargetGpuWritten(state.depth_info);
 		return false;
 	}
-	MarkRenderTargetGpuWritten(state->depth_info);
+	MarkRenderTargetGpuWritten(state.depth_info);
 
 	if (log_setup_phases) {
 		LogDrawPhase(draw.name, "ResolveRenderColorTarget");
 	}
 	for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; slot++) {
-		if (slot == 0 || (render_target_mask_slot(ctx->GetRenderTargetMask(), slot) != 0 &&
-		                  ctx->GetRenderTarget(slot).base.addr != 0)) {
-			ResolveRenderColorTarget(submit_id, buffer, *ctx,
-			                         &state->color_info[state->color_count],
+		if (slot == 0 || (render_target_mask_slot(ctx.GetRenderTargetMask(), slot) != 0 &&
+		                  ctx.GetRenderTarget(slot).base.addr != 0)) {
+			ResolveRenderColorTarget(submit_id, buffer, state.color_info[state.color_count],
 			                         render_target_slice_offset, slot);
-			if (state->color_info[state->color_count].vulkan_buffer != nullptr) {
-				MarkRenderTargetGpuWritten(state->color_info[state->color_count]);
-				state->color_count++;
+			if (state.color_info[state.color_count].vulkan_buffer != nullptr) {
+				MarkRenderTargetGpuWritten(state.color_info[state.color_count]);
+				state.color_count++;
 			}
 		}
 	}
 
-	const bool with_depth = (state->depth_info.format != vk::Format::eUndefined &&
-	                         state->depth_info.vulkan_buffer != nullptr);
-	if (state->color_count == 0 && !with_depth) {
-		LogFramebufferSkip(draw.name, state->color_info[0], state->depth_info, ctx, ucfg,
+	const bool with_depth = (state.depth_info.format != vk::Format::eUndefined &&
+	                         state.depth_info.vulkan_buffer != nullptr);
+	if (state.color_count == 0 && !with_depth) {
+		LogFramebufferSkip(draw.name, state.color_info[0], state.depth_info, buffer,
 		                   draw.index_count, draw.flags);
 		return false;
 	}
-	state->ps_active = DrawHasActivePixelShader(ctx, sh_ctx, *state, draw);
+	state.ps_active = DrawHasActivePixelShader(buffer, state, draw);
 
 	if (log_setup_phases) {
 		LogDrawPhase(draw.name, "CreateFramebuffer");
 	}
-	state->framebuffer = g_render_ctx->GetFramebufferCache()->CreateFramebuffer(
-	    state->color_info, state->color_count, &state->depth_info);
+	state.framebuffer = GetRenderContext().GetFramebufferCache().CreateFramebuffer(
+	    state.color_info, state.color_count, state.depth_info);
 
-	if (state->framebuffer == nullptr && skip_null_framebuffer) {
-		LogFramebufferSkip(draw.name, state->color_info[0], state->depth_info, ctx, ucfg,
+	if (state.framebuffer == nullptr && skip_null_framebuffer) {
+		LogFramebufferSkip(draw.name, state.color_info[0], state.depth_info, buffer,
 		                   draw.index_count, draw.flags);
 		return false;
 	}
-	EXIT_NOT_IMPLEMENTED(state->framebuffer == nullptr);
-	EXIT_NOT_IMPLEMENTED(state->framebuffer->render_pass == nullptr);
+	EXIT_NOT_IMPLEMENTED(state.framebuffer == nullptr);
+	EXIT_NOT_IMPLEMENTED(state.framebuffer->render_pass == nullptr);
 
-	state->vk_buffer = buffer->Handle();
+	state.vk_buffer = buffer.Handle();
 
 	return true;
 }
 
-static void RefreshShaders(HW::Context* ctx, HW::Shader* sh_ctx, const DrawCallInfo& draw,
-                           bool log_phases, DrawRenderState* state) {
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(sh_ctx == nullptr);
+static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
+                           DrawRenderState& state) {
 	EXIT_IF(draw.name == nullptr);
-	EXIT_IF(state == nullptr);
+	auto& ctx    = buffer.GetRegisters();
+	auto& sh_ctx = buffer.GetShaders();
 
-	const auto& vertex_shader_info = sh_ctx->GetVs();
-	const auto& pixel_shader_info  = sh_ctx->GetPs();
-	const auto& shader_regs        = ctx->GetShaderRegisters();
+	const auto& vertex_shader_info = sh_ctx.GetVs();
+	const auto& pixel_shader_info  = sh_ctx.GetPs();
+	const auto& shader_regs        = ctx.GetShaderRegisters();
 
-	state->vs_shader     = {};
-	state->ps_shader     = {};
-	state->ps_input_info = {};
+	state.vs_shader     = {};
+	state.ps_shader     = {};
+	state.ps_input_info = {};
 	std::array<Prospero::ColorComponentMapping, RENDER_COLOR_ATTACHMENTS_MAX>
 	    target_export_mapping {};
-	for (uint32_t i = 0; i < state->color_count; i++) {
-		target_export_mapping[state->color_info[i].target_slot] =
-		    state->color_info[i].export_mapping;
+	for (uint32_t i = 0; i < state.color_count; i++) {
+		target_export_mapping[state.color_info[i].target_slot] = state.color_info[i].export_mapping;
 	}
-	EXIT_IF(g_render_ctx == nullptr || g_render_ctx->GetGraphicCtx() == nullptr);
-	const auto lane_mask_mode = SelectGraphicsLaneMaskMode(*g_render_ctx->GetGraphicCtx(), 64u);
+	const auto lane_mask_mode = SelectGraphicsLaneMaskMode(64u);
 
 	if (log_phases) {
 		LogDrawPhase(draw.name, "ShaderCompileInfoVS");
 	}
-	if (!ShaderCompileInfoVS(&vertex_shader_info, &shader_regs, lane_mask_mode,
-	                         &state->vs_input_info, &state->vs_shader)) {
+	if (!ShaderCompileInfoVS(vertex_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
+	                         state.vs_shader)) {
 		EXIT("ShaderCompileInfoVS failed for draw %s\n", draw.name);
 	}
 
-	if (!state->ps_active) {
+	if (!state.ps_active) {
 		return;
 	}
 	if (log_phases) {
 		LogDrawPhase(draw.name, "ShaderCompileInfoPS");
 	}
-	if (!ShaderCompileInfoPS(&pixel_shader_info, &shader_regs, lane_mask_mode,
-	                         &state->vs_input_info, target_export_mapping, &state->ps_input_info,
-	                         &state->ps_shader)) {
+	if (!ShaderCompileInfoPS(pixel_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
+	                         target_export_mapping, state.ps_input_info, state.ps_shader)) {
 		EXIT("ShaderCompileInfoPS failed for draw %s\n", draw.name);
 	}
 }
 
-static void BindDrawVertexBuffers(uint64_t submit_id, CommandBuffer* buffer,
+static void BindDrawVertexBuffers(uint64_t submit_id, RenderCommandBuffer& buffer,
                                   const DrawCallInfo& draw, vk::CommandBuffer vk_buffer,
                                   const ShaderVertexInputInfo& vs_input_info) {
-	EXIT_IF(buffer == nullptr);
 	EXIT_IF(draw.name == nullptr);
 	(void)submit_id;
 
@@ -752,13 +732,11 @@ static void BindDrawVertexBuffers(uint64_t submit_id, CommandBuffer* buffer,
 		vk::DeviceSize offset   = 0;
 
 		if (size == 0) {
-			vertices = g_render_ctx->GetBufferCache()->ObtainNullBuffer(
-			    buffer, g_render_ctx->GetGraphicCtx());
+			vertices = &GetRenderContext().GetBufferCache().ObtainNullBuffer(buffer);
 		} else {
-			auto binding = g_render_ctx->GetBufferCache()->ObtainBuffer(
-			    buffer, g_render_ctx->GetGraphicCtx(), addr, size);
-			vertices = binding.first;
-			offset   = binding.second;
+			auto binding = GetRenderContext().GetBufferCache().ObtainBuffer(buffer, addr, size);
+			vertices     = &binding.buffer;
+			offset       = binding.offset;
 		}
 		EXIT_NOT_IMPLEMENTED(vertices == nullptr);
 
@@ -766,7 +744,7 @@ static void BindDrawVertexBuffers(uint64_t submit_id, CommandBuffer* buffer,
 	}
 }
 
-static void BindDrawIndexBuffer(CommandBuffer* buffer, vk::CommandBuffer vk_buffer,
+static void BindDrawIndexBuffer(RenderCommandBuffer& buffer, vk::CommandBuffer vk_buffer,
                                 const DrawIndexBufferSource& source) {
 	if (!source.enabled) {
 		return;
@@ -777,27 +755,24 @@ static void BindDrawIndexBuffer(CommandBuffer* buffer, vk::CommandBuffer vk_buff
 	vk::DeviceSize index_offset = 0;
 	if (source.host_data != nullptr) {
 		vk::DeviceSize range = 0;
-		if (!g_render_ctx->GetBufferCache()->UploadHostData(buffer, g_render_ctx->GetGraphicCtx(),
-		                                                    source.host_data, source.size, 16,
-		                                                    &index_buffer, &index_offset, &range)) {
+		if (!GetRenderContext().GetBufferCache().UploadHostData(
+		        buffer, source.host_data, source.size, 16, index_buffer, index_offset, range)) {
 			EXIT("failed to upload host index buffer\n");
 		}
 	} else {
-		auto binding = g_render_ctx->GetBufferCache()->ObtainBuffer(
-		    buffer, g_render_ctx->GetGraphicCtx(), source.address, source.size);
-		index_buffer = binding.first;
-		index_offset = binding.second;
+		auto binding =
+		    GetRenderContext().GetBufferCache().ObtainBuffer(buffer, source.address, source.size);
+		index_buffer = &binding.buffer;
+		index_offset = binding.offset;
 	}
 	EXIT_IF(index_buffer == nullptr);
 	vk_buffer.bindIndexBuffer(index_buffer->buffer, index_offset, source.type);
 }
 
-static void LogDrawStateIfNeeded(HW::Context* ctx, HW::UserConfig* ucfg, const DrawCallInfo& draw,
+static void LogDrawStateIfNeeded(const RenderCommandBuffer& buffer, const DrawCallInfo& draw,
                                  const DrawRenderState& state, bool always_log,
                                  bool force_legacy_rect_log, uint32_t index_type_and_size,
                                  const void* index_addr) {
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ucfg == nullptr);
 	EXIT_IF(draw.name == nullptr);
 
 	if (!graphics_debug_dump_enabled()) {
@@ -809,7 +784,7 @@ static void LogDrawStateIfNeeded(HW::Context* ctx, HW::UserConfig* ucfg, const D
 	}
 
 	if (state.ps_active) {
-		LogDrawTargetState(draw.name, state.color_info[0], state.depth_info, ctx, ucfg,
+		LogDrawTargetState(draw.name, state.color_info[0], state.depth_info, buffer,
 		                   state.ps_input_info, draw.index_count, draw.flags);
 	}
 	LogDrawInputState(state.color_info[0], state.vs_input_info, index_type_and_size,
@@ -831,13 +806,12 @@ static bool IsHostExpandedRectListDrawSupported(const ShaderVertexInputInfo& vs_
 	return draw.index_count == 3 || draw.index_count == emit.draw_vertex_count;
 }
 
-static void EmitDrawPrimitives(const HW::UserConfig* ucfg, vk::CommandBuffer vk_buffer,
+static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_buffer,
                                const ShaderVertexInputInfo& vs_input_info, const DrawCallInfo& draw,
                                const DrawEmitInfo& emit) {
-	EXIT_IF(ucfg == nullptr);
 	EXIT_IF(draw.name == nullptr);
 
-	switch (static_cast<Prospero::PrimitiveType>(ucfg->GetPrimType())) {
+	switch (static_cast<Prospero::PrimitiveType>(ucfg.GetPrimType())) {
 		case Prospero::PrimitiveType::kPointList:
 		case Prospero::PrimitiveType::kLineList:
 		case Prospero::PrimitiveType::kLineStrip:
@@ -865,7 +839,7 @@ static void EmitDrawPrimitives(const HW::UserConfig* ucfg, vk::CommandBuffer vk_
 			break;
 		case Prospero::PrimitiveType::kRectListLegacy:
 			if (emit.indexed) {
-				EXIT("unknown primitive type: %u\n", ucfg->GetPrimType());
+				EXIT("unknown primitive type: %u\n", ucfg.GetPrimType());
 			}
 			// Sarah
 			EXIT_NOT_IMPLEMENTED(!(draw.index_count == 3 && vs_input_info.buffers_num == 0));
@@ -883,67 +857,63 @@ static void EmitDrawPrimitives(const HW::UserConfig* ucfg, vk::CommandBuffer vk_
 				}
 			}
 			break;
-		default: EXIT("unknown primitive type: %u\n", ucfg->GetPrimType());
+		default: EXIT("unknown primitive type: %u\n", ucfg.GetPrimType());
 	}
 }
 
-static void ExecutePreparedDraw(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
-                                HW::UserConfig* ucfg, HW::Shader* sh_ctx, const DrawCallInfo& draw,
-                                DrawRenderState* state, vk::PrimitiveTopology topology,
-                                const DrawEmitInfo& emit, const DrawIndexBufferSource& index_source,
-                                bool log_pipeline_phase, bool set_bind_debug, bool set_auto_debug) {
-	EXIT_IF(buffer == nullptr);
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ucfg == nullptr);
-	EXIT_IF(sh_ctx == nullptr);
+static void ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer& buffer,
+                                const DrawCallInfo& draw, DrawRenderState& state,
+                                vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
+                                const DrawIndexBufferSource& index_source, bool log_pipeline_phase,
+                                bool set_bind_debug, bool set_auto_debug) {
 	EXIT_IF(draw.name == nullptr);
-	EXIT_IF(state == nullptr);
+	auto& ucfg = buffer.GetUserConfig();
 
 	for (;;) {
-		const auto recording_generation = buffer->GetRecordingGeneration();
+		const auto recording_generation = buffer.GetRecordingGeneration();
 		if (log_pipeline_phase) {
 			LogDrawPhase(draw.name, "CreatePipeline");
 		}
-		auto* pipeline = g_render_ctx->GetPipelineCache()->CreateGraphicsPipeline(
-		    state->framebuffer, state->color_info, state->color_count, &state->depth_info,
-		    &state->vs_input_info, ctx, sh_ctx, &state->ps_input_info, topology, state->ps_active,
-		    state->vs_shader, state->ps_shader);
+		auto& pipeline = GetRenderContext().GetPipelineCache().CreateGraphicsPipeline(
+		    *state.framebuffer, state.color_info, state.color_count, state.depth_info,
+		    state.vs_input_info, buffer, &state.ps_input_info, topology, state.ps_active,
+		    state.vs_shader, state.ps_shader);
 
 		if (set_bind_debug) {
 			SetDrawDebugPhase(buffer, submit_id, draw, 0x100u);
 		}
-		state->vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->pipeline);
-		const auto dynamic_params = BuildGraphicsDynamicParams(
-		    *ctx, state->color_info, state->color_count, state->depth_info);
-		SetDynamicParams(state->vk_buffer, dynamic_params);
+		state.vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
+		const auto dynamic_params = BuildGraphicsDynamicParams(buffer, state.color_info,
+		                                                       state.color_count, state.depth_info);
+		SetDynamicParams(buffer, state.vk_buffer, dynamic_params);
 
 		// EXIT_NOT_IMPLEMENTED(vs_input_info.buffers_num > 1);
-		BindDrawVertexBuffers(submit_id, buffer, draw, state->vk_buffer, state->vs_input_info);
+		BindDrawVertexBuffers(submit_id, buffer, draw, state.vk_buffer, state.vs_input_info);
 
 		LogDrawPhase(draw.name, "BindDescriptorsVS");
 		if (set_auto_debug) {
 			SetDrawDebugPhase(buffer, submit_id, draw, 0x200u);
 		}
 		BindDescriptors(submit_id, buffer, vk::PipelineBindPoint::eGraphics,
-		                pipeline->pipeline_layout, state->vs_input_info.stage,
+		                pipeline.pipeline_layout, state.vs_input_info.stage,
 		                vk::ShaderStageFlagBits::eVertex, DescriptorCache::Stage::Vertex);
 
-		if (state->ps_active) {
+		if (state.ps_active) {
 			LogDrawPhase(draw.name, "BindDescriptorsPS");
 			if (set_auto_debug) {
 				SetDrawDebugPhase(buffer, submit_id, draw, 0x300u);
 			}
 			BindDescriptors(submit_id, buffer, vk::PipelineBindPoint::eGraphics,
-			                pipeline->pipeline_layout, state->ps_input_info.stage,
+			                pipeline.pipeline_layout, state.ps_input_info.stage,
 			                vk::ShaderStageFlagBits::eFragment, DescriptorCache::Stage::Pixel);
 		}
-		if (buffer->GetRecordingGeneration() != recording_generation) {
+		if (buffer.GetRecordingGeneration() != recording_generation) {
 			continue;
 		}
 		// Index data may use this command buffer's host stream. Resolve it only after the other
 		// fault-capable bindings, and rebuild it whenever a fault reset changes the generation.
-		BindDrawIndexBuffer(buffer, state->vk_buffer, index_source);
-		if (buffer->GetRecordingGeneration() != recording_generation) {
+		BindDrawIndexBuffer(buffer, state.vk_buffer, index_source);
+		if (buffer.GetRecordingGeneration() != recording_generation) {
 			continue;
 		}
 
@@ -951,29 +921,29 @@ static void ExecutePreparedDraw(uint64_t submit_id, CommandBuffer* buffer, HW::C
 		if (set_auto_debug) {
 			SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
 		}
-		buffer->BeginRenderPass(state->framebuffer, state->color_info, state->color_count,
-		                        &state->depth_info);
+		buffer.BeginRenderPass(*state.framebuffer, state.color_info, state.color_count,
+		                       state.depth_info);
 		if (set_auto_debug) {
 			SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 		}
 
-		EmitDrawPrimitives(ucfg, state->vk_buffer, state->vs_input_info, draw, emit);
+		EmitDrawPrimitives(ucfg, state.vk_buffer, state.vs_input_info, draw, emit);
 
 		if (set_auto_debug) {
 			SetDrawDebugPhase(buffer, submit_id, draw, 0x600u);
 		}
-		buffer->EndRenderPass();
+		buffer.EndRenderPass();
 		vk::PipelineStageFlags shader_write_stages = {};
-		if (HasShaderBufferWrites(state->vs_input_info.stage)) {
+		if (HasShaderBufferWrites(state.vs_input_info.stage)) {
 			shader_write_stages |= vk::PipelineStageFlagBits::eVertexShader;
 		}
-		if (state->ps_active) {
-			if (HasShaderBufferWrites(state->ps_input_info.stage)) {
+		if (state.ps_active) {
+			if (HasShaderBufferWrites(state.ps_input_info.stage)) {
 				shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
 			}
 		}
 		if (shader_write_stages) {
-			ShaderWriteBarrier(state->vk_buffer, shader_write_stages);
+			ShaderWriteBarrier(state.vk_buffer, shader_write_stages);
 		}
 		LogDrawPhase(draw.name, "EndRenderPass");
 		if (set_auto_debug) {
@@ -983,30 +953,27 @@ static void ExecutePreparedDraw(uint64_t submit_id, CommandBuffer* buffer, HW::C
 	}
 }
 
-void RenderDrawIndex(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
-                     HW::UserConfig* ucfg, HW::Shader* sh_ctx, uint32_t index_type_and_size,
+void RenderDrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t index_type_and_size,
                      uint32_t index_count, const void* index_addr, uint32_t flags, uint32_t type,
                      uint32_t instance_count, uint32_t render_target_slice_offset,
                      int32_t vertex_offset_add, uint32_t first_instance) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_IF(ctx == nullptr);
-	EXIT_IF(ucfg == nullptr);
-	EXIT_IF(g_render_ctx == nullptr);
-	EXIT_IF(buffer == nullptr);
-	EXIT_IF(buffer->IsInvalid());
+	EXIT_IF(buffer.IsInvalid());
+	auto& ucfg   = buffer.GetUserConfig();
+	auto& sh_ctx = buffer.GetShaders();
 
-	buffer->SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DrawIndex), submit_id,
-	                     index_count, flags, type, instance_count,
-	                     reinterpret_cast<uint64_t>(index_addr));
+	buffer.SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DrawIndex), submit_id,
+	                    index_count, flags, type, instance_count,
+	                    reinterpret_cast<uint64_t>(index_addr));
 
-	Common::LockGuard lock(g_render_ctx->GetMutex());
+	Common::LockGuard lock(GetRenderContext().GetMutex());
 
 	if (index_count == 0) {
 		return;
 	}
 
-	if (ConsumeMetadataColorOperation(*ctx)) {
+	if (ConsumeMetadataColorOperation(buffer)) {
 		return;
 	}
 
@@ -1014,14 +981,14 @@ void RenderDrawIndex(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx
 		return;
 	}
 
-	if (ShouldSkipGeShader(ctx, ucfg, sh_ctx)) {
+	if (ShouldSkipGeShader(buffer)) {
 		return;
 	}
 
 	if (graphics_debug_dump_enabled()) {
-		sh_print("GraphicsRenderDrawIndex():Shader:", *sh_ctx);
-		uc_print("GraphicsRenderDrawIndex():UserConfig:", *ucfg);
-		hw_print(*ctx);
+		sh_print("GraphicsRenderDrawIndex():Shader:", sh_ctx);
+		uc_print("GraphicsRenderDrawIndex():UserConfig:", ucfg);
+		hw_print(buffer);
 
 		LOGF("GraphicsRenderDrawIndex():Parameters:\n"
 		     "\t index_type_and_size = 0x%08" PRIx32 "\n"
@@ -1037,14 +1004,14 @@ void RenderDrawIndex(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx
 		     instance_count, render_target_slice_offset, static_cast<uint32_t>(vertex_offset_add),
 		     first_instance);
 	}
-	sh_check(*sh_ctx);
+	sh_check(sh_ctx);
 
-	uc_check(*ucfg);
+	uc_check(ucfg);
 
-	hw_check(*ctx);
+	hw_check(buffer);
 
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
-	if (!GetDrawTopology(ucfg, false, false, &topology)) {
+	if (!GetDrawTopology(ucfg, false, false, topology)) {
 		return;
 	}
 
@@ -1099,47 +1066,46 @@ void RenderDrawIndex(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx
 	index_source.type = index_type;
 
 	DrawRenderState state {};
-	if (!PrepareDrawRenderState(submit_id, buffer, ctx, ucfg, sh_ctx, draw,
-	                            render_target_slice_offset, false, true, &state)) {
+	if (!PrepareDrawRenderState(submit_id, buffer, draw, render_target_slice_offset, false, true,
+	                            state)) {
 		return;
 	}
 
-	RefreshShaders(ctx, sh_ctx, draw, true, &state);
+	RefreshShaders(buffer, draw, true, state);
 
-	LogDrawStateIfNeeded(ctx, ucfg, draw, state, true, false, index_type_and_size, index_addr);
+	LogDrawStateIfNeeded(buffer, draw, state, true, false, index_type_and_size, index_addr);
 
 	const auto vertex_offset =
-	    ResolveVertexOffset(ucfg->GetIndexOffset(), state.vs_input_info) + vertex_offset_add;
+	    ResolveVertexOffset(ucfg.GetIndexOffset(), state.vs_input_info) + vertex_offset_add;
 
 	DrawEmitInfo emit {};
 	emit.indexed       = true;
 	emit.vertex_offset = vertex_offset;
 
-	ExecutePreparedDraw(submit_id, buffer, ctx, ucfg, sh_ctx, draw, &state, topology, emit,
-	                    index_source, true, true, false);
+	ExecutePreparedDraw(submit_id, buffer, draw, state, topology, emit, index_source, true, true,
+	                    false);
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void RenderDrawIndexAuto(uint64_t submit_id, CommandBuffer* buffer, HW::Context* ctx,
-                         HW::UserConfig* ucfg, HW::Shader* sh_ctx, uint32_t index_count,
+void RenderDrawIndexAuto(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t index_count,
                          uint32_t flags, uint32_t render_target_slice_offset,
                          uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_IF(ctx == nullptr || ucfg == nullptr);
-	EXIT_IF(g_render_ctx == nullptr);
-	EXIT_IF(buffer == nullptr || buffer->IsInvalid());
+	EXIT_IF(buffer.IsInvalid());
+	auto& ucfg   = buffer.GetUserConfig();
+	auto& sh_ctx = buffer.GetShaders();
 
-	buffer->SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DrawIndexAuto), submit_id,
-	                     index_count, flags, first_vertex, instance_count, first_instance);
+	buffer.SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DrawIndexAuto), submit_id,
+	                    index_count, flags, first_vertex, instance_count, first_instance);
 
-	Common::LockGuard lock(g_render_ctx->GetMutex());
+	Common::LockGuard lock(GetRenderContext().GetMutex());
 
 	if (index_count == 0) {
 		return;
 	}
 
-	if (ConsumeMetadataColorOperation(*ctx)) {
+	if (ConsumeMetadataColorOperation(buffer)) {
 		return;
 	}
 
@@ -1147,14 +1113,14 @@ void RenderDrawIndexAuto(uint64_t submit_id, CommandBuffer* buffer, HW::Context*
 		return;
 	}
 
-	if (ShouldSkipGeShader(ctx, ucfg, sh_ctx)) {
+	if (ShouldSkipGeShader(buffer)) {
 		return;
 	}
 
 	if (graphics_debug_dump_enabled()) {
-		sh_print("GraphicsRenderDrawIndexAuto():Shader:", *sh_ctx);
-		uc_print("GraphicsRenderDrawIndexAuto():UserConfig:", *ucfg);
-		hw_print(*ctx);
+		sh_print("GraphicsRenderDrawIndexAuto():Shader:", sh_ctx);
+		uc_print("GraphicsRenderDrawIndexAuto():UserConfig:", ucfg);
+		hw_print(buffer);
 
 		LOGF("GraphicsRenderDrawIndexAuto():Parameters:\n"
 		     "\t index_count         = 0x%08" PRIx32 "\n"
@@ -1166,11 +1132,11 @@ void RenderDrawIndexAuto(uint64_t submit_id, CommandBuffer* buffer, HW::Context*
 		     index_count, flags, render_target_slice_offset, instance_count, first_vertex,
 		     first_instance);
 	}
-	sh_check(*sh_ctx);
+	sh_check(sh_ctx);
 
-	uc_check(*ucfg);
+	uc_check(ucfg);
 
-	hw_check(*ctx);
+	hw_check(buffer);
 
 	EXIT_NOT_IMPLEMENTED(flags != 0);
 	if (instance_count == 0) {
@@ -1182,50 +1148,50 @@ void RenderDrawIndexAuto(uint64_t submit_id, CommandBuffer* buffer, HW::Context*
 	                         instance_count,  first_instance};
 
 	DrawRenderState state {};
-	if (!PrepareDrawRenderState(submit_id, buffer, ctx, ucfg, sh_ctx, draw,
-	                            render_target_slice_offset, true, false, &state)) {
+	if (!PrepareDrawRenderState(submit_id, buffer, draw, render_target_slice_offset, true, false,
+	                            state)) {
 		return;
 	}
 
 	vk::PrimitiveTopology topology              = vk::PrimitiveTopology::ePointList;
 	const bool            use_ngg_rectlist_draw = Config::NggRectlistDrawEnabled();
 
-	if (!GetDrawTopology(ucfg, true, use_ngg_rectlist_draw, &topology)) {
+	if (!GetDrawTopology(ucfg, true, use_ngg_rectlist_draw, topology)) {
 		return;
 	}
 	const bool draw_prim7_as_ngg =
 	    (use_ngg_rectlist_draw &&
-	     ucfg->GetPrimType() == Prospero::GpuEnumValue(Prospero::PrimitiveType::kRectList));
+	     ucfg.GetPrimType() == Prospero::GpuEnumValue(Prospero::PrimitiveType::kRectList));
 
-	RefreshShaders(ctx, sh_ctx, draw, false, &state);
+	RefreshShaders(buffer, draw, false, state);
 
 	if (draw_prim7_as_ngg && state.vs_input_info.buffers_num == 0 &&
 	    state.vs_input_info.param_export_mask == 0 && state.ps_input_info.input_num != 0) {
 		if (graphics_debug_dump_enabled()) {
 			LOGF("DrawIndexAuto: skipping rect-list draw with no VS param exports and PS inputs: "
 			     "ps_inputs=%u ps=0x%016" PRIx64 " es=0x%016" PRIx64 " gs=0x%016" PRIx64 "\n",
-			     state.ps_input_info.input_num, sh_ctx->GetPs().ps_regs.chksum,
-			     sh_ctx->GetVs().es_regs.data_addr, sh_ctx->GetVs().gs_regs.data_addr);
+			     state.ps_input_info.input_num, sh_ctx.GetPs().ps_regs.chksum,
+			     sh_ctx.GetVs().es_regs.data_addr, sh_ctx.GetVs().gs_regs.data_addr);
 		}
 		return;
 	}
 
-	LogDrawStateIfNeeded(ctx, ucfg, draw, state, false,
-	                     ucfg->GetPrimType() ==
+	LogDrawStateIfNeeded(buffer, draw, state, false,
+	                     ucfg.GetPrimType() ==
 	                         Prospero::GpuEnumValue(Prospero::PrimitiveType::kRectListLegacy),
 	                     0, nullptr);
 
 	const uint32_t draw_vertex_count = (draw_prim7_as_ngg ? 4u : index_count);
-	const auto   vertex_offset = ResolveVertexOffset(ucfg->GetIndexOffset(), state.vs_input_info) +
-	                             static_cast<int32_t>(first_vertex);
-	DrawEmitInfo emit {};
+	const auto     vertex_offset = ResolveVertexOffset(ucfg.GetIndexOffset(), state.vs_input_info) +
+	                               static_cast<int32_t>(first_vertex);
+	DrawEmitInfo   emit {};
 	emit.draw_prim7_as_ngg = draw_prim7_as_ngg;
 	emit.draw_vertex_count = draw_vertex_count;
 	emit.first_vertex      = static_cast<uint32_t>(vertex_offset);
 
 	DrawIndexBufferSource index_source {};
-	ExecutePreparedDraw(submit_id, buffer, ctx, ucfg, sh_ctx, draw, &state, topology, emit,
-	                    index_source, false, false, true);
+	ExecutePreparedDraw(submit_id, buffer, draw, state, topology, emit, index_source, false, false,
+	                    true);
 }
 
 bool IsSameColorResolveSubresource(const RenderColorInfo& src, const RenderColorInfo& dst) {
@@ -1235,8 +1201,7 @@ bool IsSameColorResolveSubresource(const RenderColorInfo& src, const RenderColor
 
 ImageImageCopy MakeColorResolveCopy(const RenderColorInfo& src, const RenderColorInfo& dst,
                                     uint32_t width, uint32_t height) {
-	ImageImageCopy region {};
-	region.src_image = src.vulkan_buffer;
+	ImageImageCopy region {*src.vulkan_buffer};
 	region.src_level = src.base_mip_level;
 	region.dst_level = dst.base_mip_level;
 	region.width     = width;
@@ -1246,8 +1211,9 @@ ImageImageCopy MakeColorResolveCopy(const RenderColorInfo& src, const RenderColo
 	return region;
 }
 
-static bool ResolveColorTargets(uint64_t submit_id, CommandBuffer* buffer, const HW::Context& hw,
+static bool ResolveColorTargets(uint64_t submit_id, RenderCommandBuffer& buffer,
                                 uint32_t render_target_slice_offset) {
+	const auto& hw = buffer.GetRegisters();
 	if (hw.GetColorControl().mode != 3) {
 		return false;
 	}
@@ -1260,9 +1226,8 @@ static bool ResolveColorTargets(uint64_t submit_id, CommandBuffer* buffer, const
 
 	RenderColorInfo src {};
 	RenderColorInfo dst {};
-	ResolveRenderColorTarget(submit_id, buffer, hw, &src, render_target_slice_offset, 0, true,
-	                         true);
-	ResolveRenderColorTarget(submit_id, buffer, hw, &dst, render_target_slice_offset, 1, true);
+	ResolveRenderColorTarget(submit_id, buffer, src, render_target_slice_offset, 0, true, true);
+	ResolveRenderColorTarget(submit_id, buffer, dst, render_target_slice_offset, 1, true);
 	if (src.vulkan_buffer == nullptr || dst.vulkan_buffer == nullptr ||
 	    src.type == RenderColorType::NoColorOutput || dst.type == RenderColorType::NoColorOutput) {
 		return false;
@@ -1280,7 +1245,7 @@ static bool ResolveColorTargets(uint64_t submit_id, CommandBuffer* buffer, const
 	const std::array regions {MakeColorResolveCopy(src, dst, width, height)};
 
 	MarkRenderTargetGpuWritten(dst);
-	Transfer::CopyImage(buffer, regions, dst.vulkan_buffer, dst.vulkan_buffer->layout);
+	Transfer::CopyImage(buffer, regions, *dst.vulkan_buffer, dst.vulkan_buffer->layout);
 	return true;
 }
 

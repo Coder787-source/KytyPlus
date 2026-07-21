@@ -6,7 +6,7 @@
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
 // Builds scalar reaching definitions and attaches descriptor sources to individual memory uses.
-bool BuildScalarProvenance(Program* program, std::string* error);
+bool BuildScalarProvenance(Program& program, std::string* error);
 
 uint32_t ScalarValueArgCount(ScalarValueOp op);
 

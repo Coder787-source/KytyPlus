@@ -316,13 +316,10 @@ inline constexpr std::array<VideoOutFormatPolicy, 6> VIDEO_OUT_FORMAT_POLICIES {
 }};
 
 [[nodiscard]] inline bool DecodeVideoOutPixelFormat(uint64_t                 pixel_format,
-                                                    VideoOutPixelFormatInfo* info) {
-	if (info == nullptr) {
-		return false;
-	}
+	                                                VideoOutPixelFormatInfo& info) {
 	for (const auto& policy: VIDEO_OUT_FORMAT_POLICIES) {
 		if (policy.pixel_format == pixel_format) {
-			*info = policy.info;
+			info = policy.info;
 			return true;
 		}
 	}
@@ -388,9 +385,8 @@ enum class BufferImageWrite : uint8_t {
 
 [[nodiscard]] inline constexpr bool
 HasGuestCurrentImageOwnership(bool image_gpu_modified, bool buffer_modified, bool cpu_dirty,
-                              bool tracker_gpu_modified, bool same_context) noexcept {
-	return !image_gpu_modified && !buffer_modified && !cpu_dirty && !tracker_gpu_modified &&
-	       same_context;
+                              bool tracker_gpu_modified) noexcept {
+	return !image_gpu_modified && !buffer_modified && !cpu_dirty && !tracker_gpu_modified;
 }
 
 enum class StorageBufferRebind : uint8_t { Reuse, RefreshFromBacking, Unsupported };
@@ -398,11 +394,11 @@ enum class MetaImageOverlap : uint8_t { RetainSampled, RetireImage, Unsupported 
 
 [[nodiscard]] inline constexpr bool CanRetireGuestCurrentDepthForMetadataReuse(
     bool depth_gpu_modified, bool depth_buffer_modified, bool depth_tracker_gpu_modified,
-    bool metadata_gpu_modified, bool metadata_tracker_gpu_modified, uint32_t metadata_clear_mask,
-    bool same_context) noexcept {
+    bool metadata_gpu_modified, bool metadata_tracker_gpu_modified,
+    uint32_t metadata_clear_mask) noexcept {
 	return !metadata_gpu_modified && !metadata_tracker_gpu_modified && metadata_clear_mask == 0 &&
 	       HasGuestCurrentImageOwnership(depth_gpu_modified, depth_buffer_modified, false,
-	                                     depth_tracker_gpu_modified, same_context);
+	                                     depth_tracker_gpu_modified);
 }
 
 [[nodiscard]] inline constexpr uint32_t SelectImageBackingBaseLevel(bool     storage,
@@ -493,12 +489,12 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 
 [[nodiscard]] inline MetaImageOverlap ClassifyMetaImageOverlap(bool sampled, bool writable_image,
                                                                bool gpu_modified,
-                                                               bool buffer_modified, bool cpu_dirty,
-                                                               bool same_context) {
+                                                               bool buffer_modified,
+                                                               bool cpu_dirty) {
 	if (sampled && !gpu_modified) {
 		return MetaImageOverlap::RetainSampled;
 	}
-	if (writable_image && !gpu_modified && !buffer_modified && !cpu_dirty && same_context) {
+	if (writable_image && !gpu_modified && !buffer_modified && !cpu_dirty) {
 		return MetaImageOverlap::RetireImage;
 	}
 	return MetaImageOverlap::Unsupported;
@@ -510,10 +506,7 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 }
 
 [[nodiscard]] inline bool DecodePackedColorClear(vk::Format format, uint32_t packed,
-                                                 vk::ClearColorValue* clear) {
-	if (clear == nullptr) {
-		return false;
-	}
+	                                             vk::ClearColorValue& clear) {
 	vk::ClearColorValue next {};
 	const auto unorm8 = [](uint32_t value) { return static_cast<float>(value & 0xffu) / 255.0f; };
 	switch (format) {
@@ -555,32 +548,28 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 			break;
 		default: return false;
 	}
-	*clear = next;
+	clear = next;
 	return true;
 }
 
-[[nodiscard]] inline bool DecodePackedStencilClear(uint32_t packed, uint8_t* clear) {
-	if (clear == nullptr) {
-		return false;
-	}
+[[nodiscard]] inline bool DecodePackedStencilClear(uint32_t packed, uint8_t& clear) {
 	const auto value = static_cast<uint8_t>(packed);
 	if (packed != static_cast<uint32_t>(value) * 0x01010101u) {
 		return false;
 	}
-	*clear = value;
+	clear = value;
 	return true;
 }
 
-[[nodiscard]] inline bool DecodePackedDepthClear(vk::Format format, uint32_t packed, float* clear) {
-	if (clear == nullptr ||
-	    (format != vk::Format::eD32Sfloat && format != vk::Format::eD32SfloatS8Uint)) {
+[[nodiscard]] inline bool DecodePackedDepthClear(vk::Format format, uint32_t packed, float& clear) {
+	if (format != vk::Format::eD32Sfloat && format != vk::Format::eD32SfloatS8Uint) {
 		return false;
 	}
 	const auto value = std::bit_cast<float>(packed);
 	if (!std::isfinite(value) || value < 0.0f || value > 1.0f) {
 		return false;
 	}
-	*clear = value;
+	clear = value;
 	return true;
 }
 
@@ -643,13 +632,11 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 
 [[nodiscard]] inline SampledOverlap ClassifySampledOverlap(const ImageInfo& requested,
                                                            const ImageInfo& cached,
-                                                           bool             cached_gpu_modified,
-                                                           bool             same_context) {
+                                                           bool             cached_gpu_modified) {
 	if (!ImagePageRangesOverlap(requested.address, requested.size, cached.address, cached.size)) {
 		return SampledOverlap::None;
 	}
-	return !cached_gpu_modified && same_context ? SampledOverlap::ReadOnlyAlias
-	                                            : SampledOverlap::Unsupported;
+	return !cached_gpu_modified ? SampledOverlap::ReadOnlyAlias : SampledOverlap::Unsupported;
 }
 
 [[nodiscard]] inline bool IsRgba8SrgbReinterpretation(vk::Format cached,
@@ -702,7 +689,7 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 [[nodiscard]] inline StorageSampledOverlap ClassifyStorageSampledOverlap(
     const ImageInfo& requested, const ImageInfo& cached, vk::Format requested_view_format,
     vk::Format cached_image_format, bool cached_gpu_modified, bool cached_cpu_dirty,
-    bool same_context, bool exact_mip_subresource = false, bool cached_buffer_modified = false,
+    bool exact_mip_subresource = false, bool cached_buffer_modified = false,
     bool tracker_gpu_modified = true) {
 	if (!ImagePageRangesOverlap(requested.address, requested.size, cached.address, cached.size)) {
 		return StorageSampledOverlap::None;
@@ -718,12 +705,11 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 	    (requested.format == cached.format && requested_view_format == cached_image_format) ||
 	    IsRgba8SrgbReinterpretation(cached_image_format, requested_view_format) ||
 	    IsR32UintFloatReinterpretation(cached_image_format, requested_view_format);
-	if (same_backing && compatible_format && cached_gpu_modified && !cached_cpu_dirty &&
-	    same_context) {
+	if (same_backing && compatible_format && cached_gpu_modified && !cached_cpu_dirty) {
 		return StorageSampledOverlap::ExactImage;
 	}
 	if (exact_mip_subresource && cached_gpu_modified && tracker_gpu_modified &&
-	    !cached_buffer_modified && !cached_cpu_dirty && same_context) {
+	    !cached_buffer_modified && !cached_cpu_dirty) {
 		return StorageSampledOverlap::RetireStorage;
 	}
 	return StorageSampledOverlap::Unsupported;
@@ -866,8 +852,7 @@ ClassifyStorageBufferRebind(bool buffer_overlap, bool cached_gpu_modified,
 [[nodiscard]] inline DepthOverlap
 ClassifyStorageDepthOverlap(const ImageInfo& storage, bool storage_gpu_modified,
                             bool storage_buffer_modified, bool storage_cpu_dirty,
-                            bool tracker_gpu_modified, bool same_context,
-                            const DepthTargetInfo& depth) {
+                            bool tracker_gpu_modified, const DepthTargetInfo& depth) {
 	const bool overlaps_depth =
 	    ImageRangeOverlaps(storage.address, storage.size, depth.address, depth.size);
 	const bool overlaps_stencil =
@@ -876,21 +861,20 @@ ClassifyStorageDepthOverlap(const ImageInfo& storage, bool storage_gpu_modified,
 	if (!overlaps_depth && !overlaps_stencil) {
 		return DepthOverlap::None;
 	}
-	const bool guest_current =
-	    HasGuestCurrentImageOwnership(storage_gpu_modified, storage_buffer_modified,
-	                                  storage_cpu_dirty, tracker_gpu_modified, same_context);
+	const bool guest_current = HasGuestCurrentImageOwnership(
+	    storage_gpu_modified, storage_buffer_modified, storage_cpu_dirty, tracker_gpu_modified);
 	const bool aspects_discarded =
 	    (!overlaps_depth || !depth.depth_access) && (!overlaps_stencil || !depth.stencil_access);
-	return guest_current || (!storage_buffer_modified && !storage_cpu_dirty && same_context &&
-	                         aspects_discarded)
+	return guest_current || (!storage_buffer_modified && !storage_cpu_dirty && aspects_discarded)
 	           ? DepthOverlap::RetireStorage
 	           : DepthOverlap::Unsupported;
 }
 
-[[nodiscard]] inline bool CanRetireGuestCurrentDepthForSampled(
-    const ImageInfo& sampled, const DepthTargetInfo& depth, bool depth_gpu_modified,
-    bool depth_buffer_modified, bool depth_tracker_gpu_modified, bool stencil_tracker_gpu_modified,
-    bool same_context) noexcept {
+[[nodiscard]] inline bool
+CanRetireGuestCurrentDepthForSampled(const ImageInfo& sampled, const DepthTargetInfo& depth,
+                                     bool depth_gpu_modified, bool depth_buffer_modified,
+                                     bool depth_tracker_gpu_modified,
+                                     bool stencil_tracker_gpu_modified) noexcept {
 	const bool overlaps_depth =
 	    ImageRangeOverlaps(sampled.address, sampled.size, depth.address, depth.size);
 	const bool overlaps_stencil =
@@ -898,15 +882,15 @@ ClassifyStorageDepthOverlap(const ImageInfo& storage, bool storage_gpu_modified,
 	                                                     depth.stencil_address, depth.stencil_size);
 	return (overlaps_depth || overlaps_stencil) &&
 	       HasGuestCurrentImageOwnership(depth_gpu_modified, depth_buffer_modified, false,
-	                                     depth_tracker_gpu_modified || stencil_tracker_gpu_modified,
-	                                     same_context);
+	                                     depth_tracker_gpu_modified ||
+	                                         stencil_tracker_gpu_modified);
 }
 
 [[nodiscard]] inline bool
 CanRetireGuestCurrentSampledForDepth(const ImageInfo& sampled, const DepthTargetInfo& depth,
                                      bool sampled_gpu_modified, bool sampled_buffer_modified,
                                      bool sampled_cpu_dirty, bool tracker_gpu_modified,
-                                     bool same_context, bool guest_source_current) noexcept {
+                                     bool guest_source_current) noexcept {
 	const bool overlaps_depth =
 	    ImageRangeOverlaps(sampled.address, sampled.size, depth.address, depth.size);
 	const bool overlaps_stencil =
@@ -914,11 +898,11 @@ CanRetireGuestCurrentSampledForDepth(const ImageInfo& sampled, const DepthTarget
 	                                                     depth.stencil_address, depth.stencil_size);
 	return (overlaps_depth || overlaps_stencil) && guest_source_current &&
 	       HasGuestCurrentImageOwnership(sampled_gpu_modified, sampled_buffer_modified,
-	                                     sampled_cpu_dirty, tracker_gpu_modified, same_context);
+	                                     sampled_cpu_dirty, tracker_gpu_modified);
 }
 
 [[nodiscard]] inline RenderTargetOverlap
-ClassifyRenderTargetOverlap(const ImageInfo& sampled, bool sampled_gpu_modified, bool same_context,
+ClassifyRenderTargetOverlap(const ImageInfo& sampled, bool sampled_gpu_modified,
                             const RenderTargetInfo& target) {
 	if (!ImagePageRangesOverlap(sampled.address, sampled.size, target.address, target.size)) {
 		return RenderTargetOverlap::None;
@@ -926,15 +910,15 @@ ClassifyRenderTargetOverlap(const ImageInfo& sampled, bool sampled_gpu_modified,
 	if (!ImageRangeOverlaps(sampled.address, sampled.size, target.address, target.size)) {
 		return RenderTargetOverlap::None;
 	}
-	return !sampled_gpu_modified && same_context ? RenderTargetOverlap::RetireSampled
-	                                             : RenderTargetOverlap::Unsupported;
+	return !sampled_gpu_modified ? RenderTargetOverlap::RetireSampled
+	                             : RenderTargetOverlap::Unsupported;
 }
 
 [[nodiscard]] inline RenderTargetOverlap
 ClassifyStorageRenderTargetOverlap(const ImageInfo& storage, vk::Format storage_format,
                                    bool storage_gpu_modified, bool storage_buffer_modified,
                                    bool storage_cpu_dirty, bool tracker_gpu_modified,
-                                   bool same_context, const RenderTargetInfo& target) {
+                                   const RenderTargetInfo& target) {
 	if (!ImagePageRangesOverlap(storage.address, storage.size, target.address, target.size)) {
 		return RenderTargetOverlap::None;
 	}
@@ -950,11 +934,11 @@ ClassifyStorageRenderTargetOverlap(const ImageInfo& storage, vk::Format storage_
 	    storage.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
 	    storage.base_array == 0 && target.levels == 1 && target.layers == 1 && target.samples == 1;
 	if (exact_native_image && storage_gpu_modified && tracker_gpu_modified &&
-	    !storage_buffer_modified && !storage_cpu_dirty && same_context) {
+	    !storage_buffer_modified && !storage_cpu_dirty) {
 		return RenderTargetOverlap::PreserveStorage;
 	}
 	return HasGuestCurrentImageOwnership(storage_gpu_modified, storage_buffer_modified,
-	                                     storage_cpu_dirty, tracker_gpu_modified, same_context)
+	                                     storage_cpu_dirty, tracker_gpu_modified)
 	           ? RenderTargetOverlap::RetireStorage
 	           : RenderTargetOverlap::Unsupported;
 }
@@ -988,29 +972,28 @@ ClassifyStorageRenderTargetOverlap(const ImageInfo& storage, vk::Format storage_
 
 [[nodiscard]] inline RenderTargetOverlap
 ClassifySampledRenderTargetOverlap(const ImageInfo& sampled, const RenderTargetInfo& target,
-                                   bool target_buffer_modified, bool same_context) {
+                                   bool target_buffer_modified) {
 	if (!ImagePageRangesOverlap(sampled.address, sampled.size, target.address, target.size)) {
 		return RenderTargetOverlap::None;
 	}
 	if (!ImageRangeOverlaps(sampled.address, sampled.size, target.address, target.size)) {
 		return RenderTargetOverlap::None;
 	}
-	return same_context && !target_buffer_modified ? RenderTargetOverlap::RetireTarget
-	                                               : RenderTargetOverlap::Unsupported;
+	return !target_buffer_modified ? RenderTargetOverlap::RetireTarget
+	                               : RenderTargetOverlap::Unsupported;
 }
 
 [[nodiscard]] inline StorageImageOverlap
 ClassifyStorageImageOverlap(uint64_t requested_address, uint64_t requested_size,
                             uint64_t cached_address, uint64_t cached_size, bool sampled,
-                            bool same_context, bool gpu_modified, bool buffer_modified,
-                            bool tracker_gpu_modified) {
+                            bool gpu_modified, bool buffer_modified, bool tracker_gpu_modified) {
 	if (!ImagePageRangesOverlap(requested_address, requested_size, cached_address, cached_size)) {
 		return StorageImageOverlap::None;
 	}
 	if (!ImageRangeOverlaps(requested_address, requested_size, cached_address, cached_size)) {
 		return StorageImageOverlap::PageNeighbor;
 	}
-	return sampled && same_context && !gpu_modified && !buffer_modified && !tracker_gpu_modified
+	return sampled && !gpu_modified && !buffer_modified && !tracker_gpu_modified
 	           ? StorageImageOverlap::RetireSampled
 	           : StorageImageOverlap::Unsupported;
 }
@@ -1068,8 +1051,7 @@ IsCompatibleDepthTargetBacking(const DepthTargetInfo& cached,
 [[nodiscard]] inline RenderTargetOverlap
 ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modified,
                             bool cached_buffer_modified, bool tracker_gpu_modified,
-                            bool same_context, bool guest_source_current,
-                            const RenderTargetInfo& requested) {
+                            bool guest_source_current, const RenderTargetInfo& requested) {
 	if (!ImagePageRangesOverlap(cached.address, cached.size, requested.address, requested.size)) {
 		return RenderTargetOverlap::None;
 	}
@@ -1079,8 +1061,7 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 	const bool expand = requested.layers > cached.layers &&
 	                    IsCompatibleRenderTargetBacking(requested, cached) &&
 	                    cached.format == requested.format;
-	if (expand && cached_gpu_modified && tracker_gpu_modified && !cached_buffer_modified &&
-	    same_context) {
+	if (expand && cached_gpu_modified && tracker_gpu_modified && !cached_buffer_modified) {
 		return RenderTargetOverlap::ExpandTarget;
 	}
 	// A clean, page-isolated overlap is allocation-pool reuse, including a contained subrange.
@@ -1100,7 +1081,7 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 	                            cached.size != requested.size || pool_storage_shape_changed;
 	return page_isolated && new_allocation && guest_source_current &&
 	               HasGuestCurrentImageOwnership(cached_gpu_modified, cached_buffer_modified, false,
-	                                             tracker_gpu_modified, same_context)
+	                                             tracker_gpu_modified)
 	           ? RenderTargetOverlap::RetireTarget
 	           : RenderTargetOverlap::Unsupported;
 }
@@ -1108,7 +1089,6 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 [[nodiscard]] inline DepthOverlap ClassifyDepthTargetOverlap(const DepthTargetInfo& cached,
                                                              bool cached_gpu_modified,
                                                              bool cached_buffer_modified,
-                                                             bool same_context,
                                                              const DepthTargetInfo& requested) {
 	const auto overlaps = [](uint64_t left, uint64_t left_size, uint64_t right, uint64_t right_size,
 	                         bool pages) {
@@ -1132,12 +1112,12 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 	}
 	const bool expand =
 	    requested.layers > cached.layers && IsCompatibleDepthTargetBacking(requested, cached);
-	if (expand && cached_gpu_modified && !cached_buffer_modified && same_context) {
+	if (expand && cached_gpu_modified && !cached_buffer_modified) {
 		return DepthOverlap::ExpandTarget;
 	}
 	const bool exact_discard =
 	    requested.depth_load_clear && cached_gpu_modified && !cached_buffer_modified &&
-	    same_context && cached.address == requested.address && cached.size == requested.size &&
+	    cached.address == requested.address && cached.size == requested.size &&
 	    cached.samples == requested.samples && cached.stencil_address == 0 &&
 	    cached.stencil_size == 0 && cached.htile_address == 0 && cached.htile_size == 0 &&
 	    requested.stencil_address == 0 && requested.stencil_size == 0 &&
@@ -1158,7 +1138,7 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 	                        cached.bytes_per_element == requested.bytes_per_element &&
 	                        cached.tile_mode == requested.tile_mode && cached.layers == 1 &&
 	                        requested.layers == 1 && cached.samples == 1 && requested.samples == 1;
-	return exact_plane_rebind && same_shape && !cached_buffer_modified && same_context
+	return exact_plane_rebind && same_shape && !cached_buffer_modified
 	           ? DepthOverlap::RecreateTarget
 	           : DepthOverlap::Unsupported;
 }
@@ -1166,7 +1146,6 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 [[nodiscard]] inline bool CanRecreateDepthForRenderTarget(const DepthTargetInfo& depth,
                                                           bool gpu_modified, bool buffer_modified,
                                                           bool tracker_gpu_modified,
-                                                          bool same_context,
                                                           bool guest_source_current,
                                                           const RenderTargetInfo& target) noexcept {
 	const bool exact_depth = depth.address == target.address && depth.size == target.size;
@@ -1189,15 +1168,16 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 	const bool ownership_consistent = gpu_modified == tracker_gpu_modified && !buffer_modified;
 	const bool source_available =
 	    ((exact_depth || exact_stencil) && gpu_modified) || guest_source_current;
-	return same_context && ownership_consistent && source_available &&
+	return ownership_consistent && source_available &&
 	       (exact_depth || exact_stencil || page_isolated_rebind) && depth.layers == 1 &&
 	       target.levels == 1 && target.layers == 1 && depth.samples == 1 && target.samples == 1;
 }
 
-[[nodiscard]] inline bool
-CanRecreateRenderTargetForDepth(const RenderTargetInfo& target, bool gpu_modified,
-                                bool buffer_modified, bool tracker_gpu_modified, bool same_context,
-                                bool guest_source_current, const DepthTargetInfo& depth) noexcept {
+[[nodiscard]] inline bool CanRecreateRenderTargetForDepth(const RenderTargetInfo& target,
+                                                          bool gpu_modified, bool buffer_modified,
+                                                          bool tracker_gpu_modified,
+                                                          bool guest_source_current,
+                                                          const DepthTargetInfo& depth) noexcept {
 	const bool exact_depth = target.address == depth.address && target.size == depth.size;
 	const bool exact_stencil =
 	    target.address == depth.stencil_address && target.size == depth.stencil_size;
@@ -1214,10 +1194,9 @@ CanRecreateRenderTargetForDepth(const RenderTargetInfo& target, bool gpu_modifie
 	      depth.stencil_size % TRACKER_PAGE_SIZE == 0));
 	const bool source_available =
 	    (gpu_modified && (exact_depth || exact_stencil)) || guest_source_current;
-	return gpu_modified == tracker_gpu_modified && !buffer_modified && same_context &&
-	       source_available && (exact_depth || exact_stencil || page_isolated_rebind) &&
-	       target.levels == 1 && target.layers == 1 && depth.layers == 1 && target.samples == 1 &&
-	       depth.samples == 1;
+	return gpu_modified == tracker_gpu_modified && !buffer_modified && source_available &&
+	       (exact_depth || exact_stencil || page_isolated_rebind) && target.levels == 1 &&
+	       target.layers == 1 && depth.layers == 1 && target.samples == 1 && depth.samples == 1;
 }
 
 [[nodiscard]] inline bool RequiresMultisampleDepthRefresh(const DepthTargetInfo& info,

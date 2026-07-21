@@ -32,11 +32,11 @@ public:
 	[[nodiscard]] std::vector<uint32_t> Build() const;
 
 private:
-	static void AppendInstruction(std::vector<uint32_t>* section, uint32_t opcode,
+	static void AppendInstruction(std::vector<uint32_t>& section, uint32_t opcode,
 	                              const std::vector<uint32_t>& operands);
-	static void AppendInstruction(std::vector<uint32_t>* section, uint32_t opcode,
+	static void AppendInstruction(std::vector<uint32_t>& section, uint32_t opcode,
 	                              std::initializer_list<uint32_t> operands);
-	static void AppendString(std::vector<uint32_t>* words, const char* text);
+	static void AppendString(std::vector<uint32_t>& words, const char* text);
 
 	uint32_t              m_next_id = 1;
 	std::vector<uint32_t> m_capabilities;

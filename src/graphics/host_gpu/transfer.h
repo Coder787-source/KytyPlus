@@ -49,7 +49,9 @@ struct ImageBufferCopy {
 };
 
 struct ImageImageCopy {
-	VulkanImage*         src_image;
+	explicit ImageImageCopy(VulkanImage& source): src_image(source) {}
+
+	VulkanImage&         src_image;
 	uint32_t             src_level;
 	uint32_t             dst_level;
 	uint32_t             width;
@@ -89,52 +91,50 @@ private:
 	void* m_data = nullptr;
 };
 
-void CopyImage(CommandBuffer* buffer, std::span<const ImageImageCopy> regions,
-               VulkanImage* dst_image, vk::ImageLayout dst_layout);
-void CopyImageViaBuffer(CommandBuffer* buffer, GraphicContext* ctx, VulkanImage* src_image,
-                        vk::ImageAspectFlags src_aspect, VulkanImage* dst_image,
+void CopyImage(CommandBuffer& buffer, std::span<const ImageImageCopy> regions,
+               VulkanImage& dst_image, vk::ImageLayout dst_layout);
+void CopyImageViaBuffer(CommandBuffer& buffer, VulkanImage& src_image,
+                        vk::ImageAspectFlags src_aspect, VulkanImage& dst_image,
                         vk::ImageAspectFlags dst_aspect, uint32_t bytes_per_element,
                         vk::ImageLayout dst_layout);
-void BlitToSwapchain(CommandBuffer* buffer, VulkanImage* src_image, VulkanSwapchain* dst_swapchain);
-void ClearColorImage(CommandBuffer* buffer, VulkanImage* image, const vk::ClearColorValue& color);
-void UploadImage(GraphicContext* ctx, VulkanImage* dst_image, const void* src_data, uint64_t size,
-                 uint32_t src_pitch, vk::ImageLayout dst_layout);
-void UploadImage(GraphicContext* ctx, DepthStencilVulkanImage* dst_image, const void* src_data,
-                 uint64_t size, uint32_t src_pitch, vk::ImageAspectFlags aspect);
-void UploadImage(GraphicContext* ctx, VulkanImage* dst_image, const void* src_data, uint64_t size,
+void BlitToSwapchain(CommandBuffer& buffer, VulkanImage& src_image, VulkanSwapchain& dst_swapchain);
+void ClearColorImage(CommandBuffer& buffer, VulkanImage& image, const vk::ClearColorValue& color);
+void UploadImage(VulkanImage& dst_image, const void* src_data, uint64_t size, uint32_t src_pitch,
+                 vk::ImageLayout dst_layout);
+void UploadImage(DepthStencilVulkanImage& dst_image, const void* src_data, uint64_t size,
+                 uint32_t src_pitch, vk::ImageAspectFlags aspect);
+void UploadImage(VulkanImage& dst_image, const void* src_data, uint64_t size,
                  std::span<const BufferImageCopy> regions, vk::ImageLayout dst_layout);
-void UploadTiledImage(GraphicContext* ctx, VulkanImage* dst_image, const void* tiled_data,
-                      uint64_t tiled_size, uint64_t linear_size, std::span<const GpuTileInfo> infos,
+void UploadTiledImage(VulkanImage& dst_image, const void* tiled_data, uint64_t tiled_size,
+                      uint64_t linear_size, std::span<const GpuTileInfo> infos,
                       std::span<const BufferImageCopy> regions, vk::ImageLayout dst_layout);
-void CopyImageImmediate(GraphicContext* ctx, std::span<const ImageImageCopy> regions,
-                        VulkanImage* dst_image, vk::ImageLayout dst_layout);
-void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size, uint32_t dst_pitch,
-                   VulkanImage* src_image, vk::ImageLayout src_layout,
+void CopyImageImmediate(std::span<const ImageImageCopy> regions, VulkanImage& dst_image,
+                        vk::ImageLayout dst_layout);
+void DownloadImage(void* dst_data, uint64_t size, uint32_t dst_pitch, VulkanImage& src_image,
+                   vk::ImageLayout      src_layout,
                    vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor);
-void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size,
-                   std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
-                   vk::ImageLayout src_layout);
+void DownloadImage(void* dst_data, uint64_t size, std::span<const ImageBufferCopy> regions,
+                   VulkanImage& src_image, vk::ImageLayout src_layout);
 // Invokes consumer synchronously after the image copy fence while the readback staging buffer is
 // reserved. The supplied span is valid only for the call; the consumer must not retain it or
 // re-enter Transfer.
-void ProcessDownloadedImage(GraphicContext* ctx, uint64_t size,
-                            std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
-                            vk::ImageLayout src_layout, const DownloadedImageConsumer& consumer);
-void DownloadTiledImage(GraphicContext* ctx, void* tiled_data, uint64_t tiled_size,
-                        uint64_t linear_size, std::span<const GpuTileInfo> infos,
-                        std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
+void ProcessDownloadedImage(uint64_t size, std::span<const ImageBufferCopy> regions,
+                            VulkanImage& src_image, vk::ImageLayout src_layout,
+                            const DownloadedImageConsumer& consumer);
+void DownloadTiledImage(void* tiled_data, uint64_t tiled_size, uint64_t linear_size,
+                        std::span<const GpuTileInfo>     infos,
+                        std::span<const ImageBufferCopy> regions, VulkanImage& src_image,
                         vk::ImageLayout src_layout);
-void UploadBuffer(GraphicContext* ctx, StagingBufferType type, VulkanBuffer* dst_buffer,
-                  uint64_t dst_offset, const void* src_data, uint64_t size);
-void CopyBuffer(VulkanBuffer* src_buffer, VulkanBuffer* dst_buffer, uint64_t size);
-void DownloadBuffer(GraphicContext* ctx, VulkanBuffer* src_buffer, uint64_t src_offset,
-                    void* dst_data, uint64_t size);
-void ReleaseCachedResources(GraphicContext* ctx);
+void UploadBuffer(StagingBufferType type, VulkanBuffer& dst_buffer, uint64_t dst_offset,
+                  const void* src_data, uint64_t size);
+void CopyBuffer(VulkanBuffer& src_buffer, VulkanBuffer& dst_buffer, uint64_t size);
+void DownloadBuffer(VulkanBuffer& src_buffer, uint64_t src_offset, void* dst_data, uint64_t size);
+void ReleaseCachedResources();
 bool GuestBufferIsTiled(uint64_t vaddr, uint64_t size);
 bool IsBlockCompressedFormat(vk::Format format);
 uint32_t BlockCompressedBytesPerBlock(vk::Format format);
 
-void WaitForGraphicsIdle(GraphicContext* ctx);
+void WaitForGraphicsIdle();
 
 inline std::pair<int, int> MipmapAtlasOffset(uint32_t lod, uint32_t width, uint32_t height) {
 	uint32_t mip_width  = width;

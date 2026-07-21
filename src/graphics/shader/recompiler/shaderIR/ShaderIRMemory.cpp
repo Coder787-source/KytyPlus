@@ -10,7 +10,7 @@
 namespace Libs::Graphics::ShaderRecompiler::IR {
 namespace {
 
-bool LowerScalarBufferLoadDword(const Decoder::Instruction& decoded, BasicBlock* block, Opcode op,
+bool LowerScalarBufferLoadDword(const Decoder::Instruction& decoded, BasicBlock& block, Opcode op,
                                 std::string* error) {
 	for (uint32_t i = 0; i < decoded.data_dwords; i++) {
 		Instruction inst;
@@ -22,38 +22,38 @@ bool LowerScalarBufferLoadDword(const Decoder::Instruction& decoded, BasicBlock*
 		// descriptor resource index.
 		inst.memory.resource = op == Opcode::SLoadDword ? RawScalarLoadBase(decoded.src0)
 		                                                : ResourceIndexFromOperand(decoded.src0);
-		if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, i), &inst.dst, error) ||
-		    !LowerSourceOperand(decoded.src1, &inst.src[0], error)) {
+		if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, i), inst.dst, error) ||
+		    !LowerSourceOperand(decoded.src1, inst.src[0], error)) {
 			return false;
 		}
-		block->instructions.push_back(inst);
+		block.instructions.push_back(inst);
 	}
 	return true;
 }
 
-bool LowerBufferAddressSources(const Decoder::Instruction& decoded, Instruction* inst,
+bool LowerBufferAddressSources(const Decoder::Instruction& decoded, Instruction& inst,
                                uint32_t first_src, std::string* error) {
 	uint32_t src = first_src;
 	if (decoded.idxen) {
-		if (!LowerSourceOperand(decoded.src0, &inst->src[src++], error)) {
+		if (!LowerSourceOperand(decoded.src0, inst.src[src++], error)) {
 			return false;
 		}
 	}
 	if (decoded.offen) {
 		const auto offset_source =
 		    decoded.idxen ? OffsetDecodedRegister(decoded.src0, 1) : decoded.src0;
-		if (!LowerSourceOperand(offset_source, &inst->src[src++], error)) {
+		if (!LowerSourceOperand(offset_source, inst.src[src++], error)) {
 			return false;
 		}
 	}
-	if (!LowerSourceOperand(decoded.src2, &inst->src[src++], error)) {
+	if (!LowerSourceOperand(decoded.src2, inst.src[src++], error)) {
 		return false;
 	}
-	inst->src_count = src;
+	inst.src_count = src;
 	return true;
 }
 
-bool LowerBufferLoad(const Decoder::Instruction& decoded, BasicBlock* block, std::string* error) {
+bool LowerBufferLoad(const Decoder::Instruction& decoded, BasicBlock& block, std::string* error) {
 	const auto ir_op =
 	    decoded.data_bits == 8u
 	        ? (decoded.data_signed ? Opcode::BufferLoadSbyte : Opcode::BufferLoadUbyte)
@@ -75,16 +75,16 @@ bool LowerBufferLoad(const Decoder::Instruction& decoded, BasicBlock* block, std
 		inst.pc     = decoded.pc;
 		inst.op     = ir_op;
 		inst.memory = OffsetBufferMemoryInfo(decoded, i);
-		if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, i), &inst.dst, error) ||
-		    !LowerBufferAddressSources(decoded, &inst, 0, error)) {
+		if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, i), inst.dst, error) ||
+		    !LowerBufferAddressSources(decoded, inst, 0, error)) {
 			return false;
 		}
-		block->instructions.push_back(inst);
+		block.instructions.push_back(inst);
 	}
 	return true;
 }
 
-bool LowerBufferStore(const Decoder::Instruction& decoded, BasicBlock* block, std::string* error) {
+bool LowerBufferStore(const Decoder::Instruction& decoded, BasicBlock& block, std::string* error) {
 	const auto ir_op = decoded.data_bits == 8u    ? Opcode::BufferStoreByte
 	                   : decoded.data_bits == 16u ? Opcode::BufferStoreShort
 	                                              : Opcode::BufferStoreDword;
@@ -101,28 +101,28 @@ bool LowerBufferStore(const Decoder::Instruction& decoded, BasicBlock* block, st
 		inst.op       = ir_op;
 		inst.memory   = OffsetBufferMemoryInfo(decoded, i);
 		inst.dst.kind = OperandKind::Null;
-		if (!LowerSourceOperand(OffsetDecodedRegister(decoded.dst, i), &inst.src[0], error) ||
-		    !LowerBufferAddressSources(decoded, &inst, 1, error)) {
+		if (!LowerSourceOperand(OffsetDecodedRegister(decoded.dst, i), inst.src[0], error) ||
+		    !LowerBufferAddressSources(decoded, inst, 1, error)) {
 			return false;
 		}
-		block->instructions.push_back(inst);
+		block.instructions.push_back(inst);
 	}
 	return true;
 }
 
-bool LowerBufferAtomicDword(const Decoder::Instruction& decoded, BasicBlock* block, Opcode op,
+bool LowerBufferAtomicDword(const Decoder::Instruction& decoded, BasicBlock& block, Opcode op,
                             std::string* error) {
 	Instruction inst;
 	inst.pc       = decoded.pc;
 	inst.op       = op;
 	inst.memory   = MemoryInfoFromDecoded(decoded, ResourceKind::Buffer);
 	inst.dst.kind = OperandKind::Null;
-	if ((decoded.glc && !LowerRegisterOperand(decoded.dst, &inst.dst, error)) ||
-	    !LowerSourceOperand(decoded.dst, &inst.src[0], error) ||
-	    !LowerBufferAddressSources(decoded, &inst, 1, error)) {
+	if ((decoded.glc && !LowerRegisterOperand(decoded.dst, inst.dst, error)) ||
+	    !LowerSourceOperand(decoded.dst, inst.src[0], error) ||
+	    !LowerBufferAddressSources(decoded, inst, 1, error)) {
 		return false;
 	}
-	block->instructions.push_back(inst);
+	block.instructions.push_back(inst);
 	return true;
 }
 
@@ -130,7 +130,7 @@ ResourceKind DsMemoryKind(const Decoder::Instruction& decoded) {
 	return decoded.gds ? ResourceKind::Gds : ResourceKind::Lds;
 }
 
-bool LowerDsRead(const Decoder::Instruction& decoded, BasicBlock* block, std::string* error) {
+bool LowerDsRead(const Decoder::Instruction& decoded, BasicBlock& block, std::string* error) {
 	const auto ir_op = decoded.data_bits == 8u
 	                       ? (decoded.data_signed ? Opcode::DsReadSbyte : Opcode::DsReadUbyte)
 	                   : decoded.data_bits == 16u
@@ -143,16 +143,16 @@ bool LowerDsRead(const Decoder::Instruction& decoded, BasicBlock* block, std::st
 		inst.op        = ir_op;
 		inst.src_count = 1;
 		inst.memory    = OffsetMemoryInfo(decoded, DsMemoryKind(decoded), i);
-		if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, i), &inst.dst, error) ||
-		    !LowerSourceOperand(decoded.src0, &inst.src[0], error)) {
+		if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, i), inst.dst, error) ||
+		    !LowerSourceOperand(decoded.src0, inst.src[0], error)) {
 			return false;
 		}
-		block->instructions.push_back(inst);
+		block.instructions.push_back(inst);
 	}
 	return true;
 }
 
-bool LowerDsRead2(const Decoder::Instruction& decoded, BasicBlock* block, uint32_t dwords_per_read,
+bool LowerDsRead2(const Decoder::Instruction& decoded, BasicBlock& block, uint32_t dwords_per_read,
                   std::string* error) {
 	const uint32_t offsets[] = {decoded.offset, decoded.secondary_offset};
 	for (uint32_t read = 0; read < 2u; read++) {
@@ -164,18 +164,18 @@ bool LowerDsRead2(const Decoder::Instruction& decoded, BasicBlock* block, uint32
 			inst.src_count = 1;
 			inst.memory =
 			    ByteOffsetMemoryInfo(decoded, DsMemoryKind(decoded), offsets[read] + dword * 4u);
-			if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, index), &inst.dst,
+			if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, index), inst.dst,
 			                          error) ||
-			    !LowerSourceOperand(decoded.src0, &inst.src[0], error)) {
+			    !LowerSourceOperand(decoded.src0, inst.src[0], error)) {
 				return false;
 			}
-			block->instructions.push_back(inst);
+			block.instructions.push_back(inst);
 		}
 	}
 	return true;
 }
 
-bool LowerDsAtomicU32(const Decoder::Instruction& decoded, BasicBlock* block, Opcode op,
+bool LowerDsAtomicU32(const Decoder::Instruction& decoded, BasicBlock& block, Opcode op,
                       bool return_old, std::string* error) {
 	Instruction inst;
 	inst.pc        = decoded.pc;
@@ -183,31 +183,31 @@ bool LowerDsAtomicU32(const Decoder::Instruction& decoded, BasicBlock* block, Op
 	inst.src_count = 2;
 	inst.memory    = MemoryInfoFromDecoded(decoded, DsMemoryKind(decoded));
 	inst.dst.kind  = return_old ? OperandKind::Register : OperandKind::Null;
-	if ((return_old && !LowerRegisterOperand(decoded.dst, &inst.dst, error)) ||
-	    !LowerSourceOperand(decoded.src1, &inst.src[0], error) ||
-	    !LowerSourceOperand(decoded.src0, &inst.src[1], error)) {
+	if ((return_old && !LowerRegisterOperand(decoded.dst, inst.dst, error)) ||
+	    !LowerSourceOperand(decoded.src1, inst.src[0], error) ||
+	    !LowerSourceOperand(decoded.src0, inst.src[1], error)) {
 		return false;
 	}
-	block->instructions.push_back(inst);
+	block.instructions.push_back(inst);
 	return true;
 }
 
-bool LowerDsSwizzleB32(const Decoder::Instruction& decoded, BasicBlock* block, std::string* error) {
+bool LowerDsSwizzleB32(const Decoder::Instruction& decoded, BasicBlock& block, std::string* error) {
 	Instruction inst;
 	inst.pc          = decoded.pc;
 	inst.op          = Opcode::DsSwizzleB32;
 	inst.src_count   = 2;
 	inst.src[1].kind = OperandKind::ImmediateU32;
 	inst.src[1].imm  = decoded.offset & 0xffffu;
-	if (!LowerRegisterOperand(decoded.dst, &inst.dst, error) ||
-	    !LowerSourceOperand(decoded.src0, &inst.src[0], error)) {
+	if (!LowerRegisterOperand(decoded.dst, inst.dst, error) ||
+	    !LowerSourceOperand(decoded.src0, inst.src[0], error)) {
 		return false;
 	}
-	block->instructions.push_back(inst);
+	block.instructions.push_back(inst);
 	return true;
 }
 
-bool LowerDsFloatMinMaxF32(const Decoder::Instruction& decoded, BasicBlock* block, Opcode op,
+bool LowerDsFloatMinMaxF32(const Decoder::Instruction& decoded, BasicBlock& block, Opcode op,
                            std::string* error) {
 	Instruction inst;
 	inst.pc              = decoded.pc;
@@ -216,17 +216,17 @@ bool LowerDsFloatMinMaxF32(const Decoder::Instruction& decoded, BasicBlock* bloc
 	inst.memory          = MemoryInfoFromDecoded(decoded, DsMemoryKind(decoded));
 	inst.memory.resource = 0;
 	inst.dst.kind        = OperandKind::Null;
-	if (!LowerSourceOperand(decoded.src1, &inst.src[0], error) ||
-	    !LowerSourceOperand(decoded.src0, &inst.src[1], error) ||
-	    !LowerSourceOperand(decoded.src2, &inst.src[2], error)) {
+	if (!LowerSourceOperand(decoded.src1, inst.src[0], error) ||
+	    !LowerSourceOperand(decoded.src0, inst.src[1], error) ||
+	    !LowerSourceOperand(decoded.src2, inst.src[2], error)) {
 		return false;
 	}
 	inst.src_count = 3;
-	block->instructions.push_back(inst);
+	block.instructions.push_back(inst);
 	return true;
 }
 
-bool LowerDsWriteAddtidB32(const Decoder::Instruction& decoded, BasicBlock* block,
+bool LowerDsWriteAddtidB32(const Decoder::Instruction& decoded, BasicBlock& block,
                            std::string* error) {
 	Instruction inst;
 	inst.pc              = decoded.pc;
@@ -236,15 +236,15 @@ bool LowerDsWriteAddtidB32(const Decoder::Instruction& decoded, BasicBlock* bloc
 	inst.memory.resource = 0;
 	inst.dst.kind        = OperandKind::Null;
 	const auto m0        = M0Operand();
-	if (!LowerSourceOperand(decoded.src1, &inst.src[0], error) ||
-	    !LowerSourceOperand(m0, &inst.src[1], error)) {
+	if (!LowerSourceOperand(decoded.src1, inst.src[0], error) ||
+	    !LowerSourceOperand(m0, inst.src[1], error)) {
 		return false;
 	}
-	block->instructions.push_back(inst);
+	block.instructions.push_back(inst);
 	return true;
 }
 
-bool LowerDsReadAddtidB32(const Decoder::Instruction& decoded, BasicBlock* block,
+bool LowerDsReadAddtidB32(const Decoder::Instruction& decoded, BasicBlock& block,
                           std::string* error) {
 	Instruction inst;
 	inst.pc              = decoded.pc;
@@ -253,15 +253,15 @@ bool LowerDsReadAddtidB32(const Decoder::Instruction& decoded, BasicBlock* block
 	inst.memory          = MemoryInfoFromDecoded(decoded, DsMemoryKind(decoded));
 	inst.memory.resource = 0;
 	const auto m0        = M0Operand();
-	if (!LowerRegisterOperand(decoded.dst, &inst.dst, error) ||
-	    !LowerSourceOperand(m0, &inst.src[0], error)) {
+	if (!LowerRegisterOperand(decoded.dst, inst.dst, error) ||
+	    !LowerSourceOperand(m0, inst.src[0], error)) {
 		return false;
 	}
-	block->instructions.push_back(inst);
+	block.instructions.push_back(inst);
 	return true;
 }
 
-bool LowerDsAppendConsume(const Decoder::Instruction& decoded, BasicBlock* block, Opcode op,
+bool LowerDsAppendConsume(const Decoder::Instruction& decoded, BasicBlock& block, Opcode op,
                           std::string* error) {
 	Instruction inst;
 	inst.pc        = decoded.pc;
@@ -269,11 +269,11 @@ bool LowerDsAppendConsume(const Decoder::Instruction& decoded, BasicBlock* block
 	inst.src_count = 1;
 	inst.memory    = MemoryInfoFromDecoded(decoded, DsMemoryKind(decoded));
 	const auto m0  = M0Operand();
-	if (!LowerRegisterOperand(decoded.dst, &inst.dst, error) ||
-	    !LowerSourceOperand(m0, &inst.src[0], error)) {
+	if (!LowerRegisterOperand(decoded.dst, inst.dst, error) ||
+	    !LowerSourceOperand(m0, inst.src[0], error)) {
 		return false;
 	}
-	block->instructions.push_back(inst);
+	block.instructions.push_back(inst);
 	return true;
 }
 
@@ -289,7 +289,7 @@ Opcode ImageAtomicIrOpcode(Decoder::Opcode opcode) {
 	}
 }
 
-bool LowerImageAtomicU32(const Decoder::Instruction& decoded, BasicBlock* block,
+bool LowerImageAtomicU32(const Decoder::Instruction& decoded, BasicBlock& block,
                          std::string* error) {
 	Instruction inst;
 	inst.pc             = decoded.pc;
@@ -298,16 +298,16 @@ bool LowerImageAtomicU32(const Decoder::Instruction& decoded, BasicBlock* block,
 	inst.memory         = MemoryInfoFromDecoded(decoded, ResourceKind::StorageImageUint);
 	inst.memory.sampler = 0;
 	inst.dst.kind       = OperandKind::Null;
-	if ((decoded.glc && !LowerRegisterOperand(decoded.dst, &inst.dst, error)) ||
-	    !LowerSourceOperand(decoded.dst, &inst.src[0], error) ||
-	    !LowerSourceOperand(decoded.src0, &inst.src[1], error)) {
+	if ((decoded.glc && !LowerRegisterOperand(decoded.dst, inst.dst, error)) ||
+	    !LowerSourceOperand(decoded.dst, inst.src[0], error) ||
+	    !LowerSourceOperand(decoded.src0, inst.src[1], error)) {
 		return false;
 	}
-	block->instructions.push_back(inst);
+	block.instructions.push_back(inst);
 	return true;
 }
 
-bool LowerFlatLoad(const Decoder::Instruction& decoded, BasicBlock* block, std::string* error) {
+bool LowerFlatLoad(const Decoder::Instruction& decoded, BasicBlock& block, std::string* error) {
 	const auto kind  = FlatSegmentResourceKind(decoded.memory_segment);
 	const auto ir_op = decoded.data_bits == 8u
 	                       ? (decoded.data_signed ? Opcode::FlatLoadSbyte : Opcode::FlatLoadUbyte)
@@ -322,15 +322,15 @@ bool LowerFlatLoad(const Decoder::Instruction& decoded, BasicBlock* block, std::
 		inst.src_count       = decoded.src_count;
 		inst.memory          = MemoryInfoFromDecoded(decoded, kind);
 		inst.memory.resource = 0;
-		if (!LowerRegisterOperand(decoded.dst, &inst.dst, error)) {
+		if (!LowerRegisterOperand(decoded.dst, inst.dst, error)) {
 			return false;
 		}
 		for (uint32_t i = 0; i < decoded.src_count && i < 3u; i++) {
-			if (!LowerSourceOperand(DecodedSourceAt(decoded, i), &inst.src[i], error)) {
+			if (!LowerSourceOperand(DecodedSourceAt(decoded, i), inst.src[i], error)) {
 				return false;
 			}
 		}
-		block->instructions.push_back(inst);
+		block.instructions.push_back(inst);
 		return true;
 	}
 
@@ -341,20 +341,20 @@ bool LowerFlatLoad(const Decoder::Instruction& decoded, BasicBlock* block, std::
 		inst.src_count       = decoded.src_count;
 		inst.memory          = OffsetMemoryInfo(decoded, kind, dword);
 		inst.memory.resource = 0;
-		if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, dword), &inst.dst, error)) {
+		if (!LowerRegisterOperand(OffsetDecodedRegister(decoded.dst, dword), inst.dst, error)) {
 			return false;
 		}
 		for (uint32_t i = 0; i < decoded.src_count && i < 3u; i++) {
-			if (!LowerSourceOperand(DecodedSourceAt(decoded, i), &inst.src[i], error)) {
+			if (!LowerSourceOperand(DecodedSourceAt(decoded, i), inst.src[i], error)) {
 				return false;
 			}
 		}
-		block->instructions.push_back(inst);
+		block.instructions.push_back(inst);
 	}
 	return true;
 }
 
-bool LowerFlatStore(const Decoder::Instruction& decoded, BasicBlock* block, std::string* error) {
+bool LowerFlatStore(const Decoder::Instruction& decoded, BasicBlock& block, std::string* error) {
 	const auto kind  = FlatSegmentResourceKind(decoded.memory_segment);
 	const auto ir_op = decoded.data_bits == 8u    ? Opcode::FlatStoreByte
 	                   : decoded.data_bits == 16u ? Opcode::FlatStoreShort
@@ -368,20 +368,20 @@ bool LowerFlatStore(const Decoder::Instruction& decoded, BasicBlock* block, std:
 		inst.memory          = OffsetMemoryInfo(decoded, kind, dword);
 		inst.memory.resource = 0;
 		inst.dst.kind        = OperandKind::Null;
-		if (!LowerSourceOperand(OffsetDecodedRegister(decoded.dst, dword), &inst.src[0], error)) {
+		if (!LowerSourceOperand(OffsetDecodedRegister(decoded.dst, dword), inst.src[0], error)) {
 			return false;
 		}
 		for (uint32_t i = 0; i < decoded.src_count && i + 1u < 3u; i++) {
-			if (!LowerSourceOperand(DecodedSourceAt(decoded, i), &inst.src[i + 1u], error)) {
+			if (!LowerSourceOperand(DecodedSourceAt(decoded, i), inst.src[i + 1u], error)) {
 				return false;
 			}
 		}
-		block->instructions.push_back(inst);
+		block.instructions.push_back(inst);
 	}
 	return true;
 }
 
-bool LowerDsWrite(const Decoder::Instruction& decoded, BasicBlock* block, std::string* error) {
+bool LowerDsWrite(const Decoder::Instruction& decoded, BasicBlock& block, std::string* error) {
 	const auto ir_op = decoded.data_bits == 8u    ? Opcode::DsWriteByte
 	                   : decoded.data_bits == 16u ? Opcode::DsWriteShort
 	                                              : Opcode::DsWriteB32;
@@ -393,16 +393,16 @@ bool LowerDsWrite(const Decoder::Instruction& decoded, BasicBlock* block, std::s
 		inst.src_count = 2;
 		inst.memory    = OffsetMemoryInfo(decoded, DsMemoryKind(decoded), i);
 		inst.dst.kind  = OperandKind::Null;
-		if (!LowerSourceOperand(OffsetDecodedRegister(decoded.src1, i), &inst.src[0], error) ||
-		    !LowerSourceOperand(decoded.src0, &inst.src[1], error)) {
+		if (!LowerSourceOperand(OffsetDecodedRegister(decoded.src1, i), inst.src[0], error) ||
+		    !LowerSourceOperand(decoded.src0, inst.src[1], error)) {
 			return false;
 		}
-		block->instructions.push_back(inst);
+		block.instructions.push_back(inst);
 	}
 	return true;
 }
 
-bool LowerDsWrite2(const Decoder::Instruction& decoded, BasicBlock* block,
+bool LowerDsWrite2(const Decoder::Instruction& decoded, BasicBlock& block,
                    uint32_t dwords_per_write, std::string* error) {
 	const Decoder::Operand* data[]    = {&decoded.src1, &decoded.src2};
 	const uint32_t          offsets[] = {decoded.offset, decoded.secondary_offset};
@@ -415,18 +415,18 @@ bool LowerDsWrite2(const Decoder::Instruction& decoded, BasicBlock* block,
 			inst.memory =
 			    ByteOffsetMemoryInfo(decoded, DsMemoryKind(decoded), offsets[write] + dword * 4u);
 			inst.dst.kind = OperandKind::Null;
-			if (!LowerSourceOperand(OffsetDecodedRegister(*data[write], dword), &inst.src[0],
+			if (!LowerSourceOperand(OffsetDecodedRegister(*data[write], dword), inst.src[0],
 			                        error) ||
-			    !LowerSourceOperand(decoded.src0, &inst.src[1], error)) {
+			    !LowerSourceOperand(decoded.src0, inst.src[1], error)) {
 				return false;
 			}
-			block->instructions.push_back(inst);
+			block.instructions.push_back(inst);
 		}
 	}
 	return true;
 }
 
-bool LowerImageOperation(const Decoder::Instruction& decoded, BasicBlock* block,
+bool LowerImageOperation(const Decoder::Instruction& decoded, BasicBlock& block,
                          std::string* error) {
 	Instruction inst;
 	inst.pc = decoded.pc;
@@ -437,11 +437,11 @@ bool LowerImageOperation(const Decoder::Instruction& decoded, BasicBlock* block,
 		inst.memory         = MemoryInfoFromDecoded(decoded, ResourceKind::StorageImage);
 		inst.memory.sampler = 0;
 		inst.dst.kind       = OperandKind::Null;
-		if (!LowerSourceOperand(decoded.dst, &inst.src[0], error) ||
-		    !LowerSourceOperand(decoded.src0, &inst.src[1], error)) {
+		if (!LowerSourceOperand(decoded.dst, inst.src[0], error) ||
+		    !LowerSourceOperand(decoded.src0, inst.src[1], error)) {
 			return false;
 		}
-		block->instructions.push_back(inst);
+		block.instructions.push_back(inst);
 		return true;
 	}
 
@@ -461,17 +461,17 @@ bool LowerImageOperation(const Decoder::Instruction& decoded, BasicBlock* block,
 	                     : Opcode::ImageSample;
 	inst.src_count = 1;
 	inst.memory    = MemoryInfoFromDecoded(decoded, ResourceKind::Image);
-	if (!LowerRegisterOperand(decoded.dst, &inst.dst, error) ||
-	    !LowerSourceOperand(decoded.src0, &inst.src[0], error)) {
+	if (!LowerRegisterOperand(decoded.dst, inst.dst, error) ||
+	    !LowerSourceOperand(decoded.src0, inst.src[0], error)) {
 		return false;
 	}
-	block->instructions.push_back(inst);
+	block.instructions.push_back(inst);
 	return true;
 }
 
 } // namespace
 
-bool LowerMemoryInstruction(const Decoder::Instruction& decoded, BasicBlock* block,
+bool LowerMemoryInstruction(const Decoder::Instruction& decoded, BasicBlock& block,
                             std::string* error) {
 	switch (decoded.opcode) {
 		case Decoder::Opcode::SLoadDword:

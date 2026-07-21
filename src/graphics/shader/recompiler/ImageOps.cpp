@@ -226,7 +226,7 @@ bool IsSingleDmaskBit(uint32_t dmask) {
 
 } // namespace
 
-bool DecodeMimg(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction* inst,
+bool DecodeMimg(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, Instruction& inst,
                 std::string* error) {
 	if (word_index + 1u >= code.size()) {
 		if (error != nullptr) {
@@ -257,12 +257,12 @@ bool DecodeMimg(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	const auto*    gather = LookupGather(opcode);
 	const auto*    atomic = LookupAtomic(opcode);
 
-	inst->pc                 = pc;
-	inst->word               = word0;
-	inst->word_count         = word_count;
-	inst->family             = Family::MIMG;
-	inst->opcode_id          = opcode;
-	inst->opcode             = (sample != nullptr   ? Opcode::ImageSample
+	inst.pc                 = pc;
+	inst.word               = word0;
+	inst.word_count         = word_count;
+	inst.family             = Family::MIMG;
+	inst.opcode_id          = opcode;
+	inst.opcode             = (sample != nullptr   ? Opcode::ImageSample
 	                            : gather != nullptr ? gather->decoded
 	                            : atomic != nullptr ? atomic->decoded
 	                            : opcode == 0x00u   ? Opcode::ImageLoad
@@ -272,20 +272,20 @@ bool DecodeMimg(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	                            : opcode == 0x0eu   ? Opcode::ImageGetResinfo
 	                            : opcode == 0x60u   ? Opcode::ImageGetLod
 	                                                : Opcode::Unsupported);
-	inst->dmask              = (word0 >> 8u) & 0xfu;
-	inst->data_dwords        = gather != nullptr ? 4u : CountDmaskComponents(inst->dmask);
-	inst->glc                = ((word0 >> 13u) & 1u) != 0;
-	inst->slc                = ((word0 >> 25u) & 1u) != 0;
-	inst->image_sample_flags = (sample != nullptr   ? sample->flags
+	inst.dmask              = (word0 >> 8u) & 0xfu;
+	inst.data_dwords        = gather != nullptr ? 4u : CountDmaskComponents(inst.dmask);
+	inst.glc                = ((word0 >> 13u) & 1u) != 0;
+	inst.slc                = ((word0 >> 25u) & 1u) != 0;
+	inst.image_sample_flags = (sample != nullptr   ? sample->flags
 	                            : gather != nullptr ? gather->flags
 	                                                : 0u) |
 	                           (a16 ? ImageSampleFlagA16 : 0u);
-	inst->image_dimension    = dimension;
-	inst->image_nsa_dwords   = nsa_dwords;
+	inst.image_dimension    = dimension;
+	inst.image_nsa_dwords   = nsa_dwords;
 	for (uint32_t i = 0; i < nsa_dwords * 4u && i < MaxImageNsaAddressComponents; i++) {
-		inst->image_nsa_addr[i] = (code[word_index + 2u + i / 4u] >> ((i % 4u) * 8u)) & 0xffu;
+		inst.image_nsa_addr[i] = (code[word_index + 2u + i / 4u] >> ((i % 4u) * 8u)) & 0xffu;
 	}
-	inst->image_address_components =
+	inst.image_address_components =
 	    sample != nullptr   ? ImageSampleAddressComponents(sample->flags, dimension)
 	    : gather != nullptr ? ImageSampleAddressComponents(gather->flags, dimension)
 	    : atomic != nullptr ? 3u
@@ -297,19 +297,19 @@ bool DecodeMimg(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	                                             : 0u);
 	SetRawWords(inst, code, word_index, word_count);
 
-	if (inst->opcode == Opcode::Unsupported) {
+	if (inst.opcode == Opcode::Unsupported) {
 		SetUnsupported(inst, Family::MIMG, opcode, "MIMG opcode is not implemented");
 	}
-	if (gather != nullptr && !IsSingleDmaskBit(inst->dmask)) {
+	if (gather != nullptr && !IsSingleDmaskBit(inst.dmask)) {
 		SetUnsupported(inst, Family::MIMG, opcode,
 		               "MIMG image gather requires exactly one dmask bit");
 	}
 
-	DecodeVectorGpr(vdata, &inst->dst, nullptr);
-	DecodeVectorGpr(vaddr, &inst->src0, nullptr);
-	DecodeScalarSource(srsrc * 4u, pc, &inst->src1, nullptr);
-	DecodeScalarSource(ssamp * 4u, pc, &inst->src2, nullptr);
-	inst->src_count = 3;
+	DecodeVectorGpr(vdata, inst.dst, nullptr);
+	DecodeVectorGpr(vaddr, inst.src0, nullptr);
+	DecodeScalarSource(srsrc * 4u, pc, inst.src1, nullptr);
+	DecodeScalarSource(ssamp * 4u, pc, inst.src2, nullptr);
+	inst.src_count = 3;
 	return true;
 }
 

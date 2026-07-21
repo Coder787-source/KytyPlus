@@ -82,13 +82,14 @@ bool GuestBufferIsTiled(uint64_t vaddr, uint64_t size) {
 	return true;
 }
 
-void WaitForGraphicsIdle(GraphicContext* ctx) {
+void WaitForGraphicsIdle() {
+	auto&          graphics = GetRenderContext().GetGraphics();
 	Common::Mutex* locked[GraphicContext::QUEUES_NUM] {};
 	int            locked_num = 0;
 
 	for (int id = 0; id < GraphicContext::QUEUES_NUM; id++) {
-		auto* mutex = ctx->queues[id].mutex;
-		if (mutex == nullptr || ctx->queues[id].vk_queue == nullptr) {
+		auto* mutex = graphics.queues[id].mutex;
+		if (mutex == nullptr || graphics.queues[id].vk_queue == nullptr) {
 			continue;
 		}
 
@@ -106,7 +107,7 @@ void WaitForGraphicsIdle(GraphicContext* ctx) {
 		}
 	}
 
-	auto result = ctx->device.waitIdle();
+	auto result = graphics.device.waitIdle();
 
 	for (int i = locked_num - 1; i >= 0; i--) {
 		locked[i]->Unlock();
@@ -119,7 +120,7 @@ void WaitForGraphicsIdle(GraphicContext* ctx) {
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 }
 
-static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage* dst_image, uint32_t base_level,
+static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage& dst_image, uint32_t base_level,
                            uint32_t levels, vk::ImageAspectFlags aspect_mask,
                            vk::ImageLayout old_image_layout, vk::ImageLayout new_image_layout);
 
@@ -129,7 +130,7 @@ static void ExecuteImmediateCommands(const Recorder& recorder) {
 	// not touch every caller.
 	CommandBuffer command(GraphicContext::QUEUE_UTIL);
 	command.Begin();
-	recorder(&command, command.Handle());
+	recorder(command, command.Handle());
 	command.End();
 	command.Execute();
 	command.WaitForFence();
@@ -205,12 +206,12 @@ static void RecordBufferToImageCopy(CommandBuffer& command, VulkanBuffer& src_bu
 	                       vk::AccessFlagBits::eMemoryWrite, vk::AccessFlagBits::eTransferRead,
 	                       vk::PipelineStageFlagBits::eAllCommands,
 	                       vk::PipelineStageFlagBits::eTransfer);
-	SetImageLayout(vk_command, &dst_image, 0, VK_REMAINING_MIP_LEVELS, transition_aspects,
+	SetImageLayout(vk_command, dst_image, 0, VK_REMAINING_MIP_LEVELS, transition_aspects,
 	               initial_layout, vk::ImageLayout::eTransferDstOptimal);
 	vk_command.copyBufferToImage(src_buffer.buffer, dst_image.image,
 	                             vk::ImageLayout::eTransferDstOptimal,
 	                             static_cast<uint32_t>(regions.size()), regions.data());
-	SetImageLayout(vk_command, &dst_image, 0, VK_REMAINING_MIP_LEVELS, transition_aspects,
+	SetImageLayout(vk_command, dst_image, 0, VK_REMAINING_MIP_LEVELS, transition_aspects,
 	               vk::ImageLayout::eTransferDstOptimal, final_layout);
 }
 
@@ -251,7 +252,7 @@ RecordImageToBuffer(CommandBuffer& command, VulkanImage& src_image, VulkanBuffer
 	for (const auto& region: regions) {
 		aspects |= GetTransferAspects(src_image, region.aspect);
 	}
-	SetImageLayout(vk_command, &src_image, 0, VK_REMAINING_MIP_LEVELS, aspects, src_image.layout,
+	SetImageLayout(vk_command, src_image, 0, VK_REMAINING_MIP_LEVELS, aspects, src_image.layout,
 	               vk::ImageLayout::eTransferSrcOptimal);
 	SetBufferMemoryBarrier(vk_command, dst_buffer.buffer, 0, VK_WHOLE_SIZE,
 	                       vk::AccessFlagBits::eMemoryRead, vk::AccessFlagBits::eTransferWrite,
@@ -264,7 +265,7 @@ RecordImageToBuffer(CommandBuffer& command, VulkanImage& src_image, VulkanBuffer
 	SetBufferMemoryBarrier(vk_command, dst_buffer.buffer, 0, VK_WHOLE_SIZE,
 	                       vk::AccessFlagBits::eTransferWrite, final_access,
 	                       vk::PipelineStageFlagBits::eTransfer, final_stage);
-	SetImageLayout(vk_command, &src_image, 0, VK_REMAINING_MIP_LEVELS, aspects,
+	SetImageLayout(vk_command, src_image, 0, VK_REMAINING_MIP_LEVELS, aspects,
 	               vk::ImageLayout::eTransferSrcOptimal, final_layout);
 }
 
@@ -279,28 +280,27 @@ static void RecordImageToBuffer(CommandBuffer& command, VulkanImage& src_image,
 
 class ReusableStagingBuffer {
 public:
-	ReusableStagingBuffer()  = default;
+	explicit ReusableStagingBuffer(GraphicContext& graphics): m_graphics(graphics) {}
 	~ReusableStagingBuffer() = default;
 	KYTY_CLASS_NO_COPY(ReusableStagingBuffer);
 
-	void UploadToBuffer(GraphicContext* ctx, VulkanBuffer* dst_buffer, const void* src_data,
-	                    uint64_t size, uint64_t dst_offset) {
-		RecordUpload<true>(ctx, src_data, size, [&](CommandBuffer*, vk::CommandBuffer vk_command) {
+	void UploadToBuffer(VulkanBuffer& dst_buffer, const void* src_data, uint64_t size,
+	                    uint64_t dst_offset) {
+		RecordUpload<true>(src_data, size, [&](CommandBuffer&, vk::CommandBuffer vk_command) {
 			SetBufferMemoryBarrier(
 			    vk_command, m_buffer.buffer, 0, size, vk::AccessFlagBits::eMemoryWrite,
 			    vk::AccessFlagBits::eTransferRead, vk::PipelineStageFlagBits::eAllCommands,
 			    vk::PipelineStageFlagBits::eTransfer);
 			SetBufferMemoryBarrier(
-			    vk_command, dst_buffer->buffer, dst_offset, size,
+			    vk_command, dst_buffer.buffer, dst_offset, size,
 			    vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
 			    vk::AccessFlagBits::eTransferWrite, vk::PipelineStageFlagBits::eAllCommands,
 			    vk::PipelineStageFlagBits::eTransfer);
 			const vk::BufferCopy copy_region {
 			    .srcOffset = 0, .dstOffset = dst_offset, .size = size};
-			vk_command.copyBuffer(m_buffer.buffer, dst_buffer->buffer, 1, &copy_region);
+			vk_command.copyBuffer(m_buffer.buffer, dst_buffer.buffer, 1, &copy_region);
 			SetBufferMemoryBarrier(
-			    vk_command, dst_buffer->buffer, dst_offset, size,
-			    vk::AccessFlagBits::eTransferWrite,
+			    vk_command, dst_buffer.buffer, dst_offset, size, vk::AccessFlagBits::eTransferWrite,
 			    vk::AccessFlagBits::eVertexAttributeRead | vk::AccessFlagBits::eIndexRead |
 			        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
 			    vk::PipelineStageFlagBits::eTransfer,
@@ -310,61 +310,57 @@ public:
 		});
 	}
 
-	void UploadToImage(GraphicContext* ctx, VulkanImage* image, const void* src_data, uint64_t size,
-	                   uint32_t src_pitch, vk::ImageAspectFlags copy_aspect,
-	                   vk::ImageLayout initial_layout, vk::ImageLayout final_layout) {
-		const auto transition_aspects = GetTransferAspects(*image, copy_aspect);
-		RecordUpload<false>(ctx, src_data, size, [&](CommandBuffer* command, vk::CommandBuffer) {
+	void UploadToImage(VulkanImage& image, const void* src_data, uint64_t size, uint32_t src_pitch,
+	                   vk::ImageAspectFlags copy_aspect, vk::ImageLayout initial_layout,
+	                   vk::ImageLayout final_layout) {
+		const auto transition_aspects = GetTransferAspects(image, copy_aspect);
+		RecordUpload<false>(src_data, size, [&](CommandBuffer& command, vk::CommandBuffer) {
 			const auto region = MakeBufferImageCopy(0, src_pitch, copy_aspect, 0, 0, {0, 0, 0},
-			                                        {image->extent.width, image->extent.height, 1});
-			RecordBufferToImageCopy(*command, m_buffer, *image,
+			                                        {image.extent.width, image.extent.height, 1});
+			RecordBufferToImageCopy(command, m_buffer, image,
 			                        std::span<const vk::BufferImageCopy>(&region, 1),
 			                        transition_aspects, initial_layout, final_layout);
 		});
 	}
 
-	void UploadToImage(GraphicContext* ctx, VulkanImage* dst_image, const void* src_data,
-	                   uint64_t size, std::span<const BufferImageCopy> regions,
-	                   vk::ImageLayout dst_layout) {
-		RecordUpload<false>(ctx, src_data, size, [&](CommandBuffer* command, vk::CommandBuffer) {
+	void UploadToImage(VulkanImage& dst_image, const void* src_data, uint64_t size,
+	                   std::span<const BufferImageCopy> regions, vk::ImageLayout dst_layout) {
+		RecordUpload<false>(src_data, size, [&](CommandBuffer& command, vk::CommandBuffer) {
 			vk::ImageAspectFlags transition_aspects = {};
 			for (const auto& region: regions) {
-				transition_aspects |= GetTransferAspects(*dst_image, region.aspect);
+				transition_aspects |= GetTransferAspects(dst_image, region.aspect);
 			}
-			RecordBufferToImageCopy(*command, m_buffer, *dst_image,
-			                        ConvertBufferImageCopies(regions), transition_aspects,
-			                        dst_image->layout, dst_layout);
+			RecordBufferToImageCopy(command, m_buffer, dst_image, ConvertBufferImageCopies(regions),
+			                        transition_aspects, dst_image.layout, dst_layout);
 		});
 	}
 
-	void DownloadFromImage(GraphicContext* ctx, void* dst_data, uint64_t size, uint32_t dst_pitch,
-	                       VulkanImage* src_image, vk::ImageLayout src_layout,
+	void DownloadFromImage(void* dst_data, uint64_t size, uint32_t dst_pitch,
+	                       VulkanImage& src_image, vk::ImageLayout src_layout,
 	                       vk::ImageAspectFlags aspect) {
 		Common::LockGuard lock(m_mutex);
 
-		EnsureBuffer(ctx, size, vk::BufferUsageFlagBits::eTransferDst);
+		EnsureBuffer(size, vk::BufferUsageFlagBits::eTransferDst);
 
-		ExecuteImmediateCommands([&](CommandBuffer* command, vk::CommandBuffer) {
-			RecordImageToBuffer(*command, *src_image, m_buffer, dst_pitch, src_layout, aspect);
+		ExecuteImmediateCommands([&](CommandBuffer& command, vk::CommandBuffer) {
+			RecordImageToBuffer(command, src_image, m_buffer, dst_pitch, src_layout, aspect);
 		});
 
 		std::memcpy(dst_data, m_mapped_data, size);
 	}
 
-	void DownloadFromImage(GraphicContext* ctx, void* dst_data, uint64_t size,
-	                       std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
-	                       vk::ImageLayout src_layout) {
-		WithDownloadedImage(ctx, size, regions, src_image, src_layout,
+	void DownloadFromImage(void* dst_data, uint64_t size, std::span<const ImageBufferCopy> regions,
+	                       VulkanImage& src_image, vk::ImageLayout src_layout) {
+		WithDownloadedImage(size, regions, src_image, src_layout,
 		                    [&](std::span<const uint8_t> data) {
 			                    std::memcpy(dst_data, data.data(), data.size());
 		                    });
 	}
 
-	void ProcessDownloadedImage(GraphicContext* ctx, uint64_t size,
-	                            std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
-	                            vk::ImageLayout                src_layout,
+	void ProcessDownloadedImage(uint64_t size, std::span<const ImageBufferCopy> regions,
+	                            VulkanImage& src_image, vk::ImageLayout src_layout,
 	                            const DownloadedImageConsumer& consumer) {
-		WithDownloadedImage(ctx, size, regions, src_image, src_layout,
+		WithDownloadedImage(size, regions, src_image, src_layout,
 		                    [&](std::span<const uint8_t> data) {
 			                    if (m_host_cached) {
 				                    consumer(data);
@@ -378,12 +374,12 @@ public:
 		                    });
 	}
 
-	void Release(GraphicContext* ctx) {
+	void Release() {
 		Common::LockGuard lock(m_mutex);
 		if (m_buffer.buffer != nullptr) {
-			EXIT_IF(ctx == nullptr || m_mapped_data == nullptr);
-			VulkanUnmapMemory(ctx, &m_buffer.memory);
-			VulkanDeleteBuffer(ctx, &m_buffer);
+			EXIT_IF(m_mapped_data == nullptr);
+			m_graphics.UnmapMemory(m_buffer.memory);
+			m_graphics.DeleteBuffer(m_buffer);
 		}
 		m_capacity    = 0;
 		m_mapped_data = nullptr;
@@ -392,42 +388,40 @@ public:
 
 private:
 	template <typename Consumer>
-	void WithDownloadedImage(GraphicContext* ctx, uint64_t size,
-	                         std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
-	                         vk::ImageLayout src_layout, const Consumer& consumer) {
+	void WithDownloadedImage(uint64_t size, std::span<const ImageBufferCopy> regions,
+	                         VulkanImage& src_image, vk::ImageLayout src_layout,
+	                         const Consumer& consumer) {
 		Common::LockGuard lock(m_mutex);
-		EnsureBuffer(ctx, size, vk::BufferUsageFlagBits::eTransferDst);
-		ExecuteImmediateCommands([&](CommandBuffer* command, vk::CommandBuffer) {
-			RecordImageToBuffer(*command, *src_image, m_buffer, regions, src_layout);
+		EnsureBuffer(size, vk::BufferUsageFlagBits::eTransferDst);
+		ExecuteImmediateCommands([&](CommandBuffer& command, vk::CommandBuffer) {
+			RecordImageToBuffer(command, src_image, m_buffer, regions, src_layout);
 		});
 		consumer(std::span<const uint8_t>(static_cast<const uint8_t*>(m_mapped_data),
 		                                  static_cast<size_t>(size)));
 	}
 
 	template <bool WaitIdle, typename Recorder>
-	void RecordUpload(GraphicContext* ctx, const void* src_data, uint64_t size,
-	                  const Recorder& recorder) {
+	void RecordUpload(const void* src_data, uint64_t size, const Recorder& recorder) {
 		Common::LockGuard lock(m_mutex);
-		CopyFromHost(ctx, src_data, size, vk::BufferUsageFlagBits::eTransferSrc);
+		CopyFromHost(src_data, size, vk::BufferUsageFlagBits::eTransferSrc);
 		if constexpr (WaitIdle) {
-			WaitForGraphicsIdle(ctx);
+			WaitForGraphicsIdle();
 		}
 		ExecuteImmediateCommands(recorder);
 	}
 
-	void CopyFromHost(GraphicContext* ctx, const void* src_data, uint64_t size,
-	                  vk::BufferUsageFlags usage) {
-		EnsureBuffer(ctx, size, usage);
+	void CopyFromHost(const void* src_data, uint64_t size, vk::BufferUsageFlags usage) {
+		EnsureBuffer(size, usage);
 
 		std::memcpy(m_mapped_data, src_data, size);
 	}
 
-	void EnsureBuffer(GraphicContext* ctx, uint64_t size, vk::BufferUsageFlags usage) {
+	void EnsureBuffer(uint64_t size, vk::BufferUsageFlags usage) {
 		if (m_capacity < size || m_buffer.usage != usage) {
 			if (m_buffer.buffer != nullptr) {
-				VulkanUnmapMemory(ctx, &m_buffer.memory);
+				m_graphics.UnmapMemory(m_buffer.memory);
 				m_mapped_data = nullptr;
-				VulkanDeleteBuffer(ctx, &m_buffer);
+				m_graphics.DeleteBuffer(m_buffer);
 			}
 
 			m_buffer.usage           = usage;
@@ -439,18 +433,19 @@ private:
 			    usage & vk::BufferUsageFlagBits::eTransferDst
 			        ? vk::MemoryPropertyFlags(vk::MemoryPropertyFlagBits::eHostCached)
 			        : vk::MemoryPropertyFlags {};
-			VulkanCreateBuffer(ctx, size, &m_buffer);
+			m_graphics.CreateBuffer(size, m_buffer);
 			m_capacity             = size;
-			const auto& properties = ctx->GetPhysicalDeviceMemoryProperties();
+			const auto& properties = m_graphics.GetPhysicalDeviceMemoryProperties();
 			EXIT_IF(m_buffer.memory.type >= properties.memoryTypeCount);
 			m_host_cached =
 			    static_cast<bool>(properties.memoryTypes[m_buffer.memory.type].propertyFlags &
 			                      vk::MemoryPropertyFlagBits::eHostCached);
 
-			VulkanMapMemory(ctx, &m_buffer.memory, &m_mapped_data);
+			m_graphics.MapMemory(m_buffer.memory, m_mapped_data);
 		}
 	}
 
+	GraphicContext&      m_graphics;
 	Common::Mutex        m_mutex;
 	VulkanBuffer         m_buffer;
 	uint64_t             m_capacity    = 0;
@@ -459,10 +454,26 @@ private:
 	std::vector<uint8_t> m_cached_readback;
 };
 
-// Do not replace with one
-static ReusableStagingBuffer g_texture_staging_buffer;
-static ReusableStagingBuffer g_vertex_staging_buffer;
-static ReusableStagingBuffer g_readback_staging_buffer;
+struct TransferResources {
+	explicit TransferResources(GraphicContext& graphics)
+	    : graphics(graphics), texture(graphics), vertex(graphics), readback(graphics) {}
+
+	GraphicContext&       graphics;
+	ReusableStagingBuffer texture;
+	ReusableStagingBuffer vertex;
+	ReusableStagingBuffer readback;
+};
+
+static Common::Mutex                      g_resources_mutex;
+static std::unique_ptr<TransferResources> g_resources;
+
+static TransferResources& GetResources() {
+	Common::LockGuard lock(g_resources_mutex);
+	if (!g_resources) {
+		g_resources = std::make_unique<TransferResources>(GetRenderContext().GetGraphics());
+	}
+	return *g_resources;
+}
 
 bool IsBlockCompressedFormat(vk::Format format) {
 	return format == vk::Format::eBc1RgbUnormBlock || format == vk::Format::eBc1RgbSrgbBlock ||
@@ -507,55 +518,57 @@ static uint32_t GetFormatTexelSize(vk::Format format) {
 	}
 }
 
-static ReusableStagingBuffer* GetStagingBuffer(StagingBufferType type) {
+static ReusableStagingBuffer& GetStagingBuffer(StagingBufferType type) {
+	auto& resources = GetResources();
 	switch (type) {
-		case StagingBufferType::Texture: return &g_texture_staging_buffer;
-		case StagingBufferType::Vertex: return &g_vertex_staging_buffer;
-		case StagingBufferType::ReadBack: return &g_readback_staging_buffer;
+		case StagingBufferType::Texture: return resources.texture;
+		case StagingBufferType::Vertex: return resources.vertex;
+		case StagingBufferType::ReadBack: return resources.readback;
 		default: EXIT("unknown staging buffer type\n");
 	}
-
-	return nullptr;
+	return resources.texture;
 }
 
-void ReleaseCachedResources(GraphicContext* ctx) {
-	EXIT_IF(ctx == nullptr);
-	GpuTileRelease(ctx);
-	g_texture_staging_buffer.Release(ctx);
-	g_vertex_staging_buffer.Release(ctx);
-	g_readback_staging_buffer.Release(ctx);
+void ReleaseCachedResources() {
+	GpuTileRelease();
+	Common::LockGuard lock(g_resources_mutex);
+	if (g_resources) {
+		g_resources->texture.Release();
+		g_resources->vertex.Release();
+		g_resources->readback.Release();
+	}
 }
 
-void UploadTiledImage(GraphicContext* ctx, VulkanImage* dst_image, const void* tiled_data,
-                      uint64_t tiled_size, uint64_t linear_size, std::span<const GpuTileInfo> infos,
+void UploadTiledImage(VulkanImage& dst_image, const void* tiled_data, uint64_t tiled_size,
+                      uint64_t linear_size, std::span<const GpuTileInfo> infos,
                       std::span<const BufferImageCopy> regions, vk::ImageLayout dst_layout) {
-	EXIT_IF(ctx == nullptr || dst_image == nullptr || tiled_data == nullptr || regions.empty());
-	GpuDetile(ctx, tiled_data, nullptr, tiled_size, linear_size, infos,
-	          [&](CommandBuffer* command, VulkanBuffer* linear) {
+	EXIT_IF(tiled_data == nullptr || regions.empty());
+	GpuDetile(tiled_data, nullptr, tiled_size, linear_size, infos,
+	          [&](CommandBuffer& command, VulkanBuffer& linear) {
 		          vk::ImageAspectFlags aspects {};
 		          for (const auto& region: regions) {
-			          aspects |= GetTransferAspects(*dst_image, region.aspect);
+			          aspects |= GetTransferAspects(dst_image, region.aspect);
 		          }
-		          RecordBufferToImageCopy(*command, *linear, *dst_image,
+		          RecordBufferToImageCopy(command, linear, dst_image,
 		                                  ConvertBufferImageCopies(regions), aspects,
-		                                  dst_image->layout, dst_layout);
+		                                  dst_image.layout, dst_layout);
 	          });
 }
 
-void DownloadTiledImage(GraphicContext* ctx, void* tiled_data, uint64_t tiled_size,
-                        uint64_t linear_size, std::span<const GpuTileInfo> infos,
-                        std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
+void DownloadTiledImage(void* tiled_data, uint64_t tiled_size, uint64_t linear_size,
+                        std::span<const GpuTileInfo>     infos,
+                        std::span<const ImageBufferCopy> regions, VulkanImage& src_image,
                         vk::ImageLayout src_layout) {
-	EXIT_IF(ctx == nullptr || tiled_data == nullptr || src_image == nullptr || regions.empty());
-	GpuTile(ctx, nullptr, tiled_data, tiled_size, linear_size, infos,
-	        [&](CommandBuffer* command, VulkanBuffer* linear) {
-		        RecordImageToBuffer(*command, *src_image, *linear, regions, src_layout,
+	EXIT_IF(tiled_data == nullptr || regions.empty());
+	GpuTile(nullptr, tiled_data, tiled_size, linear_size, infos,
+	        [&](CommandBuffer& command, VulkanBuffer& linear) {
+		        RecordImageToBuffer(command, src_image, linear, regions, src_layout,
 		                            vk::AccessFlagBits::eShaderRead,
 		                            vk::PipelineStageFlagBits::eComputeShader);
 	        });
 }
 
-static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage* dst_image, uint32_t base_level,
+static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage& dst_image, uint32_t base_level,
                            uint32_t levels, vk::ImageAspectFlags aspect_mask,
                            vk::ImageLayout old_image_layout, vk::ImageLayout new_image_layout) {
 	if ((old_image_layout == vk::ImageLayout::eTransferDstOptimal &&
@@ -568,14 +581,14 @@ static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage* dst_image, uin
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 64) {
 			LOGF("set_image_layout: image=%p type=%d tracked=%d requested=%d->%d base=%u "
 			     "levels=%u\n",
-			     VulkanHandleToPointer(dst_image->image), static_cast<int>(dst_image->type),
-			     static_cast<int>(dst_image->layout), static_cast<int>(old_image_layout),
+			     VulkanHandleToPointer(dst_image.image), static_cast<int>(dst_image.type),
+			     static_cast<int>(dst_image.layout), static_cast<int>(old_image_layout),
 			     static_cast<int>(new_image_layout), base_level, levels);
 		}
 	}
 
 	if (old_image_layout == new_image_layout) {
-		dst_image->layout = new_image_layout;
+		dst_image.layout = new_image_layout;
 		return;
 	}
 
@@ -588,12 +601,12 @@ static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage* dst_image, uin
 	image_memory_barrier.newLayout                       = new_image_layout;
 	image_memory_barrier.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
 	image_memory_barrier.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
-	image_memory_barrier.image                           = dst_image->image;
+	image_memory_barrier.image                           = dst_image.image;
 	image_memory_barrier.subresourceRange.aspectMask     = aspect_mask;
 	image_memory_barrier.subresourceRange.baseMipLevel   = base_level;
 	image_memory_barrier.subresourceRange.levelCount     = levels;
 	image_memory_barrier.subresourceRange.baseArrayLayer = 0;
-	image_memory_barrier.subresourceRange.layerCount     = dst_image->layers;
+	image_memory_barrier.subresourceRange.layerCount     = dst_image.layers;
 
 	switch (old_image_layout) {
 		case vk::ImageLayout::eColorAttachmentOptimal:
@@ -663,7 +676,7 @@ static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage* dst_image, uin
 	buffer.pipelineBarrier(src_stages, dest_stages, vk::DependencyFlags {}, 0, nullptr, 0, nullptr,
 	                       1, &image_memory_barrier);
 
-	dst_image->layout = new_image_layout;
+	dst_image.layout = new_image_layout;
 }
 
 static uint64_t CompressedImageCopyBufferSize(const ImageImageCopy& r,
@@ -674,7 +687,7 @@ static uint64_t CompressedImageCopyBufferSize(const ImageImageCopy& r,
 		return 0;
 	}
 
-	auto src_texel_size = GetFormatTexelSize(r.src_image->format);
+	auto src_texel_size = GetFormatTexelSize(r.src_image.format);
 	auto dst_block_size = BlockCompressedBytesPerBlock(dst_image.format);
 	if (src_texel_size == 0 || src_texel_size != dst_block_size) {
 		return 0;
@@ -682,16 +695,16 @@ static uint64_t CompressedImageCopyBufferSize(const ImageImageCopy& r,
 
 	auto block_width  = (r.width + 3u) / 4u;
 	auto block_height = (r.height + 3u) / 4u;
-	if (block_width > r.src_image->extent.width || block_height > r.src_image->extent.height) {
+	if (block_width > r.src_image.extent.width || block_height > r.src_image.extent.height) {
 		return 0;
 	}
 	return static_cast<uint64_t>(block_width) * block_height * dst_block_size;
 }
 
 static void CopyBlockImageToCompressedImage(vk::CommandBuffer vk_buffer, const ImageImageCopy& r,
-                                            VulkanImage* dst_image, VulkanBuffer* copy_buffer) {
-	const auto copy_size = CompressedImageCopyBufferSize(r, *dst_image);
-	EXIT_IF(copy_size == 0 || copy_buffer == nullptr || copy_buffer->buffer_size < copy_size);
+                                            VulkanImage& dst_image, VulkanBuffer& copy_buffer) {
+	const auto copy_size = CompressedImageCopyBufferSize(r, dst_image);
+	EXIT_IF(copy_size == 0 || copy_buffer.buffer_size < copy_size);
 
 	const auto block_width  = (r.width + 3u) / 4u;
 	const auto block_height = (r.height + 3u) / 4u;
@@ -700,17 +713,17 @@ static void CopyBlockImageToCompressedImage(vk::CommandBuffer vk_buffer, const I
 	    MakeBufferImageCopy(0, 0, vk::ImageAspectFlagBits::eColor, r.src_level, r.src_layer,
 	                        {r.src_x, r.src_y, 0}, {block_width, block_height, 1});
 
-	auto src_layout = r.src_image->layout;
+	auto src_layout = r.src_image.layout;
 	SetImageLayout(vk_buffer, r.src_image, r.src_level, 1, vk::ImageAspectFlagBits::eColor,
 	               src_layout, vk::ImageLayout::eTransferSrcOptimal);
 
-	SetBufferMemoryBarrier(vk_buffer, copy_buffer->buffer, 0, VK_WHOLE_SIZE,
+	SetBufferMemoryBarrier(vk_buffer, copy_buffer.buffer, 0, VK_WHOLE_SIZE,
 	                       vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eTransferWrite,
 	                       vk::PipelineStageFlagBits::eTransfer,
 	                       vk::PipelineStageFlagBits::eTransfer);
-	vk_buffer.copyImageToBuffer(r.src_image->image, vk::ImageLayout::eTransferSrcOptimal,
-	                            copy_buffer->buffer, 1, &src_region);
-	SetBufferMemoryBarrier(vk_buffer, copy_buffer->buffer, 0, VK_WHOLE_SIZE,
+	vk_buffer.copyImageToBuffer(r.src_image.image, vk::ImageLayout::eTransferSrcOptimal,
+	                            copy_buffer.buffer, 1, &src_region);
+	SetBufferMemoryBarrier(vk_buffer, copy_buffer.buffer, 0, VK_WHOLE_SIZE,
 	                       vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
 	                       vk::PipelineStageFlagBits::eTransfer,
 	                       vk::PipelineStageFlagBits::eTransfer);
@@ -719,22 +732,22 @@ static void CopyBlockImageToCompressedImage(vk::CommandBuffer vk_buffer, const I
 	    MakeBufferImageCopy(0, 0, vk::ImageAspectFlagBits::eColor, r.dst_level, r.dst_layer,
 	                        {r.dst_x, r.dst_y, 0}, {r.width, r.height, 1});
 
-	vk_buffer.copyBufferToImage(copy_buffer->buffer, dst_image->image,
+	vk_buffer.copyBufferToImage(copy_buffer.buffer, dst_image.image,
 	                            vk::ImageLayout::eTransferDstOptimal, 1, &dst_region);
 
 	SetImageLayout(vk_buffer, r.src_image, r.src_level, 1, vk::ImageAspectFlagBits::eColor,
 	               vk::ImageLayout::eTransferSrcOptimal, src_layout);
 }
 
-void CopyImage(CommandBuffer* buffer, std::span<const ImageImageCopy> regions,
-               VulkanImage* dst_image, vk::ImageLayout dst_layout) {
-	auto vk_buffer = buffer->Handle();
+void CopyImage(CommandBuffer& buffer, std::span<const ImageImageCopy> regions,
+               VulkanImage& dst_image, vk::ImageLayout dst_layout) {
+	auto vk_buffer = buffer.Handle();
 
 	bool                 same_image_copy        = false;
 	vk::ImageAspectFlags dst_transition_aspects = {};
 	for (const auto& r: regions) {
-		dst_transition_aspects |= GetTransferAspects(*dst_image, r.dst_aspect);
-		if (r.src_image == dst_image) {
+		dst_transition_aspects |= GetTransferAspects(dst_image, r.dst_aspect);
+		if (&r.src_image == &dst_image) {
 			same_image_copy = true;
 			break;
 		}
@@ -742,7 +755,7 @@ void CopyImage(CommandBuffer* buffer, std::span<const ImageImageCopy> regions,
 
 	if (same_image_copy) {
 		SetImageLayout(vk_buffer, dst_image, 0, VK_REMAINING_MIP_LEVELS, dst_transition_aspects,
-		               dst_image->layout, vk::ImageLayout::eGeneral);
+		               dst_image.layout, vk::ImageLayout::eGeneral);
 
 		for (const auto& r: regions) {
 			vk::ImageCopy region;
@@ -761,20 +774,20 @@ void CopyImage(CommandBuffer* buffer, std::span<const ImageImageCopy> regions,
 
 			auto src_layout     = vk::ImageLayout::eGeneral;
 			auto restore_layout = vk::ImageLayout::eGeneral;
-			if (r.src_image != dst_image) {
-				restore_layout = r.src_image->layout;
+			if (&r.src_image != &dst_image) {
+				restore_layout = r.src_image.layout;
 				SetImageLayout(vk_buffer, r.src_image, r.src_level, 1,
-				               GetTransferAspects(*r.src_image, r.src_aspect), restore_layout,
+				               GetTransferAspects(r.src_image, r.src_aspect), restore_layout,
 				               vk::ImageLayout::eTransferSrcOptimal);
 				src_layout = vk::ImageLayout::eTransferSrcOptimal;
 			}
 
-			vk_buffer.copyImage(r.src_image->image, src_layout, dst_image->image,
+			vk_buffer.copyImage(r.src_image.image, src_layout, dst_image.image,
 			                    vk::ImageLayout::eGeneral, 1, &region);
 
-			if (r.src_image != dst_image) {
+			if (&r.src_image != &dst_image) {
 				SetImageLayout(vk_buffer, r.src_image, r.src_level, 1,
-				               GetTransferAspects(*r.src_image, r.src_aspect),
+				               GetTransferAspects(r.src_image, r.src_aspect),
 				               vk::ImageLayout::eTransferSrcOptimal, restore_layout);
 			}
 		}
@@ -785,11 +798,11 @@ void CopyImage(CommandBuffer* buffer, std::span<const ImageImageCopy> regions,
 	}
 
 	SetImageLayout(vk_buffer, dst_image, 0, VK_REMAINING_MIP_LEVELS, dst_transition_aspects,
-	               dst_image->layout, vk::ImageLayout::eTransferDstOptimal);
+	               dst_image.layout, vk::ImageLayout::eTransferDstOptimal);
 	uint64_t compressed_copy_size = 0;
 	for (const auto& r: regions) {
 		compressed_copy_size =
-		    std::max(compressed_copy_size, CompressedImageCopyBufferSize(r, *dst_image));
+		    std::max(compressed_copy_size, CompressedImageCopyBufferSize(r, dst_image));
 	}
 	VulkanBuffer* compressed_copy_buffer = nullptr;
 	if (compressed_copy_size != 0) {
@@ -797,17 +810,17 @@ void CopyImage(CommandBuffer* buffer, std::span<const ImageImageCopy> regions,
 		compressed_copy_buffer->usage =
 		    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
 		compressed_copy_buffer->memory.property = {};
-		VulkanCreateBuffer(WindowGetGraphicContext(), compressed_copy_size, compressed_copy_buffer);
-		buffer->DeleteAfterFence(compressed_copy_buffer);
+		buffer.GetGraphics().CreateBuffer(compressed_copy_size, *compressed_copy_buffer);
+		buffer.DeleteAfterFence(*compressed_copy_buffer);
 	}
 
 	for (const auto& r: regions) {
 		vk::ImageCopy region;
 
-		auto src_layout = r.src_image->layout;
+		auto src_layout = r.src_image.layout;
 
-		if (CompressedImageCopyBufferSize(r, *dst_image) != 0) {
-			CopyBlockImageToCompressedImage(vk_buffer, r, dst_image, compressed_copy_buffer);
+		if (CompressedImageCopyBufferSize(r, dst_image) != 0) {
+			CopyBlockImageToCompressedImage(vk_buffer, r, dst_image, *compressed_copy_buffer);
 			continue;
 		}
 
@@ -824,14 +837,14 @@ void CopyImage(CommandBuffer* buffer, std::span<const ImageImageCopy> regions,
 		region.extent                        = {r.width, r.height, 1};
 
 		SetImageLayout(vk_buffer, r.src_image, r.src_level, 1,
-		               GetTransferAspects(*r.src_image, r.src_aspect), src_layout,
+		               GetTransferAspects(r.src_image, r.src_aspect), src_layout,
 		               vk::ImageLayout::eTransferSrcOptimal);
 
-		vk_buffer.copyImage(r.src_image->image, vk::ImageLayout::eTransferSrcOptimal,
-		                    dst_image->image, vk::ImageLayout::eTransferDstOptimal, 1, &region);
+		vk_buffer.copyImage(r.src_image.image, vk::ImageLayout::eTransferSrcOptimal,
+		                    dst_image.image, vk::ImageLayout::eTransferDstOptimal, 1, &region);
 
 		SetImageLayout(vk_buffer, r.src_image, r.src_level, 1,
-		               GetTransferAspects(*r.src_image, r.src_aspect),
+		               GetTransferAspects(r.src_image, r.src_aspect),
 		               vk::ImageLayout::eTransferSrcOptimal, src_layout);
 	}
 
@@ -839,59 +852,60 @@ void CopyImage(CommandBuffer* buffer, std::span<const ImageImageCopy> regions,
 	               vk::ImageLayout::eTransferDstOptimal, dst_layout);
 }
 
-void CopyImageViaBuffer(CommandBuffer* buffer, GraphicContext* ctx, VulkanImage* src_image,
-                        vk::ImageAspectFlags src_aspect, VulkanImage* dst_image,
+void CopyImageViaBuffer(CommandBuffer& buffer, VulkanImage& src_image,
+                        vk::ImageAspectFlags src_aspect, VulkanImage& dst_image,
                         vk::ImageAspectFlags dst_aspect, uint32_t bytes_per_element,
                         vk::ImageLayout dst_layout) {
 	if (!IsSingleImageAspect(src_aspect) || !IsSingleImageAspect(dst_aspect) ||
-	    (bytes_per_element != 2 && bytes_per_element != 4) || src_image->layers != 1 ||
-	    dst_image->layers != 1 || src_image->mip_levels != 1 || dst_image->mip_levels != 1 ||
-	    src_image->extent.width == 0 || src_image->extent.height == 0 ||
-	    src_image->extent.width != dst_image->extent.width ||
-	    src_image->extent.height != dst_image->extent.height) {
+	    (bytes_per_element != 2 && bytes_per_element != 4) || src_image.layers != 1 ||
+	    dst_image.layers != 1 || src_image.mip_levels != 1 || dst_image.mip_levels != 1 ||
+	    src_image.extent.width == 0 || src_image.extent.height == 0 ||
+	    src_image.extent.width != dst_image.extent.width ||
+	    src_image.extent.height != dst_image.extent.height) {
 		EXIT("unsupported image-buffer-image copy, src_aspect=0x%x dst_aspect=0x%x bpe=%u "
 		     "src=%ux%u/%u/%u dst=%ux%u/%u/%u\n",
 		     static_cast<vk::ImageAspectFlags::MaskType>(src_aspect),
 		     static_cast<vk::ImageAspectFlags::MaskType>(dst_aspect), bytes_per_element,
-		     src_image->extent.width, src_image->extent.height, src_image->layers,
-		     src_image->mip_levels, dst_image->extent.width, dst_image->extent.height,
-		     dst_image->layers, dst_image->mip_levels);
+		     src_image.extent.width, src_image.extent.height, src_image.layers,
+		     src_image.mip_levels, dst_image.extent.width, dst_image.extent.height,
+		     dst_image.layers, dst_image.mip_levels);
 	}
 
-	const uint64_t row_bytes = static_cast<uint64_t>(src_image->extent.width) * bytes_per_element;
+	const uint64_t row_bytes = static_cast<uint64_t>(src_image.extent.width) * bytes_per_element;
 	constexpr uint64_t MAX_COPY_BUFFER_SIZE = 16ull * 1024ull * 1024ull;
 	if (row_bytes == 0 || row_bytes > MAX_COPY_BUFFER_SIZE) {
 		EXIT("unsupported image-buffer-image row size: 0x%016" PRIx64 "\n", row_bytes);
 	}
 	const auto rows_per_chunk = static_cast<uint32_t>(
-	    std::min<uint64_t>(src_image->extent.height, MAX_COPY_BUFFER_SIZE / row_bytes));
+	    std::min<uint64_t>(src_image.extent.height, MAX_COPY_BUFFER_SIZE / row_bytes));
 	const auto copy_buffer_size = row_bytes * rows_per_chunk;
 
 	// Kyty does not yet have a cross-queue scheduler. Drain submitted work once before
 	// recording the recreate copy; commands already recorded on this buffer remain ordered by the
 	// barriers below. The preservation policy stays isolated here so a future scheduler can replace
 	// this synchronization without changing texture-cache ownership logic.
-	WaitForGraphicsIdle(ctx);
+	auto& graphics = buffer.GetGraphics();
+	WaitForGraphicsIdle();
 	auto* copy_buffer = new VulkanBuffer;
 	copy_buffer->usage =
 	    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
 	copy_buffer->memory.property = vk::MemoryPropertyFlagBits::eDeviceLocal;
-	VulkanCreateBuffer(ctx, copy_buffer_size, copy_buffer);
-	buffer->DeleteAfterFence(copy_buffer);
+	graphics.CreateBuffer(copy_buffer_size, *copy_buffer);
+	buffer.DeleteAfterFence(*copy_buffer);
 
-	auto       vk_buffer    = buffer->Handle();
-	const auto src_layout   = src_image->layout;
+	auto       vk_buffer    = buffer.Handle();
+	const auto src_layout   = src_image.layout;
 	const auto final_layout = dst_layout;
 	SetImageLayout(vk_buffer, src_image, 0, 1, src_aspect, src_layout,
 	               vk::ImageLayout::eTransferSrcOptimal);
-	SetImageLayout(vk_buffer, dst_image, 0, 1, dst_aspect, dst_image->layout,
+	SetImageLayout(vk_buffer, dst_image, 0, 1, dst_aspect, dst_image.layout,
 	               vk::ImageLayout::eTransferDstOptimal);
 
-	for (uint32_t row = 0; row < src_image->extent.height; row += rows_per_chunk) {
-		const auto rows = std::min(rows_per_chunk, src_image->extent.height - row);
+	for (uint32_t row = 0; row < src_image.extent.height; row += rows_per_chunk) {
+		const auto rows = std::min(rows_per_chunk, src_image.extent.height - row);
 		auto copy = MakeBufferImageCopy(0, 0, src_aspect, 0, 0, {0, static_cast<int32_t>(row), 0},
-		                                {src_image->extent.width, rows, 1});
-		vk_buffer.copyImageToBuffer(src_image->image, vk::ImageLayout::eTransferSrcOptimal,
+		                                {src_image.extent.width, rows, 1});
+		vk_buffer.copyImageToBuffer(src_image.image, vk::ImageLayout::eTransferSrcOptimal,
 		                            copy_buffer->buffer, 1, &copy);
 
 		SetBufferMemoryBarrier(
@@ -900,9 +914,9 @@ void CopyImageViaBuffer(CommandBuffer* buffer, GraphicContext* ctx, VulkanImage*
 		    vk::PipelineStageFlagBits::eTransfer);
 
 		copy.imageSubresource.aspectMask = dst_aspect;
-		vk_buffer.copyBufferToImage(copy_buffer->buffer, dst_image->image,
+		vk_buffer.copyBufferToImage(copy_buffer->buffer, dst_image.image,
 		                            vk::ImageLayout::eTransferDstOptimal, 1, &copy);
-		if (row + rows < src_image->extent.height) {
+		if (row + rows < src_image.extent.height) {
 			SetBufferMemoryBarrier(
 			    vk_buffer, copy_buffer->buffer, 0, copy_buffer_size,
 			    vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eTransferWrite,
@@ -916,22 +930,20 @@ void CopyImageViaBuffer(CommandBuffer* buffer, GraphicContext* ctx, VulkanImage*
 	               final_layout);
 }
 
-void BlitToSwapchain(CommandBuffer* buffer, VulkanImage* src_image,
-                     VulkanSwapchain* dst_swapchain) {
-	auto vk_buffer = buffer->Handle();
-	if (src_image->layout != vk::ImageLayout::eTransferSrcOptimal) {
-		EXIT("invalid prepared presentation image, image=%p vk_image=%p layout=%d\n",
-		     static_cast<const void*>(src_image),
-		     src_image != nullptr ? static_cast<void*>(src_image->image) : nullptr,
-		     src_image != nullptr ? static_cast<int>(src_image->layout) : -1);
+void BlitToSwapchain(CommandBuffer& buffer, VulkanImage& src_image,
+                     VulkanSwapchain& dst_swapchain) {
+	auto vk_buffer = buffer.Handle();
+	if (src_image.layout != vk::ImageLayout::eTransferSrcOptimal) {
+		EXIT("invalid prepared presentation image, vk_image=%p layout=%d\n",
+		     static_cast<void*>(src_image.image), static_cast<int>(src_image.layout));
 	}
 
 	VulkanImage swapchain_image(VulkanImageType::Unknown);
 
-	swapchain_image.image  = dst_swapchain->swapchain_images[dst_swapchain->current_index];
+	swapchain_image.image  = dst_swapchain.swapchain_images[dst_swapchain.current_index];
 	swapchain_image.layout = vk::ImageLayout::eUndefined;
 
-	SetImageLayout(vk_buffer, &swapchain_image, 0, 1, vk::ImageAspectFlagBits::eColor,
+	SetImageLayout(vk_buffer, swapchain_image, 0, 1, vk::ImageAspectFlagBits::eColor,
 	               vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
 
 	vk::ImageBlit region {};
@@ -942,8 +954,8 @@ void BlitToSwapchain(CommandBuffer* buffer, VulkanImage* src_image,
 	region.srcOffsets[0].x               = 0;
 	region.srcOffsets[0].y               = 0;
 	region.srcOffsets[0].z               = 0;
-	region.srcOffsets[1].x               = static_cast<int>(src_image->extent.width);
-	region.srcOffsets[1].y               = static_cast<int>(src_image->extent.height);
+	region.srcOffsets[1].x               = static_cast<int>(src_image.extent.width);
+	region.srcOffsets[1].y               = static_cast<int>(src_image.extent.height);
 	region.srcOffsets[1].z               = 1;
 	region.dstSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 	region.dstSubresource.mipLevel       = 0;
@@ -952,135 +964,132 @@ void BlitToSwapchain(CommandBuffer* buffer, VulkanImage* src_image,
 	region.dstOffsets[0].x               = 0;
 	region.dstOffsets[0].y               = 0;
 	region.dstOffsets[0].z               = 0;
-	region.dstOffsets[1].x               = static_cast<int>(dst_swapchain->swapchain_extent.width);
-	region.dstOffsets[1].y               = static_cast<int>(dst_swapchain->swapchain_extent.height);
+	region.dstOffsets[1].x               = static_cast<int>(dst_swapchain.swapchain_extent.width);
+	region.dstOffsets[1].y               = static_cast<int>(dst_swapchain.swapchain_extent.height);
 	region.dstOffsets[1].z               = 1;
 
-	vk_buffer.blitImage(src_image->image, vk::ImageLayout::eTransferSrcOptimal,
+	vk_buffer.blitImage(src_image.image, vk::ImageLayout::eTransferSrcOptimal,
 	                    swapchain_image.image, vk::ImageLayout::eTransferDstOptimal, 1, &region,
 	                    vk::Filter::eLinear);
 }
 
-void ClearColorImage(CommandBuffer* buffer, VulkanImage* image, const vk::ClearColorValue& color) {
-	auto vk_buffer = buffer->Handle();
-	SetImageLayout(vk_buffer, image, 0, 1, vk::ImageAspectFlagBits::eColor, image->layout,
+void ClearColorImage(CommandBuffer& buffer, VulkanImage& image, const vk::ClearColorValue& color) {
+	auto vk_buffer = buffer.Handle();
+	SetImageLayout(vk_buffer, image, 0, 1, vk::ImageAspectFlagBits::eColor, image.layout,
 	               vk::ImageLayout::eTransferDstOptimal);
 	const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-	vk_buffer.clearColorImage(image->image, vk::ImageLayout::eTransferDstOptimal, &color, 1,
-	                          &range);
+	vk_buffer.clearColorImage(image.image, vk::ImageLayout::eTransferDstOptimal, &color, 1, &range);
 	SetImageLayout(vk_buffer, image, 0, 1, vk::ImageAspectFlagBits::eColor,
 	               vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal);
 }
 
-void UploadImage(GraphicContext* ctx, VulkanImage* dst_image, const void* src_data, uint64_t size,
-                 uint32_t src_pitch, vk::ImageLayout dst_layout) {
+void UploadImage(VulkanImage& dst_image, const void* src_data, uint64_t size, uint32_t src_pitch,
+                 vk::ImageLayout dst_layout) {
 	KYTY_PROFILER_FUNCTION();
 
 	EXIT_IF(size == 0);
 
 	GetStagingBuffer(StagingBufferType::Texture)
-	    ->UploadToImage(ctx, dst_image, src_data, size, src_pitch, vk::ImageAspectFlagBits::eColor,
-	                    vk::ImageLayout::eUndefined, dst_layout);
+	    .UploadToImage(dst_image, src_data, size, src_pitch, vk::ImageAspectFlagBits::eColor,
+	                   vk::ImageLayout::eUndefined, dst_layout);
 }
 
-void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size, uint32_t dst_pitch,
-                   VulkanImage* src_image, vk::ImageLayout src_layout,
-                   vk::ImageAspectFlags aspect) {
+void DownloadImage(void* dst_data, uint64_t size, uint32_t dst_pitch, VulkanImage& src_image,
+                   vk::ImageLayout src_layout, vk::ImageAspectFlags aspect) {
 	KYTY_PROFILER_FUNCTION();
 
 	EXIT_IF(size == 0);
 
 	GetStagingBuffer(StagingBufferType::ReadBack)
-	    ->DownloadFromImage(ctx, dst_data, size, dst_pitch, src_image, src_layout, aspect);
+	    .DownloadFromImage(dst_data, size, dst_pitch, src_image, src_layout, aspect);
 }
 
-void DownloadImage(GraphicContext* ctx, void* dst_data, uint64_t size,
-                   std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
-                   vk::ImageLayout src_layout) {
+void DownloadImage(void* dst_data, uint64_t size, std::span<const ImageBufferCopy> regions,
+                   VulkanImage& src_image, vk::ImageLayout src_layout) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(size == 0 || regions.empty());
 	GetStagingBuffer(StagingBufferType::ReadBack)
-	    ->DownloadFromImage(ctx, dst_data, size, regions, src_image, src_layout);
+	    .DownloadFromImage(dst_data, size, regions, src_image, src_layout);
 }
 
-void ProcessDownloadedImage(GraphicContext* ctx, uint64_t size,
-                            std::span<const ImageBufferCopy> regions, VulkanImage* src_image,
-                            vk::ImageLayout src_layout, const DownloadedImageConsumer& consumer) {
+void ProcessDownloadedImage(uint64_t size, std::span<const ImageBufferCopy> regions,
+                            VulkanImage& src_image, vk::ImageLayout src_layout,
+                            const DownloadedImageConsumer& consumer) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(size == 0 || regions.empty() || !consumer);
 	GetStagingBuffer(StagingBufferType::ReadBack)
-	    ->ProcessDownloadedImage(ctx, size, regions, src_image, src_layout, consumer);
+	    .ProcessDownloadedImage(size, regions, src_image, src_layout, consumer);
 }
 
-void UploadImage(GraphicContext* ctx, VulkanImage* image, const void* src_data, uint64_t size,
+void UploadImage(VulkanImage& image, const void* src_data, uint64_t size,
                  std::span<const BufferImageCopy> regions, vk::ImageLayout dst_layout) {
 	EXIT_IF(size == 0 || regions.empty());
 
 	GetStagingBuffer(StagingBufferType::Texture)
-	    ->UploadToImage(ctx, image, src_data, size, regions, dst_layout);
+	    .UploadToImage(image, src_data, size, regions, dst_layout);
 }
 
-void CopyImageImmediate(GraphicContext* ctx, std::span<const ImageImageCopy> regions,
-                        VulkanImage* dst_image, vk::ImageLayout dst_layout) {
-	ExecuteImmediateCommands([&](CommandBuffer* command, vk::CommandBuffer) {
+void CopyImageImmediate(std::span<const ImageImageCopy> regions, VulkanImage& dst_image,
+                        vk::ImageLayout dst_layout) {
+	ExecuteImmediateCommands([&](CommandBuffer& command, vk::CommandBuffer) {
 		CopyImage(command, regions, dst_image, dst_layout);
 	});
 }
 
-void UploadImage(GraphicContext* ctx, DepthStencilVulkanImage* image, const void* src_data,
-                 uint64_t size, uint32_t src_pitch, vk::ImageAspectFlags aspect) {
+void UploadImage(DepthStencilVulkanImage& image, const void* src_data, uint64_t size,
+                 uint32_t src_pitch, vk::ImageAspectFlags aspect) {
 	EXIT_IF(size == 0);
 	GetStagingBuffer(StagingBufferType::Texture)
-	    ->UploadToImage(ctx, image, src_data, size, src_pitch, aspect, image->layout,
-	                    vk::ImageLayout::eDepthStencilAttachmentOptimal);
+	    .UploadToImage(image, src_data, size, src_pitch, aspect, image.layout,
+	                   vk::ImageLayout::eDepthStencilAttachmentOptimal);
 }
 
-void UploadBuffer(GraphicContext* ctx, StagingBufferType type, VulkanBuffer* dst_buffer,
-                  uint64_t dst_offset, const void* src_data, uint64_t size) {
+void UploadBuffer(StagingBufferType type, VulkanBuffer& dst_buffer, uint64_t dst_offset,
+                  const void* src_data, uint64_t size) {
 	EXIT_IF(size == 0);
-	EXIT_IF(dst_offset > dst_buffer->buffer_size || size > dst_buffer->buffer_size - dst_offset);
-	GetStagingBuffer(type)->UploadToBuffer(ctx, dst_buffer, src_data, size, dst_offset);
+	EXIT_IF(dst_offset > dst_buffer.buffer_size || size > dst_buffer.buffer_size - dst_offset);
+	GetStagingBuffer(type).UploadToBuffer(dst_buffer, src_data, size, dst_offset);
 }
 
-void CopyBuffer(VulkanBuffer* src_buffer, VulkanBuffer* dst_buffer, uint64_t size) {
-	EXIT_IF(size == 0 || size > src_buffer->buffer_size || size > dst_buffer->buffer_size);
+void CopyBuffer(VulkanBuffer& src_buffer, VulkanBuffer& dst_buffer, uint64_t size) {
+	EXIT_IF(size == 0 || size > src_buffer.buffer_size || size > dst_buffer.buffer_size);
 
-	ExecuteImmediateCommands([&](CommandBuffer*, vk::CommandBuffer vk_command) {
-		SetBufferMemoryBarrier(vk_command, src_buffer->buffer, 0, size,
+	ExecuteImmediateCommands([&](CommandBuffer&, vk::CommandBuffer vk_command) {
+		SetBufferMemoryBarrier(vk_command, src_buffer.buffer, 0, size,
 		                       vk::AccessFlagBits::eMemoryWrite, vk::AccessFlagBits::eTransferRead,
 		                       vk::PipelineStageFlagBits::eAllCommands,
 		                       vk::PipelineStageFlagBits::eTransfer);
-		SetBufferMemoryBarrier(vk_command, dst_buffer->buffer, 0, size,
+		SetBufferMemoryBarrier(vk_command, dst_buffer.buffer, 0, size,
 		                       vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
 		                       vk::AccessFlagBits::eTransferWrite,
 		                       vk::PipelineStageFlagBits::eAllCommands,
 		                       vk::PipelineStageFlagBits::eTransfer);
 		const vk::BufferCopy copy_region {.srcOffset = 0, .dstOffset = 0, .size = size};
-		vk_command.copyBuffer(src_buffer->buffer, dst_buffer->buffer, 1, &copy_region);
+		vk_command.copyBuffer(src_buffer.buffer, dst_buffer.buffer, 1, &copy_region);
 		SetBufferMemoryBarrier(
-		    vk_command, dst_buffer->buffer, 0, size, vk::AccessFlagBits::eTransferWrite,
+		    vk_command, dst_buffer.buffer, 0, size, vk::AccessFlagBits::eTransferWrite,
 		    vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
 		    vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands);
 	});
 }
 
-void DownloadBuffer(GraphicContext* ctx, VulkanBuffer* src_buffer, uint64_t src_offset,
-                    void* dst_data, uint64_t size) {
+void DownloadBuffer(VulkanBuffer& src_buffer, uint64_t src_offset, void* dst_data, uint64_t size) {
+	auto& graphics = GetRenderContext().GetGraphics();
 	EXIT_IF(size == 0);
-	EXIT_IF(src_offset > src_buffer->buffer_size || size > src_buffer->buffer_size - src_offset);
-	const auto family = ctx->queues[GraphicContext::QUEUE_UTIL].family;
+	EXIT_IF(src_offset > src_buffer.buffer_size || size > src_buffer.buffer_size - src_offset);
+	const auto family = graphics.queues[GraphicContext::QUEUE_UTIL].family;
 	EXIT_IF(family == static_cast<uint32_t>(-1));
 	for (int i = GraphicContext::QUEUE_COMPUTE_START;
 	     i < GraphicContext::QUEUE_COMPUTE_START + GraphicContext::QUEUE_COMPUTE_NUM; i++) {
-		EXIT_IF(ctx->queues[i].family != family);
+		EXIT_IF(graphics.queues[i].family != family);
 	}
-	EXIT_IF(ctx->queues[GraphicContext::QUEUE_GFX].family != family);
+	EXIT_IF(graphics.queues[GraphicContext::QUEUE_GFX].family != family);
 
-	if (src_buffer->memory.property & vk::MemoryPropertyFlagBits::eHostVisible) {
+	if (src_buffer.memory.property & vk::MemoryPropertyFlagBits::eHostVisible) {
 		void* mapped = nullptr;
-		VulkanMapMemory(ctx, &src_buffer->memory, &mapped);
+		graphics.MapMemory(src_buffer.memory, mapped);
 		std::memcpy(dst_data, static_cast<const uint8_t*>(mapped) + src_offset, size);
-		VulkanUnmapMemory(ctx, &src_buffer->memory);
+		graphics.UnmapMemory(src_buffer.memory);
 		return;
 	}
 
@@ -1089,15 +1098,15 @@ void DownloadBuffer(GraphicContext* ctx, VulkanBuffer* src_buffer, uint64_t src_
 	readback.memory.property = vk::MemoryPropertyFlagBits::eHostVisible |
 	                           vk::MemoryPropertyFlagBits::eHostCoherent |
 	                           vk::MemoryPropertyFlagBits::eHostCached;
-	VulkanCreateBuffer(ctx, size, &readback);
+	graphics.CreateBuffer(size, readback);
 
-	ExecuteImmediateCommands([&](CommandBuffer*, vk::CommandBuffer vk_command) {
-		SetBufferMemoryBarrier(vk_command, src_buffer->buffer, src_offset, size,
+	ExecuteImmediateCommands([&](CommandBuffer&, vk::CommandBuffer vk_command) {
+		SetBufferMemoryBarrier(vk_command, src_buffer.buffer, src_offset, size,
 		                       vk::AccessFlagBits::eMemoryWrite, vk::AccessFlagBits::eTransferRead,
 		                       vk::PipelineStageFlagBits::eAllCommands,
 		                       vk::PipelineStageFlagBits::eTransfer);
 		const vk::BufferCopy copy {.srcOffset = src_offset, .dstOffset = 0, .size = size};
-		vk_command.copyBuffer(src_buffer->buffer, readback.buffer, 1, &copy);
+		vk_command.copyBuffer(src_buffer.buffer, readback.buffer, 1, &copy);
 		SetBufferMemoryBarrier(vk_command, readback.buffer, 0, size,
 		                       vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead,
 		                       vk::PipelineStageFlagBits::eTransfer,
@@ -1105,10 +1114,10 @@ void DownloadBuffer(GraphicContext* ctx, VulkanBuffer* src_buffer, uint64_t src_
 	});
 
 	void* mapped = nullptr;
-	VulkanMapMemory(ctx, &readback.memory, &mapped);
+	graphics.MapMemory(readback.memory, mapped);
 	std::memcpy(dst_data, mapped, size);
-	VulkanUnmapMemory(ctx, &readback.memory);
-	VulkanDeleteBuffer(ctx, &readback);
+	graphics.UnmapMemory(readback.memory);
+	graphics.DeleteBuffer(readback);
 }
 
 } // namespace Libs::Graphics::Transfer

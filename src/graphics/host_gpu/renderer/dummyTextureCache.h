@@ -18,8 +18,7 @@ public:
 	~DummyTextureCache();
 	KYTY_CLASS_NO_COPY(DummyTextureCache);
 
-	[[nodiscard]] VulkanImage* Get(GraphicContext* ctx, Usage usage, bool uint_format,
-	                               bool image_3d);
+	[[nodiscard]] VulkanImage& Get(Usage usage, bool uint_format, bool image_3d);
 
 private:
 	struct Slot {
@@ -29,7 +28,6 @@ private:
 	Common::Mutex       m_mutex;
 	std::array<Slot, 4> m_sampled {};
 	std::array<Slot, 4> m_storage {};
-	GraphicContext*     m_ctx = nullptr;
 };
 
 } // namespace Libs::Graphics

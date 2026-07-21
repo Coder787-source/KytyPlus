@@ -17,9 +17,11 @@
 
 namespace Libs::Graphics {
 
+struct GraphicContext;
 struct RenderColorInfo;
 struct RenderDepthInfo;
 struct VulkanFramebuffer;
+class RenderCommandBuffer;
 
 namespace HW {
 class Context;
@@ -76,7 +78,7 @@ static_assert(std::is_trivially_copyable_v<PipelineStaticParameters>);
 static_assert(std::is_standard_layout_v<PipelineStaticParameters>);
 static_assert(alignof(PipelineStaticParameters) == 1);
 static_assert(sizeof(PipelineStaticParameters) ==
-	          sizeof(float[3]) + sizeof(float[3]) + sizeof(bool) * 2 + sizeof(int[4]) +
+              sizeof(float[3]) + sizeof(float[3]) + sizeof(bool) * 2 + sizeof(int[4]) +
                   sizeof(vk::PrimitiveTopology) + sizeof(uint32_t) + sizeof(bool) * 4 +
                   sizeof(vk::CompareOp) + sizeof(bool) + sizeof(float) * 2 + sizeof(bool) +
                   sizeof(PipelineStencilStaticState) * 2 + sizeof(uint32_t) +
@@ -86,7 +88,9 @@ static_assert(sizeof(PipelineStaticParameters) ==
 
 class PipelineCache {
 public:
-	PipelineCache() { EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread()); }
+	explicit PipelineCache(GraphicContext& graphics): m_graphics(graphics) {
+		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+	}
 	~PipelineCache() { KYTY_NOT_IMPLEMENTED; }
 	KYTY_CLASS_NO_COPY(PipelineCache);
 
@@ -105,13 +109,13 @@ public:
 		ShaderId cs_shader_id;
 	};
 
-	GraphicsPipeline* CreateGraphicsPipeline(
-	    VulkanFramebuffer* framebuffer, RenderColorInfo* colors, uint32_t color_count,
-	    RenderDepthInfo* depth, ShaderVertexInputInfo* vs_input_info, HW::Context* ctx,
-	    HW::Shader* sh_ctx, ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
-	    bool ps_active, std::span<const uint32_t> vs_spirv, std::span<const uint32_t> ps_spirv);
-	ComputePipeline* CreateComputePipeline(ShaderComputeInputInfo*      input_info,
-	                                       const HW::ComputeShaderInfo* cs_regs,
+	GraphicsPipeline& CreateGraphicsPipeline(
+	    VulkanFramebuffer& framebuffer, RenderColorInfo* colors, uint32_t color_count,
+	    RenderDepthInfo& depth, ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
+	    ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology, bool ps_active,
+	    std::span<const uint32_t> vs_spirv, std::span<const uint32_t> ps_spirv);
+	ComputePipeline& CreateComputePipeline(ShaderComputeInputInfo&      input_info,
+	                                       const HW::ComputeShaderInfo& cs_regs,
 	                                       std::span<const uint32_t>    cs_spirv);
 
 private:
@@ -136,12 +140,12 @@ private:
 	};
 
 	struct PipelineKeyHash {
-		static void Mix(std::size_t* hash, std::size_t value) {
-			*hash ^= value + static_cast<std::size_t>(0x9e3779b97f4a7c15ull) + (*hash << 6u) +
-			         (*hash >> 2u);
+		static void Mix(std::size_t& hash, std::size_t value) {
+			hash ^= value + static_cast<std::size_t>(0x9e3779b97f4a7c15ull) + (hash << 6u) +
+			        (hash >> 2u);
 		}
 
-		static void MixShaderId(std::size_t* hash, const ShaderId& id) {
+		static void MixShaderId(std::size_t& hash, const ShaderId& id) {
 			Mix(hash, id.hash0);
 			Mix(hash, id.crc32);
 			Mix(hash, id.ids.size());
@@ -150,7 +154,7 @@ private:
 			}
 		}
 
-		static void MixStaticParams(std::size_t* hash, const PipelineStaticParameters& params) {
+		static void MixStaticParams(std::size_t& hash, const PipelineStaticParameters& params) {
 			const auto* bytes = reinterpret_cast<const uint8_t*>(&params);
 			for (std::size_t i = 0; i < sizeof(params); i++) {
 				Mix(hash, bytes[i]);
@@ -161,10 +165,10 @@ private:
 	struct GraphicsPipelineKeyHash {
 		std::size_t operator()(const GraphicsPipelineKey& key) const {
 			std::size_t hash = 0;
-			PipelineKeyHash::Mix(&hash, key.render_pass_id);
-			PipelineKeyHash::MixShaderId(&hash, key.vs_shader_id);
-			PipelineKeyHash::MixShaderId(&hash, key.ps_shader_id);
-			PipelineKeyHash::MixStaticParams(&hash, key.static_params);
+			PipelineKeyHash::Mix(hash, key.render_pass_id);
+			PipelineKeyHash::MixShaderId(hash, key.vs_shader_id);
+			PipelineKeyHash::MixShaderId(hash, key.ps_shader_id);
+			PipelineKeyHash::MixStaticParams(hash, key.static_params);
 			return hash;
 		}
 	};
@@ -172,11 +176,12 @@ private:
 	struct ComputePipelineKeyHash {
 		std::size_t operator()(const ComputePipelineKey& key) const {
 			std::size_t hash = 0;
-			PipelineKeyHash::MixShaderId(&hash, key.cs_shader_id);
+			PipelineKeyHash::MixShaderId(hash, key.cs_shader_id);
 			return hash;
 		}
 	};
 
+	GraphicContext& m_graphics;
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>,
 	                   GraphicsPipelineKeyHash>
 	    m_graphics_pipelines;
@@ -187,16 +192,16 @@ private:
 
 void LogPipelineTrace(const char* phase, uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0,
                       uint32_t ps_crc32);
-void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::RenderPass render_pass,
-                            const ShaderVertexInputInfo*    vs_input_info,
+void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::RenderPass render_pass,
+                            const ShaderVertexInputInfo&    vs_input_info,
                             std::span<const uint32_t>       vs_shader,
                             const ShaderPixelInputInfo*     ps_input_info,
                             std::span<const uint32_t>       ps_shader,
                             const PipelineStaticParameters& static_params, uint32_t vs_hash0,
                             uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32,
                             bool ps_active);
-void CreatePipelineInternal(PipelineCache::ComputePipeline* pipeline,
-                            const ShaderComputeInputInfo*   input_info,
+void CreatePipelineInternal(PipelineCache::ComputePipeline& pipeline,
+                            const ShaderComputeInputInfo&   input_info,
                             std::span<const uint32_t>       cs_shader);
 
 } // namespace Libs::Graphics

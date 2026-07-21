@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <fmt/format.h>
+#include <functional>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 namespace {
@@ -200,11 +201,10 @@ bool ValidateResourceSpecialization(const Program& program, const ResourceSnapsh
 }
 
 bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
-                          ResourceSnapshot* snapshot, std::string* error) {
-	if (snapshot == nullptr || !program.resource_tracking_complete) {
+	                      ResourceSnapshot& snapshot, std::string* error) {
+	if (!program.resource_tracking_complete) {
 		if (error != nullptr) {
-			*error = snapshot == nullptr ? "invalid resource snapshot"
-			                             : "shader resources were not tracked";
+			*error = "shader resources were not tracked";
 		}
 		return false;
 	}
@@ -229,7 +229,7 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 
 	std::vector<DescriptorValue> values;
 	std::vector<uint32_t>        flattened_srt;
-	if (!EvaluateRuntimeSources(program, requests, runtime, &values, &flattened_srt, error)) {
+	if (!EvaluateRuntimeSources(program, requests, runtime, values, flattened_srt, error)) {
 		return false;
 	}
 
@@ -280,25 +280,24 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 	if (!ValidateResourceSnapshot(program, next, error)) {
 		return false;
 	}
-	*snapshot = std::move(next);
+	snapshot = std::move(next);
 	return true;
 }
 
-bool SpecializeResources(Program* program, const ResourceSnapshot& snapshot, std::string* error) {
-	if (program == nullptr || !program->resource_tracking_complete ||
-	    program->shader_info_complete || program->binding_layout_complete) {
+bool SpecializeResources(Program& program, const ResourceSnapshot& snapshot, std::string* error) {
+	if (!program.resource_tracking_complete || program.shader_info_complete ||
+	    program.binding_layout_complete) {
 		if (error != nullptr) {
-			*error = program == nullptr ? "invalid resource specialization program"
-			         : !program->resource_tracking_complete ? "shader resources were not tracked"
-			                                                : "resource specialization is too late";
+			*error = !program.resource_tracking_complete ? "shader resources were not tracked"
+			                                            : "resource specialization is too late";
 		}
 		return false;
 	}
-	if (!ValidateResourceSnapshot(*program, snapshot, error)) {
+	if (!ValidateResourceSnapshot(program, snapshot, error)) {
 		return false;
 	}
 
-	auto next = program->info;
+	auto next = program.info;
 	for (uint32_t i = 0; i < next.buffers.size(); i++) {
 		ShaderBufferResource descriptor;
 		if (!DecodeBufferDescriptor(snapshot.buffers[i], descriptor)) {
@@ -347,12 +346,12 @@ bool SpecializeResources(Program* program, const ResourceSnapshot& snapshot, std
 		}
 	}
 	struct ImagePatch {
-		Instruction*            inst;
+		std::reference_wrapper<Instruction> inst;
 		ResourceKind            kind;
 		Decoder::ImageDimension dimension;
 	};
 	std::vector<ImagePatch> patches;
-	for (auto& block: program->blocks) {
+	for (auto& block: program.blocks) {
 		for (auto& inst: block.instructions) {
 			if (inst.memory.kind != ResourceKind::Image &&
 			    inst.memory.kind != ResourceKind::ImageUint &&
@@ -368,13 +367,13 @@ bool SpecializeResources(Program* program, const ResourceSnapshot& snapshot, std
 				return false;
 			}
 			const auto& image = next.images[inst.memory.resource];
-			patches.push_back({&inst, image.kind, image.dimension});
+			patches.push_back({std::ref(inst), image.kind, image.dimension});
 		}
 	}
-	program->info = std::move(next);
+	program.info = std::move(next);
 	for (const auto& patch: patches) {
-		patch.inst->memory.kind            = patch.kind;
-		patch.inst->memory.image_dimension = patch.dimension;
+		patch.inst.get().memory.kind            = patch.kind;
+		patch.inst.get().memory.image_dimension = patch.dimension;
 	}
 	return true;
 }

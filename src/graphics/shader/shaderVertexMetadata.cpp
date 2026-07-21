@@ -17,10 +17,7 @@ bool Fail(std::string* error, const char* message) {
 } // namespace
 
 bool ShaderReadVertexMetadata(const ShaderMappedData& data, uint32_t max_user_sgprs,
-                              ShaderVertexMetadata* metadata, std::string* error) {
-	if (metadata == nullptr) {
-		return Fail(error, "missing vertex metadata output");
-	}
+	                          ShaderVertexMetadata& metadata, std::string* error) {
 	if (data.user_data == nullptr) {
 		return Fail(error, "missing AGC user-data header");
 	}
@@ -61,7 +58,7 @@ bool ShaderReadVertexMetadata(const ShaderMappedData& data, uint32_t max_user_sg
 
 	const bool embedded = next.vertex_buffer_reg >= 0 || next.vertex_attrib_reg >= 0;
 	if (!embedded) {
-		*metadata = next;
+		metadata = next;
 		return true;
 	}
 	if (next.vertex_buffer_reg < 0 || next.vertex_attrib_reg < 0) {
@@ -83,7 +80,7 @@ bool ShaderReadVertexMetadata(const ShaderMappedData& data, uint32_t max_user_sg
 	}
 	std::memcpy(next.input_semantics.data(), data.input_semantics, semantic_size);
 	next.input_semantics_count = data.num_input_semantics;
-	*metadata                  = next;
+	metadata                   = next;
 	return true;
 }
 

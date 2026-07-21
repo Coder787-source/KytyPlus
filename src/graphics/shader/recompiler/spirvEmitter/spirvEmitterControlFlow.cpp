@@ -2,8 +2,8 @@
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 
-void ComputeReachableBlocks(EmitterState* state, const IR::Program& program) {
-	state->reachable_blocks.assign(program.blocks.size(), false);
+void ComputeReachableBlocks(EmitterState& state, const IR::Program& program) {
+	state.reachable_blocks.assign(program.blocks.size(), false);
 	if (program.blocks.empty()) {
 		return;
 	}
@@ -13,38 +13,38 @@ void ComputeReachableBlocks(EmitterState* state, const IR::Program& program) {
 	while (!stack.empty()) {
 		const auto block_id = stack.back();
 		stack.pop_back();
-		if (block_id >= program.blocks.size() || state->reachable_blocks[block_id]) {
+		if (block_id >= program.blocks.size() || state.reachable_blocks[block_id]) {
 			continue;
 		}
-		state->reachable_blocks[block_id] = true;
+		state.reachable_blocks[block_id] = true;
 		for (auto succ: program.blocks[block_id].successors) {
-			if (succ < program.blocks.size() && !state->reachable_blocks[succ]) {
+			if (succ < program.blocks.size() && !state.reachable_blocks[succ]) {
 				stack.push_back(succ);
 			}
 		}
 	}
 }
 
-void AllocateBlockLabels(EmitterState* state, const IR::Program& program) {
+void AllocateBlockLabels(EmitterState& state, const IR::Program& program) {
 	for (const auto& block: program.blocks) {
-		if (block.id < state->reachable_blocks.size() && state->reachable_blocks[block.id]) {
-			state->block_labels.emplace(block.id, state->builder.AllocateId());
+		if (block.id < state.reachable_blocks.size() && state.reachable_blocks[block.id]) {
+			state.block_labels.emplace(block.id, state.builder.AllocateId());
 		}
 	}
 }
 
-void AllocateDispatcherState(EmitterState* state, const IR::Program& program) {
-	state->dispatcher_fallback = program.dispatcher_fallback;
-	if (!state->dispatcher_fallback) {
+void AllocateDispatcherState(EmitterState& state, const IR::Program& program) {
+	state.dispatcher_fallback = program.dispatcher_fallback;
+	if (!state.dispatcher_fallback) {
 		return;
 	}
-	state->dispatch_pc_variable        = state->builder.AllocateId();
-	state->dispatch_header_label       = state->builder.AllocateId();
-	state->dispatch_select_label       = state->builder.AllocateId();
-	state->dispatch_default_label      = state->builder.AllocateId();
-	state->dispatch_after_switch_label = state->builder.AllocateId();
-	state->dispatch_continue_label     = state->builder.AllocateId();
-	state->dispatch_merge_label        = state->builder.AllocateId();
+	state.dispatch_pc_variable        = state.builder.AllocateId();
+	state.dispatch_header_label       = state.builder.AllocateId();
+	state.dispatch_select_label       = state.builder.AllocateId();
+	state.dispatch_default_label      = state.builder.AllocateId();
+	state.dispatch_after_switch_label = state.builder.AllocateId();
+	state.dispatch_continue_label     = state.builder.AllocateId();
+	state.dispatch_merge_label        = state.builder.AllocateId();
 }
 
 uint32_t BlockLabel(const EmitterState& state, uint32_t block_id) {
@@ -52,7 +52,7 @@ uint32_t BlockLabel(const EmitterState& state, uint32_t block_id) {
 	return it == state.block_labels.end() ? 0 : it->second;
 }
 
-uint32_t EmitBranchCondition(EmitterState* state, CFG::BranchCondition condition) {
+uint32_t EmitBranchCondition(EmitterState& state, CFG::BranchCondition condition) {
 	switch (condition) {
 		case CFG::BranchCondition::SccZero: return EmitSccBool(state, false);
 		case CFG::BranchCondition::SccNonZero: return EmitSccBool(state, true);
@@ -68,29 +68,29 @@ uint32_t EmitBranchCondition(EmitterState* state, CFG::BranchCondition condition
 	}
 }
 
-void EmitStructuredPrefix(EmitterState* state, const CFG::Terminator& term) {
+void EmitStructuredPrefix(EmitterState& state, const CFG::Terminator& term) {
 	if (term.loop_header) {
-		const auto merge_label    = BlockLabel(*state, term.merge_block);
-		const auto continue_label = BlockLabel(*state, term.continue_block);
+		const auto merge_label    = BlockLabel(state, term.merge_block);
+		const auto continue_label = BlockLabel(state, term.continue_block);
 		if (merge_label != 0 && continue_label != 0) {
-			state->builder.AddFunction({OpLoopMerge, merge_label, continue_label, LoopControlNone});
+			state.builder.AddFunction({OpLoopMerge, merge_label, continue_label, LoopControlNone});
 		}
 		return;
 	}
 	if (term.kind == CFG::TerminatorKind::ConditionalBranch && term.merge_block != UINT32_MAX) {
-		const auto merge_label = BlockLabel(*state, term.merge_block);
+		const auto merge_label = BlockLabel(state, term.merge_block);
 		if (merge_label != 0) {
-			state->builder.AddFunction({OpSelectionMerge, merge_label, SelectionControlNone});
+			state.builder.AddFunction({OpSelectionMerge, merge_label, SelectionControlNone});
 		}
 	}
 }
 
-void EmitReturn(EmitterState* state) {
+void EmitReturn(EmitterState& state) {
 	EmitKillIfPixelValidMaskInactive(state);
-	state->builder.AddFunction({OpReturn});
+	state.builder.AddFunction({OpReturn});
 }
 
-void EmitTerminator(EmitterState* state, const CFG::Terminator& term) {
+void EmitTerminator(EmitterState& state, const CFG::Terminator& term) {
 	const auto condition = term.kind == CFG::TerminatorKind::ConditionalBranch
 	                           ? EmitBranchCondition(state, term.condition)
 	                           : 0;
@@ -98,19 +98,19 @@ void EmitTerminator(EmitterState* state, const CFG::Terminator& term) {
 
 	switch (term.kind) {
 		case CFG::TerminatorKind::Branch: {
-			const auto label = BlockLabel(*state, term.true_block);
+			const auto label = BlockLabel(state, term.true_block);
 			if (label != 0) {
-				state->builder.AddFunction({OpBranch, label});
+				state.builder.AddFunction({OpBranch, label});
 			} else {
 				EmitReturn(state);
 			}
 			break;
 		}
 		case CFG::TerminatorKind::ConditionalBranch: {
-			const auto true_label  = BlockLabel(*state, term.true_block);
-			const auto false_label = BlockLabel(*state, term.false_block);
+			const auto true_label  = BlockLabel(state, term.true_block);
+			const auto false_label = BlockLabel(state, term.false_block);
 			if (true_label != 0 && false_label != 0) {
-				state->builder.AddFunction(
+				state.builder.AddFunction(
 				    {OpBranchConditional, condition, true_label, false_label});
 			} else {
 				EmitReturn(state);
@@ -122,10 +122,10 @@ void EmitTerminator(EmitterState* state, const CFG::Terminator& term) {
 }
 
 bool UserDataDwordIndex(const EmitterState& state, IR::Register reg, uint32_t& dword_index) {
-	if (state.program == nullptr || reg.file != IR::RegisterFile::Scalar) {
+	if (reg.file != IR::RegisterFile::Scalar) {
 		return false;
 	}
-	const auto& registers = state.program->bindings.user_data_registers;
+	const auto& registers = state.program.bindings.user_data_registers;
 	const auto  found     = std::lower_bound(registers.begin(), registers.end(), reg.index);
 	if (found != registers.end() && *found == reg.index) {
 		dword_index = static_cast<uint32_t>(found - registers.begin());
@@ -134,24 +134,24 @@ bool UserDataDwordIndex(const EmitterState& state, IR::Register reg, uint32_t& d
 	return false;
 }
 
-uint32_t EmitVsharpDwordLoad(EmitterState* state, uint32_t dword_index) {
-	if (state->push_constant_variable != 0) {
-		const auto pointer = state->builder.AllocateId();
-		const auto value   = state->builder.AllocateId();
-		state->builder.AddFunction({OpAccessChain, state->ptr_push_constant_uint, pointer,
-		                            state->push_constant_variable, ConstantU32(state, 0),
+uint32_t EmitVsharpDwordLoad(EmitterState& state, uint32_t dword_index) {
+	if (state.push_constant_variable != 0) {
+		const auto pointer = state.builder.AllocateId();
+		const auto value   = state.builder.AllocateId();
+		state.builder.AddFunction({OpAccessChain, state.ptr_push_constant_uint, pointer,
+		                            state.push_constant_variable, ConstantU32(state, 0),
 		                            ConstantU32(state, dword_index / 4u),
 		                            ConstantU32(state, dword_index % 4u)});
-		state->builder.AddFunction({OpLoad, state->uint_type, value, pointer});
+		state.builder.AddFunction({OpLoad, state.uint_type, value, pointer});
 		return value;
 	}
-	if (state->vsharp_storage_variable != 0) {
-		const auto pointer = state->builder.AllocateId();
-		const auto value   = state->builder.AllocateId();
-		state->builder.AddFunction({OpAccessChain, state->ptr_storage_buffer_uint, pointer,
-		                            state->vsharp_storage_variable, ConstantU32(state, 0),
+	if (state.vsharp_storage_variable != 0) {
+		const auto pointer = state.builder.AllocateId();
+		const auto value   = state.builder.AllocateId();
+		state.builder.AddFunction({OpAccessChain, state.ptr_storage_buffer_uint, pointer,
+		                            state.vsharp_storage_variable, ConstantU32(state, 0),
 		                            ConstantU32(state, dword_index)});
-		state->builder.AddFunction({OpLoad, state->uint_type, value, pointer});
+		state.builder.AddFunction({OpLoad, state.uint_type, value, pointer});
 		return value;
 	}
 	return ConstantU32(state, 0);
@@ -170,52 +170,52 @@ uint32_t InitialRegisterValue(const EmitterState& state, IR::Register reg) {
 	return 0;
 }
 
-uint32_t EmitInitialRegisterValue(EmitterState* state, IR::Register reg) {
+uint32_t EmitInitialRegisterValue(EmitterState& state, IR::Register reg) {
 	uint32_t dword_index = 0;
-	if (UserDataDwordIndex(*state, reg, dword_index)) {
+	if (UserDataDwordIndex(state, reg, dword_index)) {
 		return EmitVsharpDwordLoad(state, dword_index);
 	}
-	return ConstantU32(state, InitialRegisterValue(*state, reg));
+	return ConstantU32(state, InitialRegisterValue(state, reg));
 }
 
-void EmitRegisterVariables(EmitterState* state) {
-	if (state->needs_function_lds) {
-		state->builder.AddFunction(
-		    {OpVariable, state->ptr_workgroup_array, state->lds_variable, StorageClassFunction});
+void EmitRegisterVariables(EmitterState& state) {
+	if (state.needs_function_lds) {
+		state.builder.AddFunction(
+		    {OpVariable, state.ptr_workgroup_array, state.lds_variable, StorageClassFunction});
 	}
-	for (const auto& binding: state->registers) {
-		state->builder.AddFunction(
-		    {OpVariable, state->ptr_func_uint, binding.pointer_id, StorageClassFunction});
+	for (const auto& binding: state.registers) {
+		state.builder.AddFunction(
+		    {OpVariable, state.ptr_func_uint, binding.pointer_id, StorageClassFunction});
 	}
-	if (state->dispatcher_fallback) {
-		state->builder.AddFunction(
-		    {OpVariable, state->ptr_func_uint, state->dispatch_pc_variable, StorageClassFunction});
+	if (state.dispatcher_fallback) {
+		state.builder.AddFunction(
+		    {OpVariable, state.ptr_func_uint, state.dispatch_pc_variable, StorageClassFunction});
 	}
-	if (state->pixel_valid_mask_variable != 0) {
-		state->builder.AddFunction({OpVariable, state->ptr_func_uint,
-		                            state->pixel_valid_mask_variable, StorageClassFunction});
-		state->builder.AddFunction(
-		    {OpStore, state->pixel_valid_mask_variable, ConstantU32(state, 1)});
+	if (state.pixel_valid_mask_variable != 0) {
+		state.builder.AddFunction({OpVariable, state.ptr_func_uint,
+		                            state.pixel_valid_mask_variable, StorageClassFunction});
+		state.builder.AddFunction(
+		    {OpStore, state.pixel_valid_mask_variable, ConstantU32(state, 1)});
 	}
-	for (const auto& binding: state->registers) {
-		state->builder.AddFunction(
+	for (const auto& binding: state.registers) {
+		state.builder.AddFunction(
 		    {OpStore, binding.pointer_id, EmitInitialRegisterValue(state, binding.reg)});
 	}
 }
 
-void EmitComputeInputRegisters(EmitterState* state) {
-	if (state->stage != ShaderType::Compute || state->compute_input_info == nullptr) {
+void EmitComputeInputRegisters(EmitterState& state) {
+	if (state.stage != ShaderType::Compute || state.compute_input_info == nullptr) {
 		return;
 	}
 
-	const auto* cs         = state->compute_input_info;
+	const auto* cs         = state.compute_input_info;
 	const auto  thread_ids = cs->thread_ids_num > 0
 	                             ? std::min<uint32_t>(static_cast<uint32_t>(cs->thread_ids_num), 3u)
 	                             : 0u;
 	for (uint32_t i = 0; i < thread_ids; i++) {
-		const auto pointer = PointerForRegister(*state, {IR::RegisterFile::Vector, i});
+		const auto pointer = PointerForRegister(state, {IR::RegisterFile::Vector, i});
 		if (pointer != 0) {
-			state->builder.AddFunction(
+			state.builder.AddFunction(
 			    {OpStore, pointer,
 			     EmitInputComponentU32(state, IR::StageInputKind::LocalInvocationId, i)});
 		}
@@ -227,10 +227,10 @@ void EmitComputeInputRegisters(EmitterState* state) {
 			continue;
 		}
 		const auto pointer = PointerForRegister(
-		    *state,
+		    state,
 		    {IR::RegisterFile::Scalar, static_cast<uint32_t>(cs->workgroup_register) + reg_offset});
 		if (pointer != 0) {
-			state->builder.AddFunction(
+			state.builder.AddFunction(
 			    {OpStore, pointer,
 			     EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, i)});
 		}
@@ -239,7 +239,7 @@ void EmitComputeInputRegisters(EmitterState* state) {
 
 	if (cs->tg_size_en) {
 		const auto pointer = PointerForRegister(
-		    *state,
+		    state,
 		    {IR::RegisterFile::Scalar, static_cast<uint32_t>(cs->workgroup_register) + reg_offset});
 		if (pointer != 0) {
 			const uint32_t wave_size     = cs->wave_size != 0 ? cs->wave_size : 64u;
@@ -250,66 +250,66 @@ void EmitComputeInputRegisters(EmitterState* state) {
 			    std::min<uint32_t>((total_threads + wave_size - 1u) / wave_size, 0x3fu);
 
 			const auto local_index = EmitLocalInvocationIndex(state);
-			const auto wave_id     = state->builder.AllocateId();
-			const auto wave_bits   = state->builder.AllocateId();
-			const auto is_first    = state->builder.AllocateId();
-			const auto first_bit   = state->builder.AllocateId();
-			const auto base        = state->builder.AllocateId();
-			const auto packed      = state->builder.AllocateId();
-			state->builder.AddFunction(
-			    {OpUDiv, state->uint_type, wave_id, local_index, ConstantU32(state, wave_size)});
-			state->builder.AddFunction(
-			    {OpShiftLeftLogical, state->uint_type, wave_bits, wave_id, ConstantU32(state, 20)});
-			state->builder.AddFunction(
-			    {OpIEqual, state->bool_type, is_first, wave_id, ConstantU32(state, 0)});
-			state->builder.AddFunction({OpSelect, state->uint_type, first_bit, is_first,
+			const auto wave_id     = state.builder.AllocateId();
+			const auto wave_bits   = state.builder.AllocateId();
+			const auto is_first    = state.builder.AllocateId();
+			const auto first_bit   = state.builder.AllocateId();
+			const auto base        = state.builder.AllocateId();
+			const auto packed      = state.builder.AllocateId();
+			state.builder.AddFunction(
+			    {OpUDiv, state.uint_type, wave_id, local_index, ConstantU32(state, wave_size)});
+			state.builder.AddFunction(
+			    {OpShiftLeftLogical, state.uint_type, wave_bits, wave_id, ConstantU32(state, 20)});
+			state.builder.AddFunction(
+			    {OpIEqual, state.bool_type, is_first, wave_id, ConstantU32(state, 0)});
+			state.builder.AddFunction({OpSelect, state.uint_type, first_bit, is_first,
 			                            ConstantU32(state, 0x80000000u), ConstantU32(state, 0)});
-			state->builder.AddFunction(
-			    {OpBitwiseOr, state->uint_type, base, wave_bits, ConstantU32(state, waves)});
-			state->builder.AddFunction({OpBitwiseOr, state->uint_type, packed, base, first_bit});
-			state->builder.AddFunction({OpStore, pointer, packed});
+			state.builder.AddFunction(
+			    {OpBitwiseOr, state.uint_type, base, wave_bits, ConstantU32(state, waves)});
+			state.builder.AddFunction({OpBitwiseOr, state.uint_type, packed, base, first_bit});
+			state.builder.AddFunction({OpStore, pointer, packed});
 		}
 	}
 }
 
-void EmitPixelFragCoordComponent(EmitterState* state, uint32_t component, uint32_t vgpr) {
-	const auto input = InputVariableForKind(*state, IR::StageInputKind::FragCoord);
-	const auto dst   = PointerForRegister(*state, {IR::RegisterFile::Vector, vgpr});
+void EmitPixelFragCoordComponent(EmitterState& state, uint32_t component, uint32_t vgpr) {
+	const auto input = InputVariableForKind(state, IR::StageInputKind::FragCoord);
+	const auto dst   = PointerForRegister(state, {IR::RegisterFile::Vector, vgpr});
 	if (input == 0 || dst == 0) {
 		return;
 	}
 
-	const auto pointer = state->builder.AllocateId();
-	const auto value   = state->builder.AllocateId();
-	const auto bits    = state->builder.AllocateId();
-	state->builder.AddFunction(
-	    {OpAccessChain, state->ptr_input_float, pointer, input, ConstantU32(state, component)});
-	state->builder.AddFunction({OpLoad, state->float_type, value, pointer});
-	state->builder.AddFunction({OpBitcast, state->uint_type, bits, value});
-	state->builder.AddFunction({OpStore, dst, bits});
+	const auto pointer = state.builder.AllocateId();
+	const auto value   = state.builder.AllocateId();
+	const auto bits    = state.builder.AllocateId();
+	state.builder.AddFunction(
+	    {OpAccessChain, state.ptr_input_float, pointer, input, ConstantU32(state, component)});
+	state.builder.AddFunction({OpLoad, state.float_type, value, pointer});
+	state.builder.AddFunction({OpBitcast, state.uint_type, bits, value});
+	state.builder.AddFunction({OpStore, dst, bits});
 }
 
-void EmitPixelFrontFacingRegister(EmitterState* state, uint32_t vgpr) {
-	const auto input = InputVariableForKind(*state, IR::StageInputKind::FrontFacing);
-	const auto dst   = PointerForRegister(*state, {IR::RegisterFile::Vector, vgpr});
+void EmitPixelFrontFacingRegister(EmitterState& state, uint32_t vgpr) {
+	const auto input = InputVariableForKind(state, IR::StageInputKind::FrontFacing);
+	const auto dst   = PointerForRegister(state, {IR::RegisterFile::Vector, vgpr});
 	if (input == 0 || dst == 0) {
 		return;
 	}
 
-	const auto value = state->builder.AllocateId();
-	const auto bits  = state->builder.AllocateId();
-	state->builder.AddFunction({OpLoad, state->bool_type, value, input});
-	state->builder.AddFunction(
-	    {OpSelect, state->uint_type, bits, value, ConstantU32(state, 1), ConstantU32(state, 0)});
-	state->builder.AddFunction({OpStore, dst, bits});
+	const auto value = state.builder.AllocateId();
+	const auto bits  = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, state.bool_type, value, input});
+	state.builder.AddFunction(
+	    {OpSelect, state.uint_type, bits, value, ConstantU32(state, 1), ConstantU32(state, 0)});
+	state.builder.AddFunction({OpStore, dst, bits});
 }
 
-void EmitPixelInputRegisters(EmitterState* state) {
-	if (state->stage != ShaderType::Pixel || state->pixel_input_info == nullptr) {
+void EmitPixelInputRegisters(EmitterState& state) {
+	if (state.stage != ShaderType::Pixel || state.pixel_input_info == nullptr) {
 		return;
 	}
 
-	const auto* ps  = state->pixel_input_info;
+	const auto* ps  = state.pixel_input_info;
 	uint32_t    reg = ps->ps_system_input_base;
 	if (ps->HasPositionInput()) {
 		if (ps->ps_pos_x) {
@@ -334,37 +334,37 @@ void EmitPixelInputRegisters(EmitterState* state) {
 	}
 }
 
-uint32_t EmitInputScalarU32(EmitterState* state, IR::StageInputKind kind) {
-	const auto variable = InputVariableForKind(*state, kind);
+uint32_t EmitInputScalarU32(EmitterState& state, IR::StageInputKind kind) {
+	const auto variable = InputVariableForKind(state, kind);
 	if (variable == 0) {
 		return ConstantU32(state, 0);
 	}
-	const auto raw  = state->builder.AllocateId();
-	const auto bits = state->builder.AllocateId();
-	state->builder.AddFunction({OpLoad, state->int_type, raw, variable});
-	state->builder.AddFunction({OpBitcast, state->uint_type, bits, raw});
+	const auto raw  = state.builder.AllocateId();
+	const auto bits = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, state.int_type, raw, variable});
+	state.builder.AddFunction({OpBitcast, state.uint_type, bits, raw});
 	return bits;
 }
 
-void EmitVertexInputRegisters(EmitterState* state) {
-	if (state->stage != ShaderType::Vertex) {
+void EmitVertexInputRegisters(EmitterState& state) {
+	if (state.stage != ShaderType::Vertex) {
 		return;
 	}
 
-	const auto vertex_index = PointerForRegister(*state, {IR::RegisterFile::Vector, 5});
+	const auto vertex_index = PointerForRegister(state, {IR::RegisterFile::Vector, 5});
 	if (vertex_index != 0) {
-		state->builder.AddFunction(
+		state.builder.AddFunction(
 		    {OpStore, vertex_index, EmitInputScalarU32(state, IR::StageInputKind::VertexIndex)});
 	}
 
-	const auto instance_index = PointerForRegister(*state, {IR::RegisterFile::Vector, 8});
+	const auto instance_index = PointerForRegister(state, {IR::RegisterFile::Vector, 8});
 	if (instance_index != 0) {
-		state->builder.AddFunction({OpStore, instance_index,
+		state.builder.AddFunction({OpStore, instance_index,
 		                            EmitInputScalarU32(state, IR::StageInputKind::InstanceIndex)});
 	}
 }
 
-void EmitInstruction(EmitterState* state, const IR::Instruction& inst) {
+void EmitInstruction(EmitterState& state, const IR::Instruction& inst) {
 	switch (inst.op) {
 		case IR::Opcode::ControlNop: EmitControlNop(state, inst); break;
 		case IR::Opcode::Waitcnt: EmitWaitcnt(state, inst); break;
@@ -846,7 +846,7 @@ void EmitInstruction(EmitterState* state, const IR::Instruction& inst) {
 		case IR::Opcode::ImageSample: EmitImageSample(state, inst); break;
 		case IR::Opcode::ImageGather4: EmitImageGather4(state, inst); break;
 		case IR::Opcode::Export:
-			if (ExportUsesPixelValidMask(*state, inst)) {
+			if (ExportUsesPixelValidMask(state, inst)) {
 				EmitUpdatePixelValidMask(state);
 			}
 			EmitGuardedByExec(state, [&]() { EmitExport(state, inst); });
@@ -855,16 +855,16 @@ void EmitInstruction(EmitterState* state, const IR::Instruction& inst) {
 	}
 }
 
-uint32_t DispatcherTargetValue(EmitterState* state, uint32_t block_id) {
-	return BlockLabel(*state, block_id) != 0 ? block_id : UINT32_MAX;
+uint32_t DispatcherTargetValue(EmitterState& state, uint32_t block_id) {
+	return BlockLabel(state, block_id) != 0 ? block_id : UINT32_MAX;
 }
 
-void EmitDispatcherStoreTarget(EmitterState* state, uint32_t block_id) {
-	state->builder.AddFunction({OpStore, state->dispatch_pc_variable,
+void EmitDispatcherStoreTarget(EmitterState& state, uint32_t block_id) {
+	state.builder.AddFunction({OpStore, state.dispatch_pc_variable,
 	                            ConstantU32(state, DispatcherTargetValue(state, block_id))});
 }
 
-void EmitDispatcherExit(EmitterState* state);
+void EmitDispatcherExit(EmitterState& state);
 
 bool RegisterForScalarCode(uint32_t code, IR::Register& reg) {
 	if (code < 106u) {
@@ -881,21 +881,21 @@ bool RegisterForScalarCode(uint32_t code, IR::Register& reg) {
 	}
 }
 
-bool EmitDispatcherLoadScalarCode(EmitterState* state, uint32_t code, uint32_t& value) {
+bool EmitDispatcherLoadScalarCode(EmitterState& state, uint32_t code, uint32_t& value) {
 	IR::Register reg;
 	if (!RegisterForScalarCode(code, reg)) {
 		return false;
 	}
-	const auto pointer = PointerForRegister(*state, reg);
+	const auto pointer = PointerForRegister(state, reg);
 	if (pointer == 0) {
 		return false;
 	}
-	value = state->builder.AllocateId();
-	state->builder.AddFunction({OpLoad, state->uint_type, value, pointer});
+	value = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, state.uint_type, value, pointer});
 	return true;
 }
 
-void EmitDispatcherStoreSelectorTarget(EmitterState* state, const CFG::Terminator& term) {
+void EmitDispatcherStoreSelectorTarget(EmitterState& state, const CFG::Terminator& term) {
 	if (term.indirect_selector_code == UINT32_MAX || term.indirect_selector_values.empty() ||
 	    term.indirect_selector_values.size() != term.indirect_selector_targets.size()) {
 		EmitDispatcherExit(state);
@@ -910,21 +910,21 @@ void EmitDispatcherStoreSelectorTarget(EmitterState* state, const CFG::Terminato
 
 	uint32_t selected = ConstantU32(state, UINT32_MAX);
 	for (uint32_t i = 0; i < term.indirect_selector_values.size(); i++) {
-		const auto match = state->builder.AllocateId();
-		state->builder.AddFunction({OpIEqual, state->bool_type, match, selector_value,
+		const auto match = state.builder.AllocateId();
+		state.builder.AddFunction({OpIEqual, state.bool_type, match, selector_value,
 		                            ConstantU32(state, term.indirect_selector_values[i])});
-		const auto next = state->builder.AllocateId();
-		state->builder.AddFunction(
-		    {OpSelect, state->uint_type, next, match,
+		const auto next = state.builder.AllocateId();
+		state.builder.AddFunction(
+		    {OpSelect, state.uint_type, next, match,
 		     ConstantU32(state, DispatcherTargetValue(state, term.indirect_selector_targets[i])),
 		     selected});
 		selected = next;
 	}
-	state->builder.AddFunction({OpStore, state->dispatch_pc_variable, selected});
-	state->builder.AddFunction({OpBranch, state->dispatch_after_switch_label});
+	state.builder.AddFunction({OpStore, state.dispatch_pc_variable, selected});
+	state.builder.AddFunction({OpBranch, state.dispatch_after_switch_label});
 }
 
-void EmitDispatcherStoreIndirectTarget(EmitterState* state, const CFG::Terminator& term) {
+void EmitDispatcherStoreIndirectTarget(EmitterState& state, const CFG::Terminator& term) {
 	if (term.indirect_selector_code != UINT32_MAX) {
 		EmitDispatcherStoreSelectorTarget(state, term);
 		return;
@@ -936,55 +936,55 @@ void EmitDispatcherStoreIndirectTarget(EmitterState* state, const CFG::Terminato
 	}
 
 	const auto pointer =
-	    PointerForRegister(*state, IR::Register {IR::RegisterFile::Scalar, term.indirect_pc_sgpr});
+	    PointerForRegister(state, IR::Register {IR::RegisterFile::Scalar, term.indirect_pc_sgpr});
 	if (pointer == 0) {
 		EmitDispatcherExit(state);
 		return;
 	}
 
-	const auto pc_value = state->builder.AllocateId();
-	state->builder.AddFunction({OpLoad, state->uint_type, pc_value, pointer});
+	const auto pc_value = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, state.uint_type, pc_value, pointer});
 	uint32_t   selected = ConstantU32(state, UINT32_MAX);
 	const auto count    = std::min(term.indirect_target_pcs.size(), term.indirect_targets.size());
 	for (uint32_t i = 0; i < count; i++) {
-		const auto match = state->builder.AllocateId();
-		state->builder.AddFunction({OpIEqual, state->bool_type, match, pc_value,
+		const auto match = state.builder.AllocateId();
+		state.builder.AddFunction({OpIEqual, state.bool_type, match, pc_value,
 		                            ConstantU32(state, term.indirect_target_pcs[i])});
-		const auto next = state->builder.AllocateId();
-		state->builder.AddFunction(
-		    {OpSelect, state->uint_type, next, match,
+		const auto next = state.builder.AllocateId();
+		state.builder.AddFunction(
+		    {OpSelect, state.uint_type, next, match,
 		     ConstantU32(state, DispatcherTargetValue(state, term.indirect_targets[i])), selected});
 		selected = next;
 	}
-	state->builder.AddFunction({OpStore, state->dispatch_pc_variable, selected});
-	state->builder.AddFunction({OpBranch, state->dispatch_after_switch_label});
+	state.builder.AddFunction({OpStore, state.dispatch_pc_variable, selected});
+	state.builder.AddFunction({OpBranch, state.dispatch_after_switch_label});
 }
 
-void EmitDispatcherExit(EmitterState* state) {
-	state->builder.AddFunction(
-	    {OpStore, state->dispatch_pc_variable, ConstantU32(state, UINT32_MAX)});
-	state->builder.AddFunction({OpBranch, state->dispatch_after_switch_label});
+void EmitDispatcherExit(EmitterState& state) {
+	state.builder.AddFunction(
+	    {OpStore, state.dispatch_pc_variable, ConstantU32(state, UINT32_MAX)});
+	state.builder.AddFunction({OpBranch, state.dispatch_after_switch_label});
 }
 
-void EmitDispatcherTerminator(EmitterState* state, const CFG::Terminator& term) {
+void EmitDispatcherTerminator(EmitterState& state, const CFG::Terminator& term) {
 	switch (term.kind) {
 		case CFG::TerminatorKind::Branch:
-			if (BlockLabel(*state, term.true_block) == 0) {
+			if (BlockLabel(state, term.true_block) == 0) {
 				EmitDispatcherExit(state);
 				return;
 			}
 			EmitDispatcherStoreTarget(state, term.true_block);
-			state->builder.AddFunction({OpBranch, state->dispatch_after_switch_label});
+			state.builder.AddFunction({OpBranch, state.dispatch_after_switch_label});
 			return;
 		case CFG::TerminatorKind::ConditionalBranch: {
 			const auto condition = EmitBranchCondition(state, term.condition);
-			const auto selected  = state->builder.AllocateId();
-			state->builder.AddFunction(
-			    {OpSelect, state->uint_type, selected, condition,
+			const auto selected  = state.builder.AllocateId();
+			state.builder.AddFunction(
+			    {OpSelect, state.uint_type, selected, condition,
 			     ConstantU32(state, DispatcherTargetValue(state, term.true_block)),
 			     ConstantU32(state, DispatcherTargetValue(state, term.false_block))});
-			state->builder.AddFunction({OpStore, state->dispatch_pc_variable, selected});
-			state->builder.AddFunction({OpBranch, state->dispatch_after_switch_label});
+			state.builder.AddFunction({OpStore, state.dispatch_pc_variable, selected});
+			state.builder.AddFunction({OpBranch, state.dispatch_after_switch_label});
 			return;
 		}
 		case CFG::TerminatorKind::IndirectBranch:
@@ -994,44 +994,44 @@ void EmitDispatcherTerminator(EmitterState* state, const CFG::Terminator& term) 
 	}
 }
 
-void EmitDispatcherSwitch(EmitterState* state, const IR::Program& program) {
-	state->builder.AddFunction({OpLabel, state->dispatch_header_label});
-	const auto pc_value = state->builder.AllocateId();
-	state->builder.AddFunction({OpLoad, state->uint_type, pc_value, state->dispatch_pc_variable});
-	const auto done = state->builder.AllocateId();
-	state->builder.AddFunction(
-	    {OpIEqual, state->bool_type, done, pc_value, ConstantU32(state, UINT32_MAX)});
-	state->builder.AddFunction({OpLoopMerge, state->dispatch_merge_label,
-	                            state->dispatch_continue_label, LoopControlNone});
-	state->builder.AddFunction(
-	    {OpBranchConditional, done, state->dispatch_merge_label, state->dispatch_select_label});
+void EmitDispatcherSwitch(EmitterState& state, const IR::Program& program) {
+	state.builder.AddFunction({OpLabel, state.dispatch_header_label});
+	const auto pc_value = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, state.uint_type, pc_value, state.dispatch_pc_variable});
+	const auto done = state.builder.AllocateId();
+	state.builder.AddFunction(
+	    {OpIEqual, state.bool_type, done, pc_value, ConstantU32(state, UINT32_MAX)});
+	state.builder.AddFunction({OpLoopMerge, state.dispatch_merge_label,
+	                            state.dispatch_continue_label, LoopControlNone});
+	state.builder.AddFunction(
+	    {OpBranchConditional, done, state.dispatch_merge_label, state.dispatch_select_label});
 
-	state->builder.AddFunction({OpLabel, state->dispatch_select_label});
-	state->builder.AddFunction(
-	    {OpSelectionMerge, state->dispatch_after_switch_label, SelectionControlNone});
-	std::vector<uint32_t> switch_words = {OpSwitch, pc_value, state->dispatch_default_label};
+	state.builder.AddFunction({OpLabel, state.dispatch_select_label});
+	state.builder.AddFunction(
+	    {OpSelectionMerge, state.dispatch_after_switch_label, SelectionControlNone});
+	std::vector<uint32_t> switch_words = {OpSwitch, pc_value, state.dispatch_default_label};
 	for (const auto& block: program.blocks) {
-		if (block.id >= state->reachable_blocks.size() || !state->reachable_blocks[block.id]) {
+		if (block.id >= state.reachable_blocks.size() || !state.reachable_blocks[block.id]) {
 			continue;
 		}
-		const auto label = BlockLabel(*state, block.id);
+		const auto label = BlockLabel(state, block.id);
 		if (label != 0) {
 			switch_words.push_back(block.id);
 			switch_words.push_back(label);
 		}
 	}
-	state->builder.AddFunction(switch_words);
+	state.builder.AddFunction(switch_words);
 
-	state->builder.AddFunction({OpLabel, state->dispatch_default_label});
+	state.builder.AddFunction({OpLabel, state.dispatch_default_label});
 	EmitDispatcherExit(state);
 }
 
-void EmitDispatcherBlocks(EmitterState* state, const IR::Program& program) {
+void EmitDispatcherBlocks(EmitterState& state, const IR::Program& program) {
 	for (const auto& block: program.blocks) {
-		if (block.id >= state->reachable_blocks.size() || !state->reachable_blocks[block.id]) {
+		if (block.id >= state.reachable_blocks.size() || !state.reachable_blocks[block.id]) {
 			continue;
 		}
-		state->builder.AddFunction({OpLabel, BlockLabel(*state, block.id)});
+		state.builder.AddFunction({OpLabel, BlockLabel(state, block.id)});
 		for (const auto& inst: block.instructions) {
 			EmitInstruction(state, inst);
 		}
@@ -1039,57 +1039,57 @@ void EmitDispatcherBlocks(EmitterState* state, const IR::Program& program) {
 	}
 }
 
-void EmitDispatcherLoopTail(EmitterState* state) {
-	state->builder.AddFunction({OpLabel, state->dispatch_after_switch_label});
-	state->builder.AddFunction({OpBranch, state->dispatch_continue_label});
-	state->builder.AddFunction({OpLabel, state->dispatch_continue_label});
-	state->builder.AddFunction({OpBranch, state->dispatch_header_label});
-	state->builder.AddFunction({OpLabel, state->dispatch_merge_label});
+void EmitDispatcherLoopTail(EmitterState& state) {
+	state.builder.AddFunction({OpLabel, state.dispatch_after_switch_label});
+	state.builder.AddFunction({OpBranch, state.dispatch_continue_label});
+	state.builder.AddFunction({OpLabel, state.dispatch_continue_label});
+	state.builder.AddFunction({OpBranch, state.dispatch_header_label});
+	state.builder.AddFunction({OpLabel, state.dispatch_merge_label});
 	EmitReturn(state);
 }
 
-void EmitDispatcherFunction(EmitterState* state, const IR::Program& program) {
-	state->builder.AddFunction({OpStore, state->dispatch_pc_variable, ConstantU32(state, 0)});
-	state->builder.AddFunction({OpBranch, state->dispatch_header_label});
+void EmitDispatcherFunction(EmitterState& state, const IR::Program& program) {
+	state.builder.AddFunction({OpStore, state.dispatch_pc_variable, ConstantU32(state, 0)});
+	state.builder.AddFunction({OpBranch, state.dispatch_header_label});
 	EmitDispatcherSwitch(state, program);
 	EmitDispatcherBlocks(state, program);
 	EmitDispatcherLoopTail(state);
 }
 
-void EmitFunction(EmitterState* state, const IR::Program& program) {
-	state->builder.AddFunction(
-	    {OpFunction, state->void_type, state->main_func, FunctionControlNone, state->func_type});
-	state->builder.AddFunction({OpLabel, state->entry_label});
+void EmitFunction(EmitterState& state, const IR::Program& program) {
+	state.builder.AddFunction(
+	    {OpFunction, state.void_type, state.main_func, FunctionControlNone, state.func_type});
+	state.builder.AddFunction({OpLabel, state.entry_label});
 
 	EmitRegisterVariables(state);
 	EmitComputeInputRegisters(state);
 	EmitPixelInputRegisters(state);
 	EmitVertexInputRegisters(state);
-	if (state->dispatcher_fallback) {
+	if (state.dispatcher_fallback) {
 		EmitDispatcherFunction(state, program);
-		state->builder.AddFunction({OpFunctionEnd});
+		state.builder.AddFunction({OpFunctionEnd});
 		return;
 	}
 
-	const auto entry_block_label = BlockLabel(*state, 0);
+	const auto entry_block_label = BlockLabel(state, 0);
 	if (entry_block_label != 0) {
-		state->builder.AddFunction({OpBranch, entry_block_label});
+		state.builder.AddFunction({OpBranch, entry_block_label});
 	} else {
 		EmitReturn(state);
 	}
 
 	for (const auto& block: program.blocks) {
-		if (block.id >= state->reachable_blocks.size() || !state->reachable_blocks[block.id]) {
+		if (block.id >= state.reachable_blocks.size() || !state.reachable_blocks[block.id]) {
 			continue;
 		}
-		state->builder.AddFunction({OpLabel, BlockLabel(*state, block.id)});
+		state.builder.AddFunction({OpLabel, BlockLabel(state, block.id)});
 		for (const auto& inst: block.instructions) {
 			EmitInstruction(state, inst);
 		}
 		EmitTerminator(state, block.terminator);
 	}
 
-	state->builder.AddFunction({OpFunctionEnd});
+	state.builder.AddFunction({OpFunctionEnd});
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter

@@ -1,19 +1,19 @@
 #include "graphics/shader/recompiler/SrtPatcher.h"
 
 #include <fmt/format.h>
+#include <functional>
 #include <map>
 #include <set>
 #include <vector>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
-bool PatchSrtReads(Program* program, std::string* error) {
-	if (program == nullptr || !program->srt_plan_complete || program->srt_patching_complete ||
-	    program->resource_tracking_complete) {
+bool PatchSrtReads(Program& program, std::string* error) {
+	if (!program.srt_plan_complete || program.srt_patching_complete ||
+	    program.resource_tracking_complete) {
 		if (error != nullptr) {
-			*error = program == nullptr               ? "invalid SRT patch program"
-			         : !program->srt_plan_complete    ? "SRT plan is not ready"
-			         : program->srt_patching_complete ? "SRT reads already patched"
+			*error = !program.srt_plan_complete      ? "SRT plan is not ready"
+			         : program.srt_patching_complete ? "SRT reads already patched"
 			                                          : "resources already tracked";
 		}
 		return false;
@@ -21,11 +21,11 @@ bool PatchSrtReads(Program* program, std::string* error) {
 
 	std::map<uint32_t, uint32_t> offsets;
 	std::map<uint32_t, uint32_t> values;
-	for (const auto& read: program->srt.reads) {
-		if (read.value >= program->provenance.values.size() ||
-		    read.flat_offset >= program->srt.reads.size() ||
-		    (program->provenance.values[read.value].op != ScalarValueOp::ReadConst &&
-		     program->provenance.values[read.value].op != ScalarValueOp::ReadConstBuffer)) {
+	for (const auto& read: program.srt.reads) {
+		if (read.value >= program.provenance.values.size() ||
+		    read.flat_offset >= program.srt.reads.size() ||
+		    (program.provenance.values[read.value].op != ScalarValueOp::ReadConst &&
+		     program.provenance.values[read.value].op != ScalarValueOp::ReadConstBuffer)) {
 			if (error != nullptr) {
 				*error = fmt::format("invalid SRT read value={} flat_offset={}", read.value,
 				                     read.flat_offset);
@@ -47,7 +47,7 @@ bool PatchSrtReads(Program* program, std::string* error) {
 			return false;
 		}
 	}
-	if (offsets.size() != program->srt.reads.size() || values.size() != program->srt.reads.size()) {
+	if (offsets.size() != program.srt.reads.size() || values.size() != program.srt.reads.size()) {
 		if (error != nullptr) {
 			*error = "SRT reads do not form a dense value-to-offset bijection";
 		}
@@ -55,10 +55,10 @@ bool PatchSrtReads(Program* program, std::string* error) {
 	}
 
 	std::set<uint32_t> dynamic_reads;
-	for (const auto value: program->srt.dynamic_reads) {
-		if (value >= program->provenance.values.size() || offsets.contains(value) ||
-		    (program->provenance.values[value].op != ScalarValueOp::ReadConst &&
-		     program->provenance.values[value].op != ScalarValueOp::ReadConstBuffer) ||
+	for (const auto value: program.srt.dynamic_reads) {
+		if (value >= program.provenance.values.size() || offsets.contains(value) ||
+		    (program.provenance.values[value].op != ScalarValueOp::ReadConst &&
+		     program.provenance.values[value].op != ScalarValueOp::ReadConstBuffer) ||
 		    !dynamic_reads.insert(value).second) {
 			if (error != nullptr) {
 				*error = fmt::format("invalid dynamic SRT read value={}", value);
@@ -67,10 +67,10 @@ bool PatchSrtReads(Program* program, std::string* error) {
 		}
 	}
 	std::set<uint32_t> dynamic_sources;
-	for (const auto source: program->srt.dynamic_sources) {
+	for (const auto source: program.srt.dynamic_sources) {
 		if (source == ScalarProvenance::Undefined ||
 		    (source > ScalarProvenance::Unknown &&
-		     source - 2u >= program->provenance.descriptors.size()) ||
+		     source - 2u >= program.provenance.descriptors.size()) ||
 		    !dynamic_sources.insert(source).second) {
 			if (error != nullptr) {
 				*error = fmt::format("invalid dynamic descriptor source={}", source);
@@ -80,21 +80,21 @@ bool PatchSrtReads(Program* program, std::string* error) {
 	}
 
 	struct Patch {
-		Instruction* inst        = nullptr;
-		uint32_t     flat_offset = 0;
+		std::reference_wrapper<Instruction> inst;
+		uint32_t                            flat_offset = 0;
 	};
 	std::vector<Patch>       patches;
 	std::map<uint32_t, bool> matched;
 	for (const auto& [value, offset]: offsets) {
 		matched.emplace(value, false);
 	}
-	for (auto& block: program->blocks) {
+	for (auto& block: program.blocks) {
 		for (auto& inst: block.instructions) {
 			if (inst.op != Opcode::SLoadDword && inst.op != Opcode::SBufferLoadDword) {
 				continue;
 			}
 			if (const auto found = offsets.find(inst.scalar_value); found != offsets.end()) {
-				const auto value_op = program->provenance.values[found->first].op;
+				const auto value_op = program.provenance.values[found->first].op;
 				if ((inst.op == Opcode::SLoadDword) != (value_op == ScalarValueOp::ReadConst)) {
 					if (error != nullptr) {
 						*error = fmt::format("SRT read value {} has the wrong scalar-load producer",
@@ -102,7 +102,7 @@ bool PatchSrtReads(Program* program, std::string* error) {
 					}
 					return false;
 				}
-				patches.push_back({&inst, found->second});
+				patches.push_back({std::ref(inst), found->second});
 				matched[found->first] = true;
 			}
 		}
@@ -117,16 +117,17 @@ bool PatchSrtReads(Program* program, std::string* error) {
 	}
 
 	for (const auto& patch: patches) {
-		patch.inst->op        = Opcode::LoadSrtDword;
-		patch.inst->src_count = 1;
-		for (auto& src: patch.inst->src) {
+		auto& inst     = patch.inst.get();
+		inst.op        = Opcode::LoadSrtDword;
+		inst.src_count = 1;
+		for (auto& src: inst.src) {
 			src = {};
 		}
-		patch.inst->src[0].kind = OperandKind::ImmediateU32;
-		patch.inst->src[0].imm  = patch.flat_offset;
-		patch.inst->memory      = {};
+		inst.src[0].kind = OperandKind::ImmediateU32;
+		inst.src[0].imm  = patch.flat_offset;
+		inst.memory      = {};
 	}
-	program->srt_patching_complete = true;
+	program.srt_patching_complete = true;
 	return true;
 }
 

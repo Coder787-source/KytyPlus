@@ -35,7 +35,12 @@ struct BufferCacheRange {
 	uint64_t size    = 0;
 };
 
-[[nodiscard]] bool MergeOverlappingBufferCacheRange(BufferCacheRange* merged,
+struct BufferBinding {
+	VulkanBuffer& buffer;
+	uint64_t      offset;
+};
+
+[[nodiscard]] bool MergeOverlappingBufferCacheRange(BufferCacheRange& merged,
                                                     BufferCacheRange  candidate) noexcept;
 [[nodiscard]] bool CanMergeBufferCacheQueueMask(uint64_t queue_mask, uint32_t queue) noexcept;
 
@@ -46,27 +51,25 @@ public:
 		return vaddr & (CACHING_PAGE_SIZE - 1);
 	}
 
-	BufferCache(PageManager& page_manager, ResourceMutex& resource_mutex);
+	BufferCache(GraphicContext& graphics, PageManager& page_manager, ResourceMutex& resource_mutex);
 	~BufferCache();
 	KYTY_CLASS_NO_COPY(BufferCache);
 
 	[[nodiscard]] bool InvalidateMemory(PageFaultAccess access, uint64_t vaddr, uint64_t size,
 	                                    PageFaultPhase phase) noexcept;
 	void               UnmapMemory(uint64_t vaddr, uint64_t size);
-	[[nodiscard]] std::pair<VulkanBuffer*, uint64_t>
-	ObtainBuffer(CommandBuffer* command, GraphicContext* ctx, uint64_t vaddr, uint64_t size,
-	             bool is_written = false, bool is_read = true, bool is_formatted = false);
+	[[nodiscard]] BufferBinding ObtainBuffer(CommandBuffer& command, uint64_t vaddr, uint64_t size,
+	                                         bool is_written = false, bool is_read = true,
+	                                         bool is_formatted = false);
 	// Emulator-owned, CPU-current scratch only. Guest ranges must use ObtainBuffer so page
 	// ownership is resolved before any CPU access.
-	[[nodiscard]] bool UploadHostData(CommandBuffer* command, GraphicContext* ctx, const void* src,
-	                                  uint64_t size, uint64_t alignment, VulkanBuffer** out_buffer,
-	                                  uint64_t* out_offset, uint64_t* out_range);
-	[[nodiscard]] VulkanBuffer* ObtainNullBuffer(CommandBuffer* command, GraphicContext* ctx);
+	[[nodiscard]] bool UploadHostData(CommandBuffer& command, const void* src, uint64_t size,
+	                                  uint64_t alignment, VulkanBuffer*& out_buffer,
+	                                  uint64_t& out_offset, uint64_t& out_range);
+	[[nodiscard]] VulkanBuffer&         ObtainNullBuffer(CommandBuffer& command);
 	[[nodiscard]] BufferImageCopySource ObtainBufferForImage(uint64_t vaddr, uint64_t size);
-	void FillBuffer(CommandBuffer* command, GraphicContext* ctx, uint64_t vaddr, uint64_t size,
-	                uint32_t value);
-	void CopyBuffer(CommandBuffer* command, GraphicContext* ctx, uint64_t dst_vaddr,
-	                uint64_t src_vaddr, uint64_t size);
+	void FillBuffer(CommandBuffer* command, uint64_t vaddr, uint64_t size, uint32_t value);
+	void CopyBuffer(CommandBuffer* command, uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t size);
 	[[nodiscard]] bool HasPageOverlap(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
@@ -80,6 +83,7 @@ private:
 	struct CachedBuffer;
 	struct ReadbackWorker;
 
+	GraphicContext&               m_graphics;
 	Common::Mutex                 m_mutex;
 	std::shared_ptr<VulkanBuffer> m_null_buffer;
 	// TODO: add LRU cache

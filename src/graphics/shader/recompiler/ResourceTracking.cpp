@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <fmt/format.h>
+#include <functional>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 namespace {
@@ -82,17 +83,17 @@ uint32_t ByteExtent(const Instruction& inst) {
 	return end > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(end);
 }
 
-bool ContainsUnknown(const ScalarProvenance& provenance, uint32_t id, std::vector<uint8_t>* visited,
-                     std::vector<uint32_t>* path) {
-	path->push_back(id);
+bool ContainsUnknown(const ScalarProvenance& provenance, uint32_t id, std::vector<uint8_t>& visited,
+	                 std::vector<uint32_t>& path) {
+	path.push_back(id);
 	if (id <= ScalarProvenance::Unknown || id >= provenance.values.size()) {
 		return true;
 	}
-	if ((*visited)[id] != 0) {
-		path->pop_back();
+	if (visited[id] != 0) {
+		path.pop_back();
 		return false;
 	}
-	(*visited)[id]    = 1;
+	visited[id]       = 1;
 	const auto& value = provenance.values[id];
 	if (value.op == ScalarValueOp::Phi) {
 		for (const auto arg: value.phi_args) {
@@ -100,7 +101,7 @@ bool ContainsUnknown(const ScalarProvenance& provenance, uint32_t id, std::vecto
 				return true;
 			}
 		}
-		path->pop_back();
+		path.pop_back();
 		return false;
 	}
 	const auto args = ScalarValueArgCount(value.op);
@@ -109,19 +110,19 @@ bool ContainsUnknown(const ScalarProvenance& provenance, uint32_t id, std::vecto
 			return true;
 		}
 	}
-	path->pop_back();
+	path.pop_back();
 	return false;
 }
 
 bool IsLoopInvariantValue(const ScalarProvenance& provenance, uint32_t id,
-                          std::vector<uint8_t>* visiting) {
+	                      std::vector<uint8_t>& visiting) {
 	if (id <= ScalarProvenance::Unknown || id >= provenance.values.size()) {
 		return false;
 	}
-	if ((*visiting)[id] != 0) {
+	if (visiting[id] != 0) {
 		return true;
 	}
-	(*visiting)[id]   = 1;
+	visiting[id]      = 1;
 	const auto& value = provenance.values[id];
 	if (value.op == ScalarValueOp::Phi) {
 		uint32_t invariant = ScalarProvenance::Undefined;
@@ -150,7 +151,7 @@ bool IsLoopInvariantDescriptor(const ScalarProvenance& provenance,
                                const DescriptorValue&  descriptor) {
 	std::vector<uint8_t> visiting(provenance.values.size());
 	for (uint32_t i = 0; i < descriptor.dword_count; i++) {
-		if (!IsLoopInvariantValue(provenance, descriptor.dwords[i], &visiting)) {
+		if (!IsLoopInvariantValue(provenance, descriptor.dwords[i], visiting)) {
 			return false;
 		}
 	}
@@ -173,7 +174,7 @@ public:
 		}
 		for (auto& block: m_program.blocks) {
 			for (auto& inst: block.instructions) {
-				if (!Collect(&inst, error)) {
+				if (!Collect(inst, error)) {
 					return false;
 				}
 			}
@@ -181,10 +182,11 @@ public:
 		LinkImageAliases();
 		m_program.info = std::move(m_info);
 		for (const auto& patch: m_patches) {
-			patch.inst->memory.resource        = patch.resource;
-			patch.inst->memory.sampler         = patch.sampler;
-			patch.inst->memory.resource_source = ScalarProvenance::Undefined;
-			patch.inst->memory.sampler_source  = ScalarProvenance::Undefined;
+			auto& inst                  = patch.inst.get();
+			inst.memory.resource        = patch.resource;
+			inst.memory.sampler         = patch.sampler;
+			inst.memory.resource_source = ScalarProvenance::Undefined;
+			inst.memory.sampler_source  = ScalarProvenance::Undefined;
 		}
 		m_program.resource_tracking_complete = true;
 		return true;
@@ -192,9 +194,9 @@ public:
 
 private:
 	struct Patch {
-		Instruction* inst     = nullptr;
-		uint32_t     resource = 0;
-		uint32_t     sampler  = 0;
+		std::reference_wrapper<Instruction> inst;
+		uint32_t                            resource = 0;
+		uint32_t                            sampler  = 0;
 	};
 
 	bool Fail(uint32_t pc, std::string* error, const std::string& reason) const {
@@ -214,7 +216,7 @@ private:
 		std::vector<uint8_t> visited(m_program.provenance.values.size());
 		for (uint32_t i = 0; i < descriptor->dword_count; i++) {
 			std::vector<uint32_t> path;
-			if (ContainsUnknown(m_program.provenance, descriptor->dwords[i], &visited, &path)) {
+			if (ContainsUnknown(m_program.provenance, descriptor->dwords[i], visited, path)) {
 				const auto  value = descriptor->dwords[i];
 				std::string chain;
 				for (const auto id: path) {
@@ -400,50 +402,49 @@ private:
 		return true;
 	}
 
-	bool Collect(Instruction* inst, std::string* error) {
-		if (IsAddress(*inst)) {
-			const bool unbased = inst->memory.resource_source == ScalarProvenance::Unknown;
-			if ((!unbased && !ValidateSource(inst->memory.resource_source, 2, inst->pc, error)) ||
-			    (unbased && inst->memory.kind != ResourceKind::Flat &&
-			     inst->memory.kind != ResourceKind::Global &&
-			     inst->memory.kind != ResourceKind::Scratch)) {
-				return unbased ? Fail(inst->pc, error, "scalar memory base is unresolved") : false;
+	bool Collect(Instruction& inst, std::string* error) {
+		if (IsAddress(inst)) {
+			const bool unbased = inst.memory.resource_source == ScalarProvenance::Unknown;
+			if ((!unbased && !ValidateSource(inst.memory.resource_source, 2, inst.pc, error)) ||
+			    (unbased && inst.memory.kind != ResourceKind::Flat &&
+			     inst.memory.kind != ResourceKind::Global &&
+			     inst.memory.kind != ResourceKind::Scratch)) {
+				return unbased ? Fail(inst.pc, error, "scalar memory base is unresolved") : false;
 			}
-			const auto resource = AddAddress(*inst);
+			const auto resource = AddAddress(inst);
 			if (resource == UINT32_MAX) {
-				return Fail(inst->pc, error, "address resource limit exceeded");
+				return Fail(inst.pc, error, "address resource limit exceeded");
 			}
-			m_patches.push_back({inst, resource, 0});
+			m_patches.push_back({std::ref(inst), resource, 0});
 			return true;
 		}
-		if (!IsBuffer(*inst) && !IsImage(*inst)) {
+		if (!IsBuffer(inst) && !IsImage(inst)) {
 			return true;
 		}
-		if (!ValidateSource(inst->memory.resource_source, IsBuffer(*inst) ? 4u : 8u, inst->pc,
+		if (!ValidateSource(inst.memory.resource_source, IsBuffer(inst) ? 4u : 8u, inst.pc,
 		                    error)) {
 			return false;
 		}
-		Patch patch;
-		patch.inst     = inst;
-		patch.resource = IsBuffer(*inst) ? AddBuffer(*inst) : AddImage(*inst);
-		if (patch.resource == UINT32_MAX) {
-			return Fail(inst->pc, error,
-			            IsBuffer(*inst) ? "buffer resource limit exceeded"
-			                            : "image resource limit exceeded");
+		const auto resource = IsBuffer(inst) ? AddBuffer(inst) : AddImage(inst);
+		if (resource == UINT32_MAX) {
+			return Fail(inst.pc, error,
+			            IsBuffer(inst) ? "buffer resource limit exceeded"
+			                           : "image resource limit exceeded");
 		}
-		if (NeedsSampler(inst->op)) {
-			if (!ValidateSource(inst->memory.sampler_source, 4, inst->pc, error)) {
+		uint32_t sampler = 0;
+		if (NeedsSampler(inst.op)) {
+			if (!ValidateSource(inst.memory.sampler_source, 4, inst.pc, error)) {
 				return false;
 			}
-			patch.sampler = AddSampler(*inst);
-			if (patch.sampler == UINT32_MAX) {
-				return Fail(inst->pc, error, "sampler resource limit exceeded");
+			sampler = AddSampler(inst);
+			if (sampler == UINT32_MAX) {
+				return Fail(inst.pc, error, "sampler resource limit exceeded");
 			}
-			if (!AddSampledPair(patch.resource, patch.sampler, inst->pc, error)) {
+			if (!AddSampledPair(resource, sampler, inst.pc, error)) {
 				return false;
 			}
 		}
-		m_patches.push_back(patch);
+		m_patches.push_back({std::ref(inst), resource, sampler});
 		return true;
 	}
 
@@ -454,15 +455,8 @@ private:
 
 } // namespace
 
-bool TrackResources(Program* program, std::string* error) {
-	if (program == nullptr) {
-		if (error != nullptr) {
-			*error = "shader resource tracking: hash=0x0000000000000000 stage=unknown "
-			         "pc=0x00000000 invalid program";
-		}
-		return false;
-	}
-	return Tracker(*program).Run(error);
+bool TrackResources(Program& program, std::string* error) {
+	return Tracker(program).Run(error);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

@@ -14,15 +14,15 @@ struct PreparedFrame;
 
 vk::SurfaceCapabilitiesKHR* VulkanGetSurfaceCapabilities();
 
-GraphicContext* WindowGetGraphicContext();
+GraphicContext& WindowGetGraphicContext();
 
 void           WindowInit(uint32_t width, uint32_t height);
 void           WindowRun();
 void           WindowWaitForGraphicInitialized();
-PreparedFrame* WindowPrepareFrame(CommandBuffer* buffer, VideoOutVulkanImage* image);
-PreparedFrame* WindowPrepareBlankFrame(CommandBuffer* buffer, uint32_t width, uint32_t height,
+PreparedFrame& WindowPrepareFrame(CommandBuffer& buffer, VideoOutVulkanImage& image);
+PreparedFrame& WindowPrepareBlankFrame(CommandBuffer& buffer, uint32_t width, uint32_t height,
                                        bool opaque);
-void           WindowPresentFrame(PreparedFrame* frame);
+void           WindowPresentFrame(PreparedFrame& frame);
 
 } // namespace Libs::Graphics
 

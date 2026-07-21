@@ -68,7 +68,7 @@ constexpr uint64_t DEFAULT_FLEXIBLE_MEMORY_SIZE = 4ull * 1024ull * 1024ull * 102
 static uint64_t g_flexible_memory_size = DEFAULT_FLEXIBLE_MEMORY_SIZE;
 
 static Graphics::GpuResourceManager& GetGpuResources() {
-	return *Graphics::g_render_ctx->GetGpuResources();
+	return Graphics::GetRenderContext().GetGpuResources();
 }
 
 static bool IsGpuAddressRange(uint64_t vaddr, uint64_t size) {
@@ -883,10 +883,10 @@ void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
 }
 
 void PrepareHostWrite(uint64_t vaddr, uint64_t size) {
-	if (size == 0 || Graphics::g_render_ctx == nullptr) {
+	if (size == 0 || !Graphics::HasRenderContext()) {
 		return;
 	}
-	Graphics::g_render_ctx->GetGpuResources()->PrepareHostWrite(vaddr, size);
+	Graphics::GetRenderContext().GetGpuResources().PrepareHostWrite(vaddr, size);
 }
 
 struct PrtAperture {

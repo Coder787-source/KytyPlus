@@ -25,62 +25,59 @@ namespace Libs::Graphics {
 // IDK: maybe we can remove it?
 constexpr uint32_t kTemporaryPs5BufferFormat121 = 121u;
 
-static bool NarrowInputFormat(vk::Format* format, uint32_t* size, uint32_t used_components) {
-	EXIT_IF(format == nullptr);
-	EXIT_IF(size == nullptr);
-
-	if (used_components == 0 || used_components >= *size) {
+static bool NarrowInputFormat(vk::Format& format, uint32_t& size, uint32_t used_components) {
+	if (used_components == 0 || used_components >= size) {
 		return false;
 	}
 
-	switch (*format) {
+	switch (format) {
 		case vk::Format::eR32G32B32A32Sfloat:
 			switch (used_components) {
-				case 1: *format = vk::Format::eR32Sfloat; break;
-				case 2: *format = vk::Format::eR32G32Sfloat; break;
-				case 3: *format = vk::Format::eR32G32B32Sfloat; break;
+				case 1: format = vk::Format::eR32Sfloat; break;
+				case 2: format = vk::Format::eR32G32Sfloat; break;
+				case 3: format = vk::Format::eR32G32B32Sfloat; break;
 				default: return false;
 			}
-			*size = used_components;
+			size = used_components;
 			return true;
 		case vk::Format::eR32G32B32Sfloat:
 			switch (used_components) {
-				case 1: *format = vk::Format::eR32Sfloat; break;
-				case 2: *format = vk::Format::eR32G32Sfloat; break;
+				case 1: format = vk::Format::eR32Sfloat; break;
+				case 2: format = vk::Format::eR32G32Sfloat; break;
 				default: return false;
 			}
-			*size = used_components;
+			size = used_components;
 			return true;
 		case vk::Format::eR16G16B16A16Sfloat:
 			switch (used_components) {
-				case 1: *format = vk::Format::eR16Sfloat; break;
-				case 2: *format = vk::Format::eR16G16Sfloat; break;
+				case 1: format = vk::Format::eR16Sfloat; break;
+				case 2: format = vk::Format::eR16G16Sfloat; break;
 				default: return false;
 			}
-			*size = used_components;
+			size = used_components;
 			return true;
 		case vk::Format::eR8G8B8A8Unorm:
 			switch (used_components) {
-				case 1: *format = vk::Format::eR8Unorm; break;
-				case 2: *format = vk::Format::eR8G8Unorm; break;
+				case 1: format = vk::Format::eR8Unorm; break;
+				case 2: format = vk::Format::eR8G8Unorm; break;
 				default: return false;
 			}
-			*size = used_components;
+			size = used_components;
 			return true;
 		case vk::Format::eR8G8B8A8Snorm:
 			if (used_components != 2) {
 				return false;
 			}
-			*format = vk::Format::eR8G8Snorm;
-			*size   = 2;
+			format = vk::Format::eR8G8Snorm;
+			size   = 2;
 			return true;
 		case vk::Format::eR8G8B8A8Uint:
 			switch (used_components) {
-				case 1: *format = vk::Format::eR8Uint; break;
-				case 2: *format = vk::Format::eR8G8Uint; break;
+				case 1: format = vk::Format::eR8Uint; break;
+				case 2: format = vk::Format::eR8G8Uint; break;
 				default: return false;
 			}
-			*size = used_components;
+			size = used_components;
 			return true;
 		default: break;
 	}
@@ -88,11 +85,8 @@ static bool NarrowInputFormat(vk::Format* format, uint32_t* size, uint32_t used_
 	return false;
 }
 
-static void GetInputFormat(const ShaderBufferResource& res, vk::Format* format, uint32_t* size,
+static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, uint32_t& size,
                            uint32_t used_components) {
-	EXIT_IF(format == nullptr);
-	EXIT_IF(size == nullptr);
-
 	auto fmt = res.Format();
 	if (fmt == Prospero::GpuEnumValue(Prospero::VertexAttribFormat::k16_16SInt)) {
 		static bool logged_113 = false;
@@ -101,11 +95,11 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format* format, 
 			     "vk::Format::eR32G32B32A32Sfloat\n");
 			logged_113 = true;
 		}
-		*format = vk::Format::eR32G32B32A32Sfloat;
-		*size   = 4;
+		format = vk::Format::eR32G32B32A32Sfloat;
+		size   = 4;
 		if (NarrowInputFormat(format, size, used_components)) {
 			LOGF("InputFormat: narrowing fmt=%u to %s for used_components=%u\n", fmt,
-			     VulkanToString(*format).c_str(), used_components);
+			     VulkanToString(format).c_str(), used_components);
 		}
 		return;
 	}
@@ -115,228 +109,228 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format* format, 
 			LOGF("InputFormat: accepting PS5 buffer format 121 as vk::Format::eR16G16Sfloat\n");
 			logged_121 = true;
 		}
-		*format = vk::Format::eR16G16Sfloat;
-		*size   = 2;
+		format = vk::Format::eR16G16Sfloat;
+		size   = 2;
 		if (NarrowInputFormat(format, size, used_components)) {
 			LOGF("InputFormat: narrowing fmt=%u to %s for used_components=%u\n", fmt,
-			     VulkanToString(*format).c_str(), used_components);
+			     VulkanToString(format).c_str(), used_components);
 		}
 		return;
 	}
 
 	switch (static_cast<Prospero::BufferFormat>(fmt)) {
 		case Prospero::BufferFormat::k32_32_32_32Float:
-			*format = vk::Format::eR32G32B32A32Sfloat;
-			*size   = 4;
+			format = vk::Format::eR32G32B32A32Sfloat;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k32_32_32_32SInt:
-			*format = vk::Format::eR32G32B32A32Sint;
-			*size   = 4;
+			format = vk::Format::eR32G32B32A32Sint;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k32_32_32_32UInt:
-			*format = vk::Format::eR32G32B32A32Uint;
-			*size   = 4;
+			format = vk::Format::eR32G32B32A32Uint;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k32_32_32Float:
-			*format = vk::Format::eR32G32B32Sfloat;
-			*size   = 3;
+			format = vk::Format::eR32G32B32Sfloat;
+			size   = 3;
 			break;
 		case Prospero::BufferFormat::k32_32_32SInt:
-			*format = vk::Format::eR32G32B32Sint;
-			*size   = 3;
+			format = vk::Format::eR32G32B32Sint;
+			size   = 3;
 			break;
 		case Prospero::BufferFormat::k32_32_32UInt:
-			*format = vk::Format::eR32G32B32Uint;
-			*size   = 3;
+			format = vk::Format::eR32G32B32Uint;
+			size   = 3;
 			break;
 		case Prospero::BufferFormat::k16_16_16_16Float:
-			*format = vk::Format::eR16G16B16A16Sfloat;
-			*size   = 4;
+			format = vk::Format::eR16G16B16A16Sfloat;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k16_16_16_16SInt:
-			*format = vk::Format::eR16G16B16A16Sint;
-			*size   = 4;
+			format = vk::Format::eR16G16B16A16Sint;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k16_16_16_16UInt:
-			*format = vk::Format::eR16G16B16A16Uint;
-			*size   = 4;
+			format = vk::Format::eR16G16B16A16Uint;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k16_16_16_16SScaled:
-			*format = vk::Format::eR16G16B16A16Sscaled;
-			*size   = 4;
+			format = vk::Format::eR16G16B16A16Sscaled;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k16_16_16_16UScaled:
-			*format = vk::Format::eR16G16B16A16Uscaled;
-			*size   = 4;
+			format = vk::Format::eR16G16B16A16Uscaled;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k16_16_16_16SNorm:
-			*format = vk::Format::eR16G16B16A16Snorm;
-			*size   = 4;
+			format = vk::Format::eR16G16B16A16Snorm;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k16_16_16_16UNorm:
-			*format = vk::Format::eR16G16B16A16Unorm;
-			*size   = 4;
+			format = vk::Format::eR16G16B16A16Unorm;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k32_32Float:
-			*format = vk::Format::eR32G32Sfloat;
-			*size   = 2;
+			format = vk::Format::eR32G32Sfloat;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k32_32SInt:
-			*format = vk::Format::eR32G32Sint;
-			*size   = 2;
+			format = vk::Format::eR32G32Sint;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k32_32UInt:
-			*format = vk::Format::eR32G32Uint;
-			*size   = 2;
+			format = vk::Format::eR32G32Uint;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k8_8_8_8UInt:
-			*format = vk::Format::eR8G8B8A8Uint;
-			*size   = 4;
+			format = vk::Format::eR8G8B8A8Uint;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k8_8_8_8SScaled:
-			*format = vk::Format::eR8G8B8A8Sscaled;
-			*size   = 4;
+			format = vk::Format::eR8G8B8A8Sscaled;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k8_8_8_8UScaled:
-			*format = vk::Format::eR8G8B8A8Uscaled;
-			*size   = 4;
+			format = vk::Format::eR8G8B8A8Uscaled;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k8_8_8_8SNorm:
-			*format = vk::Format::eR8G8B8A8Snorm;
-			*size   = 4;
+			format = vk::Format::eR8G8B8A8Snorm;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k8_8_8_8UNorm:
-			*format = vk::Format::eR8G8B8A8Unorm;
-			*size   = 4;
+			format = vk::Format::eR8G8B8A8Unorm;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k10_10_10_2UNorm:
-			*format = vk::Format::eA2B10G10R10UnormPack32;
-			*size   = 4;
+			format = vk::Format::eA2B10G10R10UnormPack32;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k10_10_10_2SNorm:
-			*format = vk::Format::eA2B10G10R10SnormPack32;
-			*size   = 4;
+			format = vk::Format::eA2B10G10R10SnormPack32;
+			size   = 4;
 			break;
 		case Prospero::BufferFormat::k16_16Float:
-			*format = vk::Format::eR16G16Sfloat;
-			*size   = 2;
+			format = vk::Format::eR16G16Sfloat;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k16_16SInt:
-			*format = vk::Format::eR16G16Sint;
-			*size   = 2;
+			format = vk::Format::eR16G16Sint;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k16_16UInt:
-			*format = vk::Format::eR16G16Uint;
-			*size   = 2;
+			format = vk::Format::eR16G16Uint;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k16_16SScaled:
-			*format = vk::Format::eR16G16Sscaled;
-			*size   = 2;
+			format = vk::Format::eR16G16Sscaled;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k16_16UScaled:
-			*format = vk::Format::eR16G16Uscaled;
-			*size   = 2;
+			format = vk::Format::eR16G16Uscaled;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k16_16SNorm:
-			*format = vk::Format::eR16G16Snorm;
-			*size   = 2;
+			format = vk::Format::eR16G16Snorm;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k16_16UNorm:
-			*format = vk::Format::eR16G16Unorm;
-			*size   = 2;
+			format = vk::Format::eR16G16Unorm;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k32Float:
-			*format = vk::Format::eR32Sfloat;
-			*size   = 1;
+			format = vk::Format::eR32Sfloat;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k32SInt:
-			*format = vk::Format::eR32Sint;
-			*size   = 1;
+			format = vk::Format::eR32Sint;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k32UInt:
-			*format = vk::Format::eR32Uint;
-			*size   = 1;
+			format = vk::Format::eR32Uint;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k8_8SInt:
-			*format = vk::Format::eR8G8Sint;
-			*size   = 2;
+			format = vk::Format::eR8G8Sint;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k8_8UInt:
-			*format = vk::Format::eR8G8Uint;
-			*size   = 2;
+			format = vk::Format::eR8G8Uint;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k8_8SScaled:
-			*format = vk::Format::eR8G8Sscaled;
-			*size   = 2;
+			format = vk::Format::eR8G8Sscaled;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k8_8UScaled:
-			*format = vk::Format::eR8G8Uscaled;
-			*size   = 2;
+			format = vk::Format::eR8G8Uscaled;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k8_8SNorm:
-			*format = vk::Format::eR8G8Snorm;
-			*size   = 2;
+			format = vk::Format::eR8G8Snorm;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k8_8UNorm:
-			*format = vk::Format::eR8G8Unorm;
-			*size   = 2;
+			format = vk::Format::eR8G8Unorm;
+			size   = 2;
 			break;
 		case Prospero::BufferFormat::k16Float:
-			*format = vk::Format::eR16Sfloat;
-			*size   = 1;
+			format = vk::Format::eR16Sfloat;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k16SInt:
-			*format = vk::Format::eR16Sint;
-			*size   = 1;
+			format = vk::Format::eR16Sint;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k16UInt:
-			*format = vk::Format::eR16Uint;
-			*size   = 1;
+			format = vk::Format::eR16Uint;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k16SScaled:
-			*format = vk::Format::eR16Sscaled;
-			*size   = 1;
+			format = vk::Format::eR16Sscaled;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k16UScaled:
-			*format = vk::Format::eR16Uscaled;
-			*size   = 1;
+			format = vk::Format::eR16Uscaled;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k16SNorm:
-			*format = vk::Format::eR16Snorm;
-			*size   = 1;
+			format = vk::Format::eR16Snorm;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k16UNorm:
-			*format = vk::Format::eR16Unorm;
-			*size   = 1;
+			format = vk::Format::eR16Unorm;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k8SInt:
-			*format = vk::Format::eR8Sint;
-			*size   = 1;
+			format = vk::Format::eR8Sint;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k8UInt:
-			*format = vk::Format::eR8Uint;
-			*size   = 1;
+			format = vk::Format::eR8Uint;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k8SScaled:
-			*format = vk::Format::eR8Sscaled;
-			*size   = 1;
+			format = vk::Format::eR8Sscaled;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k8UScaled:
-			*format = vk::Format::eR8Uscaled;
-			*size   = 1;
+			format = vk::Format::eR8Uscaled;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k8SNorm:
-			*format = vk::Format::eR8Snorm;
-			*size   = 1;
+			format = vk::Format::eR8Snorm;
+			size   = 1;
 			break;
 		case Prospero::BufferFormat::k8UNorm:
-			*format = vk::Format::eR8Unorm;
-			*size   = 1;
+			format = vk::Format::eR8Unorm;
+			size   = 1;
 			break;
 		default:
 			EXIT("unknown format: fmt = %u\n", fmt);
-			*format = vk::Format::eUndefined;
-			*size   = 4;
+			format = vk::Format::eUndefined;
+			size   = 4;
 			break;
 	}
 
@@ -391,43 +385,39 @@ static vk::BlendOp GetBlendOp(uint32_t op) {
 	return vk::BlendOp::eAdd;
 }
 
-static void CreateLayout(vk::DescriptorSetLayout* set_layouts, uint32_t* set_layouts_num,
-                         vk::PushConstantRange*               push_constant_info,
-                         uint32_t*                            push_constant_info_num,
+static void CreateLayout(std::span<vk::DescriptorSetLayout> set_layouts, uint32_t& set_layouts_num,
+                         std::span<vk::PushConstantRange>     push_constant_info,
+                         uint32_t&                            push_constant_info_num,
                          const ShaderRecompiler::IR::Program& program,
                          vk::ShaderStageFlags vk_stage, DescriptorCache::Stage stage) {
-	EXIT_IF(set_layouts == nullptr);
-	EXIT_IF(set_layouts_num == nullptr);
-	EXIT_IF(push_constant_info == nullptr);
-	EXIT_IF(push_constant_info_num == nullptr);
-
 	const auto& bindings        = program.bindings;
 	const bool  need_descriptor = !bindings.descriptors.empty();
 
 	if (bindings.push_constant_size != 0) {
-		auto index = *push_constant_info_num;
+		auto index = push_constant_info_num;
 
 		push_constant_info[index].stageFlags = vk_stage;
 		push_constant_info[index].offset     = bindings.push_constant_offset;
 		push_constant_info[index].size       = bindings.push_constant_size;
-		(*push_constant_info_num)++;
+		push_constant_info_num++;
 	}
 
 	if (need_descriptor) {
-		EXIT_IF(bindings.descriptor_set != *set_layouts_num);
+		EXIT_IF(bindings.descriptor_set != set_layouts_num);
 
-		set_layouts[*set_layouts_num] =
-		    g_render_ctx->GetDescriptorCache()->GetDescriptorSetLayout(stage, program);
-		(*set_layouts_num)++;
+		set_layouts[set_layouts_num] =
+		    GetRenderContext().GetDescriptorCache().GetDescriptorSetLayout(stage, program);
+		set_layouts_num++;
 	}
 }
 
-static void ConfigureSubgroupSize(const GraphicContext* gctx, vk::ShaderStageFlagBits vk_stage,
+static void ConfigureSubgroupSize(vk::ShaderStageFlagBits                                vk_stage,
                                   const ShaderRecompiler::IR::Program&                   program,
-                                  vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo* required,
-                                  vk::PipelineShaderStageCreateInfo*                     stage) {
-	EXIT_IF(gctx == nullptr || required == nullptr || stage == nullptr);
-	const auto config = ConfigureShaderSubgroup(*gctx, vk_stage, program);
+                                  vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo& required,
+                                  vk::PipelineShaderStageCreateInfo&                     stage) {
+	const auto& graphics = GetRenderContext().GetGraphics();
+	const auto  config =
+	    ConfigureShaderSubgroup(ShaderSubgroupCapabilities {graphics}, vk_stage, program);
 	switch (config.mode) {
 		case ShaderSubgroupMode::Natural: return;
 		case ShaderSubgroupMode::PerInvocationGraphics: {
@@ -453,33 +443,30 @@ static void ConfigureSubgroupSize(const GraphicContext* gctx, vk::ShaderStageFla
 		default:
 			EXIT("Vulkan cannot run %u-lane shader stage 0x%08x: default=%u min=%u max=%u "
 			     "controlled_stages=0x%08x\n",
-			     program.wave_size, static_cast<uint32_t>(vk_stage), gctx->subgroup_size,
-			     gctx->min_subgroup_size, gctx->max_subgroup_size,
-			     static_cast<vk::ShaderStageFlags::MaskType>(gctx->required_subgroup_size_stages));
+			     program.wave_size, static_cast<uint32_t>(vk_stage), graphics.subgroup_size,
+			     graphics.min_subgroup_size, graphics.max_subgroup_size,
+			     static_cast<vk::ShaderStageFlags::MaskType>(
+			         graphics.required_subgroup_size_stages));
 	}
 
-	required->sType = vk::StructureType::ePipelineShaderStageRequiredSubgroupSizeCreateInfo;
-	required->requiredSubgroupSize = config.required_size;
-	stage->pNext                   = required;
+	required.sType = vk::StructureType::ePipelineShaderStageRequiredSubgroupSizeCreateInfo;
+	required.requiredSubgroupSize = config.required_size;
+	stage.pNext                   = &required;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::RenderPass render_pass,
-                            const ShaderVertexInputInfo*    vs_input_info,
+void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::RenderPass render_pass,
+                            const ShaderVertexInputInfo&    vs_input_info,
                             std::span<const uint32_t>       vs_shader,
                             const ShaderPixelInputInfo*     ps_input_info,
                             std::span<const uint32_t>       ps_shader,
                             const PipelineStaticParameters& static_params, uint32_t vs_hash0,
                             uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32,
                             bool ps_active) {
-	EXIT_IF(g_render_ctx == nullptr);
-	EXIT_IF(pipeline == nullptr);
 	EXIT_IF(render_pass == nullptr);
 	EXIT_IF(ps_active && ps_input_info == nullptr);
 
-	auto* gctx = g_render_ctx->GetGraphicCtx();
-
-	EXIT_IF(gctx == nullptr);
+	auto& graphics = GetRenderContext().GetGraphics();
 
 	vk::ShaderModule vert_shader_module = nullptr;
 	vk::ShaderModule frag_shader_module = nullptr;
@@ -492,7 +479,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 
 	create_info.codeSize = vs_shader.size() * 4;
 	create_info.pCode    = vs_shader.data();
-	auto result = gctx->device.createShaderModule(&create_info, nullptr, &vert_shader_module);
+	auto result = graphics.device.createShaderModule(&create_info, nullptr, &vert_shader_module);
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreateShaderModule VS done result=%s module=%p\n",
 		     VulkanToString(result).c_str(), static_cast<void*>(vert_shader_module));
@@ -502,7 +489,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	if (ps_active) {
 		create_info.codeSize = ps_shader.size() * 4;
 		create_info.pCode    = ps_shader.data();
-		result = gctx->device.createShaderModule(&create_info, nullptr, &frag_shader_module);
+		result = graphics.device.createShaderModule(&create_info, nullptr, &frag_shader_module);
 		if (graphics_debug_dump_enabled()) {
 			LOGF("PipelineTrace: vkCreateShaderModule PS done result=%s module=%p\n",
 			     VulkanToString(result).c_str(), static_cast<void*>(frag_shader_module));
@@ -523,9 +510,9 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	vert_shader_stage_info.module              = vert_shader_module;
 	vert_shader_stage_info.pName               = "main";
 	vert_shader_stage_info.pSpecializationInfo = nullptr;
-	EXIT_IF(!vs_input_info->stage);
-	ConfigureSubgroupSize(gctx, vk::ShaderStageFlagBits::eVertex, *vs_input_info->stage.program,
-	                      &vert_subgroup_size, &vert_shader_stage_info);
+	EXIT_IF(!vs_input_info.stage);
+	ConfigureSubgroupSize(vk::ShaderStageFlagBits::eVertex, *vs_input_info.stage.program,
+	                      vert_subgroup_size, vert_shader_stage_info);
 
 	vk::PipelineShaderStageCreateInfo                     frag_shader_stage_info {};
 	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo frag_subgroup_size {};
@@ -538,9 +525,8 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	frag_shader_stage_info.pSpecializationInfo = nullptr;
 	if (ps_active) {
 		EXIT_IF(!ps_input_info->stage);
-		ConfigureSubgroupSize(gctx, vk::ShaderStageFlagBits::eFragment,
-		                      *ps_input_info->stage.program, &frag_subgroup_size,
-		                      &frag_shader_stage_info);
+		ConfigureSubgroupSize(vk::ShaderStageFlagBits::eFragment, *ps_input_info->stage.program,
+		                      frag_subgroup_size, frag_shader_stage_info);
 	}
 
 	vk::PipelineShaderStageCreateInfo shader_stages[]    = {vert_shader_stage_info,
@@ -550,8 +536,8 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	vk::VertexInputAttributeDescription input_attr[ShaderVertexInputInfo::RES_MAX];
 	vk::VertexInputBindingDescription   input_desc[ShaderVertexInputInfo::RES_MAX];
 
-	for (int bi = 0; bi < vs_input_info->buffers_num; bi++) {
-		const auto& b          = vs_input_info->buffers[bi];
+	for (int bi = 0; bi < vs_input_info.buffers_num; bi++) {
+		const auto& b          = vs_input_info.buffers[bi];
 		input_desc[bi].binding = bi;
 		input_desc[bi].stride  = b.stride;
 		input_desc[bi].inputRate =
@@ -564,11 +550,11 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 			input_attr[index].offset   = b.attr_offsets[ai];
 
 			uint32_t attr_size       = 4;
-			auto     registers_num   = vs_input_info->resources_dst[index].registers_num;
-			auto     used_components = (vs_input_info->resource_fetch_components[index] > 0
-			                                ? vs_input_info->resource_fetch_components[index]
+			auto     registers_num   = vs_input_info.resources_dst[index].registers_num;
+			auto     used_components = (vs_input_info.resource_fetch_components[index] > 0
+			                                ? vs_input_info.resource_fetch_components[index]
 			                                : registers_num);
-			GetInputFormat(vs_input_info->resources[index], &input_attr[index].format, &attr_size,
+			GetInputFormat(vs_input_info.resources[index], input_attr[index].format, attr_size,
 			               static_cast<uint32_t>(used_components));
 
 			if (graphics_debug_dump_enabled()) {
@@ -580,29 +566,29 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 					     " fetched_components=%u attr_size=%u swizzle=%u,%u,%u,%u\n",
 					     log_id, index, input_attr[index].binding, input_attr[index].offset,
 					     input_desc[bi].stride, static_cast<int>(input_attr[index].format),
-					     static_cast<uint32_t>(vs_input_info->resources[index].Format()),
-					     static_cast<uint32_t>(vs_input_info->resources_dst[index].register_start),
+					     static_cast<uint32_t>(vs_input_info.resources[index].Format()),
+					     static_cast<uint32_t>(vs_input_info.resources_dst[index].register_start),
 					     static_cast<uint32_t>(registers_num),
 					     static_cast<uint32_t>(used_components), attr_size,
-					     static_cast<uint32_t>(vs_input_info->resources[index].DstSelX()),
-					     static_cast<uint32_t>(vs_input_info->resources[index].DstSelY()),
-					     static_cast<uint32_t>(vs_input_info->resources[index].DstSelZ()),
-					     static_cast<uint32_t>(vs_input_info->resources[index].DstSelW()));
+					     static_cast<uint32_t>(vs_input_info.resources[index].DstSelX()),
+					     static_cast<uint32_t>(vs_input_info.resources[index].DstSelY()),
+					     static_cast<uint32_t>(vs_input_info.resources[index].DstSelZ()),
+					     static_cast<uint32_t>(vs_input_info.resources[index].DstSelW()));
 				}
 			}
 
-			if (vs_input_info->resources[index].OutOfBounds() != 0) {
+			if (vs_input_info.resources[index].OutOfBounds() != 0) {
 				static bool logged = false;
 				if (!logged) {
 					LOGF("VertexInput: temporary: accepting PS5 out-of-bounds behavior %" PRIu8
 					     "\n",
-					     vs_input_info->resources[index].OutOfBounds());
+					     vs_input_info.resources[index].OutOfBounds());
 					logged = true;
 				}
 			}
 
-			EXIT_NOT_IMPLEMENTED(vs_input_info->resources[index].AddTid());
-			EXIT_NOT_IMPLEMENTED(vs_input_info->resources[index].SwizzleEnabled());
+			EXIT_NOT_IMPLEMENTED(vs_input_info.resources[index].AddTid());
+			EXIT_NOT_IMPLEMENTED(vs_input_info.resources[index].SwizzleEnabled());
 
 			auto log_unsupported_vertex_swizzle = [index, attr_size, registers_num](
 			                                          uint32_t swizzle, uint32_t expected) {
@@ -619,14 +605,14 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 
 			switch (registers_num) {
 				case 1: {
-					auto swizzle = vs_input_info->resources[index].DstSelX();
+					auto swizzle = vs_input_info.resources[index].DstSelX();
 					if (swizzle != DstSel(4)) {
 						log_unsupported_vertex_swizzle(swizzle, DstSel(4));
 					}
 					break;
 				}
 				case 2: {
-					auto swizzle  = vs_input_info->resources[index].DstSelXY();
+					auto swizzle  = vs_input_info.resources[index].DstSelXY();
 					auto expected = (attr_size == 1 ? DstSel(4, 0) : DstSel(4, 5));
 					if (swizzle != expected) {
 						log_unsupported_vertex_swizzle(swizzle, expected);
@@ -634,7 +620,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 					break;
 				}
 				case 3: {
-					auto swizzle = vs_input_info->resources[index].DstSelXYZ();
+					auto swizzle = vs_input_info.resources[index].DstSelXYZ();
 					auto expected =
 					    (attr_size == 1 ? DstSel(4, 0, 0)
 					                    : (attr_size == 2 ? DstSel(4, 5, 0) : DstSel(4, 5, 6)));
@@ -644,7 +630,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 					break;
 				}
 				case 4: {
-					auto swizzle   = vs_input_info->resources[index].DstSelXYZW();
+					auto swizzle   = vs_input_info.resources[index].DstSelXYZW();
 					auto expected  = DstSel(4, 5, 6, 7);
 					bool supported = false;
 					switch (attr_size) {
@@ -679,9 +665,9 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	vertex_input_info.sType = vk::StructureType::ePipelineVertexInputStateCreateInfo;
 	vertex_input_info.pNext = nullptr;
 	vertex_input_info.flags = {};
-	vertex_input_info.vertexBindingDescriptionCount   = vs_input_info->buffers_num;
+	vertex_input_info.vertexBindingDescriptionCount   = vs_input_info.buffers_num;
 	vertex_input_info.pVertexBindingDescriptions      = input_desc;
-	vertex_input_info.vertexAttributeDescriptionCount = vs_input_info->resources_num;
+	vertex_input_info.vertexAttributeDescriptionCount = vs_input_info.resources_num;
 	vertex_input_info.pVertexAttributeDescriptions    = input_attr;
 
 	vk::PipelineInputAssemblyStateCreateInfo input_assembly {};
@@ -833,13 +819,13 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	vk::PushConstantRange push_constant_info[2];
 	uint32_t              push_constant_info_num = 0;
 
-	EXIT_IF(!vs_input_info->stage);
-	CreateLayout(set_layouts, &set_layouts_num, push_constant_info, &push_constant_info_num,
-	             *vs_input_info->stage.program, vk::ShaderStageFlagBits::eVertex,
+	EXIT_IF(!vs_input_info.stage);
+	CreateLayout(set_layouts, set_layouts_num, push_constant_info, push_constant_info_num,
+	             *vs_input_info.stage.program, vk::ShaderStageFlagBits::eVertex,
 	             DescriptorCache::Stage::Vertex);
 	if (ps_active) {
 		EXIT_IF(!ps_input_info->stage);
-		CreateLayout(set_layouts, &set_layouts_num, push_constant_info, &push_constant_info_num,
+		CreateLayout(set_layouts, set_layouts_num, push_constant_info, push_constant_info_num,
 		             *ps_input_info->stage.program, vk::ShaderStageFlagBits::eFragment,
 		             DescriptorCache::Stage::Pixel);
 	}
@@ -854,7 +840,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	pipeline_layout_info.pPushConstantRanges =
 	    push_constant_info_num > 0 ? push_constant_info : nullptr;
 
-	EXIT_IF(pipeline->pipeline_layout != nullptr);
+	EXIT_IF(pipeline.pipeline_layout != nullptr);
 
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreatePipelineLayout begin VS=0x%08" PRIx32 "/0x%08" PRIx32
@@ -862,15 +848,15 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 		     "\n",
 		     vs_hash0, vs_crc32, ps_hash0, ps_crc32, set_layouts_num, push_constant_info_num);
 	}
-	result = gctx->device.createPipelineLayout(&pipeline_layout_info, nullptr,
-	                                           &pipeline->pipeline_layout);
+	result = graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr,
+	                                              &pipeline.pipeline_layout);
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreatePipelineLayout done result=%s layout=%p\n",
-		     VulkanToString(result).c_str(), static_cast<void*>(pipeline->pipeline_layout));
+		     VulkanToString(result).c_str(), static_cast<void*>(pipeline.pipeline_layout));
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
-	EXIT_NOT_IMPLEMENTED(pipeline->pipeline_layout == nullptr);
+	EXIT_NOT_IMPLEMENTED(pipeline.pipeline_layout == nullptr);
 
 	vk::PipelineDepthStencilStateCreateInfo depth_stencil_info {};
 	depth_stencil_info.sType            = vk::StructureType::ePipelineDepthStencilStateCreateInfo;
@@ -927,13 +913,13 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 	pipeline_info.pDepthStencilState  = (static_params.with_depth ? &depth_stencil_info : nullptr);
 	pipeline_info.pColorBlendState    = &color_blending;
 	pipeline_info.pDynamicState       = &dynamic_state;
-	pipeline_info.layout              = pipeline->pipeline_layout;
+	pipeline_info.layout              = pipeline.pipeline_layout;
 	pipeline_info.renderPass          = render_pass;
 	pipeline_info.subpass             = 0;
 	pipeline_info.basePipelineHandle  = nullptr;
 	pipeline_info.basePipelineIndex   = -1;
 
-	EXIT_IF(pipeline->pipeline != nullptr);
+	EXIT_IF(pipeline.pipeline != nullptr);
 
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines begin VS=0x%08" PRIx32 "/0x%08" PRIx32
@@ -946,32 +932,27 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline* pipeline, vk::Rende
 		     viewport.y, viewport.width, viewport.height, scissor.offset.x, scissor.offset.y,
 		     scissor.extent.width, scissor.extent.height);
 	}
-	result = gctx->device.createGraphicsPipelines(nullptr, 1, &pipeline_info, nullptr,
-	                                              &pipeline->pipeline);
+	result = graphics.device.createGraphicsPipelines(nullptr, 1, &pipeline_info, nullptr,
+	                                                 &pipeline.pipeline);
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
-		     VulkanToString(result).c_str(), static_cast<void*>(pipeline->pipeline));
+		     VulkanToString(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
-	EXIT_NOT_IMPLEMENTED(pipeline->pipeline == nullptr);
+	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
 
 	if (frag_shader_module != nullptr) {
-		gctx->device.destroyShaderModule(frag_shader_module, nullptr);
+		graphics.device.destroyShaderModule(frag_shader_module, nullptr);
 	}
-	gctx->device.destroyShaderModule(vert_shader_module, nullptr);
+	graphics.device.destroyShaderModule(vert_shader_module, nullptr);
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void CreatePipelineInternal(PipelineCache::ComputePipeline* pipeline,
-                            const ShaderComputeInputInfo*   input_info,
+void CreatePipelineInternal(PipelineCache::ComputePipeline& pipeline,
+                            const ShaderComputeInputInfo&   input_info,
                             std::span<const uint32_t>       cs_shader) {
-	EXIT_IF(g_render_ctx == nullptr);
-	EXIT_IF(pipeline == nullptr);
-
-	auto* gctx = g_render_ctx->GetGraphicCtx();
-
-	EXIT_IF(gctx == nullptr);
+	auto& graphics = GetRenderContext().GetGraphics();
 
 	vk::ShaderModule comp_shader_module = nullptr;
 
@@ -984,7 +965,7 @@ void CreatePipelineInternal(PipelineCache::ComputePipeline* pipeline,
 	create_info.pCode    = cs_shader.data();
 	LOGF("PipelineTrace: vkCreateShaderModule CS begin words=%" PRIu64 "\n",
 	     static_cast<uint64_t>(cs_shader.size()));
-	auto result = gctx->device.createShaderModule(&create_info, nullptr, &comp_shader_module);
+	auto result = graphics.device.createShaderModule(&create_info, nullptr, &comp_shader_module);
 	LOGF("PipelineTrace: vkCreateShaderModule CS done result=%s module=%p\n",
 	     VulkanToString(result).c_str(), static_cast<void*>(comp_shader_module));
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
@@ -1000,9 +981,9 @@ void CreatePipelineInternal(PipelineCache::ComputePipeline* pipeline,
 	comp_shader_stage_info.module              = comp_shader_module;
 	comp_shader_stage_info.pName               = "main";
 	comp_shader_stage_info.pSpecializationInfo = nullptr;
-	EXIT_IF(!input_info->stage);
-	ConfigureSubgroupSize(gctx, vk::ShaderStageFlagBits::eCompute, *input_info->stage.program,
-	                      &comp_subgroup_size, &comp_shader_stage_info);
+	EXIT_IF(!input_info.stage);
+	ConfigureSubgroupSize(vk::ShaderStageFlagBits::eCompute, *input_info.stage.program,
+	                      comp_subgroup_size, comp_shader_stage_info);
 
 	vk::DescriptorSetLayout set_layouts[1]  = {};
 	uint32_t                set_layouts_num = 0;
@@ -1010,9 +991,9 @@ void CreatePipelineInternal(PipelineCache::ComputePipeline* pipeline,
 	vk::PushConstantRange push_constant_info[1];
 	uint32_t              push_constant_info_num = 0;
 
-	EXIT_IF(!input_info->stage);
-	CreateLayout(set_layouts, &set_layouts_num, push_constant_info, &push_constant_info_num,
-	             *input_info->stage.program, vk::ShaderStageFlagBits::eCompute,
+	EXIT_IF(!input_info.stage);
+	CreateLayout(set_layouts, set_layouts_num, push_constant_info, push_constant_info_num,
+	             *input_info.stage.program, vk::ShaderStageFlagBits::eCompute,
 	             DescriptorCache::Stage::Compute);
 
 	vk::PipelineLayoutCreateInfo pipeline_layout_info {};
@@ -1025,39 +1006,39 @@ void CreatePipelineInternal(PipelineCache::ComputePipeline* pipeline,
 	pipeline_layout_info.pPushConstantRanges =
 	    push_constant_info_num > 0 ? push_constant_info : nullptr;
 
-	EXIT_IF(pipeline->pipeline_layout != nullptr);
+	EXIT_IF(pipeline.pipeline_layout != nullptr);
 
 	LOGF("PipelineTrace: vkCreatePipelineLayout CS begin set_layouts=%u push_constants=%u\n",
 	     set_layouts_num, push_constant_info_num);
-	result = gctx->device.createPipelineLayout(&pipeline_layout_info, nullptr,
-	                                           &pipeline->pipeline_layout);
+	result = graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr,
+	                                              &pipeline.pipeline_layout);
 	LOGF("PipelineTrace: vkCreatePipelineLayout CS done result=%s layout=%p\n",
-	     VulkanToString(result).c_str(), static_cast<void*>(pipeline->pipeline_layout));
+	     VulkanToString(result).c_str(), static_cast<void*>(pipeline.pipeline_layout));
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
-	EXIT_NOT_IMPLEMENTED(pipeline->pipeline_layout == nullptr);
+	EXIT_NOT_IMPLEMENTED(pipeline.pipeline_layout == nullptr);
 
 	vk::ComputePipelineCreateInfo info {};
 	info.sType              = vk::StructureType::eComputePipelineCreateInfo;
 	info.pNext              = nullptr;
 	info.flags              = {};
 	info.stage              = comp_shader_stage_info;
-	info.layout             = pipeline->pipeline_layout;
+	info.layout             = pipeline.pipeline_layout;
 	info.basePipelineHandle = nullptr;
 	info.basePipelineIndex  = -1;
 
-	EXIT_IF(pipeline->pipeline != nullptr);
+	EXIT_IF(pipeline.pipeline != nullptr);
 
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
-	     static_cast<void*>(pipeline->pipeline_layout));
-	result = gctx->device.createComputePipelines(nullptr, 1, &info, nullptr, &pipeline->pipeline);
+	     static_cast<void*>(pipeline.pipeline_layout));
+	result = graphics.device.createComputePipelines(nullptr, 1, &info, nullptr, &pipeline.pipeline);
 	LOGF("PipelineTrace: vkCreateComputePipelines done result=%s pipeline=%p\n",
-	     VulkanToString(result).c_str(), static_cast<void*>(pipeline->pipeline));
+	     VulkanToString(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
-	EXIT_NOT_IMPLEMENTED(pipeline->pipeline == nullptr);
+	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
 
-	gctx->device.destroyShaderModule(comp_shader_module, nullptr);
+	graphics.device.destroyShaderModule(comp_shader_module, nullptr);
 }
 
 } // namespace Libs::Graphics

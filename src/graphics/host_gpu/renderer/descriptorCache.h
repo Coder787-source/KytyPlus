@@ -63,14 +63,16 @@ public:
 		BufferView                  user_data;
 	};
 
-	DescriptorCache() { EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread()); }
+	explicit DescriptorCache(GraphicContext& graphics): m_graphics(graphics) {
+		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+	}
 	~DescriptorCache() { KYTY_NOT_IMPLEMENTED; }
 	KYTY_CLASS_NO_COPY(DescriptorCache);
 
 	vk::DescriptorSetLayout GetDescriptorSetLayout(Stage                                stage,
 	                                               const ShaderRecompiler::IR::Program& program);
-	void                    Recycle(VulkanDescriptorSet* set);
-	VulkanDescriptorSet*    GetDescriptor(Stage stage, const ShaderRecompiler::IR::Program& program,
+	void                    Recycle(VulkanDescriptorSet& set);
+	VulkanDescriptorSet&    GetDescriptor(Stage stage, const ShaderRecompiler::IR::Program& program,
 	                                      const NativeDescriptors& descriptors);
 
 private:
@@ -79,12 +81,12 @@ private:
 		int                next_free_pool = -1;
 	};
 
-	void                 CreatePool(GraphicContext* gctx);
+	void                 CreatePool();
 	VulkanDescriptorSet* Allocate(Stage stage, const ShaderRecompiler::IR::Program& program);
 	vk::DescriptorSetLayout
-	GetDescriptorSetLayoutInternal(GraphicContext* gctx, Stage stage,
-	                               const ShaderRecompiler::IR::Program& program);
+	GetDescriptorSetLayoutInternal(Stage stage, const ShaderRecompiler::IR::Program& program);
 
+	GraphicContext&   m_graphics;
 	Common::Mutex     m_mutex;
 	std::vector<Pool> m_pools;
 	int               m_first_free_pool = -1;
@@ -93,7 +95,7 @@ private:
 	std::map<std::vector<uint32_t>, vk::DescriptorSetLayout> m_descriptor_set_layouts;
 };
 
-void BindDescriptors(uint64_t submit_id, CommandBuffer* buffer,
+void BindDescriptors(uint64_t submit_id, CommandBuffer& buffer,
                      vk::PipelineBindPoint pipeline_bind_point, vk::PipelineLayout layout,
                      const ShaderStageRuntime& runtime, vk::ShaderStageFlags vk_stage,
                      DescriptorCache::Stage stage);
