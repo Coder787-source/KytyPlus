@@ -139,7 +139,6 @@ static PreparedFramePool* GetPreparedFramePool() {
 }
 
 static void ConfigurePreparedFrame(PreparedFrame& frame, vk::Extent2D extent, vk::Format format) {
-	EXIT_IF(g_window_ctx == nullptr);
 	if (extent.width == 0 || extent.height == 0 || format == vk::Format::eUndefined) {
 		EXIT("unsupported prepared frame, extent=%ux%u format=%d\n", extent.width, extent.height,
 		     static_cast<int>(format));
@@ -284,7 +283,6 @@ VulkanSwapchain::~VulkanSwapchain() = default;
 }
 
 VulkanSwapchain* VulkanCreateSwapchain(uint32_t image_count) {
-	EXIT_IF(g_window_ctx == nullptr);
 	auto& graphics = g_window_ctx->graphic_ctx;
 	EXIT_IF(graphics.screen_width == 0);
 	EXIT_IF(graphics.screen_height == 0);
@@ -363,10 +361,6 @@ static void VulkanDeleteSwapchain(VulkanSwapchain* s) {
 }
 
 static void VulkanRefreshSurfaceSize() {
-	EXIT_IF(g_window_ctx == nullptr);
-	EXIT_IF(g_window_ctx->window == nullptr);
-	EXIT_IF(g_window_ctx->surface_capabilities == nullptr);
-
 	int width  = 0;
 	int height = 0;
 	SDL_Vulkan_GetDrawableSize(g_window_ctx->window, &width, &height);
@@ -380,8 +374,6 @@ static void VulkanRefreshSurfaceSize() {
 }
 
 static void VulkanRecreateSwapchain() {
-	EXIT_IF(g_window_ctx == nullptr);
-
 	LOGF("Recreating Vulkan swapchain\n");
 	VulkanRefreshSurfaceSize();
 	VulkanDeleteSwapchain(g_window_ctx->swapchain);
@@ -431,8 +423,6 @@ PreparedFrame& WindowPrepareBlankFrame(CommandBuffer& buffer, uint32_t width, ui
 void WindowPresentFrame(PreparedFrame& frame) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_IF(g_window_ctx == nullptr);
-	EXIT_IF(g_window_ctx->swapchain == nullptr);
 	struct ReleaseScope {
 		PreparedFrame* frame;
 		~ReleaseScope() { GetPreparedFramePool()->Release(frame); }

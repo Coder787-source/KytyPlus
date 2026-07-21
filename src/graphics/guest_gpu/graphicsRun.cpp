@@ -709,9 +709,6 @@ void GraphicsRing::Submit(OwnedCmdBuffer draw_buffer, OwnedCmdBuffer const_buffe
 
 	Common::LockGuard lock(m_mutex);
 
-	WindowWaitForGraphicInitialized();
-	GraphicsRenderCreateContext();
-
 	if (m_done) {
 		while (!m_idle) {
 			m_idle_cond_var.Wait(&m_mutex);
@@ -738,8 +735,6 @@ void GraphicsRing::SubmitFlipPreparation() {
 	EXIT_IF(m_cp == nullptr);
 	Common::LockGuard lock(m_mutex);
 
-	WindowWaitForGraphicInitialized();
-	GraphicsRenderCreateContext();
 	if (m_done) {
 		while (!m_idle) {
 			m_idle_cond_var.Wait(&m_mutex);
@@ -920,9 +915,6 @@ void ComputeRing::Submit(OwnedCmdBuffer buffer, bool trigger_agc_interrupt_on_do
 
 	EXIT_IF(buffer.data == nullptr);
 	EXIT_IF(buffer.num_dw == 0);
-
-	WindowWaitForGraphicInitialized();
-	GraphicsRenderCreateContext();
 
 	if (m_done) {
 		m_done = false;

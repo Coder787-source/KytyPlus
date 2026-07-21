@@ -883,7 +883,7 @@ void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
 }
 
 void PrepareHostWrite(uint64_t vaddr, uint64_t size) {
-	if (size == 0 || !Graphics::HasRenderContext()) {
+	if (size == 0) {
 		return;
 	}
 	Graphics::GetRenderContext().GetGpuResources().PrepareHostWrite(vaddr, size);

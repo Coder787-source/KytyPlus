@@ -1104,8 +1104,6 @@ static int RegisterBuffersInternal(VideoOutConfig& ctx, int set_id, int start_in
 	if (set_id < 0 || set_id >= VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX) {
 		EXIT("internal video-out buffer set identifier is out of range\n");
 	}
-	Graphics::WindowWaitForGraphicInitialized();
-	Graphics::GraphicsRenderCreateContext();
 	Common::LockGuard lock(ctx.mutex);
 	if (ctx.closing) {
 		EXIT("cannot register buffers on a closing video-out handle\n");

@@ -16,18 +16,14 @@
 #include "graphics/host_gpu/transfer.h"
 #include "graphics/host_gpu/vma.h"
 #include "graphics/host_gpu/vulkanCommon.h"
-#include "graphics/presentation/window.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
 #include <memory>
-#include <mutex>
 namespace Libs::Graphics {
 static std::atomic<uint64_t> g_command_buffer_submit_seq = 0;
-static bool                  g_render_initialized        = false;
-static std::mutex            g_render_init_mutex;
 
 static void RequireValidQueueId(int queue_id) {
 	EXIT_IF(queue_id < 0 || queue_id >= GraphicContext::QUEUES_NUM);
@@ -71,12 +67,7 @@ private:
 static RenderContext*           g_render_ctx = nullptr;
 static thread_local CommandPool g_command_pool;
 
-bool HasRenderContext() noexcept {
-	return g_render_ctx != nullptr;
-}
-
-RenderContext& GetRenderContext() {
-	EXIT_IF(g_render_ctx == nullptr);
+RenderContext& GetRenderContext() noexcept {
 	return *g_render_ctx;
 }
 
@@ -101,30 +92,12 @@ void FenceResourceRetainer::ReleaseAfterFence() noexcept {
 	m_resources.clear();
 }
 
-void GraphicsRenderInit() {
-	std::scoped_lock lock(g_render_init_mutex);
-	EXIT_IF(g_render_initialized || g_render_ctx != nullptr);
-	g_render_initialized = true;
+void GraphicsRenderInit(GraphicContext& graphics) {
+	g_render_ctx = new RenderContext(graphics);
 }
 
 void GraphicsRenderReleaseThreadCommandPools() {
-	if (g_render_ctx != nullptr) {
-		g_command_pool.DeleteAll();
-	}
-}
-
-void GraphicsRenderCreateContext() {
-	std::scoped_lock lock(g_render_init_mutex);
-	EXIT_IF(!g_render_initialized);
-	if (g_render_ctx == nullptr) {
-		g_render_ctx = new RenderContext(WindowGetGraphicContext());
-	}
-}
-
-void GraphicsRenderSetContext(RenderContext& context) {
-	std::scoped_lock lock(g_render_init_mutex);
-	EXIT_IF(!g_render_initialized || g_render_ctx != nullptr);
-	g_render_ctx = &context;
+	g_command_pool.DeleteAll();
 }
 
 CommandBuffer::CommandBuffer(int queue)
@@ -139,7 +112,6 @@ void CommandPool::Create(int queue_id) {
 	auto*& pool     = m_pools[queue_id];
 	EXIT_IF(pool != nullptr);
 
-	EXIT_IF(graphics.device == nullptr);
 	EXIT_IF(graphics.queues[queue_id].family == static_cast<uint32_t>(-1));
 
 	pool = new VulkanCommandPool;
@@ -204,8 +176,6 @@ void CommandPool::DeleteAll() {
 
 	for (auto& pool: m_pools) {
 		if (pool != nullptr) {
-			EXIT_IF(graphics.device == nullptr);
-
 			for (uint32_t i = 0; i < pool->buffers_count; i++) {
 				graphics.device.destroySemaphore(pool->semaphores[i], nullptr);
 				graphics.device.destroyFence(pool->fences[i], nullptr);
@@ -369,7 +339,6 @@ void CommandBuffer::Submit(vk::Semaphore wait_semaphore, vk::PipelineStageFlags 
 	submit_info.pSignalSemaphores    = has_signal ? &signal_semaphore : nullptr;
 
 	auto& graphics = GetRenderContext().GetGraphics();
-	EXIT_IF(graphics.device == nullptr);
 	const auto& queue = graphics.queues[m_queue];
 
 	auto result = graphics.device.resetFences(1, &fence);

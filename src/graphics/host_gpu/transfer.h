@@ -52,20 +52,20 @@ struct ImageImageCopy {
 	explicit ImageImageCopy(VulkanImage& source): src_image(source) {}
 
 	VulkanImage&         src_image;
-	uint32_t             src_level;
-	uint32_t             dst_level;
-	uint32_t             width;
-	uint32_t             height;
+	uint32_t             src_level = 0;
+	uint32_t             dst_level = 0;
+	uint32_t             width     = 0;
+	uint32_t             height    = 0;
 	uint32_t             src_layer  = 0;
 	uint32_t             dst_layer  = 0;
 	vk::ImageAspectFlags src_aspect = vk::ImageAspectFlagBits::eColor;
 	vk::ImageAspectFlags dst_aspect = vk::ImageAspectFlagBits::eColor;
-	int                  src_x;
-	int                  src_y;
-	int                  src_z = 0;
-	int                  dst_x;
-	int                  dst_y;
-	int                  dst_z = 0;
+	int                  src_x      = 0;
+	int                  src_y      = 0;
+	int                  src_z      = 0;
+	int                  dst_x      = 0;
+	int                  dst_y      = 0;
+	int                  dst_z      = 0;
 };
 
 namespace Transfer {

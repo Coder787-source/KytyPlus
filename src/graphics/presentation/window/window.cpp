@@ -242,6 +242,7 @@ struct WindowGamePrivate {
 };
 
 WindowContext* g_window_ctx = nullptr;
+static WindowGame g_window_game;
 
 constexpr const char* KYTY_SDL_WINDOW_CAPTION = "Game";
 constexpr uint32_t    KYTY_SDL_WINDOW_FLAGS =
@@ -309,7 +310,7 @@ static bool RenderAndUpdate(WindowGame& game) {
 
 bool GameInit(WindowGame& game, const Common::Timer& timer) {
 	EXIT_IF(game.private_data || game.event);
-	auto& graphics = WindowGetGraphicContext();
+	auto& graphics = g_window_ctx->graphic_ctx;
 
 	EXIT_IF(graphics.screen_width == 0 || graphics.screen_height == 0);
 
@@ -956,65 +957,21 @@ void WindowInit(uint32_t width, uint32_t height) {
 
 	g_window_ctx->graphic_ctx.screen_width  = width;
 	g_window_ctx->graphic_ctx.screen_height = height;
-}
 
-void WindowWaitForGraphicInitialized() {
-	EXIT_IF(g_window_ctx == nullptr);
-
-	Common::LockGuard lock(g_window_ctx->mutex);
-
-	while (!g_window_ctx->graphic_initialized) {
-		g_window_ctx->graphic_initialized_condvar.Wait(&g_window_ctx->mutex);
-	}
+	WindowCreate(*g_window_ctx);
+	VulkanCreate(*g_window_ctx);
+	GraphicsRenderInit(g_window_ctx->graphic_ctx);
 }
 
 void WindowRun() {
-	EXIT_IF(g_window_ctx == nullptr);
-
 	KYTY_PROFILER_THREAD("Thread_Window");
 
-	WindowGame game;
-
-	g_window_ctx->mutex.Lock();
-	{
-		EXIT_IF(g_window_ctx->graphic_initialized);
-
-		WindowCreate(*g_window_ctx);
-		VulkanCreate(*g_window_ctx);
-
-		g_window_ctx->game = &game;
-	}
-	g_window_ctx->mutex.Unlock();
-
-	GraphicsRenderCreateContext();
-
-	g_window_ctx->mutex.Lock();
-	g_window_ctx->graphic_initialized = true;
-	g_window_ctx->graphic_initialized_condvar.Signal();
-	g_window_ctx->mutex.Unlock();
-
-	GameMainLoop(game);
+	GameMainLoop(g_window_game);
 
 	// TODO: replace std::_Exit shutdown with full Vulkan teardown, then destroy
 	// the VMA allocator immediately before vkDestroyDevice.
 	Common::SubsystemsListSingleton::Instance()->ShutdownAll();
 	std::_Exit(0);
-}
-
-vk::SurfaceCapabilitiesKHR* VulkanGetSurfaceCapabilities() {
-	EXIT_IF(g_window_ctx == nullptr);
-
-	Common::LockGuard lock(g_window_ctx->mutex);
-
-	return &g_window_ctx->surface_capabilities->capabilities;
-}
-
-GraphicContext& WindowGetGraphicContext() {
-	EXIT_IF(g_window_ctx == nullptr);
-
-	Common::LockGuard lock(g_window_ctx->mutex);
-
-	return g_window_ctx->graphic_ctx;
 }
 
 static int WindowIconRead(void* user, char* data, int size) {
@@ -1077,8 +1034,6 @@ static void WindowLoadPngIcon(const std::string& path, WindowIcon* icon) {
 }
 
 void WindowUpdateIcon() {
-	EXIT_IF(g_window_ctx == nullptr);
-
 	static WindowIcon icon;
 	static bool       icon_loaded = false;
 
@@ -1096,9 +1051,6 @@ void WindowUpdateIcon() {
 }
 
 void WindowUpdateTitle() {
-	EXIT_IF(g_window_ctx == nullptr);
-	EXIT_IF(g_window_ctx->game == nullptr);
-
 	static char title[128];
 	static char title_id[12];
 	static char app_ver[12];
@@ -1112,8 +1064,8 @@ void WindowUpdateTitle() {
 	                       (has_title ? ", " : ""), (has_title_id ? title_id : ""),
 	                       (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""),
 	                       (has_app_ver ? " " : ""), g_window_ctx->device_name,
-	                       g_window_ctx->processor_name, g_window_ctx->game->m_frame_num,
-	                       g_window_ctx->game->m_current_fps);
+	                       g_window_ctx->processor_name, g_window_game.m_frame_num,
+	                       g_window_game.m_current_fps);
 
 	SDL_SetWindowTitle(g_window_ctx->window, fps.c_str());
 }

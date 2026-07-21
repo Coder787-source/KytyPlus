@@ -303,12 +303,9 @@ static void LogDrawInputState(const RenderColorInfo&       color,
 	}
 }
 
-static void VulkanCmdSetColorWriteEnableEXT(const RenderCommandBuffer& buffer,
-                                            vk::CommandBuffer          command_buffer,
+static void VulkanCmdSetColorWriteEnableEXT(vk::CommandBuffer          command_buffer,
                                             uint32_t                   attachment_count,
                                             const vk::Bool32*          p_color_write_enables) {
-	EXIT_IF(buffer.GetGraphics().device == nullptr);
-
 	if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdSetColorWriteEnableEXT == nullptr) {
 		EXIT("vkCmdSetColorWriteEnableEXT not present\n");
 	}
@@ -413,7 +410,7 @@ static void SetDynamicParams(const RenderCommandBuffer& buffer, vk::CommandBuffe
 	for (uint32_t i = 0; i < dynamic_params.color_write_count; i++) {
 		enable[i] = (dynamic_params.color_write_enable[i] ? VK_TRUE : VK_FALSE);
 	}
-	VulkanCmdSetColorWriteEnableEXT(buffer, vk_buffer, dynamic_params.color_write_count, enable);
+	VulkanCmdSetColorWriteEnableEXT(vk_buffer, dynamic_params.color_write_count, enable);
 }
 
 static bool DrawHasValidVertexShader(const HW::Shader& sh_ctx) {

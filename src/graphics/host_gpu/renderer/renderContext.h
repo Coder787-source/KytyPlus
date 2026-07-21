@@ -63,8 +63,7 @@ private:
 	std::vector<EopEqRegistration> m_eop_eqs;
 };
 
-[[nodiscard]] bool           HasRenderContext() noexcept;
-[[nodiscard]] RenderContext& GetRenderContext();
+[[nodiscard]] RenderContext& GetRenderContext() noexcept;
 
 } // namespace Libs::Graphics
 

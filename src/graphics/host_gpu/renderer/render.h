@@ -33,7 +33,6 @@ struct VulkanFramebuffer;
 struct RenderDepthInfo;
 struct RenderColorInfo;
 class BufferCache;
-class RenderContext;
 
 struct HtileClearTarget {
 	uint64_t address = 0;
@@ -162,9 +161,7 @@ void RenderDrawIndexAuto(uint64_t submit_id, RenderCommandBuffer& buffer, uint32
 void RenderDispatchDirect(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t thread_group_x,
                           uint32_t thread_group_y, uint32_t thread_group_z, uint32_t mode);
 
-void GraphicsRenderInit();
-void GraphicsRenderCreateContext();
-void GraphicsRenderSetContext(RenderContext& context);
+void GraphicsRenderInit(GraphicContext& graphics);
 void GraphicsRenderReleaseThreadCommandPools();
 
 [[nodiscard]] bool ResolveComputeImageClear(const ShaderComputeInputInfo& input, uint32_t group_x,

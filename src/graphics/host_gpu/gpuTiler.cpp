@@ -277,7 +277,6 @@ void TileCompute::Init() {
 	if (resources.pipeline_layout != nullptr) {
 		return;
 	}
-	EXIT_IF(graphics.device == nullptr || graphics.allocator == nullptr);
 	std::array<vk::DescriptorSetLayoutBinding, 2> bindings {};
 	for (uint32_t i = 0; i < bindings.size(); i++) {
 		bindings[i] = {i, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute,

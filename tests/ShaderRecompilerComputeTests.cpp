@@ -1068,13 +1068,11 @@ public:
     RequireVk(name, "memory", m_device.bindImageMemory(image_handle, memory, 0),
               "vkBindImageMemory");
 
-    GraphicContext context{};
-    context.physical_device = m_physical_device;
-    context.device = m_device;
+    EnsureRuntimeContext();
     ResourceMutex resource_mutex;
     PageManager page_manager(RejectUnexpectedPageFault, nullptr);
-    BufferCache buffer_cache(context, page_manager, resource_mutex);
-    TextureCache texture_cache(context, page_manager, buffer_cache,
+    BufferCache buffer_cache(m_runtime_context, page_manager, resource_mutex);
+    TextureCache texture_cache(m_runtime_context, page_manager, buffer_cache,
                                resource_mutex);
     buffer_cache.SetTextureCache(texture_cache);
     RenderTextureVulkanImage image;
@@ -1182,13 +1180,11 @@ public:
     RequireVk(name, "memory", m_device.bindImageMemory(image_handle, memory, 0),
               "vkBindImageMemory");
 
-    GraphicContext context{};
-    context.physical_device = m_physical_device;
-    context.device = m_device;
+    EnsureRuntimeContext();
     ResourceMutex resource_mutex;
     PageManager page_manager(RejectUnexpectedPageFault, nullptr);
-    BufferCache buffer_cache(context, page_manager, resource_mutex);
-    TextureCache texture_cache(context, page_manager, buffer_cache,
+    BufferCache buffer_cache(m_runtime_context, page_manager, resource_mutex);
+    TextureCache texture_cache(m_runtime_context, page_manager, buffer_cache,
                                resource_mutex);
     buffer_cache.SetTextureCache(texture_cache);
     DepthStencilVulkanImage image;
@@ -1253,13 +1249,11 @@ public:
                           vk::ImageUsageFlagBits::eSampled,
                       {}, 1, vk::ImageLayout::eShaderReadOnlyOptimal);
 
-    GraphicContext context{};
-    context.physical_device = m_physical_device;
-    context.device = m_device;
+    EnsureRuntimeContext();
     ResourceMutex resource_mutex;
     PageManager page_manager(RejectUnexpectedPageFault, nullptr);
-    BufferCache buffer_cache(context, page_manager, resource_mutex);
-    TextureCache texture_cache(context, page_manager, buffer_cache,
+    BufferCache buffer_cache(m_runtime_context, page_manager, resource_mutex);
+    TextureCache texture_cache(m_runtime_context, page_manager, buffer_cache,
                                resource_mutex);
     buffer_cache.SetTextureCache(texture_cache);
     VideoOutVulkanImage image;
@@ -3076,10 +3070,7 @@ private:
               static_cast<vk::Result>(vmaCreateAllocator(
                   &allocator_info, &m_runtime_context.allocator)),
               "vmaCreateAllocator");
-    if (!HasRenderContext()) {
-      GraphicsRenderInit();
-      GraphicsRenderSetContext(*new RenderContext(m_runtime_context));
-    }
+    GraphicsRenderInit(m_runtime_context);
   }
 
   void Init() {

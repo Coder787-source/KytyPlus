@@ -12,7 +12,6 @@
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/objects/label.h"
-#include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/sync.h"
 #include "graphics/presentation/renderDoc.h"
 #include "graphics/presentation/videoOut.h"
@@ -49,7 +48,6 @@ KYTY_SUBSYSTEM_INIT(Graphics) {
 
 	WindowInit(width, height);
 	VideoOut::VideoOutInit(width, height);
-	GraphicsRenderInit();
 	GraphicsRunInit();
 	LabelInit();
 	ShaderInit();

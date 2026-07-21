@@ -515,8 +515,7 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			EXIT("invalid access type for page fault at 0x%016" PRIx64 "\n",
 			     info->access_violation_vaddr);
 		}();
-		if (Libs::Graphics::HasRenderContext() &&
-		    Libs::Graphics::GetRenderContext().GetGpuResources().HandleFault(
+		if (Libs::Graphics::GetRenderContext().GetGpuResources().HandleFault(
 		        access, info->access_violation_vaddr)) {
 			return true;
 		}
