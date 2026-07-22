@@ -12,11 +12,13 @@
 #include "graphics/host_gpu/renderer/imageView.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
+#include "common/logging/log.h"
 #include "graphics/host_gpu/transfer.h"
 #include "graphics/host_gpu/vma.h"
 #include "graphics/shader/shader.h"
 
 #include <algorithm>
+#include <atomic>
 
 namespace Libs::Graphics {
 
@@ -382,9 +384,17 @@ VideoOutVulkanImage* CreateVideoOut(const VideoOutInfo& info) {
 void UploadVideoOut(VideoOutVulkanImage& image, const VideoOutInfo& info,
                     bool refresh) {
 	if (info.compression != VideoOutCompression::Uncompressed) {
-		EXIT("TextureCache: compressed video-out guest upload is unsupported, "
-		     "addr=0x%016" PRIx64 " metadata=0x%016" PRIx64 " dcc=0x%08" PRIx32 "\n",
-		     info.address, info.metadata_address, info.dcc_control);
+		// ValidateVideoOut() guarantees the pixel layout of a compressed surface is identical to
+		// the uncompressed one (DCC metadata lives in a separate buffer that the emulator never
+		// produces or consumes). Guest memory therefore only ever holds raw pixels here, so the
+		// regular raw upload below is the correct interpretation of the data.
+		static std::atomic_uint32_t log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: uploading compressed video-out surface as raw pixels, "
+			           "addr=0x%016" PRIx64 " metadata=0x%016" PRIx64 " dcc=0x%08" PRIx32 "\n",
+			           info.address, info.metadata_address, info.dcc_control);
+		}
 	}
 	if (refresh) {
 		Transfer::WaitForGraphicsIdle();

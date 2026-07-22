@@ -82,8 +82,11 @@ public:
 
 	Resolution             screen_resolution           = Resolution::R1280X720;
 	int                    vblank_frequency            = 60;
-	bool                   vulkan_validation_enabled   = true;
-	bool                   shader_validation_enabled   = true;
+	// Validation layers / SPIR-V validation are developer tools. Leaving them on by default
+	// can cut in-game FPS in half or worse, so playable defaults keep them off. Enable from the
+	// game settings dialog when debugging crashes or bad shaders.
+	bool                   vulkan_validation_enabled   = false;
+	bool                   shader_validation_enabled   = false;
 	ShaderOptimizationType shader_optimization_type    = ShaderOptimizationType::Performance;
 	ShaderLogDirection     shader_log_direction        = ShaderLogDirection::Silent;
 	QString                shader_log_folder           = "_Shaders";

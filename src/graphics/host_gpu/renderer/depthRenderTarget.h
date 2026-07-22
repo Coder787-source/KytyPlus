@@ -51,9 +51,11 @@ struct RenderDepthInfo {
 	PipelineStencilDynamicState stencil_dynamic_back;
 	DepthStencilVulkanImage*    vulkan_buffer = nullptr;
 	vk::ImageView               vulkan_view   = nullptr;
-	uint64_t                    vaddr[3]      = {};
-	uint64_t                    size[3]       = {};
-	int                         vaddr_num     = 0;
+	uint32_t                    base_array_layer = 0;
+	uint32_t                    layer_count      = 1;
+	uint64_t                    vaddr[3]         = {};
+	uint64_t                    size[3]          = {};
+	int                         vaddr_num        = 0;
 };
 
 inline bool depth_attachment_read_only(const RenderDepthInfo& depth) {

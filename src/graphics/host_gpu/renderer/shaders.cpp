@@ -461,8 +461,8 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::Rende
                             const ShaderPixelInputInfo*     ps_input_info,
                             std::span<const uint32_t>       ps_shader,
                             const PipelineStaticParameters& static_params, uint32_t vs_hash0,
-                            uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32,
-                            bool ps_active) {
+                            uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active,
+                            vk::PipelineCache disk_cache) {
 	EXIT_IF(render_pass == nullptr);
 	EXIT_IF(ps_active && ps_input_info == nullptr);
 
@@ -932,7 +932,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::Rende
 		     viewport.y, viewport.width, viewport.height, scissor.offset.x, scissor.offset.y,
 		     scissor.extent.width, scissor.extent.height);
 	}
-	result = graphics.device.createGraphicsPipelines(nullptr, 1, &pipeline_info, nullptr,
+	result = graphics.device.createGraphicsPipelines(disk_cache, 1, &pipeline_info, nullptr,
 	                                                 &pipeline.pipeline);
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
@@ -951,7 +951,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::Rende
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(PipelineCache::ComputePipeline& pipeline,
                             const ShaderComputeInputInfo&   input_info,
-                            std::span<const uint32_t>       cs_shader) {
+                            std::span<const uint32_t> cs_shader, vk::PipelineCache disk_cache) {
 	auto& graphics = GetRenderContext().GetGraphics();
 
 	vk::ShaderModule comp_shader_module = nullptr;
@@ -1031,7 +1031,8 @@ void CreatePipelineInternal(PipelineCache::ComputePipeline& pipeline,
 
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
-	result = graphics.device.createComputePipelines(nullptr, 1, &info, nullptr, &pipeline.pipeline);
+	result =
+	    graphics.device.createComputePipelines(disk_cache, 1, &info, nullptr, &pipeline.pipeline);
 	LOGF("PipelineTrace: vkCreateComputePipelines done result=%s pipeline=%p\n",
 	     VulkanToString(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);

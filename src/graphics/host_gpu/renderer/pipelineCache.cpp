@@ -13,12 +13,56 @@
 
 #include <atomic>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <span>
 #include <utility>
+#include <vector>
 
 namespace Libs::Graphics {
 
 namespace {
+
+// Flush the on-disk pipeline cache to disk after this many freshly compiled pipelines. Keeps the
+// cache reasonably fresh even if the emulator is closed without a clean shutdown, while avoiding a
+// disk write on every single new pipeline.
+constexpr uint32_t kDiskCacheFlushInterval = 16;
+
+std::filesystem::path GetPipelineCachePath() {
+	return std::filesystem::path("_PipelineCache") / "vk_pipeline_cache.bin";
+}
+
+// Returns true if the serialized cache blob was produced by the same driver/device that is running
+// now. The Vulkan spec allows drivers to ignore mismatched data, but validating up front avoids
+// feeding a foreign blob (recorded on a different GPU) into vkCreatePipelineCache.
+bool DiskCacheMatchesDevice(const std::vector<uint8_t>&         data,
+                            const vk::PhysicalDeviceProperties& props) {
+	// VkPipelineCacheHeaderVersionOne: length(u32) + version(u32) + vendorID(u32) + deviceID(u32) +
+	// pipelineCacheUUID(16 bytes) = 32 bytes minimum.
+	constexpr size_t kHeaderSize = 32;
+	if (data.size() < kHeaderSize) {
+		return false;
+	}
+	uint32_t header_length = 0;
+	uint32_t header_version = 0;
+	uint32_t vendor_id = 0;
+	uint32_t device_id = 0;
+	std::memcpy(&header_length, data.data() + 0, sizeof(uint32_t));
+	std::memcpy(&header_version, data.data() + 4, sizeof(uint32_t));
+	std::memcpy(&vendor_id, data.data() + 8, sizeof(uint32_t));
+	std::memcpy(&device_id, data.data() + 12, sizeof(uint32_t));
+
+	if (header_length < kHeaderSize) {
+		return false;
+	}
+	if (header_version != static_cast<uint32_t>(vk::PipelineCacheHeaderVersion::eOne)) {
+		return false;
+	}
+	if (vendor_id != props.vendorID || device_id != props.deviceID) {
+		return false;
+	}
+	return std::memcmp(data.data() + 16, props.pipelineCacheUUID.data(), VK_UUID_SIZE) == 0;
+}
 
 void NormalizeStaticParamsForDynamicState(PipelineStaticParameters& static_params) {
 	static_params.viewport_scale[0]  = 0.5f;
@@ -40,6 +84,106 @@ bool PipelineStaticParameters::operator==(const PipelineStaticParameters& other)
 	return std::memcmp(this, &other, sizeof(*this)) == 0;
 }
 
+void PipelineCache::EnsureDiskCacheLocked() {
+	if (m_disk_cache_ready) {
+		return;
+	}
+	m_disk_cache_ready = true;
+
+	std::vector<uint8_t> initial_data;
+	const auto           path = GetPipelineCachePath();
+	std::error_code      ec;
+	if (std::filesystem::exists(path, ec)) {
+		std::ifstream file(path, std::ios::binary | std::ios::ate);
+		if (file) {
+			const auto size = static_cast<std::streamoff>(file.tellg());
+			if (size > 0) {
+				initial_data.resize(static_cast<size_t>(size));
+				file.seekg(0, std::ios::beg);
+				file.read(reinterpret_cast<char*>(initial_data.data()), size);
+				if (!file) {
+					initial_data.clear();
+				}
+			}
+		}
+	}
+
+	if (!initial_data.empty() &&
+	    !DiskCacheMatchesDevice(initial_data, m_graphics.physical_device_properties)) {
+		LOGF("PipelineCache: on-disk cache does not match the current device, ignoring it\n");
+		initial_data.clear();
+	}
+
+	vk::PipelineCacheCreateInfo create_info {};
+	create_info.sType           = vk::StructureType::ePipelineCacheCreateInfo;
+	create_info.pNext           = nullptr;
+	create_info.flags           = {};
+	create_info.initialDataSize = initial_data.size();
+	create_info.pInitialData    = initial_data.empty() ? nullptr : initial_data.data();
+
+	auto result = m_graphics.device.createPipelineCache(&create_info, nullptr, &m_disk_cache);
+	if (result != vk::Result::eSuccess) {
+		LOGF("PipelineCache: vkCreatePipelineCache failed (%s), continuing without a disk cache\n",
+		     VulkanToString(result).c_str());
+		m_disk_cache = nullptr;
+		return;
+	}
+	LOGF("PipelineCache: initialized driver pipeline cache from %" PRIu64 " preloaded bytes\n",
+	     static_cast<uint64_t>(initial_data.size()));
+}
+
+void PipelineCache::FlushDiskCacheLocked() {
+	if (m_disk_cache == nullptr) {
+		return;
+	}
+
+	size_t size = 0;
+	if (m_graphics.device.getPipelineCacheData(m_disk_cache, &size, nullptr) !=
+	        vk::Result::eSuccess ||
+	    size == 0) {
+		return;
+	}
+	std::vector<uint8_t> data(size);
+	if (m_graphics.device.getPipelineCacheData(m_disk_cache, &size, data.data()) !=
+	    vk::Result::eSuccess) {
+		return;
+	}
+	data.resize(size);
+
+	const auto      path = GetPipelineCachePath();
+	std::error_code ec;
+	std::filesystem::create_directories(path.parent_path(), ec);
+
+	// Write to a temporary file and rename so a crash mid-write cannot corrupt the cache.
+	const auto tmp_path = std::filesystem::path(path).concat(".tmp");
+	{
+		std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
+		if (!file) {
+			return;
+		}
+		file.write(reinterpret_cast<const char*>(data.data()),
+		           static_cast<std::streamsize>(data.size()));
+		if (!file) {
+			return;
+		}
+	}
+	std::filesystem::rename(tmp_path, path, ec);
+	if (ec) {
+		std::filesystem::remove(tmp_path, ec);
+		return;
+	}
+	m_pipelines_since_flush = 0;
+}
+
+void PipelineCache::MaybeFlushDiskCacheLocked() {
+	if (m_disk_cache == nullptr) {
+		return;
+	}
+	if (++m_pipelines_since_flush >= kDiskCacheFlushInterval) {
+		FlushDiskCacheLocked();
+	}
+}
+
 PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
     VulkanFramebuffer& framebuffer, RenderColorInfo* colors, uint32_t color_count,
     RenderDepthInfo& depth, ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
@@ -53,6 +197,7 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	EXIT_IF(ps_active && ps_spirv.empty());
 
 	Common::LockGuard lock(m_mutex);
+	EnsureDiskCacheLocked();
 	auto&             ctx    = command.GetRegisters();
 	auto&             sh_ctx = command.GetShaders();
 
@@ -164,7 +309,7 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	                 ps_id.crc32);
 	CreatePipelineInternal(*cached, framebuffer.render_pass, vs_input_info, vs_spirv, ps_input_info,
 	                       ps_spirv, static_params, vs_id.hash0, vs_id.crc32, ps_id.hash0,
-	                       ps_id.crc32, ps_active);
+	                       ps_id.crc32, ps_active, m_disk_cache);
 	LogPipelineTrace("CreatePipelineInternal done", vs_id.hash0, vs_id.crc32, ps_id.hash0,
 	                 ps_id.crc32);
 
@@ -173,6 +318,8 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
+
+	MaybeFlushDiskCacheLocked();
 
 	return *iter->second;
 }
@@ -186,6 +333,7 @@ PipelineCache::CreateComputePipeline(ShaderComputeInputInfo&      input_info,
 	EXIT_IF(cs_spirv.empty());
 
 	Common::LockGuard lock(m_mutex);
+	EnsureDiskCacheLocked();
 
 	auto cs_id = ShaderGetIdCS(cs_regs, input_info, true);
 
@@ -204,13 +352,15 @@ PipelineCache::CreateComputePipeline(ShaderComputeInputInfo&      input_info,
 	}
 
 	auto cached = std::make_unique<ComputePipeline>(p);
-	CreatePipelineInternal(*cached, input_info, cs_spirv);
+	CreatePipelineInternal(*cached, input_info, cs_spirv, m_disk_cache);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 
 	auto [iter, inserted] = m_compute_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
+
+	MaybeFlushDiskCacheLocked();
 
 	return *iter->second;
 }

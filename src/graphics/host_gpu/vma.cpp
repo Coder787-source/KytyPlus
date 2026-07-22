@@ -61,6 +61,16 @@ bool GraphicContext::CreateAllocator() {
 	EXIT_IF(instance == nullptr || physical_device == nullptr || device == nullptr ||
 	        allocator != nullptr);
 
+	integrated_gpu =
+	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
+
+	// On UMA iGPUs the Vulkan heap already points at system RAM. VK_EXT_memory_budget often
+	// reports only the dedicated UMA carve-out (commonly 512 MiB–2 GiB), which makes VMA refuse
+	// allocations long before the machine's 16–32 GiB of shared memory is exhausted. Keep the
+	// extension enabled for logging on discrete GPUs; skip the VMA budget bit on integrated ones
+	// so textures/buffers can grow into shared RAM (the practical "virtual VRAM" pool).
+	memory_budget_for_vma = memory_budget_ext_enabled && !integrated_gpu;
+
 	VmaVulkanFunctions functions {};
 	functions.vkGetInstanceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr;
 	functions.vkGetDeviceProcAddr   = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
@@ -71,12 +81,33 @@ bool GraphicContext::CreateAllocator() {
 	info.device           = device;
 	info.pVulkanFunctions = &functions;
 	info.vulkanApiVersion = VULKAN_TARGET_API_VERSION;
-	info.flags = memory_budget_ext_enabled ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0;
+	info.flags = memory_budget_for_vma ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0;
+	// Larger blocks cut allocation/map overhead when many guest textures are resident. 512 MiB is
+	// cheap on a 32 GiB Mini PC / discrete card; keep the VMA default (256 MiB) only as a floor.
+	info.preferredLargeHeapBlockSize = 512ull * 1024ull * 1024ull;
 
 	const auto result = static_cast<vk::Result>(vmaCreateAllocator(&info, &allocator));
 	if (result != vk::Result::eSuccess) {
 		LOGF("vmaCreateAllocator failed: %s\n", VulkanToString(result).c_str());
 		return false;
+	}
+
+	const auto& mem = GetPhysicalDeviceMemoryProperties();
+	uint64_t    device_local_bytes = 0;
+	for (uint32_t i = 0; i < mem.memoryHeapCount; i++) {
+		if (mem.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+			device_local_bytes += mem.memoryHeaps[i].size;
+		}
+	}
+	LOGF("VMA: device=%s type=%s memory_budget_ext=%d vma_uses_budget=%d "
+	     "device_local_heaps=%" PRIu64 " MiB preferred_block=%" PRIu64 " MiB\n",
+	     physical_device_properties.deviceName.data(),
+	     integrated_gpu ? "integrated/UMA" : "discrete", memory_budget_ext_enabled ? 1 : 0,
+	     memory_budget_for_vma ? 1 : 0, device_local_bytes / (1024ull * 1024ull),
+	     info.preferredLargeHeapBlockSize / (1024ull * 1024ull));
+	if (integrated_gpu) {
+		LOGF("VMA: integrated GPU — allocations may use shared system RAM beyond the BIOS UMA "
+		     "carve-out (no artificial 2 GiB VMA budget cap)\n");
 	}
 	return true;
 }

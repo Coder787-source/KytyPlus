@@ -680,10 +680,13 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, vk::Sur
 	create_info.flags                = {};
 	create_info.pQueueCreateInfos    = queue_create_info.data();
 	create_info.queueCreateInfoCount = queue_create_info_num;
-	create_info.enabledLayerCount =
-	    (r.enable_validation_layers ? static_cast<uint32_t>(r.required_layers.size()) : 0);
-	create_info.ppEnabledLayerNames =
-	    (r.enable_validation_layers ? r.required_layers.data() : nullptr);
+	// Device-level layers have been deprecated and non-functional since Vulkan 1.0. Current
+	// validation layers hard-reject a non-zero enabledLayerCount on VkDeviceCreateInfo, which
+	// crashes device creation whenever validation is enabled. The validation layer is already
+	// enabled at the instance level, which is the only supported place, so leave the device layer
+	// list empty.
+	create_info.enabledLayerCount       = 0;
+	create_info.ppEnabledLayerNames     = nullptr;
 	create_info.enabledExtensionCount   = static_cast<uint32_t>(device_extensions.size());
 	create_info.ppEnabledExtensionNames = device_extensions.data();
 	create_info.pEnabledFeatures        = &device_features;

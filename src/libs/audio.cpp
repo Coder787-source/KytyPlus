@@ -1426,14 +1426,21 @@ struct Ngs2CustomSamplerRackOption {
 	uint32_t             max_codec_caches         = 0;
 };
 
+struct Ngs2CustomMasteringRackOption {
+	Ngs2CustomRackOption custom_rack_option;
+	uint32_t             max_channels          = 0;
+	uint32_t             num_peak_meter_blocks = 0;
+};
+
 union Ngs2RackOptionUnion {
-	Ngs2RackOption               common;
-	Ngs2SamplerRackOption        sampler;
-	Ngs2MasteringRackOption      mastering;
-	Ngs2SubmixerRackOption       submixer;
-	Ngs2ReverbRackOption         reverb;
-	Ngs2CustomSubmixerRackOption custom_submixer;
-	Ngs2CustomSamplerRackOption  custom_sampler;
+	Ngs2RackOption                common;
+	Ngs2SamplerRackOption         sampler;
+	Ngs2MasteringRackOption       mastering;
+	Ngs2SubmixerRackOption        submixer;
+	Ngs2ReverbRackOption          reverb;
+	Ngs2CustomSubmixerRackOption  custom_submixer;
+	Ngs2CustomSamplerRackOption   custom_sampler;
+	Ngs2CustomMasteringRackOption custom_mastering;
 };
 
 struct Ngs2ContextBufferInfo {
@@ -1589,6 +1596,7 @@ enum class Ngs2RackType {
 	Reverb,
 	CustomSubmixer,
 	CustomSampler,
+	CustomMastering,
 };
 
 struct Ngs2RackInternal {
@@ -1726,7 +1734,8 @@ static Ngs2Internal* Ngs2CreateSystemInternal(const Ngs2SystemOption* option, vo
 static bool Ngs2RackIsCustom(Ngs2RackType type) {
 	switch (type) {
 		case Ngs2RackType::CustomSubmixer:
-		case Ngs2RackType::CustomSampler: return true;
+		case Ngs2RackType::CustomSampler:
+		case Ngs2RackType::CustomMastering: return true;
 		default: return false;
 	}
 }
@@ -1860,6 +1869,20 @@ static void Ngs2FillDefaultRackOption(uint32_t rack_id, Ngs2RackOptionUnion* opt
 			option->custom_sampler.max_atrac9_channel_works                              = 256;
 			option->custom_sampler.max_ajm_atrac9_decoders                               = 0;
 			option->custom_sampler.max_codec_caches                                      = 32;
+			break;
+		case 0x4003:
+			// Mirrors the plain mastering defaults; custom module internals are still stubbed,
+			// same as the other custom rack types above.
+			option->custom_mastering.custom_rack_option.rack_option.size =
+			    sizeof(Ngs2CustomMasteringRackOption);
+			option->custom_mastering.custom_rack_option.rack_option.max_grain_samples      = 512;
+			option->custom_mastering.custom_rack_option.rack_option.max_voices             = 1;
+			option->custom_mastering.custom_rack_option.rack_option.max_input_delay_blocks = 1;
+			option->custom_mastering.custom_rack_option.rack_option.max_matrices           = 0;
+			option->custom_mastering.custom_rack_option.rack_option.max_ports              = 0;
+			option->custom_mastering.custom_rack_option.num_buffers                        = 1;
+			option->custom_mastering.max_channels                                          = 8;
+			option->custom_mastering.num_peak_meter_blocks                                 = 8;
 			break;
 		default: EXIT("unknown rack_id for default option: 0x%" PRIx32 "\n", rack_id);
 	}
@@ -2042,6 +2065,12 @@ int KYTY_SYSV_ABI Ngs2RackCreate(uintptr_t system_handle, uint32_t rack_id,
 			rack->option.custom_sampler =
 			    *reinterpret_cast<const Ngs2CustomSamplerRackOption*>(option);
 			rack->type = Ngs2RackType::CustomSampler;
+			break;
+		case 0x4003:
+			EXIT_NOT_IMPLEMENTED(option->size != sizeof(Ngs2CustomMasteringRackOption));
+			rack->option.custom_mastering =
+			    *reinterpret_cast<const Ngs2CustomMasteringRackOption*>(option);
+			rack->type = Ngs2RackType::CustomMastering;
 			break;
 		default: EXIT("unknown rack_id: 0x%" PRIx32 "\n", rack_id);
 	}
@@ -2549,6 +2578,9 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 				break;
 			case 0x4002:
 				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::CustomSubmixer);
+				break;
+			case 0x4003:
+				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::CustomMastering);
 				break;
 			default: EXIT("unknown rack_id: 0x%" PRIx32 "\n", rack_id);
 		}

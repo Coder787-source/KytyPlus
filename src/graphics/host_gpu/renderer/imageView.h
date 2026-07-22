@@ -17,14 +17,21 @@ namespace Libs::Graphics {
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16Float) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float);
+	const bool two_channel =
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16Float);
+	const bool rgba8 =
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UNorm) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb);
 	return swizzle == DstSel(4, 5, 6, 7) ||
 	       (single_channel && (swizzle == DstSel(4, 0, 0, 0) || swizzle == DstSel(4, 0, 0, 1) ||
 	                           swizzle == DstSel(4, 4, 4, 4))) ||
-	       (format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32UInt) &&
-	        swizzle == DstSel(4, 5, 0, 1)) ||
-	       ((format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UNorm) ||
-	         format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UInt)) &&
-	        (swizzle == DstSel(4, 5, 6, 1) || swizzle == DstSel(6, 5, 4, 7))) ||
+	       (two_channel && swizzle == DstSel(4, 5, 0, 1)) ||
+	       ((rgba8 || format == Prospero::GpuEnumValue(Prospero::BufferFormat::k11_11_10Float)) &&
+	        swizzle == DstSel(4, 5, 6, 1)) ||
+	       (rgba8 && swizzle == DstSel(6, 5, 4, 7)) ||
 	       (format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32_32_32Float) &&
 	        swizzle == DstSel(5, 6, 7, 4));
 }
@@ -113,9 +120,12 @@ namespace Libs::Graphics {
 	if (image_format == view_format || IsRgba8SrgbReinterpretation(image_format, view_format)) {
 		return true;
 	}
-	if ((IsRgba16UintFloatReinterpretation(image_format, view_format) ||
-	     IsRgba8UnormUintReinterpretation(image_format, view_format)) &&
-	    swizzle == DstSel(4, 5, 6, 7)) {
+	// Bit-exact reinterpretations (unorm<->uint, float<->uint). The component mapping of a
+	// sampled view is orthogonal to the format reinterpretation in Vulkan, so any valid swizzle
+	// is fine here, same as the identical-format and sRGB cases above. Games use this e.g. for
+	// sampling an RGBA8 render target as uint with a BGRA channel order.
+	if (IsRgba16UintFloatReinterpretation(image_format, view_format) ||
+	    IsRgba8UnormUintReinterpretation(image_format, view_format)) {
 		return true;
 	}
 	return IsBgraToRgbaSampledView(image_format, view_format) && swizzle == DstSel(6, 5, 4, 7);
@@ -175,13 +185,19 @@ IsSupportedSampledDepthUintResource(const ShaderRecompiler::IR::ImageResource& r
 	    view_format == vk::Format::eR8Unorm || view_format == vk::Format::eR8Uint ||
 	    view_format == vk::Format::eR16Uint || view_format == vk::Format::eR32Uint ||
 	    view_format == vk::Format::eR16Sfloat || view_format == vk::Format::eR32Sfloat;
+	const bool two_channel = view_format == vk::Format::eR32G32Uint ||
+	                         view_format == vk::Format::eR16G16Uint ||
+	                         view_format == vk::Format::eR16G16Sfloat;
 	const bool swizzle_ok =
 	    swizzle == DstSel(4, 5, 6, 7) ||
 	    (single_channel && (swizzle == DstSel(4, 0, 0, 0) || swizzle == DstSel(4, 0, 0, 1) ||
 	                        swizzle == DstSel(4, 4, 4, 4))) ||
-	    (view_format == vk::Format::eR32G32Uint && swizzle == DstSel(4, 5, 0, 1)) ||
+	    (two_channel && swizzle == DstSel(4, 5, 0, 1)) ||
+	    ((view_format == vk::Format::eR8G8B8A8Unorm || view_format == vk::Format::eR8G8B8A8Uint ||
+	      view_format == vk::Format::eB10G11R11UfloatPack32) &&
+	     swizzle == DstSel(4, 5, 6, 1)) ||
 	    ((view_format == vk::Format::eR8G8B8A8Unorm || view_format == vk::Format::eR8G8B8A8Uint) &&
-	     (swizzle == DstSel(4, 5, 6, 1) || swizzle == DstSel(6, 5, 4, 7))) ||
+	     swizzle == DstSel(6, 5, 4, 7)) ||
 	    (view_format == vk::Format::eR32G32B32A32Sfloat && swizzle == DstSel(5, 6, 7, 4));
 	if ((image_format != view_format &&
 	     !IsBgraSrgbStorageView(image_format, view_format, swizzle)) ||

@@ -524,6 +524,13 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		        info->access_violation_vaddr)) {
 			return true;
 		}
+
+		// Soft-skip guest stores/loads through the null page. Seen when Unity Addressables fail to
+		// load a bundle and later write through a null object pointer (Blasphemous 2 / #66).
+		if (Loader::X64InstructionEmulator::TrySkipNullPageAccess(info->native_context,
+		                                                          info->access_violation_vaddr)) {
+			return true;
+		}
 	}
 
 	LOGF("kyty_exception_handler: %016" PRIx64 "\n", info->exception_address);

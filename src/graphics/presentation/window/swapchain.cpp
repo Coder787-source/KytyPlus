@@ -184,11 +184,28 @@ static void ConfigurePreparedFrame(PreparedFrame& frame, vk::Extent2D extent, vk
 
 VulkanSwapchain::~VulkanSwapchain() = default;
 
+// Picks a tear-free present mode. Never use Immediate: it uncapped FPS but tears. Mailbox is the
+// sweet spot (no tear, no hard producer stall). Plain FIFO is the portable vsync fallback.
+// FIFO_RELAXED is skipped because it is allowed to tear when a frame misses vblank.
+static vk::PresentModeKHR ChooseSwapchainPresentMode(const SurfaceCapabilities& r,
+                                                     bool /*integrated_gpu*/) {
+	const auto supports = [&](vk::PresentModeKHR mode) {
+		return std::find(r.present_modes.begin(), r.present_modes.end(), mode) !=
+		       r.present_modes.end();
+	};
+	if (supports(vk::PresentModeKHR::eMailbox)) {
+		return vk::PresentModeKHR::eMailbox;
+	}
+	// FIFO is guaranteed by the Vulkan specification and never tears.
+	return vk::PresentModeKHR::eFifo;
+}
+
 [[maybe_unused]] static vk::SwapchainKHR VulkanCreateSwapchainInternal(
     vk::Device device, vk::SurfaceKHR surface, uint32_t width, uint32_t height,
     uint32_t image_count, SurfaceCapabilities& r, vk::Format& swapchain_format,
     vk::Extent2D& swapchain_extent, std::unique_ptr<vk::Image[]>& swapchain_images,
-    std::unique_ptr<vk::ImageView[]>& swapchain_image_views, uint32_t& swapchain_images_count) {
+    std::unique_ptr<vk::ImageView[]>& swapchain_image_views, uint32_t& swapchain_images_count,
+    bool integrated_gpu) {
 	EXIT_IF(device == nullptr);
 	EXIT_IF(surface == nullptr);
 
@@ -200,8 +217,22 @@ VulkanSwapchain::~VulkanSwapchain() = default;
 	extent.height = std::clamp(height, r.capabilities.minImageExtent.height,
 	                           r.capabilities.maxImageExtent.height);
 
-	image_count =
-	    std::clamp(image_count, r.capabilities.minImageCount, r.capabilities.maxImageCount);
+	const vk::PresentModeKHR present_mode = ChooseSwapchainPresentMode(r, integrated_gpu);
+	LOGF("Swapchain present mode selected: %u (integrated=%d)\n",
+	     static_cast<uint32_t>(present_mode), integrated_gpu ? 1 : 0);
+
+	// Mailbox is only meaningful with at least three images (one on screen, one queued, one being
+	// rendered); ask for the extra buffer so the driver does not silently fall back to blocking.
+	if (present_mode == vk::PresentModeKHR::eMailbox && image_count < 3) {
+		image_count = 3;
+	}
+
+	// maxImageCount == 0 means the surface has no upper limit. Keep the clamp range valid even
+	// then: the effective maximum must never be below minImageCount or the requested count.
+	const uint32_t max_image_count =
+	    (r.capabilities.maxImageCount == 0 ? std::max(image_count, r.capabilities.minImageCount)
+	                                       : r.capabilities.maxImageCount);
+	image_count = std::clamp(image_count, r.capabilities.minImageCount, max_image_count);
 
 	vk::SwapchainCreateInfoKHR create_info {};
 	create_info.sType         = vk::StructureType::eSwapchainCreateInfoKHR;
@@ -231,7 +262,7 @@ VulkanSwapchain::~VulkanSwapchain() = default;
 	create_info.pQueueFamilyIndices   = nullptr;
 	create_info.preTransform          = r.capabilities.currentTransform;
 	create_info.compositeAlpha        = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-	create_info.presentMode           = vk::PresentModeKHR::eFifo;
+	create_info.presentMode           = present_mode;
 	create_info.clipped               = VK_TRUE;
 	create_info.oldSwapchain          = nullptr;
 
@@ -295,7 +326,8 @@ VulkanSwapchain* VulkanCreateSwapchain(uint32_t image_count) {
 	s->swapchain = VulkanCreateSwapchainInternal(
 	    graphics.device, g_window_ctx->surface, graphics.screen_width, graphics.screen_height,
 	    image_count, *g_window_ctx->surface_capabilities, s->swapchain_format, s->swapchain_extent,
-	    s->swapchain_images, s->swapchain_image_views, s->swapchain_images_count);
+	    s->swapchain_images, s->swapchain_image_views, s->swapchain_images_count,
+	    graphics.integrated_gpu);
 	if (s->swapchain == nullptr) {
 		EXIT("Could not create swapchain");
 	}

@@ -598,7 +598,19 @@ static void YieldCommandProcessorWait(uint32_t poll_interval_cycles) noexcept {
 template <typename T>
 void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, uint32_t poll,
                                   uint32_t wait_op) {
-	EXIT_IF(addr == nullptr);
+	// Unity titles (e.g. Blasphemous 2) occasionally emit wait_reg_mem with a null address after a
+	// failed asset load. Treat the wait as already satisfied instead of faulting the CP thread.
+	if (addr == nullptr) {
+		static std::atomic<uint32_t> null_wait_logs {0};
+		if (null_wait_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "wait_reg_mem: null address, treating condition as met "
+			           "(func=%" PRIu32 " ref=0x%0*" PRIx64 " mask=0x%0*" PRIx64 ")\n",
+			           func, static_cast<int>(sizeof(T) * 2u), static_cast<uint64_t>(ref),
+			           static_cast<int>(sizeof(T) * 2u), static_cast<uint64_t>(mask));
+		}
+		return;
+	}
 	if ((wait_op & ~1u) != 0) {
 		EXIT("unsupported wait_reg_mem operation: 0x%08" PRIx32 "\n", wait_op);
 	}
@@ -646,6 +658,16 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 		LOGF("\t warning: unexpected write_data control 0x%08" PRIx32 "\n", write_control);
 	}
 	if (dw_num == 0) {
+		return;
+	}
+	if (dst == nullptr || src == nullptr) {
+		static std::atomic<uint32_t> null_write_logs {0};
+		if (null_write_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "write_data: null %s, skipping %" PRIu32 " dwords (control=0x%08" PRIx32
+			           ")\n",
+			           dst == nullptr ? "destination" : "source", dw_num, write_control);
+		}
 		return;
 	}
 
@@ -1616,38 +1638,79 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 			break;
 		case 0x04:
 			if constexpr (sizeof(T) == sizeof(uint64_t)) {
+				// Timestamp / reference-clock EOPs. Games (e.g. Plague Tale) issue more
+				// event_type/index/cache_action combinations than the historical allow-list.
+				// The guest destination already needs the clock value; failing closed here aborts
+				// an otherwise progressing title. Always complete the write, and use writeback
+				// when the cache_action requests it.
 				const auto clock = Sync::ReadReferenceClock();
 				std::memcpy(dst_gpu_addr, &clock, sizeof(clock));
-				switch (cache_action) {
-					case 0x00:
-						if (((eop_event_type == 0x04 && event_index == 0x05) ||
-						     (eop_event_type == 0x28 && event_index == 0x00)) &&
-						    !with_interrupt) {
-							Sync::WriteAtEndOfPipeClockCounter(m_submit_id, CurrentBuffer(),
-							                                   static_cast<uint64_t*>(dst_gpu_addr),
-							                                   clock);
-							return;
-						}
-						break;
-					case 0x38:
-						if (((eop_event_type == 0x04 &&
-						      (event_index == 0x00 || event_index == 0x05)) ||
-						     (eop_event_type == 0x28 && event_index == 0x00)) &&
-						    !with_interrupt) {
-							Sync::WriteAtEndOfPipeClockCounterWithWriteBack(
-							    m_submit_id, CurrentBuffer(), static_cast<uint64_t*>(dst_gpu_addr),
-							    clock);
-							return;
-						}
-						break;
-					default: break;
+				const bool writeback = cache_action == 0x38 || cache_action == 0x3b;
+				const bool known =
+				    ((cache_action == 0x00 || cache_action == 0x38) &&
+				     (((eop_event_type == 0x04 &&
+				        (event_index == 0x00 || event_index == 0x05)) ||
+				       (eop_event_type == 0x28 && event_index == 0x00)) &&
+				      !with_interrupt)) ||
+				    (cache_action == 0x3b && eop_event_type == 0x04 && event_index == 0x05 &&
+				     with_interrupt);
+				if (!known) {
+					static std::atomic_uint32_t log_count {0};
+					if (log_count.fetch_add(1, std::memory_order_relaxed) < 32) {
+						LOGF_COLOR(Log::Color::Yellow,
+						           "WriteAtEndOfPipe: accepting unlisted clock EOP "
+						           "type=0x%08" PRIx32 " cache=0x%08" PRIx32 " index=0x%08" PRIx32
+						           " interrupt=%d writeback=%d\n",
+						           eop_event_type, cache_action, event_index, with_interrupt ? 1 : 0,
+						           writeback ? 1 : 0);
+					}
 				}
+				if (writeback) {
+					Sync::WriteAtEndOfPipeClockCounterWithWriteBack(
+					    m_submit_id, CurrentBuffer(), static_cast<uint64_t*>(dst_gpu_addr), clock);
+				} else {
+					Sync::WriteAtEndOfPipeClockCounter(m_submit_id, CurrentBuffer(),
+					                                   static_cast<uint64_t*>(dst_gpu_addr), clock);
+				}
+				return;
 			}
 			break;
 		default: break;
 	}
 
-	EXIT("unknown event type\n");
+	// Best-effort fallback: keep the process alive for unlisted data EOPs. The destination is
+	// still updated and an EOP write is recorded so waiting CPUs observe progress.
+	{
+		static std::atomic_uint32_t log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 64) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "WriteAtEndOfPipe: unknown event falling back to data write "
+			           "src=0x%08" PRIx32 " type=0x%08" PRIx32 " cache=0x%08" PRIx32
+			           " index=0x%08" PRIx32 " interrupt=%d dst=0x%016" PRIx64 "\n",
+			           event_write_source, eop_event_type, cache_action, event_index,
+			           with_interrupt ? 1 : 0, reinterpret_cast<uint64_t>(dst_gpu_addr));
+		}
+	}
+	if constexpr (sizeof(T) == sizeof(uint32_t)) {
+		write32(cache_action == 0x38 || cache_action == 0x3b);
+	} else {
+		auto* dst = static_cast<uint64_t*>(dst_gpu_addr);
+		std::memcpy(dst, &value, sizeof(value));
+		const bool writeback = cache_action == 0x38 || cache_action == 0x3b;
+		if (with_interrupt) {
+			if (writeback) {
+				Sync::WriteAtEndOfPipeWithInterruptWriteBack64(
+				    m_submit_id, CurrentBuffer(), dst, value, interrupt_context_id);
+			} else {
+				Sync::WriteAtEndOfPipeWithInterrupt64(m_submit_id, CurrentBuffer(), dst, value,
+				                                      interrupt_context_id);
+			}
+		} else if (writeback) {
+			Sync::WriteAtEndOfPipeWithWriteBack64(m_submit_id, CurrentBuffer(), dst, value);
+		} else {
+			Sync::WriteAtEndOfPipe64(m_submit_id, CurrentBuffer(), dst, value);
+		}
+	}
 }
 
 void CommandProcessor::WriteAtEndOfPipe32(uint32_t cache_policy, uint32_t event_write_dest,
@@ -1754,7 +1817,19 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
 			     event_type, event_index);
 			break;
 		default:
-			EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type, event_index);
+			// Keep the GPU timeline moving instead of aborting; unknown EVENT_WRITE opcodes are
+			// common in newer titles and usually only need a barrier for correctness.
+			{
+				static std::atomic_uint32_t log_count {0};
+				if (log_count.fetch_add(1, std::memory_order_relaxed) < 32) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "TriggerEvent: ignoring unsupported event_type=0x%08" PRIx32
+					           " index=0x%08" PRIx32 "\n",
+					           event_type, event_index);
+				}
+			}
+			MemoryBarrier();
+			break;
 	}
 }
 

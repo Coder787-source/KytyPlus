@@ -971,6 +971,14 @@ private:
 
 	void* MapPlaceholderView(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
 	                         VirtualMemory::Mode mode, FailureReason* failure_reason) {
+		// Windows can only reserve a placeholder whose base is aligned to the allocation
+		// granularity (64 KiB). PS5 engines routinely request fixed mappings aligned only to the
+		// 16 KiB guest page, so an unaligned base needs the containing 64 KiB block reserved and
+		// then split down to the exact sub-range.
+		if (!IsGranularityAligned(vaddr)) {
+			return MapUnalignedPlaceholderView(vaddr, size, backing_offset, mode, failure_reason);
+		}
+
 		void* placeholder =
 		    VirtualAlloc2(GetCurrentProcess(), reinterpret_cast<void*>(vaddr), size,
 		                  MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, nullptr, 0);
@@ -980,6 +988,64 @@ private:
 			}
 			SetFailure(failure_reason, FailureReason::PlaceholderReserveFailed);
 			return nullptr;
+		}
+
+		auto* ptr = ReplacePlaceholderView(vaddr, size, backing_offset, mode, failure_reason);
+		if (ptr == nullptr) {
+			VirtualFree(reinterpret_cast<void*>(vaddr), 0, MEM_RELEASE);
+			return nullptr;
+		}
+		return ptr;
+	}
+
+	// Reserve a placeholder for a range whose base is not 64 KiB-aligned. Reserves the containing
+	// granularity-aligned block, carves out [vaddr, vaddr+size) as its own placeholder using the
+	// same MEM_PRESERVE_PLACEHOLDER split technique used elsewhere in this file, releases the
+	// surrounding padding placeholders, and maps the backing view into the carved sub-range.
+	void* MapUnalignedPlaceholderView(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
+	                                  VirtualMemory::Mode mode, FailureReason* failure_reason) {
+		const uint64_t aligned_base = vaddr & ~(m_granularity - 1u);
+		const uint64_t prefix       = vaddr - aligned_base;
+		if (prefix > UINT64_MAX - size) {
+			SetFailure(failure_reason, FailureReason::PlaceholderReserveFailed);
+			return nullptr;
+		}
+		const uint64_t span           = prefix + size;
+		const uint64_t container_size = (span + m_granularity - 1u) & ~(m_granularity - 1u);
+
+		void* container =
+		    VirtualAlloc2(GetCurrentProcess(), reinterpret_cast<void*>(aligned_base), container_size,
+		                  MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, nullptr, 0);
+		if (container == nullptr || reinterpret_cast<uint64_t>(container) != aligned_base) {
+			if (container != nullptr) {
+				VirtualFree(container, 0, MEM_RELEASE);
+			}
+			SetFailure(failure_reason, FailureReason::PlaceholderReserveFailed);
+			return nullptr;
+		}
+
+		// Carve the left padding off, leaving a placeholder that begins exactly at vaddr.
+		if (prefix != 0 && !SplitPlaceholder(aligned_base, prefix)) {
+			VirtualFree(container, 0, MEM_RELEASE);
+			SetFailure(failure_reason, FailureReason::PlaceholderReserveFailed);
+			return nullptr;
+		}
+		// Carve the target range off from any trailing padding.
+		const uint64_t suffix = container_size - span;
+		if (suffix != 0 && !SplitPlaceholder(vaddr, size)) {
+			if (prefix != 0) {
+				VirtualFree(reinterpret_cast<void*>(aligned_base), 0, MEM_RELEASE);
+			}
+			VirtualFree(reinterpret_cast<void*>(vaddr), 0, MEM_RELEASE);
+			SetFailure(failure_reason, FailureReason::PlaceholderReserveFailed);
+			return nullptr;
+		}
+		// Release the padding placeholders; only the [vaddr, vaddr+size) placeholder is kept.
+		if (prefix != 0) {
+			VirtualFree(reinterpret_cast<void*>(aligned_base), 0, MEM_RELEASE);
+		}
+		if (suffix != 0) {
+			VirtualFree(reinterpret_cast<void*>(vaddr + size), 0, MEM_RELEASE);
 		}
 
 		auto* ptr = ReplacePlaceholderView(vaddr, size, backing_offset, mode, failure_reason);
