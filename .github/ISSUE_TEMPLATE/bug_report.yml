@@ -1,0 +1,131 @@
+name: Bug report
+description: Emulator crash, hang, black screen, or wrong behavior.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping KytyPlus. **Do not** upload game dumps, firmware, SPRXs, or piracy links.
+        Attach **logs** only. Experimental software — many titles still fail.
+
+  - type: input
+    id: version
+    attributes:
+      label: KytyPlus version
+      description: Release tag or commit (e.g. v1.0).
+      placeholder: v1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: build_source
+    attributes:
+      label: Build source
+      options:
+        - Official GitHub Release zip
+        - Self-built from source
+        - Other / unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: Short description of the bug.
+      placeholder: Crashed with EXIT after the logo / hung on black screen / etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      placeholder: Game should reach the menu / keep running / etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps.
+      placeholder: |
+        1. Launch launcher.exe
+        2. Select game folder
+        3. Start
+        4. Crash after ~30s
+    validations:
+      required: true
+
+  - type: input
+    id: game
+    attributes:
+      label: Game (title + Title ID if known)
+      description: e.g. Dreaming Sarah [PPSA02929]. No dump uploads.
+      placeholder: Game Name [PPSAxxxxx]
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU
+      placeholder: Ryzen 7 7840HS
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU + driver
+      placeholder: Radeon 780M, Adrenalin 24.x.x
+    validations:
+      required: true
+
+  - type: input
+    id: ram
+    attributes:
+      label: RAM
+      placeholder: 32 GB
+    validations:
+      required: false
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error / EXIT line
+      description: Paste the final error or `--- Error ---` block if you have one.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt
+      description: Paste the last ~50–100 lines, or describe where the full log is attached.
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I used a KytyPlus Release (or stated that I self-built).
+          required: true
+        - label: I am not requesting or attaching game dumps / firmware / SPRXs.
+          required: true
+        - label: I searched existing issues for a duplicate.
+          required: true

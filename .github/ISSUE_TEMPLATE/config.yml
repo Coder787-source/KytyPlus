@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Read the README first
+    url: https://github.com/Coder787-source/KytyPlus#readme
+    about: Status, install steps, legal notes, and what KytyPlus is / is not.
+  - name: Download releases
+    url: https://github.com/Coder787-source/KytyPlus/releases
+    about: Use an official Release build when reporting bugs (not a random old exe).

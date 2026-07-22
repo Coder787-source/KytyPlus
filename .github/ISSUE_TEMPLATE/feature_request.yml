@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest an emulator improvement or tooling change.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature ideas are welcome. KytyPlus is early — focus on realistic emulator/HLE/GPU/tooling requests.
+        **Not accepted:** requests for pirated games, firmware dumps, or copyrighted modules.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem this would solve
+      placeholder: Hard to triage logs / missing HLE stub / no way to disable X…
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: What you want added or changed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: Workarounds or other approaches.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: This is not a request for dumps, firmware, or piracy help.
+          required: true
