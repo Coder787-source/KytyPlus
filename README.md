@@ -29,7 +29,7 @@ standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (i
 - KytyPlus **does not include** games, game dumps, or Sony system firmware.
 - Use **only** game files you have obtained **legally**.
 - Do **not** ask maintainers for piracy links, firmware dumps, or copyrighted `sce_module` SPRXs.
-- Distributing copyrighted dumps or firmware with this software is **Illegal**
+- Distributing copyrighted dumps or firmware with this software is **illegal**.
 
 ### Firmware / modules
 
