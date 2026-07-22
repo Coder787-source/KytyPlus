@@ -10,8 +10,8 @@ if(CMAKE_SYSTEM_NAME MATCHES ".*Linux")
 	set(LINUX TRUE)
 endif()
 
-if (NOT (WIN32 OR LINUX))
-    message(FATAL_ERROR "only Windows and Linux builds are supported")
+if (NOT (WIN32 OR LINUX OR APPLE))
+    message(FATAL_ERROR "only Windows, Linux, and macOS builds are supported")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -45,8 +45,9 @@ else()
 	set(KYTY_BUILD KYTY_BUILD_RELEASE)
 endif()
 
-if(LINUX)
-	set(KYTY_PLATFORM KYTY_PLATFORM_LINUX)	
+if(LINUX OR APPLE)
+	# macOS rides the POSIX/Linux code paths until it gets a dedicated platform
+	set(KYTY_PLATFORM KYTY_PLATFORM_LINUX)
 else()
 	set(KYTY_PLATFORM KYTY_PLATFORM_WINDOWS)
 endif()
@@ -63,6 +64,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
 	if(WIN32 AND KYTY_CXX_COMPILER_NAME STREQUAL "clang-cl")
 		set(KYTY_CLANG_CL TRUE)
 		set(KYTY_LINKER LLD_LINK)
+	elseif(APPLE)
+		set(KYTY_LINKER LD64) # Apple's default linker; lld flags don't apply
 	else()
 		set(KYTY_LINKER LLD)
 	endif()
@@ -460,6 +463,18 @@ elseif(WIN32 OR LINUX)
 endif()
 
 add_dependencies(kyty_emulator KytyGitVersion)
+
+if(APPLE)
+	# The emulator writes x86-64 trampolines/PLT stubs into memory and executes them, and
+	# runs guest code under Rosetta. That requires the JIT / unsigned-executable-memory
+	# entitlements, so re-sign the binary after every link (an unsigned/relinked binary
+	# reverts to the hardened defaults and aborts when it first executes written code).
+	add_custom_command(TARGET kyty_emulator POST_BUILD
+		COMMAND codesign -s - --force --options runtime
+			--entitlements "${CMAKE_CURRENT_SOURCE_DIR}/macos_jit.entitlements"
+			$<TARGET_FILE:kyty_emulator>
+		COMMENT "Codesign kyty_emulator with JIT entitlements (macOS)")
+endif()
 
 install(TARGETS kyty_emulator DESTINATION .)
 if(KYTY_BUILD_LAUNCHER)
