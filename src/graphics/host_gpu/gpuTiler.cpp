@@ -422,7 +422,7 @@ void TileCompute::Execute(bool to_tiled, const void* input, void* output, uint64
 	graphics.device.updateDescriptorSets(static_cast<uint32_t>(writes.size()), writes.data(), 0,
 	                                     nullptr);
 
-	CommandBuffer command(GraphicContext::QUEUE_UTIL);
+	CommandBuffer command;
 	command.Begin();
 	auto vk_command = command.Handle();
 	if (input != nullptr) {
@@ -520,9 +520,8 @@ void TileCompute::Release() {
 
 } // namespace
 
-void GpuDetile(const void* tiled, void* linear, uint64_t tiled_capacity,
-               uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
-               const GpuTileRecord& after) {
+void GpuDetile(const void* tiled, void* linear, uint64_t tiled_capacity, uint64_t linear_capacity,
+               std::span<const GpuTileInfo> infos, const GpuTileRecord& after) {
 	Common::LockGuard lock(g_tiler_mutex);
 	if (!g_tiler) {
 		g_tiler = std::make_unique<TileCompute>(GetRenderContext().GetGraphics());
@@ -530,9 +529,8 @@ void GpuDetile(const void* tiled, void* linear, uint64_t tiled_capacity,
 	g_tiler->Run(false, tiled, linear, tiled_capacity, linear_capacity, infos, after);
 }
 
-void GpuTile(const void* linear, void* tiled, uint64_t tiled_capacity,
-             uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
-             const GpuTileRecord& before) {
+void GpuTile(const void* linear, void* tiled, uint64_t tiled_capacity, uint64_t linear_capacity,
+             std::span<const GpuTileInfo> infos, const GpuTileRecord& before) {
 	Common::LockGuard lock(g_tiler_mutex);
 	if (!g_tiler) {
 		g_tiler = std::make_unique<TileCompute>(GetRenderContext().GetGraphics());

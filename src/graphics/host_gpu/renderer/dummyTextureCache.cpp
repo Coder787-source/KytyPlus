@@ -24,7 +24,7 @@ DummyTextureCache::~DummyTextureCache() {
 	if (!populated(m_sampled) && !populated(m_storage)) {
 		return;
 	}
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 	const auto destroy = [](auto& slots) {
 		for (auto& slot: slots) {
 			if (slot.image != nullptr) {
@@ -42,8 +42,7 @@ VulkanImage& DummyTextureCache::Get(Usage usage, bool uint_format, bool image_3d
 	auto&             slots = usage == Usage::Storage ? m_storage : m_sampled;
 	auto&             slot  = slots[DummyTextureIndex(uint_format, image_3d)];
 	if (slot.image == nullptr) {
-		slot.image = ImageOps::CreateDummyTexture(uint_format, image_3d,
-		                                          usage == Usage::Storage);
+		slot.image = ImageOps::CreateDummyTexture(uint_format, image_3d, usage == Usage::Storage);
 	}
 	return *slot.image;
 }

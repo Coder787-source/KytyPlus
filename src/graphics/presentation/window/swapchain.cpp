@@ -226,14 +226,12 @@ VulkanSwapchain::~VulkanSwapchain() = default;
 	create_info.imageArrayLayers = 1;
 	create_info.imageUsage =
 	    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
-	create_info.imageSharingMode      = vk::SharingMode::eExclusive;
-	create_info.queueFamilyIndexCount = 0;
-	create_info.pQueueFamilyIndices   = nullptr;
-	create_info.preTransform          = r.capabilities.currentTransform;
-	create_info.compositeAlpha        = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-	create_info.presentMode           = vk::PresentModeKHR::eFifo;
-	create_info.clipped               = VK_TRUE;
-	create_info.oldSwapchain          = nullptr;
+	create_info.imageSharingMode = vk::SharingMode::eExclusive;
+	create_info.preTransform     = r.capabilities.currentTransform;
+	create_info.compositeAlpha   = vk::CompositeAlphaFlagBitsKHR::eOpaque;
+	create_info.presentMode      = vk::PresentModeKHR::eFifo;
+	create_info.clipped          = VK_TRUE;
+	create_info.oldSwapchain     = nullptr;
 
 	swapchain_format = create_info.imageFormat;
 	swapchain_extent = extent;
@@ -331,7 +329,7 @@ static void VulkanDeleteSwapchain(VulkanSwapchain* s) {
 	auto  swapchain_owner = std::unique_ptr<VulkanSwapchain>(s);
 	auto& graphics        = g_window_ctx->graphic_ctx;
 
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 
 	if (s->image_acquired_semaphores != nullptr) {
 		for (uint32_t i = 0; i < s->swapchain_images_count; i++) {
@@ -380,15 +378,9 @@ static void VulkanRecreateSwapchain() {
 	g_window_ctx->swapchain = VulkanCreateSwapchain(2);
 }
 
-static void ValidatePreparedCommand(CommandBuffer& buffer) {
-	if (buffer.IsInvalid() || buffer.GetQueue() != GraphicContext::QUEUE_GFX) {
-		EXIT("prepared frames must be recorded on the graphics queue\n");
-	}
-}
-
 PreparedFrame& WindowPrepareFrame(CommandBuffer& buffer, VideoOutVulkanImage& image) {
 	KYTY_PROFILER_FUNCTION();
-	ValidatePreparedCommand(buffer);
+	EXIT_IF(buffer.IsInvalid());
 	if (image.format == vk::Format::eUndefined) {
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}
@@ -408,7 +400,7 @@ PreparedFrame& WindowPrepareFrame(CommandBuffer& buffer, VideoOutVulkanImage& im
 PreparedFrame& WindowPrepareBlankFrame(CommandBuffer& buffer, uint32_t width, uint32_t height,
                                        bool opaque) {
 	KYTY_PROFILER_FUNCTION();
-	ValidatePreparedCommand(buffer);
+	EXIT_IF(buffer.IsInvalid());
 	auto*             pool   = GetPreparedFramePool();
 	auto              format = pool->GetFormat();
 	auto*             frame  = pool->Acquire();
@@ -462,7 +454,7 @@ void WindowPresentFrame(PreparedFrame& frame) {
 	}
 	EXIT_NOT_IMPLEMENTED(swapchain->current_index == static_cast<uint32_t>(-1));
 	if (frame.present_commands == nullptr) {
-		frame.present_commands = std::make_unique<CommandBuffer>(GraphicContext::QUEUE_GFX);
+		frame.present_commands = std::make_unique<CommandBuffer>();
 	}
 	frame.present_commands->WaitForFenceAndReset();
 	auto& buffer = *frame.present_commands;
@@ -510,14 +502,10 @@ void WindowPresentFrame(PreparedFrame& frame) {
 	present.waitSemaphoreCount = 1;
 	present.pResults           = nullptr;
 
-	const auto& queue = g_window_ctx->graphic_ctx.queues[GraphicContext::QUEUE_PRESENT];
-
-	if (queue.mutex != nullptr) {
-		queue.mutex->Lock();
-	}
-	result = queue.vk_queue.presentKHR(&present);
-	if (queue.mutex != nullptr) {
-		queue.mutex->Unlock();
+	auto& graphics = g_window_ctx->graphic_ctx;
+	{
+		Common::LockGuard lock(graphics.queue_mutex);
+		result = graphics.queue.presentKHR(&present);
 	}
 	switch (result) {
 		case vk::Result::eSuccess: break;

@@ -124,128 +124,39 @@ static bool CheckFormat(vk::PhysicalDevice device, vk::Format format, bool tile,
 	return (supported_features & features) == features;
 }
 
-struct QueueInfo {
-	uint32_t family   = 0;
-	uint32_t index    = 0;
-	bool     graphics = false;
-	bool     compute  = false;
-	bool     present  = false;
-};
-
-struct VulkanQueues {
-	uint32_t               family_count = 0;
-	std::vector<uint32_t>  family_used;
-	std::vector<QueueInfo> available;
-	std::vector<QueueInfo> graphics;
-	std::vector<QueueInfo> compute;
-	std::vector<QueueInfo> present;
-};
-
-static void VulkanDumpQueues(const VulkanQueues& qs) {
-	LOGF("Queues selected:\n"
-	     "\t family_count = %u\n",
-	     qs.family_count);
-	std::vector<std::string> nums;
-	for (auto u: qs.family_used) {
-		nums.push_back(fmt::format("{}", u));
-	}
-	LOGF("\t family_used = [%s]\n"
-	     "\t graphics:\n",
-	     Common::Concat(nums, ", ").c_str());
-	for (const auto& q: qs.graphics) {
-		LOGF("\t\t family = %u, index = %u\n", q.family, q.index);
-	}
-	LOGF("\t compute:\n");
-	for (const auto& q: qs.compute) {
-		LOGF("\t\t family = %u, index = %u\n", q.family, q.index);
-	}
-	LOGF("\t present:\n");
-	for (const auto& q: qs.present) {
-		LOGF("\t\t family = %u, index = %u\n", q.family, q.index);
-	}
-}
-
-static VulkanQueues VulkanFindQueues(vk::PhysicalDevice device, vk::SurfaceKHR surface,
-                                     uint32_t graphics_num, uint32_t compute_num,
-                                     uint32_t present_num) {
+static uint32_t VulkanFindQueueFamily(vk::PhysicalDevice device, vk::SurfaceKHR surface) {
 	EXIT_IF(device == nullptr);
 	EXIT_IF(surface == nullptr);
-
-	VulkanQueues qs;
 
 	uint32_t queue_family_count = 0;
 	device.getQueueFamilyProperties(&queue_family_count, nullptr);
 	std::vector<vk::QueueFamilyProperties> queue_families(queue_family_count);
 	device.getQueueFamilyProperties(&queue_family_count, queue_families.data());
 
-	qs.family_count = queue_family_count;
-
-	uint32_t family = 0;
-	for (auto& f: queue_families) {
-		vk::Bool32 presentation_supported = VK_FALSE;
+	const auto required = vk::QueueFlagBits::eGraphics | vk::QueueFlagBits::eCompute;
+	for (uint32_t family = 0; family < queue_family_count; family++) {
+		const auto& properties             = queue_families[family];
+		vk::Bool32  presentation_supported = VK_FALSE;
 		RequireVulkanSuccess(device.getSurfaceSupportKHR(family, surface, &presentation_supported),
 		                     "vkGetPhysicalDeviceSurfaceSupportKHR");
 
 		LOGF("\tqueue family: %s [count = %u], [present = %s]\n",
-		     VulkanToString(f.queueFlags).c_str(), f.queueCount,
+		     VulkanToString(properties.queueFlags).c_str(), properties.queueCount,
 		     (presentation_supported == VK_TRUE ? "true" : "false"));
-
-		for (uint32_t i = 0; i < f.queueCount; i++) {
-			QueueInfo info;
-			info.family   = family;
-			info.index    = i;
-			info.graphics = static_cast<bool>(f.queueFlags & vk::QueueFlagBits::eGraphics);
-			info.compute  = static_cast<bool>(f.queueFlags & vk::QueueFlagBits::eCompute);
-			info.present  = (presentation_supported == VK_TRUE);
-
-			qs.available.push_back(info);
-		}
-
-		qs.family_used.push_back(0);
-
-		family++;
-	}
-
-	auto select_queues = [&qs](uint32_t count, auto matches, auto& selected) {
-		for (uint32_t i = 0; i < count; i++) {
-			auto it = std::find_if(qs.available.begin(), qs.available.end(), matches);
-			if (it == qs.available.end()) {
-				continue;
-			}
-
-			qs.family_used[it->family]++;
-			selected.push_back(*it);
-			qs.available.erase(it);
-		}
-	};
-
-	select_queues(graphics_num, [](const auto& q) { return q.graphics; }, qs.graphics);
-
-	const uint32_t graphics_family =
-	    qs.graphics.empty() ? static_cast<uint32_t>(-1) : qs.graphics.front().family;
-	select_queues(
-	    compute_num,
-	    [graphics_family](const auto& q) { return q.compute && q.family == graphics_family; },
-	    qs.compute);
-	if (compute_num != 0 && qs.compute.empty()) {
-		auto graphics_compute = std::find_if(qs.graphics.begin(), qs.graphics.end(),
-		                                     [](const auto& q) { return q.compute; });
-		if (graphics_compute != qs.graphics.end()) {
-			// Reuse the universal graphics queue when Intel GPUs expose no spare compute queue.
-			qs.compute.push_back(*graphics_compute);
+		if (properties.queueCount != 0 && (properties.queueFlags & required) == required &&
+		    presentation_supported == VK_TRUE) {
+			LOGF("\tselected universal queue family %u\n", family);
+			return family;
 		}
 	}
-
-	select_queues(present_num, [](const auto& q) { return q.present; }, qs.present);
-
-	return qs;
+	return static_cast<uint32_t>(-1);
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surface,
                                      const std::vector<const char*>& device_extensions,
                                      SurfaceCapabilities&            out_capabilities,
-                                     vk::PhysicalDevice& out_device, VulkanQueues& out_queues) {
+                                     vk::PhysicalDevice& out_device, uint32_t& out_queue_family) {
 	EXIT_IF(instance == nullptr);
 	EXIT_IF(surface == nullptr);
 
@@ -255,8 +166,8 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 	    });
 	EXIT_NOT_IMPLEMENTED(devices.empty());
 
-	vk::PhysicalDevice  best_device = nullptr;
-	VulkanQueues        best_queues;
+	vk::PhysicalDevice  best_device       = nullptr;
+	uint32_t            best_queue_family = static_cast<uint32_t>(-1);
 	SurfaceCapabilities best_capabilities;
 
 	for (const auto& device: devices) {
@@ -304,16 +215,9 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 
 		device.getFeatures2(&device_features2);
 
-		auto qs =
-		    VulkanFindQueues(device, surface, GraphicContext::QUEUE_GFX_NUM,
-		                     GraphicContext::QUEUE_COMPUTE_NUM, GraphicContext::QUEUE_PRESENT_NUM);
-
-		VulkanDumpQueues(qs);
-
-		if (qs.graphics.size() != GraphicContext::QUEUE_GFX_NUM ||
-		    !(qs.compute.size() >= 1 && qs.compute.size() <= GraphicContext::QUEUE_COMPUTE_NUM) ||
-		    qs.present.size() != GraphicContext::QUEUE_PRESENT_NUM) {
-			LOGF("Not enough queues\n");
+		const auto queue_family = VulkanFindQueueFamily(device, surface);
+		if (queue_family == static_cast<uint32_t>(-1)) {
+			LOGF("No universal graphics, compute, and presentation queue\n");
 			skip_device = true;
 		}
 
@@ -504,13 +408,13 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		if (best_device == nullptr ||
 		    device_properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu) {
 			best_device       = device;
-			best_queues       = qs;
+			best_queue_family = queue_family;
 			best_capabilities = std::move(candidate_capabilities);
 		}
 	}
 
-	out_device = best_device;
-	out_queues = best_queues;
+	out_device       = best_device;
+	out_queue_family = best_queue_family;
 	if (best_device != nullptr) {
 		out_capabilities = std::move(best_capabilities);
 	}
@@ -558,35 +462,19 @@ static void VulkanInitSubgroupSizeControl(vk::PhysicalDevice physical_device) {
 	     graphics.subgroup_size_control_enabled ? "true" : "false");
 }
 
-static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, vk::SurfaceKHR surface,
-                                     const VulkanExtensions& r, const VulkanQueues& queues,
+static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const VulkanExtensions& r,
+                                     uint32_t                        queue_family,
                                      const std::vector<const char*>& device_extensions) {
 	EXIT_IF(physical_device == nullptr);
 	auto& graphics = g_window_ctx->graphic_ctx;
-	EXIT_IF(surface == nullptr);
+	EXIT_IF(queue_family == static_cast<uint32_t>(-1));
 
-	std::vector<vk::DeviceQueueCreateInfo> queue_create_info(queues.family_count);
-	std::vector<std::vector<float>>        queue_priority(queues.family_count);
-	uint32_t                               queue_create_info_num = 0;
-
-	for (uint32_t i = 0; i < queues.family_count; i++) {
-		if (queues.family_used[i] != 0) {
-			for (uint32_t pi = 0; pi < queues.family_used[i]; pi++) {
-				queue_priority[queue_create_info_num].push_back(1.0f);
-			}
-
-			queue_create_info[queue_create_info_num].sType =
-			    vk::StructureType::eDeviceQueueCreateInfo;
-			queue_create_info[queue_create_info_num].pNext            = nullptr;
-			queue_create_info[queue_create_info_num].flags            = {};
-			queue_create_info[queue_create_info_num].queueFamilyIndex = i;
-			queue_create_info[queue_create_info_num].queueCount       = queues.family_used[i];
-			queue_create_info[queue_create_info_num].pQueuePriorities =
-			    queue_priority[queue_create_info_num].data();
-
-			queue_create_info_num++;
-		}
-	}
+	const float               queue_priority = 1.0f;
+	vk::DeviceQueueCreateInfo queue_create_info {};
+	queue_create_info.sType            = vk::StructureType::eDeviceQueueCreateInfo;
+	queue_create_info.queueFamilyIndex = queue_family;
+	queue_create_info.queueCount       = 1;
+	queue_create_info.pQueuePriorities = &queue_priority;
 
 	vk::PhysicalDeviceColorWriteEnableFeaturesEXT color_write_ext {};
 	color_write_ext.sType = vk::StructureType::ePhysicalDeviceColorWriteEnableFeaturesEXT;
@@ -678,8 +566,8 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, vk::Sur
 	create_info.sType                = vk::StructureType::eDeviceCreateInfo;
 	create_info.pNext                = &features13;
 	create_info.flags                = {};
-	create_info.pQueueCreateInfos    = queue_create_info.data();
-	create_info.queueCreateInfoCount = queue_create_info_num;
+	create_info.pQueueCreateInfos    = &queue_create_info;
+	create_info.queueCreateInfoCount = 1;
 	create_info.enabledLayerCount =
 	    (r.enable_validation_layers ? static_cast<uint32_t>(r.required_layers.size()) : 0);
 	create_info.ppEnabledLayerNames =
@@ -865,64 +753,6 @@ static VKAPI_ATTR vk::Result VKAPI_CALL VulkanCreateDebugUtilsMessengerEXT(
 	return vk::Result::eErrorExtensionNotPresent;
 }
 
-static void VulkanCreateQueues(const VulkanQueues& queues) {
-	auto& graphics = g_window_ctx->graphic_ctx;
-	EXIT_IF(graphics.device == nullptr);
-	EXIT_IF(queues.graphics.size() != 1);
-	EXIT_IF(queues.present.size() != 1);
-	EXIT_IF(!(queues.compute.size() >= 1 &&
-	          queues.compute.size() <= GraphicContext::QUEUE_COMPUTE_NUM));
-
-	auto get_queue = [&graphics](int id, const QueueInfo& info) {
-		graphics.queues[id].family = info.family;
-		graphics.queues[id].index  = info.index;
-		EXIT_IF(graphics.queues[id].vk_queue != nullptr);
-		graphics.device.getQueue(graphics.queues[id].family, graphics.queues[id].index,
-		                         &graphics.queues[id].vk_queue);
-		EXIT_NOT_IMPLEMENTED(graphics.queues[id].vk_queue == nullptr);
-	};
-
-	get_queue(GraphicContext::QUEUE_GFX, queues.graphics[0]);
-	graphics.queues[GraphicContext::QUEUE_UTIL].family =
-	    graphics.queues[GraphicContext::QUEUE_GFX].family;
-	graphics.queues[GraphicContext::QUEUE_UTIL].index =
-	    graphics.queues[GraphicContext::QUEUE_GFX].index;
-	graphics.queues[GraphicContext::QUEUE_UTIL].vk_queue =
-	    graphics.queues[GraphicContext::QUEUE_GFX].vk_queue;
-	LOGF("Vulkan queue: using graphics queue for utility submissions to preserve resource "
-	     "ordering\n");
-	get_queue(GraphicContext::QUEUE_PRESENT, queues.present[0]);
-
-	for (int id = 0; id < GraphicContext::QUEUE_COMPUTE_NUM; id++) {
-		get_queue(GraphicContext::QUEUE_COMPUTE_START + id,
-		          queues.compute[id % queues.compute.size()]);
-	}
-
-	for (int id = 0; id < GraphicContext::QUEUES_NUM; id++) {
-		auto& queue = graphics.queues[id];
-		if (queue.vk_queue == nullptr) {
-			continue;
-		}
-		EXIT_IF(queue.mutex != nullptr);
-
-		for (int other_id = 0; other_id < id; other_id++) {
-			auto& other = graphics.queues[other_id];
-			if (other.vk_queue != queue.vk_queue) {
-				continue;
-			}
-
-			EXIT_IF(other.mutex == nullptr);
-			queue.mutex = other.mutex;
-			LOGF("Vulkan queue: sharing mutex for queue ids %d and %d\n", other_id, id);
-			break;
-		}
-
-		if (queue.mutex == nullptr) {
-			queue.mutex = &graphics.queue_mutexes[id];
-		}
-	}
-}
-
 static void VulkanCheckInstanceVersion() {
 	uint32_t version = VK_API_VERSION_1_0;
 
@@ -1061,11 +891,11 @@ void VulkanCreate(WindowContext& window) {
 
 	window.surface_capabilities = new SurfaceCapabilities {};
 
-	VulkanQueues queues;
+	uint32_t queue_family = static_cast<uint32_t>(-1);
 
 	VulkanFindPhysicalDevice(window.graphic_ctx.instance, window.surface, device_extensions,
 	                         *window.surface_capabilities, window.graphic_ctx.physical_device,
-	                         queues);
+	                         queue_family);
 
 	if (window.graphic_ctx.physical_device == nullptr) {
 		EXIT("Could not find suitable device");
@@ -1102,18 +932,19 @@ void VulkanCreate(WindowContext& window) {
 
 	VulkanInitSubgroupSizeControl(window.graphic_ctx.physical_device);
 
-	window.graphic_ctx.device = VulkanCreateDevice(window.graphic_ctx.physical_device,
-	                                               window.surface, r, queues, device_extensions);
+	window.graphic_ctx.device =
+	    VulkanCreateDevice(window.graphic_ctx.physical_device, r, queue_family, device_extensions);
 	if (window.graphic_ctx.device == nullptr) {
 		EXIT("Could not create device");
 	}
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(window.graphic_ctx.device);
+	window.graphic_ctx.queue_family = queue_family;
+	window.graphic_ctx.device.getQueue(queue_family, 0, &window.graphic_ctx.queue);
+	EXIT_IF(window.graphic_ctx.queue == nullptr);
 
 	if (!window.graphic_ctx.CreateAllocator()) {
 		EXIT("Could not create Vulkan memory allocator");
 	}
-
-	VulkanCreateQueues(queues);
 
 	window.swapchain = VulkanCreateSwapchain(2);
 	RenderDocSetActiveWindow(window.graphic_ctx.instance, window.window);

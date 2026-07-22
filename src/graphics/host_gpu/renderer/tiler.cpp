@@ -106,7 +106,7 @@ void UploadPromotedD16Depth(DepthStencilVulkanImage& image, const DepthTargetInf
 
 void Tiler::DetileImage(GpuTextureVulkanImage& image, const ImageInfo& info,
                         const BufferImageCopySource& source, bool refresh, bool storage) const {
-	if (refresh) Transfer::WaitForGraphicsIdle();
+	if (refresh) Transfer::WaitForQueueIdle();
 
 	const bool array_texture  = TextureIsLayeredTexture(info.type);
 	const bool volume_texture = TextureIs3DTexture(info.type);
@@ -127,7 +127,7 @@ void Tiler::DetileImage(DepthStencilVulkanImage& image, const DepthTargetInfo& i
                         const BufferImageCopySource& source, bool refresh,
                         uint32_t base_layer) const {
 	EXIT_NOT_IMPLEMENTED(info.samples != 1 || image.samples != 1);
-	if (refresh) Transfer::WaitForGraphicsIdle();
+	if (refresh) Transfer::WaitForQueueIdle();
 
 	if (DepthAspectTransferBytes(info.format) != info.bytes_per_element) {
 		switch (info.format) {
@@ -149,7 +149,7 @@ void Tiler::DetileStencil(DepthStencilVulkanImage& image, const DepthTargetInfo&
                           const BufferImageCopySource& source, bool refresh,
                           uint32_t base_layer) const {
 	EXIT_NOT_IMPLEMENTED(info.samples != 1 || image.samples != 1);
-	if (refresh) Transfer::WaitForGraphicsIdle();
+	if (refresh) Transfer::WaitForQueueIdle();
 
 	const auto format = Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt);
 	const auto pitch  = TileGetTexturePitch(format, info.width, 1,

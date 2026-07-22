@@ -11,7 +11,6 @@
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
-#include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/objects/label.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -176,9 +175,6 @@ public:
 		Start();
 	}
 
-	[[nodiscard]] int GetQueueId() const { return m_queue_id; }
-	void              SetQueueId(int id) { m_queue_id = id; }
-
 private:
 	void Start() {
 		Common::Thread t(ThreadRun, this);
@@ -193,8 +189,7 @@ private:
 	bool            m_done = true;
 	bool            m_idle = true;
 
-	CommandProcessor* m_cp       = nullptr;
-	int               m_queue_id = -1;
+	CommandProcessor* m_cp = nullptr;
 
 	struct DirectBatch {
 		OwnedCmdBuffer buffer;
@@ -206,6 +201,10 @@ private:
 
 class Gpu {
 public:
+	static constexpr uint32_t ComputePipeCount    = 7;
+	static constexpr uint32_t RingsPerComputePipe = 8;
+	static constexpr uint32_t ComputeRingCount    = ComputePipeCount * RingsPerComputePipe;
+
 	Gpu() {
 		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 		Init();
@@ -228,15 +227,15 @@ private:
 	void Init();
 	void WaitLocked();
 
-	ComputeRing* GetRing(uint32_t ring_id);
+	ComputeRing* GetComputeRing(uint32_t ring_index);
 
 	Common::Mutex m_mutex;
 
 	CommandProcessor* m_gfx_cp   = nullptr;
 	GraphicsRing*     m_gfx_ring = nullptr;
 
-	CommandProcessor* m_compute_cp[8]    = {};
-	ComputeRing*      m_compute_ring[64] = {};
+	std::array<CommandProcessor*, ComputePipeCount> m_compute_cp {};
+	std::array<ComputeRing*, ComputeRingCount>      m_compute_ring {};
 
 	std::atomic_int m_done_num = 0;
 };
@@ -274,19 +273,11 @@ void Gpu::SubmitCompute(uint32_t queue, uint32_t* cmd_buffer, uint32_t num_dw,
 	GpuMutexLock   lock(m_mutex);
 
 	constexpr uint32_t compute_queue_base = 0x20u;
-	constexpr uint32_t compute_queue_num  = 7u * 8u;
 	EXIT_NOT_IMPLEMENTED(queue < compute_queue_base ||
-	                     queue >= compute_queue_base + compute_queue_num);
+	                     queue >= compute_queue_base + ComputeRingCount);
 
 	uint32_t compute_queue = queue - compute_queue_base;
-	uint32_t pipe_id       = (compute_queue >> 3u) & 0x7u;
-	uint32_t queue_id      = compute_queue & 0x7u;
-	EXIT_NOT_IMPLEMENTED(pipe_id >= 7u);
-	EXIT_NOT_IMPLEMENTED(queue_id >= 8u);
-
-	uint32_t ring_id = compute_queue + 1u;
-
-	auto* ring = GetRing(ring_id);
+	auto*    ring          = GetComputeRing(compute_queue);
 
 	ring->Submit(std::move(buffer), trigger_agc_interrupt_on_done);
 }
@@ -297,10 +288,10 @@ void Gpu::SubmitFlipPreparation() {
 }
 
 void Gpu::Done() {
-	GraphicsRing*     gfx_ring = nullptr;
-	CommandProcessor* gfx_cp   = nullptr;
-	ComputeRing*      compute_rings[64] {};
-	CommandProcessor* compute_cps[8] {};
+	GraphicsRing*                                   gfx_ring = nullptr;
+	CommandProcessor*                               gfx_cp   = nullptr;
+	std::array<ComputeRing*, ComputeRingCount>      compute_rings {};
+	std::array<CommandProcessor*, ComputePipeCount> compute_cps {};
 
 	{
 		GpuMutexLock lock(m_mutex);
@@ -308,8 +299,8 @@ void Gpu::Done() {
 		gfx_ring = m_gfx_ring;
 		gfx_cp   = m_gfx_cp;
 
-		std::copy(std::begin(m_compute_ring), std::end(m_compute_ring), std::begin(compute_rings));
-		std::copy(std::begin(m_compute_cp), std::end(m_compute_cp), std::begin(compute_cps));
+		compute_rings = m_compute_ring;
+		compute_cps   = m_compute_cp;
 
 		m_done_num++;
 	}
@@ -347,15 +338,15 @@ int Gpu::GetFrameNum() {
 }
 
 void Gpu::WaitLocked() {
-	GraphicsRing*     gfx_ring = nullptr;
-	CommandProcessor* gfx_cp   = nullptr;
-	ComputeRing*      compute_rings[64] {};
-	CommandProcessor* compute_cps[8] {};
+	GraphicsRing*                                   gfx_ring = nullptr;
+	CommandProcessor*                               gfx_cp   = nullptr;
+	std::array<ComputeRing*, ComputeRingCount>      compute_rings {};
+	std::array<CommandProcessor*, ComputePipeCount> compute_cps {};
 
-	gfx_ring = m_gfx_ring;
-	gfx_cp   = m_gfx_cp;
-	std::copy(std::begin(m_compute_ring), std::end(m_compute_ring), std::begin(compute_rings));
-	std::copy(std::begin(m_compute_cp), std::end(m_compute_cp), std::begin(compute_cps));
+	gfx_ring      = m_gfx_ring;
+	gfx_cp        = m_gfx_cp;
+	compute_rings = m_compute_ring;
+	compute_cps   = m_compute_cp;
 
 	if (gfx_ring != nullptr) {
 		gfx_ring->WaitForIdle();
@@ -381,40 +372,28 @@ void Gpu::Init() {
 
 	m_gfx_cp   = new CommandProcessor;
 	m_gfx_ring = new GraphicsRing;
-	m_gfx_cp->SetQueue(GraphicContext::QUEUE_GFX);
 	m_gfx_ring->SetCp(*m_gfx_cp);
-
-	EXIT_IF(GraphicContext::QUEUE_COMPUTE_NUM < 8);
 }
 
-ComputeRing* Gpu::GetRing(uint32_t ring_id) {
-	int v        = static_cast<int>(ring_id - 1);
-	int pipe_id  = v / 8;
-	int queue_id = v % 8;
+ComputeRing* Gpu::GetComputeRing(uint32_t ring_index) {
+	EXIT_IF(ring_index >= ComputeRingCount);
+	const auto pipe_id = ring_index / RingsPerComputePipe;
 
 	if (m_compute_cp[pipe_id] == nullptr) {
 		m_compute_cp[pipe_id] = new CommandProcessor;
-		m_compute_cp[pipe_id]->SetQueue(GraphicContext::QUEUE_COMPUTE_START + pipe_id);
 	}
 
-	if (m_compute_ring[v] == nullptr) {
-		m_compute_ring[v] = new ComputeRing;
-		m_compute_ring[v]->SetQueueId(queue_id);
-		m_compute_ring[v]->SetCp(*m_compute_cp[pipe_id]);
+	if (m_compute_ring[ring_index] == nullptr) {
+		m_compute_ring[ring_index] = new ComputeRing;
+		m_compute_ring[ring_index]->SetCp(*m_compute_cp[pipe_id]);
 	}
 
-	return m_compute_ring[v];
+	return m_compute_ring[ring_index];
 }
 
-void CommandProcessor::SetQueue(int queue) {
+CommandProcessor::CommandProcessor(): m_scheduler(m_ctx, m_ucfg, m_sh_ctx) {
 	Common::LockGuard lock(m_mutex);
-	if (queue < 0 || queue >= GraphicContext::QUEUES_NUM ||
-	    (m_processors[queue] != nullptr && m_processors[queue] != this)) {
-		EXIT("invalid command-processor queue registration: queue=%d owner=%p\n", queue,
-		     static_cast<const void*>(m_processors[queue]));
-	}
-	m_scheduler.SetQueue(queue);
-	m_processors[queue] = this;
+	m_processors.push_back(this);
 }
 
 void CommandProcessor::FinishReadbackTransaction() {
@@ -429,19 +408,11 @@ void CommandProcessor::FinishReadbackTransaction() {
 }
 
 void CommandProcessor::FinishCommandProcessors() {
-	std::array<CommandProcessor*, GraphicContext::QUEUES_NUM> processors {};
-	uint32_t                                                  processor_count = 0;
 	for (auto* processor: m_processors) {
-		if (processor == nullptr ||
-		    std::find(processors.begin(), processors.begin() + processor_count, processor) !=
-		        processors.begin() + processor_count) {
-			continue;
-		}
-		processors[processor_count++] = processor;
 		processor->m_scheduler.SubmitForReadback();
 	}
-	for (uint32_t i = 0; i < processor_count; i++) {
-		processors[i]->m_scheduler.ResumeAfterReadback();
+	for (auto* processor: m_processors) {
+		processor->m_scheduler.ResumeAfterReadback();
 	}
 }
 
@@ -881,8 +852,8 @@ void ComputeRing::ThreadRun(void* data) {
 
 		static std::atomic<uint32_t> compute_batch_log_count {0};
 		if (num_dw <= 128 && buffer != nullptr && compute_batch_log_count.fetch_add(1) < 32) {
-			LOGF("compute direct batch: queue=%d, data=0x%016" PRIx64 ", num_dw=%" PRIu32 "\n",
-			     ring->m_queue_id, reinterpret_cast<uint64_t>(buffer), num_dw);
+			LOGF("compute direct batch: data=0x%016" PRIx64 ", num_dw=%" PRIu32 "\n",
+			     reinterpret_cast<uint64_t>(buffer), num_dw);
 			for (uint32_t i = 0; i < std::min<uint32_t>(num_dw, 16); i++) {
 				LOGF("\t compute[%02" PRIu32 "] = 0x%08" PRIx32 "\n", i, buffer[i]);
 			}
@@ -1356,11 +1327,11 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 				const auto& cs = m_sh_ctx.GetCs().cs_regs;
 				const auto& oa = m_ucfg.GetGdsOaCounter(m_ucfg.GetGdsOaState().GetIndex());
 				LOGF("QueuePoint DispatchDirect: frame=%u submit=%" PRIu64
-				     " queue=%d groups=%ux%ux%u local=%ux%ux%u mode=0x%08" PRIx32
-				     " wave=%u cs=0x%016" PRIx64 " oa_index=%u oa_enabled=%s oa_addr=0x%04" PRIx32
-				     " oa_space=0x%08" PRIx32 "\n",
-				     frame_num, m_submit_id, m_scheduler.Queue(), thread_group_x, thread_group_y,
-				     thread_group_z, std::max(cs.num_thread_x, 1u), std::max(cs.num_thread_y, 1u),
+				     " groups=%ux%ux%u local=%ux%ux%u mode=0x%08" PRIx32 " wave=%u cs=0x%016" PRIx64
+				     " oa_index=%u oa_enabled=%s oa_addr=0x%04" PRIx32 " oa_space=0x%08" PRIx32
+				     "\n",
+				     frame_num, m_submit_id, thread_group_x, thread_group_y, thread_group_z,
+				     std::max(cs.num_thread_x, 1u), std::max(cs.num_thread_y, 1u),
 				     std::max(cs.num_thread_z, 1u), mode, static_cast<uint32_t>(cs.wave_size),
 				     cs.data_addr, m_ucfg.GetGdsOaState().GetIndex(),
 				     oa.IsCounterEnabled() ? "true" : "false", oa.GetAddressBytes(),

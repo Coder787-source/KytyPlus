@@ -82,39 +82,14 @@ bool GuestBufferIsTiled(uint64_t vaddr, uint64_t size) {
 	return true;
 }
 
-void WaitForGraphicsIdle() {
-	auto&          graphics = GetRenderContext().GetGraphics();
-	Common::Mutex* locked[GraphicContext::QUEUES_NUM] {};
-	int            locked_num = 0;
-
-	for (int id = 0; id < GraphicContext::QUEUES_NUM; id++) {
-		auto* mutex = graphics.queues[id].mutex;
-		if (mutex == nullptr || graphics.queues[id].vk_queue == nullptr) {
-			continue;
-		}
-
-		bool already_locked = false;
-		for (int i = 0; i < locked_num; i++) {
-			if (locked[i] == mutex) {
-				already_locked = true;
-				break;
-			}
-		}
-
-		if (!already_locked) {
-			mutex->Lock();
-			locked[locked_num++] = mutex;
-		}
-	}
-
-	auto result = graphics.device.waitIdle();
-
-	for (int i = locked_num - 1; i >= 0; i--) {
-		locked[i]->Unlock();
-	}
+void WaitForQueueIdle() {
+	auto& graphics = GetRenderContext().GetGraphics();
+	EXIT_IF(graphics.queue == nullptr);
+	Common::LockGuard lock(graphics.queue_mutex);
+	const auto        result = graphics.queue.waitIdle();
 
 	if (result != vk::Result::eSuccess) {
-		LOGF("vkDeviceWaitIdle failed: %s (%d)\n", VulkanToString(result).c_str(),
+		LOGF("vkQueueWaitIdle failed: %s (%d)\n", VulkanToString(result).c_str(),
 		     static_cast<int>(result));
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
@@ -126,9 +101,7 @@ static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage& dst_image, uin
 
 template <typename Recorder>
 static void ExecuteImmediateCommands(const Recorder& recorder) {
-	// Keep synchronous utility submission behind one boundary so adopting a central scheduler does
-	// not touch every caller.
-	CommandBuffer command(GraphicContext::QUEUE_UTIL);
+	CommandBuffer command;
 	command.Begin();
 	recorder(command, command.Handle());
 	command.End();
@@ -286,7 +259,7 @@ public:
 
 	void UploadToBuffer(VulkanBuffer& dst_buffer, const void* src_data, uint64_t size,
 	                    uint64_t dst_offset) {
-		RecordUpload<true>(src_data, size, [&](CommandBuffer&, vk::CommandBuffer vk_command) {
+		RecordUpload(src_data, size, [&](CommandBuffer&, vk::CommandBuffer vk_command) {
 			SetBufferMemoryBarrier(
 			    vk_command, m_buffer.buffer, 0, size, vk::AccessFlagBits::eMemoryWrite,
 			    vk::AccessFlagBits::eTransferRead, vk::PipelineStageFlagBits::eAllCommands,
@@ -314,7 +287,7 @@ public:
 	                   vk::ImageAspectFlags copy_aspect, vk::ImageLayout initial_layout,
 	                   vk::ImageLayout final_layout) {
 		const auto transition_aspects = GetTransferAspects(image, copy_aspect);
-		RecordUpload<false>(src_data, size, [&](CommandBuffer& command, vk::CommandBuffer) {
+		RecordUpload(src_data, size, [&](CommandBuffer& command, vk::CommandBuffer) {
 			const auto region = MakeBufferImageCopy(0, src_pitch, copy_aspect, 0, 0, {0, 0, 0},
 			                                        {image.extent.width, image.extent.height, 1});
 			RecordBufferToImageCopy(command, m_buffer, image,
@@ -325,7 +298,7 @@ public:
 
 	void UploadToImage(VulkanImage& dst_image, const void* src_data, uint64_t size,
 	                   std::span<const BufferImageCopy> regions, vk::ImageLayout dst_layout) {
-		RecordUpload<false>(src_data, size, [&](CommandBuffer& command, vk::CommandBuffer) {
+		RecordUpload(src_data, size, [&](CommandBuffer& command, vk::CommandBuffer) {
 			vk::ImageAspectFlags transition_aspects = {};
 			for (const auto& region: regions) {
 				transition_aspects |= GetTransferAspects(dst_image, region.aspect);
@@ -400,13 +373,10 @@ private:
 		                                  static_cast<size_t>(size)));
 	}
 
-	template <bool WaitIdle, typename Recorder>
+	template <typename Recorder>
 	void RecordUpload(const void* src_data, uint64_t size, const Recorder& recorder) {
 		Common::LockGuard lock(m_mutex);
 		CopyFromHost(src_data, size, vk::BufferUsageFlagBits::eTransferSrc);
-		if constexpr (WaitIdle) {
-			WaitForGraphicsIdle();
-		}
 		ExecuteImmediateCommands(recorder);
 	}
 
@@ -880,12 +850,7 @@ void CopyImageViaBuffer(CommandBuffer& buffer, VulkanImage& src_image,
 	    std::min<uint64_t>(src_image.extent.height, MAX_COPY_BUFFER_SIZE / row_bytes));
 	const auto copy_buffer_size = row_bytes * rows_per_chunk;
 
-	// Kyty does not yet have a cross-queue scheduler. Drain submitted work once before
-	// recording the recreate copy; commands already recorded on this buffer remain ordered by the
-	// barriers below. The preservation policy stays isolated here so a future scheduler can replace
-	// this synchronization without changing texture-cache ownership logic.
-	auto& graphics = buffer.GetGraphics();
-	WaitForGraphicsIdle();
+	auto& graphics    = buffer.GetGraphics();
 	auto* copy_buffer = new VulkanBuffer;
 	copy_buffer->usage =
 	    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
@@ -1077,14 +1042,6 @@ void DownloadBuffer(VulkanBuffer& src_buffer, uint64_t src_offset, void* dst_dat
 	auto& graphics = GetRenderContext().GetGraphics();
 	EXIT_IF(size == 0);
 	EXIT_IF(src_offset > src_buffer.buffer_size || size > src_buffer.buffer_size - src_offset);
-	const auto family = graphics.queues[GraphicContext::QUEUE_UTIL].family;
-	EXIT_IF(family == static_cast<uint32_t>(-1));
-	for (int i = GraphicContext::QUEUE_COMPUTE_START;
-	     i < GraphicContext::QUEUE_COMPUTE_START + GraphicContext::QUEUE_COMPUTE_NUM; i++) {
-		EXIT_IF(graphics.queues[i].family != family);
-	}
-	EXIT_IF(graphics.queues[GraphicContext::QUEUE_GFX].family != family);
-
 	if (src_buffer.memory.property & vk::MemoryPropertyFlagBits::eHostVisible) {
 		void* mapped = nullptr;
 		graphics.MapMemory(src_buffer.memory, mapped);

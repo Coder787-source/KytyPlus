@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace Libs::Graphics {
 
@@ -23,8 +24,6 @@ public:
 	CommandScheduler(HW::Context& registers, HW::UserConfig& user_config, HW::Shader& shaders)
 	    : m_registers(registers), m_user_config(user_config), m_shaders(shaders) {}
 
-	void SetQueue(int queue) { m_queue = queue; }
-	int  Queue() const { return m_queue; }
 	bool Active() const { return m_current >= 0 && m_current < BuffersNum; }
 	void CheckActive() const { EXIT_IF(!Active()); }
 
@@ -40,7 +39,7 @@ public:
 		}
 		for (auto& buf: m_buffers) {
 			EXIT_IF(buf != nullptr);
-			buf = new RenderCommandBuffer(m_queue, m_registers, m_user_config, m_shaders);
+			buf = new RenderCommandBuffer(m_registers, m_user_config, m_shaders);
 		}
 		m_current = 0;
 		Current().Begin();
@@ -103,7 +102,6 @@ private:
 
 	RenderCommandBuffer* m_buffers[BuffersNum] = {};
 	int                  m_current             = -1;
-	int                  m_queue               = -1;
 	HW::Context&         m_registers;
 	HW::UserConfig&      m_user_config;
 	HW::Shader&          m_shaders;
@@ -118,7 +116,7 @@ public:
 		int64_t flip_arg  = 0;
 	};
 
-	CommandProcessor(): m_scheduler(m_ctx, m_ucfg, m_sh_ctx) {}
+	CommandProcessor();
 	~CommandProcessor() { KYTY_NOT_IMPLEMENTED; }
 
 	KYTY_CLASS_NO_COPY(CommandProcessor);
@@ -226,9 +224,6 @@ public:
 
 	void Run(uint32_t* data, uint32_t num_dw);
 
-	void              SetQueue(int queue);
-	[[nodiscard]] int GetQueue() const { return m_scheduler.Queue(); }
-
 	[[nodiscard]] const FlipInfo& GetFlip() const { return m_flip; }
 	void                          SetFlip(const FlipInfo& flip) { m_flip = flip; }
 
@@ -264,11 +259,11 @@ private:
 	uint64_t         m_dispatch_indirect_args_base_addr = 0;
 	uint32_t         m_num_instances                    = 1;
 
-	inline static Common::Mutex                                             m_mutex;
-	inline static std::array<CommandProcessor*, GraphicContext::QUEUES_NUM> m_processors {};
-	inline static bool m_readback_active   = false;
-	inline static bool m_readback_finished = false;
-	Common::Mutex      m_run_mutex;
+	inline static Common::Mutex                  m_mutex;
+	inline static std::vector<CommandProcessor*> m_processors;
+	inline static bool                           m_readback_active   = false;
+	inline static bool                           m_readback_finished = false;
+	Common::Mutex                                m_run_mutex;
 
 	CommandScheduler m_scheduler;
 

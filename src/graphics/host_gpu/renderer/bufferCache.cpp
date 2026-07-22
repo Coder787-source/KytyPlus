@@ -166,14 +166,9 @@ bool MergeOverlappingBufferCacheRange(BufferCacheRange& merged,
 	return true;
 }
 
-bool CanMergeBufferCacheQueueMask(uint64_t queue_mask, uint32_t queue) noexcept {
-	return queue < 64 && (queue_mask & ~(uint64_t {1} << queue)) == 0;
-}
-
 struct BufferCache::CachedBuffer {
-	uint64_t                      vaddr      = 0;
-	uint64_t                      size       = 0;
-	uint64_t                      queue_mask = 0;
+	uint64_t                      vaddr = 0;
+	uint64_t                      size  = 0;
 	std::shared_ptr<VulkanBuffer> buffer;
 };
 
@@ -392,30 +387,13 @@ struct BufferCache::ReadbackWorker {
 					     static_cast<const void*>(command.get()), static_cast<const void*>(mapped),
 					     static_cast<const void*>(readback.buffer));
 				}
-				const auto family = cache.m_graphics.queues[GraphicContext::QUEUE_UTIL].family;
-				if (family == static_cast<uint32_t>(-1) ||
-				    cache.m_graphics.queues[GraphicContext::QUEUE_GFX].family != family) {
-					EXIT("BufferCache: utility and graphics queues must share a valid family, "
-					     "util=%u "
-					     "gfx=%u\n",
-					     family, cache.m_graphics.queues[GraphicContext::QUEUE_GFX].family);
-				}
-				for (int i = GraphicContext::QUEUE_COMPUTE_START;
-				     i < GraphicContext::QUEUE_COMPUTE_START + GraphicContext::QUEUE_COMPUTE_NUM;
-				     i++) {
-					if (cache.m_graphics.queues[i].family != family) {
-						EXIT("BufferCache: compute queue %d family mismatch, expected=%u "
-						     "actual=%u\n",
-						     i, family, cache.m_graphics.queues[i].family);
-					}
-				}
 				readback.usage           = vk::BufferUsageFlagBits::eTransferDst;
 				readback.memory.property = vk::MemoryPropertyFlagBits::eHostVisible |
 				                           vk::MemoryPropertyFlagBits::eHostCoherent |
 				                           vk::MemoryPropertyFlagBits::eHostCached;
 				cache.m_graphics.CreateBuffer(READBACK_CAPACITY, readback);
 				cache.m_graphics.MapMemory(readback.memory, mapped);
-				command = std::make_unique<CommandBuffer>(GraphicContext::QUEUE_UTIL);
+				command = std::make_unique<CommandBuffer>();
 				state.store(State::Idle, std::memory_order_release);
 				state.notify_all();
 				continue;
@@ -550,7 +528,7 @@ BufferCache::~BufferCache() {
 		}
 	}
 	if (!m_buffers.empty()) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 	}
 	m_buffers.clear();
 }
@@ -649,13 +627,10 @@ void BufferCache::UnmapMemory(uint64_t vaddr, uint64_t size) {
 BufferBinding BufferCache::ObtainBuffer(CommandBuffer& command, uint64_t vaddr, uint64_t size,
                                         bool is_written, bool is_read, bool is_formatted) {
 	if (command.IsInvalid() || command.IsExecute() || vaddr == 0 || size == 0 ||
-	    size > UINT64_MAX - vaddr || command.GetQueue() < 0 || command.GetQueue() >= 64) {
-		EXIT("BufferCache: invalid buffer request, queue=%d addr=0x%016" PRIx64
-		     " size=0x%016" PRIx64 "\n",
-		     command.GetQueue(), vaddr, size);
+	    size > UINT64_MAX - vaddr) {
+		EXIT("BufferCache: invalid buffer request, addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+		     vaddr, size);
 	}
-	const auto queue      = static_cast<uint32_t>(command.GetQueue());
-	const auto queue_mask = uint64_t {1} << queue;
 	ValidateGpuAccess(vaddr, size, is_read, is_written);
 	const auto      begin = AlignDown(vaddr);
 	const auto      end   = AlignUp(vaddr + size);
@@ -753,12 +728,6 @@ BufferBinding BufferCache::ObtainBuffer(CommandBuffer& command, uint64_t vaddr, 
 					EXIT("BufferCache: invalid overlapping buffer owner, addr=0x%016" PRIx64
 					     " size=0x%016" PRIx64 " buffer=%p\n",
 					     old.vaddr, old.size, static_cast<const void*>(old.buffer.get()));
-				}
-				if (!CanMergeBufferCacheQueueMask(old.queue_mask, queue)) {
-					EXIT("BufferCache: cross-queue overlap merge is unsupported, "
-					     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " used_queues=0x%016" PRIx64
-					     " requested_queue=%u\n",
-					     old.vaddr, old.size, old.queue_mask, queue);
 				}
 				std::vector<std::pair<uint64_t, uint64_t>> uploads;
 				m_memory_tracker.ForEachUploadRange(
@@ -860,7 +829,6 @@ BufferBinding BufferCache::ObtainBuffer(CommandBuffer& command, uint64_t vaddr, 
 	if (is_written) {
 		m_gpu_modified_ranges.Add(vaddr, size);
 	}
-	cached.queue_mask |= queue_mask;
 	command.RetainResourceUntilFence(cached.buffer);
 	return {*cached.buffer, vaddr - cached.vaddr};
 }
@@ -944,7 +912,7 @@ BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t
 			     vaddr, size, GraphicsRunIsCommandProcessorThread(),
 			     GraphicsRunSubmissionLockHeld(), LabelInCallback());
 		}
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 		auto     backing_writes = ReserveBackingWrites(m_page_manager, dirty_ranges);
 		uint64_t downloaded     = 0;
 		m_memory_tracker.ForEachDownloadRange<true>(
@@ -1039,10 +1007,6 @@ vk::BufferMemoryBarrier MakeDmaBarrier(VulkanBuffer& buffer, uint64_t offset, ui
 	barrier.size                = size;
 	return barrier;
 }
-
-vk::CommandBuffer GetDmaCommandBuffer(CommandBuffer& command) {
-	return command.Handle();
-}
 } // namespace
 
 void BufferCache::FillBuffer(CommandBuffer* command, uint64_t vaddr, uint64_t size,
@@ -1086,7 +1050,7 @@ void BufferCache::FillBuffer(CommandBuffer* command, uint64_t vaddr, uint64_t si
 	const auto before            = MakeDmaBarrier(
 	    dst, dst_offset, size, vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
 	    vk::AccessFlagBits::eTransferWrite);
-	const auto vk_buffer = GetDmaCommandBuffer(*command);
+	const auto vk_buffer = command->Handle();
 	vk_buffer.pipelineBarrier(
 	    vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer,
 	    vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &before, 0, nullptr);
@@ -1179,7 +1143,7 @@ void BufferCache::CopyBuffer(CommandBuffer* command, uint64_t dst_vaddr, uint64_
 	    MakeDmaBarrier(src, src_offset, size, vk::AccessFlagBits::eMemoryWrite,
 	                   vk::AccessFlagBits::eTransferRead),
 	};
-	const auto vk_buffer = GetDmaCommandBuffer(*command);
+	const auto vk_buffer = command->Handle();
 	vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                          vk::PipelineStageFlagBits::eTransfer,
 	                          vk::DependencyFlagBits::eByRegion, 0, nullptr, 2, before, 0, nullptr);

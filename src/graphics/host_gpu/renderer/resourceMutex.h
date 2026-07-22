@@ -9,7 +9,7 @@
 namespace Libs::Graphics {
 
 // Owner-tracked shared buffer/image transaction. External faults pause GPU submissions first;
-// command-processor faults drain their queue before entering this transaction.
+// command-processor faults drain pending guest processors before entering this transaction.
 class ResourceMutex final {
 public:
 	class FaultScope final {

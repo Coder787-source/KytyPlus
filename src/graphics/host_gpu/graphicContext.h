@@ -3,11 +3,9 @@
 
 #include "common/abi.h"
 #include "common/common.h"
-#include "common/threads.h"
 #include "graphics/host_gpu/vulkanCommon.h" // IWYU pragma: export
 #include "graphics/host_gpu/vulkanInstance.h"
 
-#include <array>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -35,16 +33,6 @@ struct VulkanSwapchain {
 	uint32_t                         present_frame = 0;
 };
 
-struct VulkanCommandPool {
-	Common::Mutex                        mutex;
-	vk::CommandPool                      pool = nullptr;
-	std::unique_ptr<vk::CommandBuffer[]> buffers;
-	std::unique_ptr<vk::Fence[]>         fences;
-	std::unique_ptr<vk::Semaphore[]>     semaphores;
-	std::unique_ptr<bool[]>              busy;
-	uint32_t                             buffers_count = 0;
-};
-
 struct GraphicContext: public VulkanInstance {
 	[[nodiscard]] bool CreateAllocator();
 	void               DestroyAllocator();
@@ -60,9 +48,8 @@ struct GraphicContext: public VulkanInstance {
 	    std::vector<const char*>&                   device_extensions);
 	void LoadHardwareRayTracingFunctions() const;
 
-	uint32_t                              screen_width  = 0;
-	uint32_t                              screen_height = 0;
-	std::array<Common::Mutex, QUEUES_NUM> queue_mutexes;
+	uint32_t screen_width  = 0;
+	uint32_t screen_height = 0;
 };
 
 struct VulkanMemory {

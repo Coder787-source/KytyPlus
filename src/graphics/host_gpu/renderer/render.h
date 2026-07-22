@@ -26,7 +26,7 @@ struct DepthStencilVulkanImage;
 struct TextureVulkanImage;
 struct StorageTextureVulkanImage;
 struct RenderTextureVulkanImage;
-struct VulkanCommandPool;
+struct CommandSlot;
 struct VulkanBuffer;
 struct VulkanDescriptorSet;
 struct VulkanFramebuffer;
@@ -68,19 +68,16 @@ private:
 
 class CommandBuffer {
 public:
-	explicit CommandBuffer(int queue);
-	~CommandBuffer() { Free(); }
+	CommandBuffer();
+	~CommandBuffer() { Release(); }
 
 	KYTY_CLASS_NO_COPY(CommandBuffer);
 
 	[[nodiscard]] bool IsInvalid() const;
 
-	void Allocate();
-	void Free();
 	void Begin() const;
 	void End() const;
 	void Execute();
-	void ExecuteWithSemaphore(vk::Semaphore signal_semaphore = nullptr);
 	void ExecuteWithSemaphore(vk::Semaphore wait_semaphore, vk::PipelineStageFlags wait_stage,
 	                          vk::Semaphore signal_semaphore);
 	void SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0 = 0, uint32_t arg1 = 0,
@@ -97,7 +94,6 @@ public:
 
 	[[nodiscard]] vk::CommandBuffer Handle() const;
 	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
-	[[nodiscard]] int               GetQueue() const { return m_queue; }
 	[[nodiscard]] bool              IsExecute() const { return m_execute; }
 	[[nodiscard]] uint64_t GetRecordingGeneration() const { return m_recording_generation; }
 
@@ -106,16 +102,14 @@ private:
 
 	void Submit(vk::Semaphore wait_semaphore, vk::PipelineStageFlags wait_stage,
 	            vk::Semaphore signal_semaphore);
-	[[nodiscard]] vk::Semaphore ResolveSignalSemaphore(vk::Semaphore semaphore) const;
-	void                        FinalizeFence(bool reset_recording);
-	void                        ReleaseResourcesAfterFence();
-	void                        DeleteBuffersAfterFence();
-	void                        RecycleDescriptorsAfterFence();
+	void Release();
+	void FinalizeFence(bool reset_recording);
+	void ReleaseResourcesAfterFence();
+	void DeleteBuffersAfterFence();
+	void RecycleDescriptorsAfterFence();
 
 	GraphicContext&                   m_graphics;
-	VulkanCommandPool*                m_pool                 = nullptr;
-	uint32_t                          m_index                = static_cast<uint32_t>(-1);
-	int                               m_queue                = -1;
+	CommandSlot*                      m_slot                 = nullptr;
 	bool                              m_execute              = false;
 	bool                              m_fence_waited         = false;
 	uint64_t                          m_submit_seq           = 0;
@@ -135,10 +129,8 @@ private:
 
 class RenderCommandBuffer final: public CommandBuffer {
 public:
-	RenderCommandBuffer(int queue, HW::Context& registers, HW::UserConfig& user_config,
-	                    HW::Shader& shaders)
-	    : CommandBuffer(queue), m_registers(registers), m_user_config(user_config),
-	      m_shaders(shaders) {}
+	RenderCommandBuffer(HW::Context& registers, HW::UserConfig& user_config, HW::Shader& shaders)
+	    : m_registers(registers), m_user_config(user_config), m_shaders(shaders) {}
 
 	[[nodiscard]] HW::Context&    GetRegisters() const noexcept { return m_registers; }
 	[[nodiscard]] HW::UserConfig& GetUserConfig() const noexcept { return m_user_config; }
@@ -162,7 +154,7 @@ void RenderDispatchDirect(uint64_t submit_id, RenderCommandBuffer& buffer, uint3
                           uint32_t thread_group_y, uint32_t thread_group_z, uint32_t mode);
 
 void GraphicsRenderInit(GraphicContext& graphics);
-void GraphicsRenderReleaseThreadCommandPools();
+void GraphicsRenderReleaseThreadCommandPool();
 
 [[nodiscard]] bool ResolveComputeImageClear(const ShaderComputeInputInfo& input, uint32_t group_x,
                                             uint32_t group_y, uint32_t group_z, uint32_t mode,

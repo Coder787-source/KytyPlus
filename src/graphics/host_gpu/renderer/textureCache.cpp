@@ -1008,7 +1008,7 @@ void TextureCache::MaterializeImagesToGuestLocked(
     const std::vector<std::shared_ptr<CachedImage>>& images) {
 	if (std::any_of(images.begin(), images.end(),
 	                [](const auto& cached) { return cached->gpu_modified; })) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 	}
 	for (const auto& cached: images) {
 		if (!cached->gpu_modified) {
@@ -1269,7 +1269,7 @@ void TextureCache::RetireSampledTargetAliases(const ImageInfo& requested) {
 	}
 	RequireRetirementIsolation(retire, "sampled target", requested.address, requested.size);
 	if (wait_idle) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 	}
 	for (auto* cached: retire) {
 		if (!cached->gpu_modified) {
@@ -1360,7 +1360,7 @@ void TextureCache::RetireStorageDepthAliasLocked(const ImageInfo& requested) {
 	if (selected == nullptr) {
 		return;
 	}
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 	const auto transfer = m_readback->DownloadDepthTarget(*selected, false);
 	for (const auto& range: transfer.Ranges()) {
 		m_memory_tracker.ForEachDownloadRange<true>(range.address, range.size,
@@ -1373,7 +1373,7 @@ void TextureCache::RetireStorageDepthAliasLocked(const ImageInfo& requested) {
 TextureCache::~TextureCache() {
 	m_readback.reset();
 	if (!m_images.empty()) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 	}
 	for (const auto& image: m_images) {
 		UnregisterImageLocked(*image, false);
@@ -1488,7 +1488,7 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 		// Kyty does not yet copy between those independently allocated Vulkan images, so use the
 		// existing synchronized tiled readback seam and rebuild the complete chain from coherent
 		// guest backing. This is an uncommon ownership transition, not a frame lookup fast path.
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 		for (auto* cached: storage_retire) {
 			if (!cached->gpu_modified || cached->buffer_modified || cached->info.IsCpuDirty() ||
 			    !m_memory_tracker.IsRegionGpuModified(cached->info.address, cached->info.size) ||
@@ -2632,7 +2632,7 @@ void TextureCache::UnregisterVideoOutSurfaces(const std::vector<VideoOutVulkanIm
 			     cached->Address(), cached->Size());
 		}
 	}
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 	for (auto* cached: selected) {
 		if (cached->gpu_modified) {
 			m_memory_tracker.UnmarkRegionAsGpuModified(cached->Address(), cached->Size());
@@ -2992,7 +2992,7 @@ void TextureCache::SynchronizeColorImageToBufferLocked(CachedImage& cached, uint
 		     target.address, target.size);
 	}
 
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 	std::vector<ImageBufferCopy> regions;
 	std::vector<BufferImageCopy> tiled_regions;
 	TextureUploadLayout          tiled_layout {};
@@ -3100,7 +3100,7 @@ void TextureCache::SynchronizeDepthImageToBufferLocked(CachedImage& cached, uint
 		     info.layers, static_cast<int>(info.format), info.guest_format, info.bytes_per_element,
 		     has_stencil, has_htile, cached.gpu_modified, cached.buffer_modified);
 	}
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 	const auto regions = Transfer::MakeLayeredImageBufferCopies(
 	    1, info.size, info.pitch, info.width, info.height, vk::ImageAspectFlagBits::eDepth);
 	TileBlockLayout block {};
@@ -3790,7 +3790,7 @@ void TextureCache::UnmapMemory(uint64_t vaddr, uint64_t size) {
 		}
 	}
 	if (wait_idle) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 	}
 	for (auto& cached: m_images) {
 		if (!cached->OverlapsRange(vaddr, size, false) || !cached->gpu_modified) {

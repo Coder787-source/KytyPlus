@@ -855,6 +855,22 @@ public:
 
   [[nodiscard]] vk::Device Device() const { return m_device; }
 
+  void CheckCommandPoolGrowth() {
+    EnsureRuntimeContext();
+    std::array<CommandBuffer, 12> commands;
+    for (auto &command : commands) {
+      Require("CommandPoolGrowth", "allocation", !command.IsInvalid(),
+              "unified command pool failed to grow");
+      command.Begin();
+      command.End();
+      command.Execute();
+    }
+    for (auto &command : commands) {
+      command.WaitForFence();
+    }
+    std::printf("[host]    %-32s ok\n", "CommandPoolGrowth");
+  }
+
   void CheckMutableStorageSrgbView() {
     constexpr const char *name = "StorageTextureMutableSrgbView";
     vk::ImageCreateInfo image_info{};
@@ -1350,7 +1366,7 @@ public:
     target_info.tile_mode = linear;
 
     {
-      CommandBuffer command(GraphicContext::QUEUE_GFX);
+      CommandBuffer command;
       (void)texture_cache.FindTexture(command, sampled_info, false);
       auto& target = texture_cache.FindRenderTarget(command, target_info);
 
@@ -3047,12 +3063,8 @@ private:
     m_physical_device.getProperties(
         &m_runtime_context.physical_device_properties);
     m_runtime_context.physical_device_memory_properties = m_memory_properties;
-    for (auto &queue : m_runtime_context.queues) {
-      queue.mutex = &m_runtime_queue_mutex;
-      queue.family = m_queue_family;
-      queue.index = 0;
-      queue.vk_queue = m_queue;
-    }
+    m_runtime_context.queue_family = m_queue_family;
+    m_runtime_context.queue = m_queue;
 
     VmaVulkanFunctions functions{};
     functions.vkGetInstanceProcAddr =
@@ -3172,7 +3184,7 @@ private:
     if (m_device != nullptr) {
       RequireVulkanSuccess(m_device.waitIdle(), "vkDeviceWaitIdle");
       if (m_runtime_context.allocator != nullptr) {
-        GraphicsRenderReleaseThreadCommandPools();
+        GraphicsRenderReleaseThreadCommandPool();
         Transfer::ReleaseCachedResources();
         vmaDestroyAllocator(m_runtime_context.allocator);
         m_runtime_context.allocator = nullptr;
@@ -3413,7 +3425,6 @@ private:
   vk::CommandPool m_command_pool = nullptr;
   u32 m_queue_family = 0;
   vk::PhysicalDeviceMemoryProperties m_memory_properties{};
-  Common::Mutex m_runtime_queue_mutex;
   GraphicContext m_runtime_context{};
 };
 
@@ -10540,13 +10551,6 @@ void CheckBufferCacheRangeMerge() {
           MergeOverlappingBufferCacheRange(merged, {0x10000, 0x1000}) &&
               merged.address == 0xc000 && merged.size == 0xe000,
           "contained range changed the cache union");
-  Require("BufferCacheRangeMerge", "queue ownership",
-          CanMergeBufferCacheQueueMask(0, 3) &&
-              CanMergeBufferCacheQueueMask(uint64_t{1} << 3u, 3) &&
-              !CanMergeBufferCacheQueueMask(
-                  (uint64_t{1} << 2u) | (uint64_t{1} << 3u), 3) &&
-              !CanMergeBufferCacheQueueMask(0, 64),
-          "cross-queue or invalid queue ownership was accepted");
   std::printf("[host]    %-32s ok\n", "BufferCacheRangeMerge");
 }
 
@@ -13907,26 +13911,27 @@ struct FenceLifetimeProbe {
   bool *destroyed = nullptr;
 };
 
-void CheckCrossQueueImageLifetime() {
+void CheckSharedFenceResourceLifetime() {
   bool destroyed = false;
   auto image = std::make_shared<FenceLifetimeProbe>(&destroyed);
-  FenceResourceRetainer graphics;
-  FenceResourceRetainer compute;
-  graphics.Retain(image);
-  compute.Retain(image);
-  graphics.Retain(image);
+  FenceResourceRetainer first;
+  FenceResourceRetainer second;
+  first.Retain(image);
+  second.Retain(image);
+  first.Retain(image);
   image.reset();
-  Require("CrossQueueImageLifetime", "retained",
-          !destroyed && !graphics.Empty() && !compute.Empty(),
+  Require("SharedFenceResourceLifetime", "retained",
+          !destroyed && !first.Empty() && !second.Empty(),
           "cache removal destroyed an image retained by command buffers");
-  graphics.ReleaseAfterFence();
-  Require("CrossQueueImageLifetime", "first fence",
-          !destroyed && graphics.Empty() && !compute.Empty(),
-          "first command-buffer fence destroyed another queue's image");
-  compute.ReleaseAfterFence();
-  Require("CrossQueueImageLifetime", "last fence", destroyed && compute.Empty(),
+  first.ReleaseAfterFence();
+  Require("SharedFenceResourceLifetime", "first fence",
+          !destroyed && first.Empty() && !second.Empty(),
+          "first command-buffer fence destroyed another buffer's image");
+  second.ReleaseAfterFence();
+  Require("SharedFenceResourceLifetime", "last fence",
+          destroyed && second.Empty(),
           "last referencing command-buffer fence did not destroy the image");
-  std::printf("[host]    %-32s ok\n", "CrossQueueImageLifetime");
+  std::printf("[host]    %-32s ok\n", "SharedFenceResourceLifetime");
 }
 
 void CheckHostDmaMetadataReuse() {
@@ -14216,7 +14221,7 @@ int main(int argc, char **argv) {
   CheckStencilAttachmentAccess();
   CheckDepthTargetFootprints();
   CheckHtileClearTargetResolution();
-  CheckCrossQueueImageLifetime();
+  CheckSharedFenceResourceLifetime();
   CheckHostDmaMetadataReuse();
 #else
   (void)argc;
@@ -14228,6 +14233,7 @@ int main(int argc, char **argv) {
   CheckEmbeddedFetchLaneSpill();
   CheckPs5GameExampleImageClearRuntimeShape();
   VulkanHarness vulkan;
+  vulkan.CheckCommandPoolGrowth();
   vulkan.CheckGpuTilerCpuParity();
   vulkan.CheckQueryRegionImageClassification();
   vulkan.CheckMutableStorageSrgbView();
