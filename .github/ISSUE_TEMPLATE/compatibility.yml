@@ -1,0 +1,81 @@
+name: Compatibility report
+description: How far a game gets (boot / menu / ingame) on KytyPlus.
+title: "[Compat]: "
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report how far a **legally obtained** title gets. No dumps, firmware, or piracy links.
+
+  - type: input
+    id: version
+    attributes:
+      label: KytyPlus version
+      placeholder: v1.0
+    validations:
+      required: true
+
+  - type: input
+    id: game
+    attributes:
+      label: Game (title + Title ID if known)
+      placeholder: Game Name [PPSAxxxxx]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: status
+    attributes:
+      label: Status
+      options:
+        - Does not boot
+        - Boots / logos only
+        - Reaches menu
+        - Ingame (broken)
+        - Ingame (playable-ish)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Graphics/audio/input issues, performance, comparison to stock KytyPS5 if known.
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU + driver
+      placeholder: RTX 4070, Game Ready 56x.xx
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Windows 11
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log / error excerpt (optional but preferred)
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I own this dump legally and will not upload it here.
+          required: true
+        - label: I am not asking for dumps or firmware.
+          required: true
