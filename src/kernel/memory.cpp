@@ -2929,7 +2929,12 @@ int KYTY_SYSV_ABI KernelQueryMemoryProtection(void* addr, void** start, void** e
 
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
 
-	EXIT_NOT_IMPLEMENTED(addr == nullptr);
+	// A null query address is a bad argument, not an emulator bug. Real hardware returns an error
+	// here instead of aborting, and every comparable function in this file returns EFAULT for a
+	// null pointer, so match that rather than killing the whole process.
+	if (addr == nullptr) {
+		return KERNEL_ERROR_EFAULT;
+	}
 
 	VirtualRanges::Range range {};
 	if (!g_virtual_ranges->Query(reinterpret_cast<uint64_t>(addr), 0, &range)) {

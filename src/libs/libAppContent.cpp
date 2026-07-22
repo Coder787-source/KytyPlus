@@ -174,7 +174,7 @@ int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         servic
 
 	std::memset(mount_point->data, 0, sizeof(mount_point->data));
 
-	return APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
+	return OK;
 }
 
 int KYTY_SYSV_ABI AppContentAddcontUnmount(const AppContentMountPoint* mount_point) {

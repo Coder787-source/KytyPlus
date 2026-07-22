@@ -265,6 +265,17 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 		views[color_count] = depth.vulkan_view;
 	}
 
+	uint32_t framebuffer_layers = 1;
+	for (uint32_t i = 0; i < color_count; i++) {
+		framebuffer_layers = std::max(framebuffer_layers, colors[i].layer_count);
+	}
+	if (with_depth) {
+		framebuffer_layers = std::max(framebuffer_layers, depth.layer_count);
+	}
+	if (framebuffer_layers == 0 || framebuffer_layers > 2048) {
+		EXIT("Framebuffer: unsupported layer count %u\n", framebuffer_layers);
+	}
+
 	vk::FramebufferCreateInfo framebuffer_info {};
 	framebuffer_info.sType           = vk::StructureType::eFramebufferCreateInfo;
 	framebuffer_info.pNext           = nullptr;
@@ -274,7 +285,7 @@ VulkanFramebuffer* FramebufferCache::CreateFramebuffer(RenderColorInfo* colors,
 	framebuffer_info.pAttachments    = views;
 	framebuffer_info.width           = first_color_extent.width;
 	framebuffer_info.height          = first_color_extent.height;
-	framebuffer_info.layers          = 1;
+	framebuffer_info.layers          = framebuffer_layers;
 
 	result =
 	    m_graphics.device.createFramebuffer(&framebuffer_info, nullptr, &framebuffer->framebuffer);

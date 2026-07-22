@@ -77,16 +77,19 @@ void ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 	const auto view = ResolveTargetViewInfo(
 	    rt.view.base_array_slice_index, rt.view.last_array_slice_index, render_target_slice_offset);
 	switch (view.type) {
-		case TargetViewType::Image2D: break;
-		case TargetViewType::Image2DArray:
-			EXIT("layered render-target views are unsupported: base=%u count=%u\n", view.base_layer,
-			     view.layer_count);
+		case TargetViewType::Image2D:
+		case TargetViewType::Image2DArray: break;
 		case TargetViewType::Unsupported:
 			EXIT("invalid render-target view: base=%u last=%u draw_offset=%u\n",
 			     rt.view.base_array_slice_index, rt.view.last_array_slice_index,
 			     render_target_slice_offset);
 	}
-	r.base_array_layer    = view.base_layer;
+	if (view.layer_count == 0 || view.layer_count > 2048) {
+		EXIT("unsupported render-target layer count: base=%u count=%u\n", view.base_layer,
+		     view.layer_count);
+	}
+	r.base_array_layer = view.base_layer;
+	r.layer_count      = view.layer_count;
 	const uint32_t levels = rt.attrib2.num_mip_levels + 1u;
 	if (levels == 0 || levels > 16 || rt.view.current_mip_level >= levels) {
 		EXIT("unsupported render-target mip range: current=%u levels=%u\n",
@@ -221,24 +224,34 @@ void ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 		     rt.attrib3.tile_mode, Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget),
 		     rt.base.addr, backing_size, video_image.size);
 	}
-	bool render_to_texture = view.base_layer != 0 || video_image.image == nullptr;
+	// Display buffers are single-layer surfaces; array / layered color targets always go through
+	// the texture-cache render-target path (GetRenderTargetAttachmentView already builds 2DArray
+	// views when layer_count > 1).
+	bool render_to_texture =
+	    view.base_layer != 0 || view.layer_count > 1 || video_image.image == nullptr;
 	if (!render_to_texture && (levels != 1 || rt.view.current_mip_level != 0)) {
 		EXIT("mipmapped display render targets are unsupported\n");
 	}
 	const vk::Extent2D view_extent = {std::max(width >> rt.view.current_mip_level, 1u),
 	                                  std::max(height >> rt.view.current_mip_level, 1u)};
 
-	auto decision_log_id = g_render_color_log_count.fetch_add(1);
-	if (decision_log_id < 128 || !render_to_texture) {
-		LOGF("RenderColorTarget: slot=%" PRIu32 " addr=0x%010" PRIx64 " size=0x%016" PRIx64
-		     " extent=%ux%u view_mip=%u view_extent=%ux%u levels=%u pitch=%u"
-		     " fmt=0x%08" PRIx32 " nfmt=0x%08" PRIx32 " order=0x%08" PRIx32
-		     " samples=%u tile=%s target=%s video_size=0x%016" PRIx64 " video_pitch=%" PRIu64 "\n",
-		     rt_slot, rt.base.addr, backing_size, width, height, rt.view.current_mip_level,
-		     view_extent.width, view_extent.height, levels, pitch, rt.info.format,
-		     rt.info.channel_type, rt.info.channel_order, samples, tile ? "tiled" : "linear",
-		     render_to_texture ? "RenderTexture" : "DisplayBuffer", video_image.size,
-		     video_image.pitch);
+	// Per-draw render-target spam is a measurable hitch when printf goes to a file (the common
+	// bug-report setup). Keep it behind the graphics debug dump flag; identity mismatches below
+	// still log unconditionally because they indicate real correctness problems.
+	if (graphics_debug_dump_enabled()) {
+		auto decision_log_id = g_render_color_log_count.fetch_add(1);
+		if (decision_log_id < 128 || !render_to_texture) {
+			LOGF("RenderColorTarget: slot=%" PRIu32 " addr=0x%010" PRIx64 " size=0x%016" PRIx64
+			     " extent=%ux%u view_mip=%u view_extent=%ux%u levels=%u pitch=%u"
+			     " fmt=0x%08" PRIx32 " nfmt=0x%08" PRIx32 " order=0x%08" PRIx32
+			     " samples=%u tile=%s target=%s video_size=0x%016" PRIx64 " video_pitch=%" PRIu64
+			     "\n",
+			     rt_slot, rt.base.addr, backing_size, width, height, rt.view.current_mip_level,
+			     view_extent.width, view_extent.height, levels, pitch, rt.info.format,
+			     rt.info.channel_type, rt.info.channel_order, samples, tile ? "tiled" : "linear",
+			     render_to_texture ? "RenderTexture" : "DisplayBuffer", video_image.size,
+			     video_image.pitch);
+		}
 	}
 
 	if (render_to_texture) {
@@ -266,6 +279,8 @@ void ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 		r.format             = target.format;
 		r.extent             = view_extent;
 		r.base_mip_level     = rt.view.current_mip_level;
+		r.base_array_layer   = view.base_layer;
+		r.layer_count        = view.layer_count;
 		r.buffer_size        = backing_size;
 		r.samples            = samples;
 		r.export_mapping     = target_format.export_mapping;
@@ -302,16 +317,18 @@ void ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 		}
 		EXIT_NOT_IMPLEMENTED(video_image.size < size);
 		EXIT_NOT_IMPLEMENTED(video_image.pitch != pitch);
-		r.type           = RenderColorType::DisplayBuffer;
-		r.base_addr      = rt.base.addr;
-		r.vulkan_buffer  = video_image.image;
-		r.vulkan_view    = video_image.image->image_view[VulkanImage::VIEW_DEFAULT];
-		r.format         = video_image.image->format;
-		r.extent         = video_image.image->extent;
-		r.base_mip_level = 0;
-		r.buffer_size    = video_image.size;
-		r.samples        = 1;
-		r.export_mapping = target_format.export_mapping;
+		r.type             = RenderColorType::DisplayBuffer;
+		r.base_addr        = rt.base.addr;
+		r.vulkan_buffer    = video_image.image;
+		r.vulkan_view      = video_image.image->image_view[VulkanImage::VIEW_DEFAULT];
+		r.format           = video_image.image->format;
+		r.extent           = video_image.image->extent;
+		r.base_mip_level   = 0;
+		r.base_array_layer = 0;
+		r.layer_count      = 1;
+		r.buffer_size      = video_image.size;
+		r.samples          = 1;
+		r.export_mapping   = target_format.export_mapping;
 	}
 }
 

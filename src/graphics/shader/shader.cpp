@@ -172,8 +172,8 @@ static bool SpirvDisassemble(const uint32_t* src_binary, size_t src_binary_size,
 }
 
 static bool SpirvValidateBinary(const char* label, uint64_t shader_hash,
-                                const std::vector<uint32_t>& spirv) {
-	if (!Config::ShaderValidationEnabled()) {
+                                const std::vector<uint32_t>& spirv, bool force = false) {
+	if (!force && !Config::ShaderValidationEnabled()) {
 		return true;
 	}
 
@@ -196,6 +196,78 @@ static bool SpirvValidateBinary(const char* label, uint64_t shader_hash,
 	           label, shader_hash, messages.c_str());
 	LOGF("%s\n", disassembly.c_str());
 	return false;
+}
+
+// Minimal no-op compute module used when structured and dispatcher emits both fail validation.
+// Keeps the title running; the dispatch is a no-op until the CFG emitter is fixed for that shader.
+static std::vector<uint32_t> MakeNopComputeSpirv(uint32_t local_x, uint32_t local_y,
+                                                 uint32_t local_z) {
+	if (local_x == 0) {
+		local_x = 1;
+	}
+	if (local_y == 0) {
+		local_y = 1;
+	}
+	if (local_z == 0) {
+		local_z = 1;
+	}
+	// clang-format off
+	return {
+	    0x07230203u, 0x00010000u, 0x0008000bu, 0x0000000du, 0x00000000u,
+	    0x00020011u, 0x00000001u, // OpCapability Shader
+	    0x0003000eu, 0x00000000u, 0x00000001u, // OpMemoryModel Logical GLSL450
+	    0x0005000fu, 0x00000005u, 0x00000001u, 0x6e69616du, 0x00000000u, // OpEntryPoint GLCompute %1 "main"
+	    0x00060010u, 0x00000001u, 0x00000011u, local_x, local_y, local_z, // OpExecutionMode LocalSize
+	    0x00020013u, 0x00000002u, // OpTypeVoid
+	    0x00030021u, 0x00000003u, 0x00000002u, // OpTypeFunction
+	    0x00050036u, 0x00000002u, 0x00000001u, 0x00000000u, 0x00000003u, // OpFunction
+	    0x000200f8u, 0x00000004u, // OpLabel
+	    0x000100fdu, // OpReturn
+	    0x00010038u, // OpFunctionEnd
+	};
+	// clang-format on
+}
+
+// Runs spirv-tools optimization passes when configured. The optimization_type was previously only
+// used as a shader-cache key — the optimizer header was included but never invoked, so "Performance"
+// did nothing for GPU runtime cost. Failures fall back to the original binary so a bad pass cannot
+// abort an otherwise playable title.
+static void SpirvOptimizeBinary(const char* label, uint64_t shader_hash,
+                                std::vector<uint32_t>& spirv) {
+	const auto opt_type = Config::GetShaderOptimizationType();
+	if (opt_type == Config::ShaderOptimizationType::None || spirv.empty()) {
+		return;
+	}
+
+	spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_3);
+	std::string         messages;
+	optimizer.SetMessageConsumer([&messages](spv_message_level_t /*level*/, const char* /*source*/,
+	                                         const spv_position_t& /*position*/,
+	                                         const char* message) {
+		if (message != nullptr) {
+			messages += message;
+			messages += '\n';
+		}
+	});
+
+	if (opt_type == Config::ShaderOptimizationType::Size) {
+		optimizer.RegisterSizePasses();
+	} else {
+		optimizer.RegisterPerformancePasses();
+	}
+
+	std::vector<uint32_t> optimized;
+	if (!optimizer.Run(spirv.data(), spirv.size(), &optimized) || optimized.empty()) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "%s SPIR-V optimize failed hash=0x%016" PRIx64
+			           ", keeping unoptimized binary%s%s",
+			           label, shader_hash, messages.empty() ? "" : ":\n", messages.c_str());
+		}
+		return;
+	}
+	spirv = std::move(optimized);
 }
 
 static void ExitShaderRecompilerFailure(const char* label, uint64_t shader_hash,
@@ -228,9 +300,11 @@ static std::span<const uint32_t> ShaderGetMappedCode(uint64_t shader_addr, const
 		     label, shader_hash, shader_addr, data.code_size_bytes);
 	}
 	const auto code_words = data.code_size_bytes / sizeof(uint32_t);
-	LOGF("%s hash=0x%016" PRIx64 " shader=0x%016" PRIx64 " using AGC shader_size=0x%08" PRIx32
-	     " (%" PRIu32 " dwords)\n",
-	     label, shader_hash, shader_addr, data.code_size_bytes, code_words);
+	if (Config::GraphicsDebugDumpEnabled()) {
+		LOGF("%s hash=0x%016" PRIx64 " shader=0x%016" PRIx64 " using AGC shader_size=0x%08" PRIx32
+		     " (%" PRIu32 " dwords)\n",
+		     label, shader_hash, shader_addr, data.code_size_bytes, code_words);
+	}
 	return {reinterpret_cast<const uint32_t*>(shader_addr), code_words};
 }
 
@@ -1396,6 +1470,7 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 		ExitShaderRecompilerFailure("ShaderRecompiler VS", options.shader_hash, error.c_str());
 	}
 	DumpShaderRecompilerOriginal("vs", options.shader_hash, code, result.decoded_dump);
+	SpirvOptimizeBinary("ShaderRecompiler VS", options.shader_hash, result.spirv);
 	if (!SpirvValidateBinary("ShaderRecompiler VS", options.shader_hash, result.spirv)) {
 		DumpShaderRecompilerSpirv("vs", options.shader_hash, result.spirv);
 		ExitShaderRecompilerFailure("ShaderRecompiler VS", options.shader_hash,
@@ -1449,6 +1524,7 @@ bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegis
 		ExitShaderRecompilerFailure("ShaderRecompiler PS", options.shader_hash, error.c_str());
 	}
 	DumpShaderRecompilerOriginal("ps", options.shader_hash, code, result.decoded_dump);
+	SpirvOptimizeBinary("ShaderRecompiler PS", options.shader_hash, result.spirv);
 	if (!SpirvValidateBinary("ShaderRecompiler PS", options.shader_hash, result.spirv)) {
 		DumpShaderRecompilerSpirv("ps", options.shader_hash, result.spirv);
 		ExitShaderRecompilerFailure("ShaderRecompiler PS", options.shader_hash,
@@ -1499,10 +1575,51 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
 		ExitShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash, error.c_str());
 	}
 	DumpShaderRecompilerOriginal("cs", options.shader_hash, code, result.decoded_dump);
-	if (!SpirvValidateBinary("ShaderRecompiler CS", options.shader_hash, result.spirv)) {
+	SpirvOptimizeBinary("ShaderRecompiler CS", options.shader_hash, result.spirv);
+	// Always structural-validate compute modules: invalid OpLoopMerge nesting still fails
+	// vkCreateShaderModule even with runtime shader-validation disabled (Beyond a Steel Sky / #67).
+	if (!SpirvValidateBinary("ShaderRecompiler CS", options.shader_hash, result.spirv, true)) {
 		DumpShaderRecompilerSpirv("cs", options.shader_hash, result.spirv);
-		ExitShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash,
-		                            "SPIR-V validation failed");
+		if (!options.force_dispatcher) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "ShaderRecompiler CS: retrying with dispatcher fallback hash=0x%016" PRIx64
+			           "\n",
+			           options.shader_hash);
+			options.force_dispatcher = true;
+			ShaderRecompiler::CompileResult retry;
+			std::string                    retry_error;
+			if (ShaderRecompiler::TryRecompile(code, options, retry, &retry_error)) {
+				SpirvOptimizeBinary("ShaderRecompiler CS", options.shader_hash, retry.spirv);
+				if (SpirvValidateBinary("ShaderRecompiler CS", options.shader_hash, retry.spirv,
+				                        true)) {
+					result = std::move(retry);
+				} else {
+					DumpShaderRecompilerSpirv("cs_dispatcher", options.shader_hash, retry.spirv);
+					LOGF_COLOR(Log::Color::Yellow,
+					           "ShaderRecompiler CS: dispatcher SPIR-V still invalid "
+					           "hash=0x%016" PRIx64 ", using no-op stub\n",
+					           options.shader_hash);
+					result.spirv = MakeNopComputeSpirv(input_info.threads_num[0],
+					                                   input_info.threads_num[1],
+					                                   input_info.threads_num[2]);
+				}
+			} else {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "ShaderRecompiler CS: dispatcher retry failed hash=0x%016" PRIx64
+				           ": %s — using no-op stub\n",
+				           options.shader_hash, retry_error.c_str());
+				result.spirv = MakeNopComputeSpirv(input_info.threads_num[0],
+				                                   input_info.threads_num[1],
+				                                   input_info.threads_num[2]);
+			}
+		} else {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "ShaderRecompiler CS: invalid SPIR-V hash=0x%016" PRIx64
+			           ", using no-op stub\n",
+			           options.shader_hash);
+			result.spirv = MakeNopComputeSpirv(input_info.threads_num[0], input_info.threads_num[1],
+			                                   input_info.threads_num[2]);
+		}
 	}
 	input_info.stage.program =
 	    std::make_shared<const ShaderRecompiler::IR::Program>(std::move(result.program));

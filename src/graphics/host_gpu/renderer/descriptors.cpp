@@ -31,12 +31,14 @@
 #include "graphics/shader/recompiler/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ShaderIR.h"
 #include "graphics/shader/shader.h"
+#include "kernel/memory.h"
 
 #include <algorithm>
 #include <atomic>
 #include <fmt/format.h>
 #include <limits>
 #include <span>
+#include <vector>
 
 #ifdef min
 #undef min
@@ -48,6 +50,11 @@
 namespace Libs::Graphics {
 
 using TextureVariant = DescriptorCache::TextureVariant;
+
+// Upper bound on how large an unaligned read-only storage buffer we will re-serve from the
+// per-command host stream (whose ring is 32 MiB and shared by every upload in the command).
+// Anything larger keeps the original hard failure rather than risking stream exhaustion.
+static constexpr uint64_t kMaxRealignedStorageBufferSize = 8ull * 1024ull * 1024ull;
 
 static void BindNullStorageBuffer(CommandBuffer& cmd_buffer, BufferView& dst) {
 	dst.buffer = &GetRenderContext().GetBufferCache().ObtainNullBuffer(cmd_buffer);
@@ -143,9 +150,44 @@ static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command
 		EXIT("storage buffer range or device alignment is unsupported\n");
 	}
 	(void)submit_id;
-	auto binding = GetRenderContext().GetBufferCache().ObtainBuffer(
-	    command_buffer, address, size, resource.written, resource.read, resource.formatted);
+	auto& buffer_cache = GetRenderContext().GetBufferCache();
+	auto  binding =
+	    buffer_cache.ObtainBuffer(command_buffer, address, size, resource.written, resource.read,
+	                              resource.formatted);
 	if (binding.offset % alignment != 0) {
+		// PS5 buffer V#s may point at guest addresses finer-grained than the host's
+		// minStorageBufferOffsetAlignment, so the natural cache binding offset is not always a
+		// legal Vulkan storage-buffer offset. For a read-only range whose bytes are CPU-current we
+		// serve an aligned copy from the per-command host stream instead of aborting the whole
+		// emulator. Writable or GPU-produced ranges still need the proper sub-alignment path, which
+		// is not implemented, so those keep the previous hard failure.
+		const bool can_realign = !resource.written &&
+		                         !buffer_cache.IsRegionGpuModified(address, size) &&
+		                         size <= kMaxRealignedStorageBufferSize;
+		if (can_realign) {
+			// Read the physical backing (bypasses host GPU page protection) into a scratch copy,
+			// then upload it into the host stream at an offset aligned for storage descriptors.
+			std::vector<uint8_t> scratch(static_cast<size_t>(size));
+			VulkanBuffer*        aligned_buffer = nullptr;
+			uint64_t             aligned_offset = 0;
+			uint64_t             aligned_range  = 0;
+			if (Libs::LibKernel::Memory::TryReadBacking(address, scratch.data(),
+			                                            static_cast<size_t>(size)) &&
+			    buffer_cache.UploadHostData(command_buffer, scratch.data(), size, alignment,
+			                                aligned_buffer, aligned_offset, aligned_range)) {
+				static std::atomic<uint32_t> log_count {0};
+				if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF("StorageBuffer: realigned unaligned read-only binding addr=0x%016" PRIx64
+					     " size=0x%016" PRIx64 " via host stream (cache offset 0x%016" PRIx64
+					     " -> stream offset 0x%016" PRIx64 ")\n",
+					     address, size, binding.offset, aligned_offset);
+				}
+				result.buffer = aligned_buffer;
+				result.offset = aligned_offset;
+				result.range  = static_cast<vk::DeviceSize>(size);
+				return result;
+			}
+		}
 		EXIT("storage buffer binding is not device-aligned\n");
 	}
 	result.buffer = &binding.buffer;
@@ -352,9 +394,17 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	    tile == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) && !resource.read &&
 	    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint &&
 	    IsSupportedStorageDepthTile(descriptor.Format(), descriptor.Type(), width, height, depth);
+	// Standard-swizzle tiles are fully covered by the guest tiler (the sampled-texture path
+	// already uploads them), so storage images may use them too. 256B blocks are 2D-only;
+	// 4KB blocks have both the 2D layout and the thick Standard4KB3D volume layout.
+	const bool supported_standard_tile =
+	    (tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard256B) && !is_3d &&
+	     TileIsStandard256BTextureSupported(descriptor.Format())) ||
+	    (tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
+	     TileIsStandard4KBTextureSupported(descriptor.Format()));
 	const bool supported_tile = tile == Prospero::GpuEnumValue(Prospero::TileMode::kLinear) ||
 	                            tile == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) ||
-	                            supported_depth_tile;
+	                            supported_standard_tile || supported_depth_tile;
 	const bool supported_swizzle =
 	    IsSupportedStorageSwizzle(descriptor.Format(), descriptor.DstSelXYZW()) &&
 	    (descriptor.DstSelXYZW() == DstSel(4, 5, 6, 7) || !resource.read);
@@ -371,6 +421,12 @@ static bool IsSupportedStorageTextureEncoding(const ShaderTextureResource& descr
 	constexpr uint32_t field2_reserved_mask = 0xf0003000u;
 	constexpr uint32_t field5_expected      = 0x00700000u;
 	constexpr uint32_t field5_max_mip_mask  = 0x000000f0u;
+	// fields[6]/[7] hold the DCC compression configuration and the metadata surface address
+	// (see ShaderTextureResource accessors). The texture cache keeps the host image natively
+	// coherent and guest-side DCC metadata is never produced or consumed, so compression hints
+	// are ignored instead of rejected. Only the genuinely undefined bits (8-9, 11-14 of
+	// fields[6]; bit 10 is msaa-depth and is validated separately) still fail validation.
+	constexpr uint32_t field6_reserved_mask = 0x00007b00u;
 	const uint32_t     expected_field3 = descriptor.DstSelXYZW() |
 	                                     (static_cast<uint32_t>(descriptor.BaseLevel()) << 12u) |
 	                                     (static_cast<uint32_t>(descriptor.LastLevel()) << 16u) |
@@ -380,7 +436,7 @@ static bool IsSupportedStorageTextureEncoding(const ShaderTextureResource& descr
 	       (descriptor.fields[2] & field2_reserved_mask) == 0 &&
 	       descriptor.fields[3] == expected_field3 && descriptor.fields[4] == descriptor.Depth() &&
 	       (descriptor.fields[5] & ~field5_max_mip_mask) == field5_expected &&
-	       descriptor.fields[6] == 0 && descriptor.fields[7] == 0;
+	       (descriptor.fields[6] & field6_reserved_mask) == 0;
 }
 
 void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
@@ -394,6 +450,24 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	const bool format_ok = Prospero::IsSupportedTextureFormat(format) &&
 	                       uint_resource == Prospero::IsUintTextureFormat(format);
 	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
+		return;
+	}
+	// Soft-continue for write-only storage that the tiler can still size. Titles bind unusual
+	// tile/swizzle combos that we do not yet fully classify (#76/#77/#87).
+	if (size != 0 && resource.written && !resource.read && !resource.atomic && format_ok) {
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-allow storage texture: resource=%d descriptor=%d encoding=%d "
+			           "format=%d kind=%u dim=%u tile=%u fmt=%u swizzle=0x%03x "
+			           "extent=%ux%ux%u addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+			           resource_ok, descriptor_ok, encoding_ok, format_ok,
+			           static_cast<uint32_t>(resource.kind),
+			           static_cast<uint32_t>(resource.dimension), descriptor.TileMode(), format,
+			           descriptor.DstSelXYZW(), static_cast<uint32_t>(descriptor.Width5()) + 1u,
+			           static_cast<uint32_t>(descriptor.Height5()) + 1u,
+			           static_cast<uint32_t>(descriptor.Depth()) + 1u, descriptor.Base40(), size);
+		}
 		return;
 	}
 	EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "

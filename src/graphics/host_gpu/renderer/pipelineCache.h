@@ -181,6 +181,14 @@ private:
 		}
 	};
 
+	// Lazily creates the persistent VkPipelineCache and preloads it from disk. Must be called
+	// while m_mutex is held. Safe to call repeatedly; only the first call does work.
+	void EnsureDiskCacheLocked();
+	// Serializes the current VkPipelineCache contents to disk. Must be called with m_mutex held.
+	void FlushDiskCacheLocked();
+	// Flushes the on-disk cache once enough new pipelines have accumulated. Held under m_mutex.
+	void MaybeFlushDiskCacheLocked();
+
 	GraphicContext& m_graphics;
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>,
 	                   GraphicsPipelineKeyHash>
@@ -188,6 +196,12 @@ private:
 	std::unordered_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>, ComputePipelineKeyHash>
 	              m_compute_pipelines;
 	Common::Mutex m_mutex;
+
+	// Driver-side pipeline cache persisted across runs so shaders are not recompiled from
+	// scratch. nullptr if disk caching is unavailable; m_disk_cache_ready guards lazy init.
+	vk::PipelineCache m_disk_cache             = nullptr;
+	bool              m_disk_cache_ready       = false;
+	uint32_t          m_pipelines_since_flush  = 0;
 };
 
 void LogPipelineTrace(const char* phase, uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0,
@@ -198,11 +212,11 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::Rende
                             const ShaderPixelInputInfo*     ps_input_info,
                             std::span<const uint32_t>       ps_shader,
                             const PipelineStaticParameters& static_params, uint32_t vs_hash0,
-                            uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32,
-                            bool ps_active);
+                            uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active,
+                            vk::PipelineCache disk_cache);
 void CreatePipelineInternal(PipelineCache::ComputePipeline& pipeline,
                             const ShaderComputeInputInfo&   input_info,
-                            std::span<const uint32_t>       cs_shader);
+                            std::span<const uint32_t> cs_shader, vk::PipelineCache disk_cache);
 
 } // namespace Libs::Graphics
 

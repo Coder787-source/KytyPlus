@@ -41,6 +41,11 @@ struct VulkanInstance {
 	vk::Device                         device                            = nullptr;
 	VmaAllocator                       allocator                         = nullptr;
 	bool                               memory_budget_ext_enabled         = false;
+	// True when VMA is allowed to consult VK_EXT_memory_budget. Integrated/UMA GPUs leave this
+	// false even if the extension is present: the driver budget often mirrors the small BIOS UMA
+	// carve-out (~1–2 GiB) and would prevent the emulator from using the rest of system RAM.
+	bool                               memory_budget_for_vma             = false;
+	bool                               integrated_gpu                    = false;
 	bool                               rt_extensions_enabled             = false;
 	bool                               subgroup_size_control_enabled     = false;
 	bool                               sample_rate_shading_enabled       = false;

@@ -146,6 +146,7 @@ private:
 	                                                                 bool page_overlap);
 	void RequireRetirementIsolation(const std::vector<CachedImage*>& retire, const char* operation,
 	                                uint64_t address, uint64_t size) const;
+	void ExpandRetirementAliases(std::vector<CachedImage*>& retire);
 	void RetireImages(const std::vector<CachedImage*>& retire,
 	                  const CachedImage*               native_image_source = nullptr);
 	void RetireDepthMetadataLocked(const std::vector<CachedImage*>& retire,

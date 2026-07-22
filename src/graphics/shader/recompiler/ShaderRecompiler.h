@@ -25,6 +25,7 @@ struct CompileOptions {
 	uint32_t                      push_constant_offset = 0;
 	bool                          dump_ir              = true;
 	bool                          early_dump           = false;
+	bool                          force_dispatcher     = false;
 	const char*                   dump_label           = nullptr;
 	const uint32_t*               user_data            = nullptr;
 	IR::SrtMemoryReader           read_memory          = nullptr;

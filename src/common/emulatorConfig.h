@@ -24,7 +24,9 @@ struct ConfigOptions {
 	uint32_t               vblank_frequency            = 60;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
-	ShaderOptimizationType shader_optimization_type    = ShaderOptimizationType::None;
+	// Match the launcher's playable default so CLI launches without
+	// --shader-optimization-type still get SPIR-V performance passes.
+	ShaderOptimizationType shader_optimization_type    = ShaderOptimizationType::Performance;
 	ShaderLogDirection     shader_log_direction        = ShaderLogDirection::Silent;
 	std::filesystem::path  shader_log_folder           = "_Shaders";
 	bool                   command_buffer_dump_enabled = false;

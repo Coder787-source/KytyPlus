@@ -1193,7 +1193,7 @@ void RenderDrawIndexAuto(uint64_t submit_id, RenderCommandBuffer& buffer, uint32
 
 bool IsSameColorResolveSubresource(const RenderColorInfo& src, const RenderColorInfo& dst) {
 	return src.base_addr == dst.base_addr && src.base_mip_level == dst.base_mip_level &&
-	       src.base_array_layer == dst.base_array_layer;
+	       src.base_array_layer == dst.base_array_layer && src.layer_count == dst.layer_count;
 }
 
 ImageImageCopy MakeColorResolveCopy(const RenderColorInfo& src, const RenderColorInfo& dst,

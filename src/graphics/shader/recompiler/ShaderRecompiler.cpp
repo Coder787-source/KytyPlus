@@ -692,7 +692,11 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	     static_cast<uint64_t>(cfg.back_edges.size()), phase_ms());
 	bool        dispatcher_fallback = false;
 	std::string dispatcher_reason;
-	if (cfg.irreducible) {
+	if (options.force_dispatcher) {
+		dispatcher_fallback = true;
+		dispatcher_reason   = "forced dispatcher fallback";
+		LOGF("%s forcing dispatcher fallback\n", GetDumpLabel(options));
+	} else if (cfg.irreducible) {
 		dispatcher_fallback   = true;
 		dispatcher_reason     = cfg.unsupported_reason;
 		const auto diagnostic = FormatCfgFailure(cfg, options, cfg.unsupported_reason);
