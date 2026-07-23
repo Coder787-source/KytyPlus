@@ -9,6 +9,7 @@
 #include "loader/symbolDatabase.h"
 #include "loader/systemContent.h"
 
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <system_error>
@@ -118,7 +119,16 @@ int KYTY_SYSV_ABI AppContentAppParamGetInt(uint32_t param_id, int32_t* value) {
 		case 2: found = Loader::SystemContentParamSfoGetInt("USER_DEFINED_PARAM_2", value); break;
 		case 3: found = Loader::SystemContentParamSfoGetInt("USER_DEFINED_PARAM_3", value); break;
 		case 4: found = Loader::SystemContentParamSfoGetInt("USER_DEFINED_PARAM_4", value); break;
-		default: EXIT("unknown param_id: %u\n", param_id);
+		default: {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "AppContentAppParamGetInt: soft-zero unknown param_id=%u\n", param_id);
+			}
+			*value = 0;
+			found  = false;
+			break;
+		}
 	}
 
 	LOGF("\t value    = %d [%s]\n", *value, found ? "found" : "not found");

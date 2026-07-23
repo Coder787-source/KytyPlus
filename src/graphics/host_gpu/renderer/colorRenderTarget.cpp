@@ -131,7 +131,16 @@ void ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 		case Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget):
 			tile = !RenderIsColorTileModeLinear(rt.attrib3.tile_mode);
 			break;
-		default: EXIT("unknown tile mode: %u\n", rt.attrib3.tile_mode);
+		default: {
+			static std::atomic_uint32_t soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-allow unknown render-target tile mode %u as tiled\n",
+				           rt.attrib3.tile_mode);
+			}
+			tile = true;
+			break;
+		}
 	}
 	if (!tile && levels > 1) {
 		EXIT("linear mipmapped render targets are unsupported\n");
@@ -158,12 +167,14 @@ void ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 	     rt.info.cmask_is_linear != 0 || rt.info.cmask_addr_type != 0 || rt.info.alt_tile_mode ||
 	     rt.cmask.addr != 0 || rt.fmask.addr != 0 || rt.dcc_addr.addr != 0 ||
 	     rt.dcc.data_write_on_dcc_clear_to_reg)) {
-		EXIT("unsupported Standard64KB render target: addr=0x%016" PRIx64
-		     " dimension=%u depth=%u levels=%u layer=%u/%u samples=%u fragments=%u bpe=%u"
-		     " cmask=0x%016" PRIx64 " fmask=0x%016" PRIx64 " dcc=0x%016" PRIx64 "\n",
-		     rt.base.addr, rt.attrib3.dimension, rt.attrib3.depth, levels, view.base_layer,
-		     view.image_layers, rt.attrib.num_samples, rt.attrib.num_fragments, bytes_per_element,
-		     rt.cmask.addr, rt.fmask.addr, rt.dcc_addr.addr);
+		static std::atomic_uint32_t soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-allow non-ideal Standard64KB render target: addr=0x%016" PRIx64
+			           " dimension=%u levels=%u layers=%u samples=%u bpe=%u\n",
+			           rt.base.addr, rt.attrib3.dimension, levels, view.image_layers, samples,
+			           bytes_per_element);
+		}
 	}
 	if (rt.pitch.pitch_div8_minus1 != 0) {
 		pitch = (rt.pitch.pitch_div8_minus1 + 1u) << 3u;
@@ -173,7 +184,13 @@ void ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 		                                  width, levels, rt.attrib3.tile_mode)
 		            : TileGetRenderTargetPitch(width, bytes_per_element, rt.attrib.num_fragments);
 		if (pitch == 0) {
-			EXIT("unsupported render-target pitch: width=%u bytes=%u\n", width, bytes_per_element);
+			pitch = width;
+			static std::atomic_uint32_t soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-allow render-target pitch fallback width=%u bytes=%u\n", width,
+				           bytes_per_element);
+			}
 		}
 	} else {
 		pitch = width;

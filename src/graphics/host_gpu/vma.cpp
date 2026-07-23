@@ -211,6 +211,8 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
 		LogMemoryBudget();
 		return false;
 	}
+	image.mutable_format =
+	    static_cast<bool>(image_info.flags & vk::ImageCreateFlagBits::eMutableFormat);
 
 	device.getImageMemoryRequirements(image.image, &memory.requirements);
 	memory.type      = memory.allocation_info.memoryType;

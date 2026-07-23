@@ -93,14 +93,25 @@ static KYTY_SYSV_ABI int UserServiceGetLoginUserIdList(UserServiceLoginUserIdLis
 }
 
 static KYTY_SYSV_ABI int UserServiceGetUserName(int user_id, char* name, size_t size) {
-	EXIT_NOT_IMPLEMENTED(user_id != 1000);
-	EXIT_NOT_IMPLEMENTED(size < 5);
+	// Some titles probe user_id 1 as well as the canonical 1000 login id (Astro-family / first-party
+	// bootstrap). Treat both as the primary local user.
+	if (user_id != 1000 && user_id != 1) {
+		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
+	}
+	if (name == nullptr || size < 5) {
+		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+	}
 
 	int s = snprintf(name, size, "%s", "Kyty");
-
-	EXIT_NOT_IMPLEMENTED(static_cast<size_t>(s) >= size);
+	if (s < 0 || static_cast<size_t>(s) >= size) {
+		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
+	}
 
 	return OK;
+}
+
+static bool IsPrimaryLocalUser(int user_id) {
+	return user_id == 1000 || user_id == 1;
 }
 
 static KYTY_SYSV_ABI int UserServiceGetUserNumber(int user_id, int32_t* number) {
@@ -109,7 +120,7 @@ static KYTY_SYSV_ABI int UserServiceGetUserNumber(int user_id, int32_t* number) 
 	if (number == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (user_id != 1000) {
+	if (!IsPrimaryLocalUser(user_id)) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -124,7 +135,7 @@ static KYTY_SYSV_ABI int UserServiceGetGamePresets(int user_id, UserServiceGameP
 	if (presets == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (user_id != 1000) {
+	if (!IsPrimaryLocalUser(user_id)) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -145,7 +156,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityVibration(int user_id, int32
 	if (vibration == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (user_id != 1000) {
+	if (!IsPrimaryLocalUser(user_id)) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -161,7 +172,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityTriggerEffect(int      user_
 	if (trigger_effect == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (user_id != 1000) {
+	if (!IsPrimaryLocalUser(user_id)) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -176,7 +187,7 @@ static KYTY_SYSV_ABI int UserServiceGetAgeLevel(int user_id, uint32_t* age_level
 	if (age_level == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (user_id != 1000) {
+	if (!IsPrimaryLocalUser(user_id)) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -192,7 +203,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityChatTranscription(int      u
 	if (chat_transcription == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (user_id != 1000) {
+	if (!IsPrimaryLocalUser(user_id)) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -208,7 +219,7 @@ UserServiceGetAccessibilityPressAndHoldDelay(int user_id, int32_t* press_and_hol
 	if (press_and_hold_delay == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (user_id != 1000) {
+	if (!IsPrimaryLocalUser(user_id)) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -224,7 +235,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityZoomEnabled(int      user_id
 	if (zoom_enabled == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (user_id != 1000) {
+	if (!IsPrimaryLocalUser(user_id)) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -240,7 +251,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityZoomFollowFocus(int      use
 	if (zoom_follow_focus == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (user_id != 1000) {
+	if (!IsPrimaryLocalUser(user_id)) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 

@@ -261,6 +261,87 @@ void CommandBuffer::RecycleDescriptorAfterFence(VulkanDescriptorSet& set) {
 	m_descriptor_sets_after_fence.push_back(&set);
 }
 
+void CommandBuffer::QueueStorageStreamWriteback(VulkanBuffer& src, uint64_t src_offset,
+                                                VulkanBuffer& dst, uint64_t dst_offset,
+                                                uint64_t size) {
+	if (IsInvalid() || m_execute) {
+		EXIT("storage stream writeback requires a recording command buffer\n");
+	}
+	if (src.buffer == nullptr || dst.buffer == nullptr || size == 0) {
+		EXIT("invalid storage stream writeback, size=0x%016" PRIx64 "\n", size);
+	}
+	if (src_offset > src.buffer_size || size > src.buffer_size - src_offset ||
+	    dst_offset > dst.buffer_size || size > dst.buffer_size - dst_offset) {
+		EXIT("storage stream writeback out of range, src_off=0x%016" PRIx64
+		     " dst_off=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+		     src_offset, dst_offset, size);
+	}
+	m_storage_stream_writebacks.push_back(
+	    StorageStreamWriteback {&src, src_offset, &dst, dst_offset, size});
+}
+
+void CommandBuffer::FlushStorageStreamWritebacks() {
+	if (m_storage_stream_writebacks.empty()) {
+		return;
+	}
+	if (IsInvalid() || m_execute) {
+		EXIT("storage stream writeback flush requires a recording command buffer\n");
+	}
+	auto vk_buffer = Handle();
+	for (const auto& wb: m_storage_stream_writebacks) {
+		vk::BufferMemoryBarrier before[2] {};
+		before[0].sType               = vk::StructureType::eBufferMemoryBarrier;
+		before[0].srcAccessMask       = vk::AccessFlagBits::eShaderWrite;
+		before[0].dstAccessMask       = vk::AccessFlagBits::eTransferRead;
+		before[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		before[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		before[0].buffer              = wb.src->buffer;
+		before[0].offset              = wb.src_offset;
+		before[0].size                = wb.size;
+		before[1].sType               = vk::StructureType::eBufferMemoryBarrier;
+		before[1].srcAccessMask =
+		    vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+		before[1].dstAccessMask       = vk::AccessFlagBits::eTransferWrite;
+		before[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		before[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		before[1].buffer              = wb.dst->buffer;
+		before[1].offset              = wb.dst_offset;
+		before[1].size                = wb.size;
+		vk_buffer.pipelineBarrier(
+		    vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader |
+		        vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eAllCommands,
+		    vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion, 0, nullptr, 2,
+		    before, 0, nullptr);
+		const vk::BufferCopy region {.srcOffset = wb.src_offset,
+		                             .dstOffset = wb.dst_offset,
+		                             .size      = wb.size};
+		vk_buffer.copyBuffer(wb.src->buffer, wb.dst->buffer, 1, &region);
+		vk::BufferMemoryBarrier after {};
+		after.sType         = vk::StructureType::eBufferMemoryBarrier;
+		after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		after.dstAccessMask =
+		    vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite |
+		    vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+		after.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		after.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		after.buffer              = wb.dst->buffer;
+		after.offset              = wb.dst_offset;
+		after.size                = wb.size;
+		vk_buffer.pipelineBarrier(
+		    vk::PipelineStageFlagBits::eTransfer,
+		    vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader |
+		        vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eTransfer |
+		        vk::PipelineStageFlagBits::eAllCommands,
+		    vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &after, 0, nullptr);
+	}
+	static std::atomic<uint32_t> log_count {0};
+	if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+		LOGF("StorageBuffer: flushed %zu unaligned stream writeback(s)\n",
+		     m_storage_stream_writebacks.size());
+	}
+	m_storage_stream_writebacks.clear();
+}
+
 void CommandBuffer::RecycleDescriptorsAfterFence() {
 	for (auto* set: m_descriptor_sets_after_fence) {
 		GetRenderContext().GetDescriptorCache().Recycle(*set);
@@ -426,6 +507,10 @@ void CommandBuffer::FinalizeFence(bool reset_recording) {
 		}
 	}
 	if (reset_recording) {
+		if (!m_storage_stream_writebacks.empty()) {
+			EXIT("CommandBuffer: %zu storage stream writeback(s) were not flushed before reset\n",
+			     m_storage_stream_writebacks.size());
+		}
 		m_host_stream.Reset();
 	}
 	if (was_executed) {

@@ -154,8 +154,9 @@ FindImageRetirementConflict(std::span<const ImageRetirementRange> ranges) {
 			if (ranges[retained].retire) {
 				continue;
 			}
-			if (ImageRangeOverlaps(ranges[retired].address, ranges[retired].size,
-			                       ranges[retained].address, ranges[retained].size)) {
+			// Tracker ownership is page-granular (#84 void tRrLM screen transitions).
+			if (ImagePageRangesOverlap(ranges[retired].address, ranges[retired].size,
+			                           ranges[retained].address, ranges[retained].size)) {
 				return {retired, retained};
 			}
 		}

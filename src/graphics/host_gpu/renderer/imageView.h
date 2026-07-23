@@ -25,13 +25,21 @@ namespace Libs::Graphics {
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UNorm) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UInt) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb);
+	const bool rgba16f =
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16Float);
+	const bool packed_float =
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k11_11_10Float) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k10_11_11Float);
 	return swizzle == DstSel(4, 5, 6, 7) ||
 	       (single_channel && (swizzle == DstSel(4, 0, 0, 0) || swizzle == DstSel(4, 0, 0, 1) ||
 	                           swizzle == DstSel(4, 4, 4, 4))) ||
-	       (two_channel && swizzle == DstSel(4, 5, 0, 1)) ||
-	       ((rgba8 || format == Prospero::GpuEnumValue(Prospero::BufferFormat::k11_11_10Float)) &&
-	        swizzle == DstSel(4, 5, 6, 1)) ||
+	       (two_channel && (swizzle == DstSel(4, 5, 0, 1) || swizzle == DstSel(4, 5, 0, 0) ||
+	                        swizzle == DstSel(4, 5, 4, 5) || swizzle == DstSel(4, 5, 1, 1) ||
+	                        swizzle == DstSel(4, 5, 1, 0))) ||
+	       ((rgba8 || packed_float || rgba16f) &&
+	        (swizzle == DstSel(4, 5, 6, 1) || swizzle == DstSel(4, 5, 6, 0))) ||
 	       (rgba8 && swizzle == DstSel(6, 5, 4, 7)) ||
+	       (rgba16f && swizzle == DstSel(4, 5, 6, 7)) ||
 	       (format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32_32_32Float) &&
 	        swizzle == DstSel(5, 6, 7, 4));
 }
@@ -128,7 +136,13 @@ namespace Libs::Graphics {
 	    IsRgba8UnormUintReinterpretation(image_format, view_format)) {
 		return true;
 	}
-	return IsBgraToRgbaSampledView(image_format, view_format) && swizzle == DstSel(6, 5, 4, 7);
+	if (IsBgraToRgbaSampledView(image_format, view_format) && swizzle == DstSel(6, 5, 4, 7)) {
+		return true;
+	}
+	// BGRA display/RT images rebound as RGBA8 uint with BGRA channel order (#41 Callisto).
+	return (image_format == vk::Format::eB8G8R8A8Unorm ||
+	        image_format == vk::Format::eB8G8R8A8Srgb) &&
+	       view_format == vk::Format::eR8G8B8A8Uint && swizzle == DstSel(6, 5, 4, 7);
 }
 
 [[nodiscard]] inline uint32_t
@@ -164,6 +178,8 @@ SelectSampledDepthView(vk::Format image_format, vk::Format view_format, uint32_t
 
 [[nodiscard]] inline bool
 IsSupportedSampledDepthResource(const ShaderRecompiler::IR::ImageResource& resource) noexcept {
+	// depth_compare is expected for shadow maps (cube/array PCF). Compare state lives on the
+	// paired sampler; the image resource itself remains a readable depth view.
 	return resource.kind == ShaderRecompiler::IR::ResourceKind::Image &&
 	       (resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D ||
 	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DArray) &&
@@ -192,10 +208,12 @@ IsSupportedSampledDepthUintResource(const ShaderRecompiler::IR::ImageResource& r
 	    swizzle == DstSel(4, 5, 6, 7) ||
 	    (single_channel && (swizzle == DstSel(4, 0, 0, 0) || swizzle == DstSel(4, 0, 0, 1) ||
 	                        swizzle == DstSel(4, 4, 4, 4))) ||
-	    (two_channel && swizzle == DstSel(4, 5, 0, 1)) ||
+	    (two_channel && (swizzle == DstSel(4, 5, 0, 1) || swizzle == DstSel(4, 5, 0, 0) ||
+	                     swizzle == DstSel(4, 5, 1, 1))) ||
 	    ((view_format == vk::Format::eR8G8B8A8Unorm || view_format == vk::Format::eR8G8B8A8Uint ||
-	      view_format == vk::Format::eB10G11R11UfloatPack32) &&
-	     swizzle == DstSel(4, 5, 6, 1)) ||
+	      view_format == vk::Format::eB10G11R11UfloatPack32 ||
+	      view_format == vk::Format::eR16G16B16A16Sfloat) &&
+	     (swizzle == DstSel(4, 5, 6, 1) || swizzle == DstSel(4, 5, 6, 0))) ||
 	    ((view_format == vk::Format::eR8G8B8A8Unorm || view_format == vk::Format::eR8G8B8A8Uint) &&
 	     swizzle == DstSel(6, 5, 4, 7)) ||
 	    (view_format == vk::Format::eR32G32B32A32Sfloat && swizzle == DstSel(5, 6, 7, 4));

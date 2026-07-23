@@ -35,8 +35,18 @@ struct TargetViewInfo {
 
 inline constexpr TargetViewInfo ResolveTargetViewInfo(uint32_t base_layer, uint32_t last_layer,
                                                       uint32_t draw_layer_offset = 0) {
-	if (base_layer > last_layer || draw_layer_offset != 0) {
+	if (base_layer > last_layer) {
 		return {};
+	}
+	// Draw-time slice offsets select a single layer within the encoded view range (Afterimage
+	// Decompress Htile / layered MRT paths). Clamp instead of rejecting the whole target.
+	if (draw_layer_offset != 0) {
+		const uint32_t span = last_layer - base_layer + 1u;
+		if (draw_layer_offset >= span) {
+			return {};
+		}
+		const uint32_t layer = base_layer + draw_layer_offset;
+		return {TargetViewType::Image2D, layer, 1u, last_layer + 1u};
 	}
 	return {base_layer == last_layer ? TargetViewType::Image2D : TargetViewType::Image2DArray,
 	        base_layer, last_layer - base_layer + 1u, last_layer + 1u};

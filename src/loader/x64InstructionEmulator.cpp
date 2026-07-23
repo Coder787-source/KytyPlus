@@ -284,7 +284,7 @@ static size_t GetX64InstructionLength(const uint8_t* code) {
 	if (op == 0x83) {
 		return finish_modrm(1);
 	}
-	// MOVZX / MOVSX / MOVSXD with 0F prefix already consumed? handle 0F escape
+	// MOVZX / MOVSX / MOVSXD / SSE memory ops with 0F escape
 	if (op == 0x0f) {
 		if (offset >= 15) {
 			return 0;
@@ -293,7 +293,30 @@ static size_t GetX64InstructionLength(const uint8_t* code) {
 		if (op2 == 0xb6 || op2 == 0xb7 || op2 == 0xbe || op2 == 0xbf || op2 == 0xb0 || op2 == 0xb1) {
 			return finish_modrm(0);
 		}
+		// MOVAPS/MOVAPD/MOVUPS/MOVUPD/MOVDQA/MOVDQU stores and loads to/from memory
+		if (op2 == 0x28 || op2 == 0x29 || op2 == 0x10 || op2 == 0x11 || op2 == 0x6f || op2 == 0x7f ||
+		    op2 == 0x2b || op2 == 0x12 || op2 == 0x13 || op2 == 0x16 || op2 == 0x17) {
+			return finish_modrm(0);
+		}
+		// MOVSS/MOVSD already covered via F2/F3 prefixes + 0F 10/11
 		return 0;
+	}
+	// VEX-encoded AVX memory ops: 2-byte (C5) or 3-byte (C4) VEX + opcode + ModRM
+	if (op == 0xc5) {
+		if (offset + 1 >= 15) {
+			return 0;
+		}
+		++offset; // VEX.vvvv.L.pp
+		++offset; // opcode
+		return finish_modrm(0);
+	}
+	if (op == 0xc4) {
+		if (offset + 2 >= 15) {
+			return 0;
+		}
+		offset += 2; // m-mmmm.W.vvvv.L.pp
+		++offset;    // opcode
+		return finish_modrm(0);
 	}
 	// PUSH/POP r/m
 	if (op == 0xff || op == 0x8f) {
@@ -304,8 +327,10 @@ static size_t GetX64InstructionLength(const uint8_t* code) {
 }
 
 bool TrySkipNullPageAccess(void* native_context, uint64_t access_vaddr) {
-	constexpr uint64_t kNullPageSize = 0x1000;
-	if (native_context == nullptr || access_vaddr >= kNullPageSize) {
+	// Cover the first 64 KiB — Unity/Unreal often fault on small non-null near-zero pointers
+	// after a failed Addressables/asset load (#66 class).
+	constexpr uint64_t kLowFaultWindow = 0x10000;
+	if (native_context == nullptr || access_vaddr >= kLowFaultWindow) {
 		return false;
 	}
 	auto* context = static_cast<PCONTEXT>(native_context);
@@ -318,9 +343,56 @@ bool TrySkipNullPageAccess(void* native_context, uint64_t access_vaddr) {
 	    (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
 		return false;
 	}
-	const size_t length = GetX64InstructionLength(code);
+	size_t length = GetX64InstructionLength(code);
+	// Fallback: many Unity faults are still ModRM memory ops our decoder missed. If the byte
+	// after prefixes looks like it has a ModRM, skip a conservative ModRM-sized instruction.
 	if (length == 0 || length > 15) {
-		return false;
+		size_t at = 0;
+		while (at < 4 && (code[at] == 0x66 || code[at] == 0x67 || code[at] == 0xf0 ||
+		                  code[at] == 0xf2 || code[at] == 0xf3 || (code[at] & 0xf0u) == 0x40u)) {
+			++at;
+		}
+		if (at < 14) {
+			const uint8_t maybe_op = code[at];
+			// Prefer treating unknown memory ops as opcode + ModRM (+ optional SIB/disp).
+			if (maybe_op != 0xc3 && maybe_op != 0xc2 && maybe_op != 0xe8 && maybe_op != 0xe9) {
+				uint8_t modrm = 0;
+				size_t  disp  = 0;
+				bool    sib   = false;
+				if (at + 1 < 15) {
+					const uint8_t m   = code[at + 1];
+					const uint8_t mod = static_cast<uint8_t>(m >> 6u);
+					const uint8_t rm  = static_cast<uint8_t>(m & 0x7u);
+					size_t        len = at + 2;
+					if (mod != 3 && rm == 4) {
+						++len; // SIB
+					}
+					if (mod == 1) {
+						len += 1;
+					} else if (mod == 2 || (mod == 0 && rm == 5)) {
+						len += 4;
+					}
+					if (len > 0 && len <= 15) {
+						length = len;
+						(void)modrm;
+						(void)disp;
+						(void)sib;
+					}
+				}
+			}
+		}
+	}
+	if (length == 0 || length > 15) {
+		// Last resort for near-null faults: skip one byte so Unity/Unreal null-object writes
+		// (#66 Blasphemous 2) do not kill the process when the decoder cannot size the insn.
+		length = 1;
+		static std::atomic<uint32_t> fallback_logs {0};
+		if (fallback_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-skip null-page access (1-byte fallback): rip=0x%016" PRIx64
+			           " vaddr=0x%016" PRIx64 "\n",
+			           static_cast<uint64_t>(context->Rip), access_vaddr);
+		}
 	}
 	static std::atomic<uint32_t> skip_logs {0};
 	if (skip_logs.fetch_add(1, std::memory_order_relaxed) < 32) {

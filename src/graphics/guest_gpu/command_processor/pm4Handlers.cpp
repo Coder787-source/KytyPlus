@@ -1801,14 +1801,17 @@ KYTY_CP_OP_PARSER(CpOpAcquireMem) {
 	switch (cache_action) {
 		case 0x00000000: {
 			if (custom && gcr_cntl != 0) {
-				LOGF("\t custom acquire_mem GCR-only barrier, gcr_cntl = 0x%08" PRIx32
-				     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-				     gcr_cntl, base_lo << 8u, size_lo << 8u);
-
-				cp.MemoryBarrier();
-				if ((gcr_cntl & AcquireGcrGl2Writeback) != 0) {
-					cp.SynchronizeGpu();
+				static std::atomic<uint32_t> gcr_logs {0};
+				if (gcr_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF("\t custom acquire_mem GCR-only barrier, gcr_cntl = 0x%08" PRIx32
+					     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
+					     gcr_cntl, base_lo << 8u, size_lo << 8u);
 				}
+
+				// GPU ordering only — a full SynchronizeGpu() (flush every CP) on every GCR
+				// writeback stalls light titles to single-digit FPS. CPU visibility is handled
+				// by release_mem / EOP label paths that actually publish guest memory.
+				cp.MemoryBarrier();
 			}
 		} break;
 		case 0x00000040:
@@ -1820,9 +1823,15 @@ KYTY_CP_OP_PARSER(CpOpAcquireMem) {
 			EXIT_IF(extended_action != 0x00000000);
 			EXIT_IF(action != 0x00);
 
-			LOGF("\t temporary: acquire_mem target-mask-only barrier, target_mask = 0x%08" PRIx32
-			     ", gcr_cntl = 0x%08" PRIx32 ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-			     target_mask, gcr_cntl, base_lo << 8u, size_lo << 8u);
+			{
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF("\t temporary: acquire_mem target-mask-only barrier, target_mask = 0x%08"
+					     PRIx32 ", gcr_cntl = 0x%08" PRIx32 ", base = 0x%016" PRIx64
+					     ", size = 0x%016" PRIx64 "\n",
+					     target_mask, gcr_cntl, base_lo << 8u, size_lo << 8u);
+				}
+			}
 
 			cp.MemoryBarrier();
 		} break;
@@ -1834,9 +1843,14 @@ KYTY_CP_OP_PARSER(CpOpAcquireMem) {
 			EXIT_IF(extended_action != 0x02000000);
 			EXIT_IF(action != 0x00);
 
-			LOGF("\t temporary: acquire_mem CB-cache-only barrier, gcr_cntl = 0x%08" PRIx32
-			     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-			     gcr_cntl, base_lo << 8u, size_lo << 8u);
+			{
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF("\t temporary: acquire_mem CB-cache-only barrier, gcr_cntl = 0x%08" PRIx32
+					     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
+					     gcr_cntl, base_lo << 8u, size_lo << 8u);
+				}
+			}
 
 			cp.MemoryBarrier();
 		} break;
@@ -1848,9 +1862,14 @@ KYTY_CP_OP_PARSER(CpOpAcquireMem) {
 			EXIT_IF(extended_action != 0x04000000);
 			EXIT_IF(action != 0x00);
 
-			LOGF("\t temporary: acquire_mem DB-cache-only barrier, gcr_cntl = 0x%08" PRIx32
-			     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-			     gcr_cntl, base_lo << 8u, size_lo << 8u);
+			{
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF("\t temporary: acquire_mem DB-cache-only barrier, gcr_cntl = 0x%08" PRIx32
+					     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
+					     gcr_cntl, base_lo << 8u, size_lo << 8u);
+				}
+			}
 
 			cp.MemoryBarrier();
 		} break;
@@ -2938,12 +2957,10 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	};
 
 	if (data_sel == 0 || interrupt_selector == 4) {
-		if (eop_event_type != 0x28 || gcr_cntl != 0) {
+		if (eop_event_type != 0x28 || gcr_cntl != 0 || gl2_writeback) {
+			// Coalesced GPU barrier is enough for EOP/interrupt-only releases. A full
+			// SynchronizeGpu() here serialized every frame on titles that spam GL2 writeback.
 			cp.MemoryBarrier();
-		}
-
-		if (gl2_writeback) {
-			cp.SynchronizeGpu();
 		}
 
 		trigger_interrupt();
@@ -2952,12 +2969,8 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	}
 
 	if (release_dst == ReleaseMemDstMemory && dst_gpu_addr == nullptr) {
-		if (eop_event_type != 0x28 || gcr_cntl != 0) {
+		if (eop_event_type != 0x28 || gcr_cntl != 0 || gl2_writeback) {
 			cp.MemoryBarrier();
-		}
-
-		if (gl2_writeback) {
-			cp.SynchronizeGpu();
 		}
 
 		trigger_interrupt();

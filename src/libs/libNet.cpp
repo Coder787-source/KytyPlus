@@ -1,4 +1,4 @@
-#include "common/abi.h"
+﻿#include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/logging/log.h"
@@ -86,6 +86,10 @@ int KYTY_SYSV_ABI NetAccept(int s, void* addr, uint32_t* addrlen) {
 
 int KYTY_SYSV_ABI NetBind(int s, const void* addr, uint32_t addrlen) {
 	return FinishSocketCall(Net::Bind(s, addr, addrlen));
+}
+
+int KYTY_SYSV_ABI NetGetsockname(int s, void* addr, uint32_t* addrlen) {
+	return FinishSocketCall(Net::Getsockname(s, addr, addrlen));
 }
 
 int KYTY_SYSV_ABI NetListen(int s, int backlog) {
@@ -184,6 +188,7 @@ LIB_DEFINE(InitNet_1_Net) {
 	LIB_FUNC("HQOwnfMGipQ", LibNet::GetNetErrorAddr);
 	LIB_FUNC("PIWqhn9oSxc", LibNet::NetAccept);
 	LIB_FUNC("bErx49PgxyY", LibNet::NetBind);
+	LIB_FUNC("hoOAofhhRvE", LibNet::NetGetsockname);
 	LIB_FUNC("dgJBaeJnGpo", LibNet::NetPoolCreate);
 	LIB_FUNC("K7RlrTkI-mw", LibNet::NetPoolDestroy);
 	LIB_FUNC("C4UgDHHPvdw", LibNet::NetResolverCreate);

@@ -614,8 +614,7 @@ static void ZCheck(const HW::DepthRenderTarget& z) {
 		if (z.depth_view.slice_start != 0x00000000 || z.depth_view.slice_max != 0x00000000) {
 			static std::atomic<uint32_t> log_count {0};
 			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-				LOGF("DepthTarget: temporary: ignoring PS5 array slice view start=0x%08" PRIx32
-				     ", max=0x%08" PRIx32 "\n",
+				LOGF("DepthTarget: array slice view start=0x%08" PRIx32 ", max=0x%08" PRIx32 "\n",
 				     z.depth_view.slice_start, z.depth_view.slice_max);
 			}
 		}
@@ -1244,6 +1243,11 @@ ScissorRect calc_final_scissor(const HW::ScreenViewport& vp, const HW::ScanModeC
 }
 
 void hw_check(const RenderCommandBuffer& buffer) {
+	// Per-draw state walks are for debug dumps only. Leaving them on every indexed draw
+	// costs measurable FPS on sprite-heavy light titles (Raiden / Alex Kidd / TMNT).
+	if (!graphics_debug_dump_enabled()) {
+		return;
+	}
 	const auto& hw      = buffer.GetRegisters();
 	const auto  rt_slot = render_target_first_bound_slot(buffer);
 	const auto& rt      = hw.GetRenderTarget(rt_slot);
@@ -1264,11 +1268,9 @@ void hw_check(const RenderCommandBuffer& buffer) {
 	const auto& ac      = hw.GetAaConfig();
 
 	auto log_phase = [](const char* phase) {
-		if (graphics_debug_dump_enabled()) {
-			static std::atomic<uint32_t> log_count {0};
-			if (log_count.fetch_add(1, std::memory_order_relaxed) < 512) {
-				LOGF("HwCheckPhase: %s\n", phase);
-			}
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 512) {
+			LOGF("HwCheckPhase: %s\n", phase);
 		}
 	};
 
@@ -1312,7 +1314,6 @@ void hw_check(const RenderCommandBuffer& buffer) {
 			     hw.GetDepthClearValue());
 		}
 	}
-	// EXIT_NOT_IMPLEMENTED(hw.GetStencilClearValue() != 0);
 }
 
 void hw_print(const RenderCommandBuffer& buffer) {

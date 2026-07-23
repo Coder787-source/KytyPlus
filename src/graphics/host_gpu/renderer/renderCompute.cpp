@@ -58,14 +58,15 @@ bool ResolveHtileClearTarget(const HW::DepthRenderTarget& z, uint64_t descriptor
 	const auto* depth_policy = FindDepthFormatPolicy(z.z_info.format);
 	const bool  supported_depth_state =
 	    z.z_info.tile_surface_enable && depth_policy != nullptr && z.z_info.tile_mode_index == 0 &&
-	    z.z_info.num_samples <= 3 && z.z_info.zrange_precision <= 1 && !z.z_info.expclear_enabled &&
+	    z.z_info.num_samples <= 3 && !z.z_info.expclear_enabled &&
 	    !z.z_info.embedded_sample_locations && !z.z_info.partially_resident &&
 	    z.z_info.num_mip_levels == 0 && z.z_info.plane_compression == 0 &&
-	    z.depth_view.current_mip_level == 0 && z.depth_view.slice_start == 0 &&
-	    z.depth_view.slice_max == 0 && z.depth_info.addr5_swizzle_mask == 0 &&
-	    z.depth_info.array_mode == 0 && z.depth_info.pipe_config == 0 &&
-	    z.depth_info.bank_width == 0 && z.depth_info.bank_height == 0 &&
-	    z.depth_info.macro_tile_aspect == 0 && z.depth_info.num_banks == 0;
+	    z.depth_view.current_mip_level == 0 &&
+	    z.depth_view.slice_start <= z.depth_view.slice_max && z.depth_view.slice_max < 2048 &&
+	    z.depth_info.addr5_swizzle_mask == 0 && z.depth_info.array_mode == 0 &&
+	    z.depth_info.pipe_config == 0 && z.depth_info.bank_width == 0 &&
+	    z.depth_info.bank_height == 0 && z.depth_info.macro_tile_aspect == 0 &&
+	    z.depth_info.num_banks == 0;
 	const bool supported_stencil_state =
 	    z.stencil_info.tile_mode_index == 0 && z.stencil_info.tile_split == 0 &&
 	    !z.stencil_info.expclear_enabled &&
@@ -121,11 +122,34 @@ bool ResolveHtileClearTarget(const HW::DepthRenderTarget& z, uint64_t descriptor
 		return false;
 	}
 	TileSizeAlign htile_size {};
-	if (!TileGetHtileSize(width, height, htile_size) || htile_size.size != descriptor_size) {
+	if (!TileGetHtileSize(width, height, htile_size) || htile_size.size == 0) {
 		return false;
 	}
-	resolved = {.address = z.htile_data_base_addr, .size = htile_size.size};
-	return true;
+	// Layered depth attachments store one HTile slab per array slice. Accept either a single-slice
+	// descriptor or a packed multi-slice surface covering [slice_start, slice_max] (#49 Afterimage
+	// Decompress Htile / cube shadow clears).
+	const uint32_t layer_count = z.depth_view.slice_max - z.depth_view.slice_start + 1u;
+	const uint64_t full_layers = static_cast<uint64_t>(z.depth_view.slice_max) + 1u;
+	if (htile_size.size > UINT64_MAX / full_layers) {
+		return false;
+	}
+	const uint64_t layered_size = static_cast<uint64_t>(htile_size.size) * full_layers;
+	const uint64_t view_size    = static_cast<uint64_t>(htile_size.size) * layer_count;
+	const uint64_t view_addr =
+	    z.htile_data_base_addr + static_cast<uint64_t>(htile_size.size) * z.depth_view.slice_start;
+	if (descriptor_size == htile_size.size) {
+		resolved = {.address = view_addr, .size = htile_size.size};
+		return true;
+	}
+	if (descriptor_size == view_size) {
+		resolved = {.address = view_addr, .size = view_size};
+		return true;
+	}
+	if (descriptor_size == layered_size && z.depth_view.slice_start == 0) {
+		resolved = {.address = z.htile_data_base_addr, .size = layered_size};
+		return true;
+	}
+	return false;
 }
 
 static void ValidateFullHtileClearDispatch(const ShaderComputeInputInfo& input,
@@ -190,27 +214,25 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
 		return false;
 	}
 	if (current_references > 1 || (current_references == 0 && registered_writes > 1)) {
-		EXIT("HTile clear has ambiguous metadata descriptors: current=%u registered=%u\n",
-		     current_references, registered_writes);
+		EXIT("ambiguous HTile clear: current=%u registered=%u\n", current_references,
+		     registered_writes);
 	}
 	HtileClearTarget target {};
 	if (current_references != 0) {
 		if (!ResolveHtileClearTarget(z, described_meta_size, target)) {
-			EXIT("unsupported HTile compute-clear target state: current=%u registered=%u "
-			     "meta=0x%016" PRIx64 "+0x%016" PRIx64 " depth=0x%016" PRIx64 "/0x%016" PRIx64
-			     " stencil=0x%016" PRIx64 "/0x%016" PRIx64
-			     " extent=%d:%ux%u wh=%d:%ux%u pitch=%d:%u/%u/%u zfmt=%u sfmt=%u samples=%u\n",
-			     current_references, registered_writes, meta_addr, described_meta_size,
-			     z.z_read_base_addr, z.z_write_base_addr, z.stencil_read_base_addr,
-			     z.stencil_write_base_addr, z.size.valid, static_cast<uint32_t>(z.size.x_max) + 1u,
-			     static_cast<uint32_t>(z.size.y_max) + 1u, z.width_height_valid, z.width, z.height,
-			     z.pitch_height_valid, z.pitch_div8_minus1, z.height_div8_minus1,
-			     z.slice_div64_minus1, z.z_info.format, z.stencil_info.format,
-			     z.z_info.num_samples);
+			EXIT("unsupported HTile compute-clear target state, meta=0x%016" PRIx64
+			     " descriptor_size=0x%016" PRIx64 " slices=%u..%u\n",
+			     meta_addr, described_meta_size, z.depth_view.slice_start, z.depth_view.slice_max);
 		}
-		cache.RegisterMeta(target.address, target.size);
+		const uint32_t meta_layers =
+		    z.depth_view.slice_max >= z.depth_view.slice_start
+		        ? (z.depth_view.slice_max - z.depth_view.slice_start + 1u)
+		        : 1u;
+		cache.RegisterMeta(target.address, target.size, meta_layers);
 		if (!cache.ResolveMetaRange(target.address, target.size, registered_meta)) {
-			EXIT("failed to resolve registered HTile compute-clear range\n");
+			EXIT("failed to resolve registered HTile clear range addr=0x%016" PRIx64
+			     " size=0x%016" PRIx64 "\n",
+			     target.address, target.size);
 		}
 	} else {
 		target = registered_target;
@@ -221,8 +243,7 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
 	ShaderBufferResource metadata_descriptor {};
 	if (!program.info.images.empty() || !program.info.samplers.empty() ||
 	    !program.info.addresses.empty()) {
-		EXIT("HTile clear with non-buffer resources is unsupported: images=%zu samplers=%zu "
-		     "addresses=%zu\n",
+		EXIT("HTile clear with non-buffer resources: images=%zu samplers=%zu addresses=%zu\n",
 		     program.info.images.size(), program.info.samplers.size(),
 		     program.info.addresses.size());
 	}
@@ -250,8 +271,7 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
 		                                                      true, false);
 	}
 	if (metadata_writes != 1) {
-		EXIT("HTile clear requires exactly one write-only metadata buffer, writes=%u\n",
-		     metadata_writes);
+		EXIT("HTile clear requires exactly one metadata write, writes=%u\n", metadata_writes);
 	}
 	ValidateFullHtileClearDispatch(input, metadata_descriptor, group_x, group_y, group_z, mode);
 	const bool recorded = registered_meta.full ? cache.ClearMeta(registered_meta.metadata_address)
@@ -384,7 +404,7 @@ void RenderDispatchDirect(uint64_t submit_id, RenderCommandBuffer& buffer, uint3
 	ShaderComputeInputInfo    input_info {};
 	std::span<const uint32_t> cs_shader;
 	if (!ShaderCompileInfoCS(cs_regs, sh_regs, input_info, cs_shader)) {
-		EXIT("ShaderCompileInfoCS failed for dispatch with CS shader 0x%016" PRIx64 "\n",
+		EXIT("dispatch: ShaderCompileInfoCS failed for CS 0x%016" PRIx64 "\n",
 		     cs_regs.cs_regs.data_addr);
 	}
 
@@ -513,6 +533,7 @@ void RenderDispatchDirect(uint64_t submit_id, RenderCommandBuffer& buffer, uint3
 		                pipeline.pipeline_layout, input_info.stage,
 		                vk::ShaderStageFlagBits::eCompute, DescriptorCache::Stage::Compute);
 		if (buffer.GetRecordingGeneration() != recording_generation) {
+			buffer.ClearStorageStreamWritebacks();
 			continue;
 		}
 
@@ -531,6 +552,7 @@ void RenderDispatchDirect(uint64_t submit_id, RenderCommandBuffer& buffer, uint3
 		if (has_storage_writes) {
 			ShaderWriteBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 		}
+		buffer.FlushStorageStreamWritebacks();
 		break;
 	}
 }

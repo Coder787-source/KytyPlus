@@ -895,16 +895,11 @@ void TextureCache::RequireRetirementIsolation(const std::vector<CachedImage*>& r
 	if (conflict.Exists()) {
 		const auto& retired  = ranges[conflict.retired];
 		const auto& retained = ranges[conflict.retained];
-		static std::atomic<uint32_t> alias_logs {0};
-		if (alias_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "TextureCache: %s retirement still has a tracked page alias after expand, "
-			           "request=0x%016" PRIx64 "+0x%016" PRIx64 " retired=0x%016" PRIx64
-			           "+0x%016" PRIx64 " retained=0x%016" PRIx64 "+0x%016" PRIx64
-			           " — continuing\n",
-			           operation, address, size, retired.address, retired.size, retained.address,
-			           retained.size);
-		}
+		EXIT("TextureCache: %s retirement leaves a tracked page alias, request=0x%016" PRIx64
+		     "+0x%016" PRIx64 " retired=0x%016" PRIx64 "+0x%016" PRIx64 " retained=0x%016" PRIx64
+		     "+0x%016" PRIx64 "\n",
+		     operation, address, size, retired.address, retired.size, retained.address,
+		     retained.size);
 	}
 }
 
@@ -924,8 +919,11 @@ void TextureCache::ExpandRetirementAliases(std::vector<CachedImage*>& retire) {
 			for (auto* retiring: retire) {
 				for (uint32_t left = 0; left < cached->RangeCount() && !overlaps_retiree; left++) {
 					for (uint32_t right = 0; right < retiring->RangeCount(); right++) {
-						if (ImageRangeOverlaps(cached->Address(left), cached->Size(left),
-						                       retiring->Address(right), retiring->Size(right))) {
+						// Page-granular: void tRrLM (#84) chains heap neighbors that share tracker
+						// pages even when the newly requested RT only byte-overlaps one of them.
+						if (ImagePageRangesOverlap(cached->Address(left), cached->Size(left),
+						                           retiring->Address(right),
+						                           retiring->Size(right))) {
 							overlaps_retiree = true;
 							break;
 						}
@@ -956,30 +954,77 @@ void TextureCache::ExpandRetirementAliases(std::vector<CachedImage*>& retire) {
 			const bool downloadable =
 			    cached->gpu_modified && tracker_gpu && !cached->buffer_modified && !cpu_dirty &&
 			    (cached->kind == CachedImage::Kind::StorageTexture ||
-			     cached->kind == CachedImage::Kind::RenderTarget);
-			if (cached->kind == CachedImage::Kind::Texture) {
-				if (!guest_current) {
-					// Chained page aliases (#84): a dirty sampled image sitting on the same pages
-					// as a retiring RT/storage blocks isolation. Drop the GPU marker and retire
-					// with the set — guest heap reuse already owns the next binding shape.
-					static std::atomic<uint32_t> force_logs {0};
-					if (force_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-						LOGF_COLOR(Log::Color::Yellow,
-						           "TextureCache: forcing sampled alias into retirement, "
-						           "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-						           " gpu=%d buffer=%d tracker=%d\n",
-						           cached->Address(), cached->Size(), cached->gpu_modified,
-						           cached->buffer_modified, tracker_gpu);
-					}
-					cached->gpu_modified    = false;
-					cached->buffer_modified = false;
+			     cached->kind == CachedImage::Kind::RenderTarget ||
+			     cached->kind == CachedImage::Kind::DepthTarget);
+			if (!guest_current && !downloadable) {
+				// Chained page aliases (#84): drop ownership markers and retire with the set.
+				static std::atomic<uint32_t> force_logs {0};
+				if (force_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "TextureCache: forcing aliased image into retirement, kind=%u "
+					           "addr=0x%016" PRIx64 " size=0x%016" PRIx64
+					           " gpu=%d buffer=%d tracker=%d cpu=%d\n",
+					           static_cast<uint32_t>(cached->kind), cached->Address(),
+					           cached->Size(), cached->gpu_modified, cached->buffer_modified,
+					           tracker_gpu, cpu_dirty);
 				}
-			} else if (!guest_current && !downloadable) {
-				continue;
+				cached->gpu_modified    = false;
+				cached->buffer_modified = false;
 			}
 			retire.push_back(cached);
 			grew = true;
 		}
+	}
+}
+
+void TextureCache::IsolateRetirementSet(std::vector<CachedImage*>& retire) {
+	ExpandRetirementAliases(retire);
+	for (uint32_t pass = 0; pass < 64; pass++) {
+		std::vector<ImageRetirementRange> ranges;
+		ranges.reserve(m_images.size() * 2);
+		for (const auto& cached: m_images) {
+			const bool retiring =
+			    std::find(retire.begin(), retire.end(), cached.get()) != retire.end();
+			for (uint32_t range = 0; range < cached->RangeCount(); range++) {
+				ranges.push_back({cached->Address(range), cached->Size(range), retiring});
+			}
+		}
+		const auto conflict = FindImageRetirementConflict(ranges);
+		if (!conflict.Exists()) {
+			return;
+		}
+		const auto& retained_range = ranges[conflict.retained];
+		CachedImage* victim        = nullptr;
+		for (auto& entry: m_images) {
+			auto* cached = entry.get();
+			if (std::find(retire.begin(), retire.end(), cached) != retire.end()) {
+				continue;
+			}
+			for (uint32_t range = 0; range < cached->RangeCount(); range++) {
+				if (cached->Address(range) == retained_range.address &&
+				    cached->Size(range) == retained_range.size) {
+					victim = cached;
+					break;
+				}
+			}
+			if (victim != nullptr) {
+				break;
+			}
+		}
+		if (victim == nullptr) {
+			return;
+		}
+		static std::atomic<uint32_t> isolate_logs {0};
+		if (isolate_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: isolating retained alias into retirement, kind=%u "
+			           "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+			           static_cast<uint32_t>(victim->kind), victim->Address(), victim->Size());
+		}
+		victim->gpu_modified    = false;
+		victim->buffer_modified = false;
+		retire.push_back(victim);
+		ExpandRetirementAliases(retire);
 	}
 }
 
@@ -1294,12 +1339,20 @@ void TextureCache::RetireSampledTargetAliases(const ImageInfo& requested) {
 			case RenderTargetOverlap::RetireStorage:
 			case RenderTargetOverlap::PreserveStorage:
 			case RenderTargetOverlap::ExpandTarget:
-			case RenderTargetOverlap::Unsupported:
-				EXIT("TextureCache: unsupported sampled/render-target alias, sampled=0x%016" PRIx64
-				     "+0x%016" PRIx64 " target=0x%016" PRIx64 "+0x%016" PRIx64
-				     " gpu=%d buffer=%d\n",
-				     requested.address, requested.size, cached->target.address, cached->target.size,
-				     cached->gpu_modified, cached->buffer_modified);
+			case RenderTargetOverlap::Unsupported: {
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "TextureCache: soft-retire sampled/render-target alias, "
+					           "sampled=0x%016" PRIx64 "+0x%016" PRIx64 " target=0x%016" PRIx64
+					           "+0x%016" PRIx64 " gpu=%d buffer=%d\n",
+					           requested.address, requested.size, cached->target.address,
+					           cached->target.size, cached->gpu_modified, cached->buffer_modified);
+				}
+				wait_idle |= cached->gpu_modified;
+				retire.push_back(cached);
+				break;
+			}
 		}
 	}
 	for (auto* cached: FindImagesInRegionLocked(requested.address, requested.size, true)) {
@@ -1338,22 +1391,20 @@ void TextureCache::RetireSampledTargetAliases(const ImageInfo& requested) {
 		    (exact_range || sampled_expansion);
 		const bool supported = clean_pool_alias || native_transition;
 		if (!supported) {
-			EXIT("TextureCache: unsupported sampled/depth-target alias, sampled=0x%016" PRIx64
-			     "+0x%016" PRIx64 " depth=0x%016" PRIx64 "+0x%016" PRIx64
-			     " overlaps=%d/%d contained=%d gpu=%d/%d/%d buffer=%d"
-			     " stencil=0x%016" PRIx64 "+0x%016" PRIx64 " layers=%u expansion=%d"
-			     " sampled_info={fmt=%u extent=%ux%u pitch=%u levels=%u/%u tile=%u type=%u}"
-			     " depth_info={fmt=%u host=%d extent=%ux%u pitch=%u tile=%u htile=0x%016" PRIx64
-			     "+0x%016" PRIx64 "}\n",
-			     requested.address, requested.size, cached->depth.address, cached->depth.size,
-			     overlaps_depth, overlaps_stencil, contained, cached->gpu_modified,
-			     depth_tracker_gpu, stencil_tracker_gpu, cached->buffer_modified,
-			     cached->depth.stencil_address, cached->depth.stencil_size, cached->depth.layers,
-			     sampled_expansion, requested.format, requested.width, requested.height,
-			     requested.pitch, requested.levels, requested.view_levels, requested.tile,
-			     requested.type, cached->depth.guest_format, static_cast<int>(cached->depth.format),
-			     cached->depth.width, cached->depth.height, cached->depth.pitch,
-			     cached->depth.tile_mode, cached->depth.htile_address, cached->depth.htile_size);
+			static std::atomic<uint32_t> force_logs {0};
+			if (force_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "TextureCache: forcing sampled/depth-target alias into retirement, "
+				           "sampled=0x%016" PRIx64 "+0x%016" PRIx64 " depth=0x%016" PRIx64
+				           "+0x%016" PRIx64 "\n",
+				           requested.address, requested.size, cached->depth.address,
+				           cached->depth.size);
+			}
+			// Contents cannot be preserved as a native transition; download path below still runs
+			// when gpu_modified remains set. Only clear when we intentionally discard.
+			if (!cached->gpu_modified) {
+				cached->buffer_modified = false;
+			}
 		}
 		wait_idle |= cached->gpu_modified;
 		retire.push_back(cached);
@@ -1361,6 +1412,7 @@ void TextureCache::RetireSampledTargetAliases(const ImageInfo& requested) {
 	if (retire.empty()) {
 		return;
 	}
+	IsolateRetirementSet(retire);
 	RequireRetirementIsolation(retire, "sampled target", requested.address, requested.size);
 	if (wait_idle) {
 		Transfer::WaitForGraphicsIdle();
@@ -1394,25 +1446,13 @@ void TextureCache::ResolveStorageImageOverlaps(const ImageInfo& requested) {
 			case StorageImageOverlap::None: continue;
 			case StorageImageOverlap::RetireSampled: retire.push_back(cached); continue;
 			case StorageImageOverlap::PageNeighbor: continue;
-			case StorageImageOverlap::Unsupported: {
-				static std::atomic<uint32_t> soft_logs {0};
-				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-					LOGF_COLOR(Log::Color::Yellow,
-					           "TextureCache: soft-retire storage-image byte alias, "
-					           "requested=0x%016" PRIx64 "+0x%016" PRIx64 " existing=0x%016" PRIx64
-					           "+0x%016" PRIx64 " kind=%u gpu=%d/%d buffer=%d\n",
-					           requested.address, requested.size, cached->Address(), cached->Size(),
-					           static_cast<uint32_t>(cached->kind), cached->gpu_modified,
-					           tracker_gpu, cached->buffer_modified);
-				}
-				if (cached->kind == CachedImage::Kind::Texture && cached->gpu_modified &&
-				    cached->buffer_modified) {
-					cached->gpu_modified    = false;
-					cached->buffer_modified = false;
-				}
-				retire.push_back(cached);
-				continue;
-			}
+			case StorageImageOverlap::Unsupported:
+				EXIT("TextureCache: unsupported storage-image byte alias, requested=0x%016" PRIx64
+				     "+0x%016" PRIx64 " existing=0x%016" PRIx64 "+0x%016" PRIx64
+				     " kind=%u gpu=%d/%d buffer=%d\n",
+				     requested.address, requested.size, cached->Address(), cached->Size(),
+				     static_cast<uint32_t>(cached->kind), cached->gpu_modified, tracker_gpu,
+				     cached->buffer_modified);
 		}
 	}
 	// Every exact byte overlap was classified above: only clean sampled images are retired and all
@@ -1456,8 +1496,7 @@ void TextureCache::RetireStorageDepthAliasLocked(const ImageInfo& requested) {
 		    requested.depth == 1 && requested.levels == 1;
 		if (!exact_d32_uint || selected != nullptr) {
 			EXIT("TextureCache: unsupported storage/depth-target alias, requested=0x%016" PRIx64
-			     "+0x%016" PRIx64 " depth=0x%016" PRIx64 "+0x%016" PRIx64
-			     " exact=%d ambiguous=%d\n",
+			     "+0x%016" PRIx64 " depth=0x%016" PRIx64 "+0x%016" PRIx64 " exact=%d ambiguous=%d\n",
 			     requested.address, requested.size, depth.address, depth.size, exact_d32_uint,
 			     selected != nullptr);
 		}
@@ -1555,8 +1594,7 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 				EXIT("TextureCache: unsupported sampled/storage image alias, "
 				     "requested=0x%016" PRIx64 "+0x%016" PRIx64 " storage=0x%016" PRIx64
 				     "+0x%016" PRIx64
-				     " gpu_modified=%d buffer_modified=%d tracker_gpu=%d cpu_dirty=%d"
-				     " exact_mip=%d"
+				     " gpu_modified=%d buffer_modified=%d tracker_gpu=%d cpu_dirty=%d exact_mip=%d"
 				     " requested_info={format=%u extent=%ux%ux%u pitch=%u base=%u levels=%u"
 				     " view_levels=%u tile=%u swizzle=0x%03x type=%u base_array=%u}"
 				     " storage_info={format=%u extent=%ux%ux%u pitch=%u base=%u levels=%u"
@@ -1573,21 +1611,21 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 		}
 	}
 	if (storage_match != nullptr && !storage_retire.empty()) {
-		EXIT("TextureCache: sampled binding has both exact and mip storage owners, "
-		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " mip_owners=%zu\n",
-		     info.address, info.size, storage_retire.size());
+		// Exact GPU-resident storage wins over overlapping mip-chain retire candidates.
+		storage_retire.clear();
 	}
 	if (storage_match != nullptr) {
 		if (m_memory_tracker.IsRegionCpuModified(info.address, info.size) ||
 		    !m_memory_tracker.IsRegionGpuModified(info.address, info.size) ||
 		    storage_match->image->type != VulkanImageType::StorageTexture ||
 		    storage_match->image->image_view[VulkanImage::VIEW_DEFAULT] == nullptr) {
-			EXIT("TextureCache: sampled storage-image ownership or view is inconsistent, "
-			     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
-			     info.address, info.size);
+			// Ownership drifted — download/retire and rebuild as a sampled texture.
+			storage_retire.push_back(storage_match.get());
+			storage_match.reset();
+		} else {
+			command.RetainResourceUntilFence(storage_match);
+			return *storage_match->image;
 		}
-		command.RetainResourceUntilFence(storage_match);
-		return *storage_match->image;
 	}
 	if (!storage_retire.empty()) {
 		// Either a guest-current heap reuse (drop clean storage) or a modified mip/storage that
@@ -1602,20 +1640,34 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 			if (!cached->gpu_modified) {
 				if (cached->buffer_modified || cached->info.IsCpuDirty() ||
 				    m_memory_tracker.IsRegionGpuModified(cached->info.address, cached->info.size)) {
-					EXIT("TextureCache: sampled storage retirement lost guest ownership, "
-					     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " buffer=%d dirty=%d\n",
-					     cached->info.address, cached->info.size, cached->buffer_modified,
-					     cached->info.IsCpuDirty());
+					static std::atomic<uint32_t> soft_logs {0};
+					if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+						LOGF_COLOR(Log::Color::Yellow,
+						           "TextureCache: soft-drop sampled storage retirement with stale "
+						           "ownership, addr=0x%016" PRIx64 " size=0x%016" PRIx64
+						           " buffer=%d dirty=%d\n",
+						           cached->info.address, cached->info.size, cached->buffer_modified,
+						           cached->info.IsCpuDirty());
+					}
+					cached->buffer_modified = false;
 				}
 				continue;
 			}
 			if (cached->buffer_modified || cached->info.IsCpuDirty() ||
 			    !m_memory_tracker.IsRegionGpuModified(cached->info.address, cached->info.size) ||
 			    m_memory_tracker.IsRegionCpuModified(cached->info.address, cached->info.size)) {
-				EXIT("TextureCache: sampled mip-storage ownership changed during transition, "
-				     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " gpu=%d buffer=%d dirty=%d\n",
-				     cached->info.address, cached->info.size, cached->gpu_modified,
-				     cached->buffer_modified, cached->info.IsCpuDirty());
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "TextureCache: soft-drop sampled mip-storage with mixed ownership, "
+					           "addr=0x%016" PRIx64 " size=0x%016" PRIx64
+					           " gpu=%d buffer=%d dirty=%d\n",
+					           cached->info.address, cached->info.size, cached->gpu_modified,
+					           cached->buffer_modified, cached->info.IsCpuDirty());
+				}
+				cached->gpu_modified    = false;
+				cached->buffer_modified = false;
+				continue;
 			}
 			const auto transfer = m_readback->DownloadColorImage(*cached);
 			for (const auto& range: transfer.Ranges()) {
@@ -1683,13 +1735,11 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 			if (!cached->OverlapsRange(info.address, info.size, true)) {
 				continue;
 			}
-			EXIT("TextureCache: sampled image overlaps GPU target, requested=0x%016" PRIx64
-			     "+0x%016" PRIx64 " target=0x%016" PRIx64 "+0x%016" PRIx64
-			     " target_kind=%u requested_info={format=%u extent=%ux%ux%u pitch=%u levels=%u"
-			     " tile=%u type=%u}\n",
+			EXIT("TextureCache: sampled image overlaps GPU target without prior resolve, "
+			     "requested=0x%016" PRIx64 "+0x%016" PRIx64 " target=0x%016" PRIx64
+			     "+0x%016" PRIx64 " target_kind=%u\n",
 			     info.address, info.size, cached->Address(), cached->Size(),
-			     static_cast<uint32_t>(cached->kind), info.format, info.width, info.height,
-			     info.depth, info.pitch, info.levels, info.tile, info.type);
+			     static_cast<uint32_t>(cached->kind));
 		}
 		const auto overlap = ClassifySampledOverlap(info, cached->info, cached->gpu_modified);
 		if (overlap == SampledOverlap::Unsupported) {
@@ -1733,101 +1783,129 @@ StorageTextureVulkanImage& TextureCache::FindStorageTexture(CommandBuffer&   com
 	     TileIsStandard256BTextureSupported(info.format)) ||
 	    (info.tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
 	     TileIsStandard4KBTextureSupported(info.format));
-	if (info.address == 0 || info.size == 0 || info.address >= TRACKER_ADDRESS_SIZE ||
-	    info.size > TRACKER_ADDRESS_SIZE - info.address || info.width == 0 || info.height == 0 ||
-	    info.depth == 0 || info.levels == 0 || info.levels > 16 || info.base_level >= info.levels ||
-	    info.view_levels != 1 || info.base_array != 0 || !supported_type ||
-	    (info.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) && info.depth != 1) ||
-	    (info.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor3D) && info.depth == 0) ||
-	    (info.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
-	     info.base_array >= info.depth)) {
+	ImageInfo request = info;
+	if (request.view_levels != 1) {
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: soft-clamp storage-image view_levels %u -> 1, "
+			           "addr=0x%016" PRIx64 "\n",
+			           request.view_levels, request.address);
+		}
+		request.view_levels = 1;
+	}
+	if (request.base_array != 0 &&
+	    request.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
+	    request.base_array < request.depth) {
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: soft-allow storage-image base_array=%u depth=%u, "
+			           "addr=0x%016" PRIx64 "\n",
+			           request.base_array, request.depth, request.address);
+		}
+	} else if (request.base_array != 0) {
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: soft-zero storage-image base_array=%u, addr=0x%016" PRIx64
+			           "\n",
+			           request.base_array, request.address);
+		}
+		request.base_array = 0;
+	}
+	if (request.address == 0 || request.size == 0 || request.address >= TRACKER_ADDRESS_SIZE ||
+	    request.size > TRACKER_ADDRESS_SIZE - request.address || request.width == 0 ||
+	    request.height == 0 || request.depth == 0 || request.levels == 0 || request.levels > 16 ||
+	    request.base_level >= request.levels || request.view_levels != 1 || !supported_type ||
+	    (request.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
+	     request.depth != 1) ||
+	    (request.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor3D) &&
+	     request.depth == 0) ||
+	    (request.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
+	     request.base_array >= request.depth)) {
 		EXIT("TextureCache: unsupported storage-image request, command=%p "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
 		     " extent=%ux%ux%u levels=%u base_level=%u base_array=%u type=%u tile=%u "
 		     "swizzle=0x%03x\n",
-		     static_cast<const void*>(&command), info.address, info.size, info.width, info.height,
-		     info.depth, info.levels, info.base_level, info.base_array, info.type, info.tile,
-		     info.swizzle);
+		     static_cast<const void*>(&command), request.address, request.size, request.width,
+		     request.height, request.depth, request.levels, request.base_level, request.base_array,
+		     request.type, request.tile, request.swizzle);
 	}
 	const bool supported_tile =
-	    info.tile == Prospero::GpuEnumValue(Prospero::TileMode::kLinear) ||
-	    info.tile == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) ||
+	    request.tile == Prospero::GpuEnumValue(Prospero::TileMode::kLinear) ||
+	    request.tile == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) ||
 	    supported_standard_tile || supported_depth_tile;
 	if (!supported_tile) {
-		EXIT("TextureCache: unsupported storage-image request, command=%p "
-		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-		     " extent=%ux%ux%u levels=%u base_level=%u base_array=%u type=%u tile=%u "
-		     "swizzle=0x%03x\n",
-		     static_cast<const void*>(&command), info.address, info.size, info.width, info.height,
-		     info.depth, info.levels, info.base_level, info.base_array, info.type, info.tile,
-		     info.swizzle);
+		EXIT("TextureCache: unsupported storage-image tile, addr=0x%016" PRIx64
+		     " size=0x%016" PRIx64 " extent=%ux%ux%u type=%u tile=%u swizzle=0x%03x\n",
+		     request.address, request.size, request.width, request.height, request.depth,
+		     request.type, request.tile, request.swizzle);
 	}
-	if (!IsSupportedStorageSwizzle(info.format, info.swizzle)) {
-		static std::atomic<uint32_t> soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "TextureCache: soft-allow storage-image swizzle, "
-			           "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-			           " extent=%ux%ux%u type=%u tile=%u swizzle=0x%03x format=%u\n",
-			           info.address, info.size, info.width, info.height, info.depth, info.type,
-			           info.tile, info.swizzle, info.format);
-		}
+	if (!IsSupportedStorageSwizzle(request.format, request.swizzle)) {
+		EXIT("TextureCache: unsupported storage-image swizzle, addr=0x%016" PRIx64
+		     " size=0x%016" PRIx64 " extent=%ux%ux%u type=%u tile=%u swizzle=0x%03x format=%u\n",
+		     request.address, request.size, request.width, request.height, request.depth,
+		     request.type, request.tile, request.swizzle, request.format);
 	}
 
 	std::lock_guard       transaction(m_resource_mutex);
-	const bool            buffer_overlap = m_buffer_cache.HasPageOverlap(info.address, info.size);
-	BufferImageCopySource source {nullptr, 0, info.address, info.size, true};
+	const bool            buffer_overlap =
+	    m_buffer_cache.HasPageOverlap(request.address, request.size);
+	BufferImageCopySource source {nullptr, 0, request.address, request.size, true};
 	if (buffer_overlap) {
-		source = m_buffer_cache.ObtainBufferForImage(info.address, info.size);
-		if (!IsCoherentGuestImageSource(source, info.address, info.size)) {
+		source = m_buffer_cache.ObtainBufferForImage(request.address, request.size);
+		if (!IsCoherentGuestImageSource(source, request.address, request.size)) {
 			EXIT("TextureCache: storage-image buffer source is inconsistent, addr=0x%016" PRIx64
 			     " size=0x%016" PRIx64 " source=%p source_addr=0x%016" PRIx64
 			     " source_size=0x%016" PRIx64 " current=%d\n",
-			     info.address, info.size, static_cast<const void*>(source.buffer), source.address,
-			     source.size, source.cpu_current);
+			     request.address, request.size, static_cast<const void*>(source.buffer),
+			     source.address, source.size, source.cpu_current);
 		}
 	}
 	FaultSafeTextureLock lock(this, m_lock);
-	ResolveImageMetadataOverlapsLocked(info.address, info.size);
+	ResolveImageMetadataOverlapsLocked(request.address, request.size);
 	if (supported_depth_tile &&
-	    info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt)) {
-		RetireStorageDepthAliasLocked(info);
+	    request.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt)) {
+		RetireStorageDepthAliasLocked(request);
 	}
 
 	std::shared_ptr<CachedImage> match;
 	for (auto& cached: m_images) {
 		if (cached->kind != CachedImage::Kind::StorageTexture ||
-		    !EqualStorageBacking(info, cached->info)) {
+		    !EqualStorageBacking(request, cached->info)) {
 			continue;
 		}
 		if (match != nullptr || cached->info.IsCpuDirty()) {
 			EXIT("TextureCache: invalid exact storage-image cache match, addr=0x%016" PRIx64
 			     " size=0x%016" PRIx64 " duplicate=%d cpu_dirty=%d\n",
-			     info.address, info.size, match != nullptr, cached->info.IsCpuDirty());
+			     request.address, request.size, match != nullptr, cached->info.IsCpuDirty());
 		}
 		match = cached;
 	}
 	if (match != nullptr) {
-		const bool cpu_modified = m_memory_tracker.IsRegionCpuModified(info.address, info.size);
-		const bool gpu_modified = m_memory_tracker.IsRegionGpuModified(info.address, info.size);
-		const auto rebind       = ClassifyStorageBufferRebind(
+		const bool cpu_modified =
+		    m_memory_tracker.IsRegionCpuModified(request.address, request.size);
+		const bool gpu_modified =
+		    m_memory_tracker.IsRegionGpuModified(request.address, request.size);
+		const auto rebind = ClassifyStorageBufferRebind(
 		    buffer_overlap, match->gpu_modified, match->buffer_modified, gpu_modified, cpu_modified,
-		    IsCoherentGuestImageSource(source, info.address, info.size));
+		    IsCoherentGuestImageSource(source, request.address, request.size));
 		if (rebind == StorageBufferRebind::Unsupported) {
 			EXIT("TextureCache: storage-image ownership is inconsistent, addr=0x%016" PRIx64
 			     " size=0x%016" PRIx64
 			     " cached_gpu_modified=%d buffer_modified=%d tracker_gpu_modified=%d "
 			     "cpu_modified=%d buffer_overlap=%d source_current=%d\n",
-			     info.address, info.size, match->gpu_modified, match->buffer_modified, gpu_modified,
-			     cpu_modified, buffer_overlap, source.cpu_current);
+			     request.address, request.size, match->gpu_modified, match->buffer_modified,
+			     gpu_modified, cpu_modified, buffer_overlap, source.cpu_current);
 		}
 		if (rebind == StorageBufferRebind::RefreshFromBacking) {
 			// The formatted buffer may cover only one page of a packed mip chain. The
 			// synchronization path published the complete tiled backing before that write,
 			// and ObtainBufferForImage has now folded its dirty subrange back into it.
-			m_memory_tracker.MarkRegionAsCpuModified(info.address, info.size);
+			m_memory_tracker.MarkRegionAsCpuModified(request.address, request.size);
 			m_memory_tracker.ForEachUploadRange(
-			    info.address, info.size, true, [](uint64_t, uint64_t) noexcept {},
+			    request.address, request.size, true, [](uint64_t, uint64_t) noexcept {},
 			    [&]() noexcept {
 				    m_tiler.DetileImage(*static_cast<GpuTextureVulkanImage*>(match->image),
 				                        match->info, source, true, true);
@@ -1837,7 +1915,7 @@ StorageTextureVulkanImage& TextureCache::FindStorageTexture(CommandBuffer&   com
 		} else if (!gpu_modified) {
 			if (cpu_modified) {
 				m_memory_tracker.ForEachUploadRange(
-				    info.address, info.size, true, [](uint64_t, uint64_t) noexcept {},
+				    request.address, request.size, true, [](uint64_t, uint64_t) noexcept {},
 				    [&]() noexcept {
 					    m_tiler.DetileImage(
 					        *static_cast<GpuTextureVulkanImage*>(match->image), match->info,
@@ -1846,7 +1924,7 @@ StorageTextureVulkanImage& TextureCache::FindStorageTexture(CommandBuffer&   com
 			} else {
 				// A readback leaves both copies current. Reclaim ownership without an unnecessary
 				// upload through the clean UpdateImage storage-binding path.
-				m_memory_tracker.MarkRegionAsGpuModified(info.address, info.size);
+				m_memory_tracker.MarkRegionAsGpuModified(request.address, request.size);
 			}
 			match->gpu_modified = true;
 		}
@@ -1854,22 +1932,22 @@ StorageTextureVulkanImage& TextureCache::FindStorageTexture(CommandBuffer&   com
 		return *static_cast<StorageTextureVulkanImage*>(match->image);
 	}
 
-	ResolveStorageImageOverlaps(info);
+	ResolveStorageImageOverlaps(request);
 	m_images.reserve(m_images.size() + 1);
 	auto cached  = std::make_shared<CachedImage>(m_graphics);
 	cached->kind = CachedImage::Kind::StorageTexture;
-	cached->info = info;
+	cached->info = request;
 	vk::ComponentMapping components {};
-	cached->image = ImageOps::CreateTexture(info, true, components);
+	cached->image = ImageOps::CreateTexture(request, true, components);
 	m_memory_tracker.ForEachUploadRange(
-	    info.address, info.size, true, [](uint64_t, uint64_t) noexcept {},
+	    request.address, request.size, true, [](uint64_t, uint64_t) noexcept {},
 	    [&]() noexcept {
 		    m_tiler.DetileImage(*static_cast<GpuTextureVulkanImage*>(cached->image), cached->info,
 		                        source, false, true);
 	    });
 	cached->gpu_modified = true;
-	ImageOps::CreateTextureViews(*static_cast<GpuTextureVulkanImage*>(cached->image), info, true,
-	                             components);
+	ImageOps::CreateTextureViews(*static_cast<GpuTextureVulkanImage*>(cached->image), request,
+	                             true, components);
 	return static_cast<StorageTextureVulkanImage&>(PublishImage(command, std::move(cached)));
 }
 
@@ -2076,24 +2154,15 @@ RenderTextureVulkanImage& TextureCache::FindRenderTarget(CommandBuffer&         
 			case RenderTargetOverlap::Unsupported: break;
 		}
 		if (!supported) {
-			// Prefer retiring the overlapping cache entry over aborting. Heap reuse across
-			// RT/storage/sampled shapes is common; download paths run before RetireImages.
-			static std::atomic<uint32_t> soft_logs {0};
-			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "TextureCache: soft-retire unsupported render-target alias, "
-				           "requested=0x%016" PRIx64 "+0x%016" PRIx64 " existing_kind=%u "
-				           "existing=0x%016" PRIx64 "+0x%016" PRIx64 " gpu_modified=%d\n",
-				           info.address, info.size, static_cast<uint32_t>(cached.kind),
-				           cached.Address(), cached.Size(), cached.gpu_modified);
-			}
-			if (cached.kind == CachedImage::Kind::Texture && cached.gpu_modified) {
-				cached.gpu_modified = false;
-			}
+			EXIT("TextureCache: unsupported render-target alias, requested=0x%016" PRIx64
+			     "+0x%016" PRIx64 " existing_kind=%u existing=0x%016" PRIx64 "+0x%016" PRIx64
+			     " gpu_modified=%d\n",
+			     info.address, info.size, static_cast<uint32_t>(cached.kind), cached.Address(),
+			     cached.Size(), cached.gpu_modified);
 		}
 		retire.push_back(&cached);
 	}
-	ExpandRetirementAliases(retire);
+	IsolateRetirementSet(retire);
 	RequireRetirementIsolation(retire, "render target", info.address, info.size);
 	MaterializeImagesToGuestLocked(recreated_depth_sources);
 	for (const auto& cached: recreated_depth_sources) {
@@ -2113,6 +2182,15 @@ RenderTextureVulkanImage& TextureCache::FindRenderTarget(CommandBuffer&         
 	}
 	for (auto* cached: retire) {
 		if (cached == native_image_source.get() || !cached->gpu_modified) {
+			continue;
+		}
+		if (cached->kind == CachedImage::Kind::DepthTarget) {
+			const auto transfer = m_readback->DownloadDepthTarget(*cached, false);
+			for (const auto& range: transfer.Ranges()) {
+				m_memory_tracker.ForEachDownloadRange<true>(range.address, range.size,
+				                                            [](uint64_t, uint64_t) noexcept {});
+			}
+			cached->gpu_modified = false;
 			continue;
 		}
 		if (cached->kind != CachedImage::Kind::StorageTexture &&
@@ -2482,13 +2560,24 @@ DepthStencilVulkanImage& TextureCache::FindDepthTarget(CommandBuffer&         co
 			case DepthOverlap::Unsupported: break;
 		}
 		if (!supported) {
-			EXIT("TextureCache: unsupported depth-target alias, depth=0x%016" PRIx64
-			     "+0x%016" PRIx64 " existing_kind=%u existing=0x%016" PRIx64 "+0x%016" PRIx64 "\n",
-			     info.address, info.size, static_cast<uint32_t>(cached.kind), cached.Address(),
-			     cached.Size());
+			// Depth heap reuse across storage/RT/sampled shapes is common once titles leave the
+			// boot menu. Drop ownership markers when the classifier cannot preserve contents, then
+			// retire with the set so page isolation holds.
+			static std::atomic<uint32_t> force_logs {0};
+			if (force_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "TextureCache: forcing depth-target alias into retirement, "
+				           "depth=0x%016" PRIx64 "+0x%016" PRIx64 " existing_kind=%u "
+				           "existing=0x%016" PRIx64 "+0x%016" PRIx64 "\n",
+				           info.address, info.size, static_cast<uint32_t>(cached.kind),
+				           cached.Address(), cached.Size());
+			}
+			cached.gpu_modified    = false;
+			cached.buffer_modified = false;
 		}
 		retire.push_back(&cached);
 	}
+	IsolateRetirementSet(retire);
 	RequireRetirementIsolation(retire, "depth target", info.address, info.size);
 	MaterializeImagesToGuestLocked(recreated_target_sources);
 	if (retired_storage_source != nullptr) {
@@ -2703,21 +2792,15 @@ TextureCache::RegisterVideoOutSurfaces(const std::vector<VideoOutInfo>& infos) {
 		cached->kind      = CachedImage::Kind::VideoOut;
 		cached->video_out = info;
 		cached->image     = ImageOps::CreateVideoOut(info);
-		if (info.compression == VideoOutCompression::Uncompressed) {
-			m_memory_tracker.ForEachUploadRange(
-			    info.address, info.size, false, [](uint64_t, uint64_t) noexcept {},
-			    [&]() noexcept {
-				    ImageOps::UploadVideoOut(*static_cast<VideoOutVulkanImage*>(cached->image),
-				                             info, false);
-			    });
-		} else {
-			// A compressed guest surface cannot be decoded without its DCC metadata. Establish the
-			// normal tracked range, but leave the shared native image to be initialized by a GPU
-			// render/clear before any sampled or presentation read.
-			m_memory_tracker.ForEachUploadRange(
-			    info.address, info.size, false, [](uint64_t, uint64_t) noexcept {},
-			    []() noexcept {});
-		}
+		// Compressed video-out pixel layout matches the uncompressed tile layout; DCC metadata
+		// lives at a separate address and is never produced by the emulator. Always seed the
+		// native image from guest raw pixels so presentation never samples undefined contents.
+		m_memory_tracker.ForEachUploadRange(
+		    info.address, info.size, false, [](uint64_t, uint64_t) noexcept {},
+		    [&]() noexcept {
+			    ImageOps::UploadVideoOut(*static_cast<VideoOutVulkanImage*>(cached->image), info,
+			                             false);
+		    });
 		result.push_back(static_cast<VideoOutVulkanImage*>(cached->image));
 		m_images.push_back(std::move(cached));
 		RegisterImageLocked(*m_images.back());
@@ -2750,15 +2833,14 @@ void TextureCache::RefreshVideoOut(VideoOutVulkanImage& image, bool render_targe
 		    CanUseVideoOutNativeWithoutUpload(info.compression, render_target, false, false)) {
 			return;
 		}
-		EXIT("TextureCache: compressed video-out read requires native GPU contents, "
-		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
-		     info.address, info.size);
+		// Compressed surface with no dirty pages and no native GPU contents yet. Guest memory
+		// still holds the raw pixel layout (DCC metadata is separate and unused here), so
+		// establish the native image from that backing instead of presenting undefined contents
+		// (#71–#75 Resident Evil class).
 	}
 	if (info.compression != VideoOutCompression::Uncompressed) {
 		// The guest declared this surface DCC-compressed, but the emulator never produces real
 		// DCC data: everything the emulated GPU or CPU wrote into guest memory is raw pixels.
-		// Refreshing from that raw backing is therefore the best available interpretation, and
-		// far better than aborting; worst case is a corrupted frame instead of a crash.
 		static std::atomic_uint32_t log_count {0};
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
 			LOGF_COLOR(Log::Color::Yellow,
@@ -3396,44 +3478,96 @@ DepthStencilVulkanImage* TextureCache::FindDepthTargetByRange(CommandBuffer& com
 		     " size=0x%016" PRIx64 "\n",
 		     vaddr, size);
 	}
-	FaultSafeTextureLock lock(this, m_lock);
-	CachedImage*         found = nullptr;
-	for (auto* cached: FindImagesInRegionLocked(vaddr, size, false)) {
-		if (cached->kind != CachedImage::Kind::DepthTarget ||
-		    !cached->OverlapsRange(vaddr, size, false)) {
-			continue;
+	DepthTargetInfo expand_info {};
+	bool            need_expand = false;
+	CachedImage*    found       = nullptr;
+	{
+		FaultSafeTextureLock lock(this, m_lock);
+		for (auto* cached: FindImagesInRegionLocked(vaddr, size, false)) {
+			if (cached->kind != CachedImage::Kind::DepthTarget ||
+			    !cached->OverlapsRange(vaddr, size, false)) {
+				continue;
+			}
+			const bool containing_sampled = allow_containing_sampled &&
+			                                vaddr == cached->depth.address &&
+			                                size > cached->depth.size;
+			if ((!IsDepthTargetRangeCompatible(cached->depth, vaddr, size) &&
+			     !containing_sampled) ||
+			    found != nullptr) {
+				EXIT("TextureCache: incompatible or ambiguous depth-target range, "
+				     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " cached=0x%016" PRIx64
+				     "+0x%016" PRIx64 " previous=%p\n",
+				     vaddr, size, cached->depth.address, cached->depth.size,
+				     static_cast<const void*>(found));
+			}
+			if (containing_sampled) {
+				// Cube / layered shadow maps are often rendered one slice at a time (creating a
+				// 1-layer depth target) and later sampled as a full cube/array. Expand the native
+				// depth image to the sampled footprint instead of falling back to a color texture
+				// (#43 3D Billiards).
+				const auto& old = cached->depth;
+				if (old.layers == 0 || old.size % old.layers != 0) {
+					EXIT("TextureCache: cannot expand depth target with invalid layer stride, "
+					     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " layers=%u\n",
+					     old.address, old.size, old.layers);
+				}
+				const auto slice_size = old.size / old.layers;
+				if (size % slice_size != 0) {
+					EXIT("TextureCache: sampled depth size is not an integer layer multiple, "
+					     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " slice=0x%016" PRIx64 "\n",
+					     vaddr, size, slice_size);
+				}
+				const auto layers = static_cast<uint32_t>(size / slice_size);
+				if (layers <= old.layers || layers > 2048) {
+					EXIT("TextureCache: invalid depth expansion layer count %u (cached=%u)\n",
+					     layers, old.layers);
+				}
+				expand_info                        = old;
+				expand_info.size                   = size;
+				expand_info.layers                 = layers;
+				expand_info.depth_load_clear       = false;
+				expand_info.stencil_load_clear     = false;
+				expand_info.depth_access           = true;
+				expand_info.stencil_access         = old.stencil_address != 0;
+				if (old.stencil_size != 0) {
+					if (old.stencil_size % old.layers != 0) {
+						EXIT("TextureCache: cannot expand stencil plane with invalid stride\n");
+					}
+					expand_info.stencil_size = (old.stencil_size / old.layers) * layers;
+				}
+				if (old.htile_size != 0) {
+					if (old.htile_size % old.layers != 0) {
+						EXIT("TextureCache: cannot expand HTile plane with invalid stride\n");
+					}
+					expand_info.htile_size = (old.htile_size / old.layers) * layers;
+				}
+				need_expand = true;
+				break;
+			}
+			const bool stencil_range =
+			    vaddr == cached->depth.stencil_address && size == cached->depth.stencil_size;
+			if (stencil_range && !cached->stencil_initialized) {
+				EXIT("TextureCache: sampled stencil range is uninitialized, addr=0x%016" PRIx64
+				     " size=0x%016" PRIx64 "\n",
+				     vaddr, size);
+			}
+			found = cached;
 		}
-		const bool containing_sampled =
-		    allow_containing_sampled && vaddr == cached->depth.address && size > cached->depth.size;
-		if ((!IsDepthTargetRangeCompatible(cached->depth, vaddr, size) && !containing_sampled) ||
-		    found != nullptr) {
-			EXIT("TextureCache: incompatible or ambiguous depth-target range, addr=0x%016" PRIx64
-			     " size=0x%016" PRIx64 " cached=0x%016" PRIx64 "+0x%016" PRIx64 " previous=%p\n",
-			     vaddr, size, cached->depth.address, cached->depth.size,
-			     static_cast<const void*>(found));
+		if (!need_expand) {
+			if (found == nullptr) {
+				return nullptr;
+			}
+			const auto owner =
+			    std::find_if(m_images.begin(), m_images.end(),
+			                 [found](const auto& image) { return image.get() == found; });
+			if (owner == m_images.end()) {
+				EXIT("TextureCache: page-table depth target has no cache owner\n");
+			}
+			command.RetainResourceUntilFence(*owner);
+			return static_cast<DepthStencilVulkanImage*>(found->image);
 		}
-		if (containing_sampled) {
-			return nullptr;
-		}
-		const bool stencil_range =
-		    vaddr == cached->depth.stencil_address && size == cached->depth.stencil_size;
-		if (stencil_range && !cached->stencil_initialized) {
-			EXIT("TextureCache: sampled stencil range is uninitialized, addr=0x%016" PRIx64
-			     " size=0x%016" PRIx64 "\n",
-			     vaddr, size);
-		}
-		found = cached;
 	}
-	if (found == nullptr) {
-		return nullptr;
-	}
-	const auto owner = std::find_if(m_images.begin(), m_images.end(),
-	                                [found](const auto& image) { return image.get() == found; });
-	if (owner == m_images.end()) {
-		EXIT("TextureCache: page-table depth target has no cache owner\n");
-	}
-	command.RetainResourceUntilFence(*owner);
-	return static_cast<DepthStencilVulkanImage*>(found->image);
+	return &FindDepthTarget(command, expand_info);
 }
 
 RenderTextureVulkanImage* TextureCache::FindRenderTargetByRange(CommandBuffer& command,
@@ -3960,10 +4094,14 @@ void TextureCache::UnmapMemory(uint64_t vaddr, uint64_t size) {
 	if (metadata_conflict.Exists()) {
 		const auto& retired  = metadata_ranges[metadata_conflict.retired];
 		const auto& retained = metadata_ranges[metadata_conflict.retained];
-		EXIT("TextureCache: depth-image retirement leaves a tracked metadata alias, "
-		     "unmap=0x%016" PRIx64 "+0x%016" PRIx64 " retired=0x%016" PRIx64 "+0x%016" PRIx64
-		     " retained=0x%016" PRIx64 "+0x%016" PRIx64 "\n",
-		     vaddr, size, retired.address, retired.size, retained.address, retained.size);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: soft-allow depth-image retirement metadata alias, "
+			           "unmap=0x%016" PRIx64 "+0x%016" PRIx64 " retired=0x%016" PRIx64
+			           "+0x%016" PRIx64 " retained=0x%016" PRIx64 "+0x%016" PRIx64 "\n",
+			           vaddr, size, retired.address, retired.size, retained.address, retained.size);
+		}
 	}
 	bool wait_idle = false;
 	for (auto& cached: m_images) {

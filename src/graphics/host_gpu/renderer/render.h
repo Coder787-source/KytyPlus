@@ -94,6 +94,12 @@ public:
 	void DeleteAfterFence(VulkanBuffer& buffer);
 	void RetainResourceUntilFence(std::shared_ptr<void> resource);
 	void RecycleDescriptorAfterFence(VulkanDescriptorSet& set);
+	// Queue a stream->cache copy for a writable unaligned storage V# (#85 Gex). Flushed after the
+	// dispatch/draw that consumed the aligned host-stream binding.
+	void QueueStorageStreamWriteback(VulkanBuffer& src, uint64_t src_offset, VulkanBuffer& dst,
+	                                 uint64_t dst_offset, uint64_t size);
+	void FlushStorageStreamWritebacks();
+	void ClearStorageStreamWritebacks() noexcept { m_storage_stream_writebacks.clear(); }
 
 	[[nodiscard]] vk::CommandBuffer Handle() const;
 	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
@@ -103,6 +109,14 @@ public:
 
 private:
 	friend class BufferCache;
+
+	struct StorageStreamWriteback {
+		VulkanBuffer* src         = nullptr;
+		uint64_t      src_offset  = 0;
+		VulkanBuffer* dst         = nullptr;
+		uint64_t      dst_offset  = 0;
+		uint64_t      size        = 0;
+	};
 
 	void Submit(vk::Semaphore wait_semaphore, vk::PipelineStageFlags wait_stage,
 	            vk::Semaphore signal_semaphore);
@@ -130,6 +144,7 @@ private:
 	std::vector<VulkanBuffer*>        m_delete_after_fence;
 	FenceResourceRetainer             m_fence_resources;
 	std::vector<VulkanDescriptorSet*> m_descriptor_sets_after_fence;
+	std::vector<StorageStreamWriteback> m_storage_stream_writebacks;
 	HostStreamBuffer                  m_host_stream;
 };
 

@@ -353,7 +353,10 @@ int KYTY_SYSV_ABI PadOpen(int user_id, int type, int index, const void* param) {
 
 	constexpr int pad_error_invalid_arg = -2137915391; /* 0x80920001 */
 
-	if (user_id != 1000 || (type != 0 && type != 2 && type != 16) || index != 0) {
+	// Accept canonical login id 1000 and the secondary probe id 1 used by first-party titles
+	// (Astro-family bootstrap / DualSense open paths).
+	if ((user_id != 1000 && user_id != 1) || (type != 0 && type != 2 && type != 16) ||
+	    index != 0) {
 		return pad_error_invalid_arg;
 	}
 
@@ -372,7 +375,8 @@ int KYTY_SYSV_ABI PadGetHandle(int user_id, int type, int index) {
 
 	constexpr int pad_error_device_no_handle = -2137915384; /* 0x80920008 */
 
-	if (user_id != 1000 || (type != 0 && type != 2 && type != 16) || index != 0) {
+	if ((user_id != 1000 && user_id != 1) || (type != 0 && type != 2 && type != 16) ||
+	    index != 0) {
 		return pad_error_device_no_handle;
 	}
 

@@ -518,7 +518,14 @@ int64_t KYTY_SYSV_ABI KernelRead(int d, void* buf, size_t nbytes) {
 		return KERNEL_ERROR_EIO;
 	}
 
-	LOGF("\tRead %u bytes from: %s\n", bytes_read, Common::PathToString(file->real_name).c_str());
+	{
+		static std::atomic<uint32_t> read_logs {0};
+		const auto                  n = read_logs.fetch_add(1, std::memory_order_relaxed);
+		if (n < 32 || (n % 1024) == 0) {
+			LOGF("\tRead %u bytes from: %s\n", bytes_read,
+			     Common::PathToString(file->real_name).c_str());
+		}
+	}
 
 	return bytes_read;
 }
@@ -646,8 +653,14 @@ int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offse
 		return KERNEL_ERROR_EIO;
 	}
 
-	LOGF("\tRead %u bytes (pos = %" PRId64 ") from: %s\n", bytes_read, offset,
-	     Common::PathToString(file->real_name).c_str());
+	{
+		static std::atomic<uint32_t> pread_logs {0};
+		const auto                  n = pread_logs.fetch_add(1, std::memory_order_relaxed);
+		if (n < 32 || (n % 1024) == 0) {
+			LOGF("\tRead %u bytes (pos = %" PRId64 ") from: %s\n", bytes_read, offset,
+			     Common::PathToString(file->real_name).c_str());
+		}
+	}
 
 	return bytes_read;
 }

@@ -1375,8 +1375,6 @@ void VideoOutWaitFlipDone(int handle, int index) {
 }
 
 KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) {
-	PRINT_NAME();
-
 	EXIT_IF(g_video_out_context == nullptr);
 
 	if (status == nullptr) {
@@ -1389,25 +1387,10 @@ KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) 
 	}
 
 	g_video_out_context->GetFlipQueue().GetFlipStatus(*ctx, *status);
-
-	LOGF("\t count = %" PRIu64 "\n"
-	     "\t processTime = %" PRIu64 "\n"
-	     "\t processTimeCounter = %" PRIu64 "\n"
-	     "\t submitProcessTimeCounter = %" PRIu64 "\n"
-	     "\t flipArg = %" PRId64 "\n"
-	     "\t gcQueueNum = %d\n"
-	     "\t flipPendingNum = %d\n"
-	     "\t currentBuffer = %d\n",
-	     status->count, status->processTime, status->processTimeCounter,
-	     status->submitProcessTimeCounter, status->flipArg, status->gcQueueNum,
-	     status->flipPendingNum, status->currentBuffer);
-
 	return OK;
 }
 
 KYTY_SYSV_ABI int VideoOutIsFlipPending(int handle) {
-	PRINT_NAME();
-
 	EXIT_IF(g_video_out_context == nullptr);
 
 	auto* ctx = g_video_out_context->Get(handle);
@@ -1417,9 +1400,6 @@ KYTY_SYSV_ABI int VideoOutIsFlipPending(int handle) {
 
 	VideoOutFlipStatus status {};
 	g_video_out_context->GetFlipQueue().GetFlipStatus(*ctx, status);
-
-	LOGF("\t flipPendingNum = %d\n", status.flipPendingNum);
-
 	return status.flipPendingNum;
 }
 
