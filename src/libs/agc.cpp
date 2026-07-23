@@ -3361,7 +3361,13 @@ int KYTY_SYSV_ABI GraphicsWaitRegMemPatchAddress(uint32_t* cmd, const volatile v
 		cmd[1] = static_cast<uint32_t>(vaddr) & ~0x7u;
 		cmd[2] = static_cast<uint32_t>(vaddr >> 32u) & 0x3ffffu;
 	} else {
-		EXIT("unsupported waitOnAddress packet for address patch: 0x%08" PRIx32 "\n", cmd[0]);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-skip unsupported waitOnAddress packet for address patch: 0x%08" PRIx32
+			           "\n",
+			           cmd[0]);
+		}
 	}
 
 	return OK;
@@ -3384,7 +3390,13 @@ int KYTY_SYSV_ABI GraphicsWaitRegMemPatchReference(uint32_t* cmd, uint64_t refer
 		cmd[5] = static_cast<uint32_t>(reference & 0xffffffffu);
 		cmd[6] = static_cast<uint32_t>((reference >> 32u) & 0xffffffffu);
 	} else {
-		EXIT("unsupported waitOnAddress packet for reference patch: 0x%08" PRIx32 "\n", cmd[0]);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-skip unsupported waitOnAddress packet for reference patch: 0x%08" PRIx32
+			           "\n",
+			           cmd[0]);
+		}
 	}
 
 	return OK;
@@ -3413,8 +3425,13 @@ int KYTY_SYSV_ABI GraphicsQueueEndOfPipeActionPatchAddress(uint32_t*            
 		cmd[2] = static_cast<uint32_t>(vaddr & 0xffffffffu);
 		cmd[3] = (cmd[3] & 0xffff0000u) | static_cast<uint32_t>((vaddr >> 32u) & 0xffffu);
 	} else {
-		EXIT("unsupported queueEndOfPipeAction packet for address patch: 0x%08" PRIx32 "\n",
-		     cmd[0]);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-skip unsupported queueEndOfPipeAction packet for address patch: "
+			           "0x%08" PRIx32 "\n",
+			           cmd[0]);
+		}
 	}
 
 	return OK;
@@ -3452,7 +3469,13 @@ int KYTY_SYSV_ABI GraphicsQueueEndOfPipeActionPatchData(uint32_t* cmd, uint32_t 
 		cmd[4] = static_cast<uint32_t>(data & 0xffffffffu);
 		cmd[5] = static_cast<uint32_t>((data >> 32u) & 0xffffffffu);
 	} else {
-		EXIT("unsupported queueEndOfPipeAction packet for data patch: 0x%08" PRIx32 "\n", cmd[0]);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-skip unsupported queueEndOfPipeAction packet for data patch: "
+			           "0x%08" PRIx32 "\n",
+			           cmd[0]);
+		}
 	}
 
 	return OK;

@@ -280,6 +280,9 @@ private:
 	FlipInfo m_flip;
 	uint64_t m_submit_id      = 0;
 	bool     m_predicate_skip = false;
+	// Consecutive acquire_mem GCR barriers with no intervening work (#57 Monster Boy) would emit
+	// thousands of identical Vulkan pipeline barriers and flood the log; coalesce them.
+	bool m_memory_barrier_coalesced = false;
 };
 
 } // namespace Libs::Graphics

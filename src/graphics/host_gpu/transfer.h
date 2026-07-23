@@ -135,6 +135,8 @@ bool IsBlockCompressedFormat(vk::Format format);
 uint32_t BlockCompressedBytesPerBlock(vk::Format format);
 
 void WaitForGraphicsIdle();
+// Prefer CP drain over vkDeviceWaitIdle when called from a command-processor thread.
+void WaitForSubmittedGraphics();
 
 inline std::pair<int, int> MipmapAtlasOffset(uint32_t lod, uint32_t width, uint32_t height) {
 	uint32_t mip_width  = width;

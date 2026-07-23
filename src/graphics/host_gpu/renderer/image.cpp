@@ -184,7 +184,7 @@ void UploadRenderTargetLayers(RenderTextureVulkanImage& image,
 		     info.samples, image.samples);
 	}
 	if (refresh) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForSubmittedGraphics();
 	}
 	const auto slice_size  = info.size / info.layers;
 	const auto upload_size = slice_size * layer_count;
@@ -285,15 +285,22 @@ DepthStencilVulkanImage* CreateDepthTarget(const DepthTargetInfo& info) {
 	create.usage         = DepthTargetImageUsage();
 	create.sharingMode   = vk::SharingMode::eExclusive;
 	create.samples       = vulkan_sample_count(info.samples);
+	// Square 6-layer (or multiple-of-6) depth targets are cube shadow maps. Mark them
+	// cube-compatible so either eCube or e2DArray sampled views are legal (#43).
+	if (info.layers >= 6 && (info.layers % 6u) == 0 && info.width == info.height &&
+	    info.width != 0) {
+		create.flags |= vk::ImageCreateFlagBits::eCubeCompatible;
+	}
 	vk::ImageFormatProperties properties {};
 	if (graphics.GetImageFormatProperties(
-	        info.format, vk::ImageType::e2D, vk::ImageTiling::eOptimal, create.usage,
-	        vk::ImageCreateFlags {}, &properties) != vk::Result::eSuccess ||
+	        info.format, vk::ImageType::e2D, vk::ImageTiling::eOptimal, create.usage, create.flags,
+	        &properties) != vk::Result::eSuccess ||
 	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
 		EXIT("TextureCache: depth format does not support required usage, format=%d usage=0x%x "
-		     "samples=%u supported=0x%x\n",
+		     "flags=0x%x samples=%u supported=0x%x\n",
 		     static_cast<int>(info.format),
-		     static_cast<vk::ImageUsageFlags::MaskType>(create.usage), info.samples,
+		     static_cast<vk::ImageUsageFlags::MaskType>(create.usage),
+		     static_cast<vk::ImageCreateFlags::MaskType>(create.flags), info.samples,
 		     static_cast<vk::SampleCountFlags::MaskType>(properties.sampleCounts));
 	}
 	auto* image            = new DepthStencilVulkanImage;
@@ -397,7 +404,7 @@ void UploadVideoOut(VideoOutVulkanImage& image, const VideoOutInfo& info,
 		}
 	}
 	if (refresh) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForSubmittedGraphics();
 	}
 	image.layout = vk::ImageLayout::eUndefined;
 	if (!info.bgra16) {

@@ -125,6 +125,10 @@ struct VulkanImage {
 
 	VulkanImageType        type                 = VulkanImageType::Unknown;
 	vk::Format             format               = vk::Format::eUndefined;
+	// Set from vk::ImageCreateFlagBits::eMutableFormat at creation. Views with a format that
+	// differs from the image format are only legal on mutable-format images
+	// (VUID-VkImageViewCreateInfo-image-01019).
+	bool                   mutable_format       = false;
 	vk::Extent2D           extent               = {};
 	uint32_t               guest_pitch          = 0;
 	uint32_t               layers               = 1;

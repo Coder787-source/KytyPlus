@@ -599,15 +599,15 @@ static bool GetDrawTopology(const HW::UserConfig& ucfg, bool auto_draw, bool use
 			                                               : vk::PrimitiveTopology::eTriangleList);
 			break;
 		case Prospero::PrimitiveType::kRectListLegacy:
-			if (!auto_draw) {
-				EXIT("unknown primitive type: %u\n", ucfg.GetPrimType());
-			}
+			// Indexed RectListLegacy is emitted as a strip of two triangles per rect.
+			(void)auto_draw;
 			topology = vk::PrimitiveTopology::eTriangleStrip;
 			break;
 		case Prospero::PrimitiveType::kQuadListLegacy:
 			topology = vk::PrimitiveTopology::eTriangleFan;
 			break;
-		default: EXIT("unknown primitive type: %u\n", ucfg.GetPrimType());
+		default:
+			EXIT("unsupported primitive type: %u\n", ucfg.GetPrimType());
 	}
 
 	return true;
@@ -674,7 +674,7 @@ static bool PrepareDrawRenderState(uint64_t submit_id, RenderCommandBuffer& buff
 	return true;
 }
 
-static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
+static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
                            DrawRenderState& state) {
 	EXIT_IF(draw.name == nullptr);
 	auto& ctx    = buffer.GetRegisters();
@@ -699,19 +699,20 @@ static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	}
 	if (!ShaderCompileInfoVS(vertex_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
 	                         state.vs_shader)) {
-		EXIT("ShaderCompileInfoVS failed for draw %s\n", draw.name);
+		EXIT("draw %s: ShaderCompileInfoVS failed\n", draw.name);
 	}
 
 	if (!state.ps_active) {
-		return;
+		return true;
 	}
 	if (log_phases) {
 		LogDrawPhase(draw.name, "ShaderCompileInfoPS");
 	}
 	if (!ShaderCompileInfoPS(pixel_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
 	                         target_export_mapping, state.ps_input_info, state.ps_shader)) {
-		EXIT("ShaderCompileInfoPS failed for draw %s\n", draw.name);
+		EXIT("draw %s: ShaderCompileInfoPS failed\n", draw.name);
 	}
+	return true;
 }
 
 static void BindDrawVertexBuffers(uint64_t submit_id, RenderCommandBuffer& buffer,
@@ -836,11 +837,13 @@ static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_
 			break;
 		case Prospero::PrimitiveType::kRectListLegacy:
 			if (emit.indexed) {
-				EXIT("unknown primitive type: %u\n", ucfg.GetPrimType());
+				vk_buffer.drawIndexed(draw.index_count, draw.instance_count, 0, emit.vertex_offset,
+				                      draw.first_instance);
+			} else {
+				// Sarah
+				EXIT_NOT_IMPLEMENTED(!(draw.index_count == 3 && vs_input_info.buffers_num == 0));
+				vk_buffer.draw(4, draw.instance_count, emit.first_vertex, draw.first_instance);
 			}
-			// Sarah
-			EXIT_NOT_IMPLEMENTED(!(draw.index_count == 3 && vs_input_info.buffers_num == 0));
-			vk_buffer.draw(4, draw.instance_count, emit.first_vertex, draw.first_instance);
 			break;
 		case Prospero::PrimitiveType::kQuadListLegacy:
 			EXIT_NOT_IMPLEMENTED((draw.index_count & 0x3u) != 0);
@@ -854,7 +857,7 @@ static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_
 				}
 			}
 			break;
-		default: EXIT("unknown primitive type: %u\n", ucfg.GetPrimType());
+		default: EXIT("unsupported emit primitive type: %u\n", ucfg.GetPrimType());
 	}
 }
 
@@ -905,12 +908,14 @@ static void ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer& buffer,
 			                vk::ShaderStageFlagBits::eFragment, DescriptorCache::Stage::Pixel);
 		}
 		if (buffer.GetRecordingGeneration() != recording_generation) {
+			buffer.ClearStorageStreamWritebacks();
 			continue;
 		}
 		// Index data may use this command buffer's host stream. Resolve it only after the other
 		// fault-capable bindings, and rebuild it whenever a fault reset changes the generation.
 		BindDrawIndexBuffer(buffer, state.vk_buffer, index_source);
 		if (buffer.GetRecordingGeneration() != recording_generation) {
+			buffer.ClearStorageStreamWritebacks();
 			continue;
 		}
 
@@ -942,6 +947,7 @@ static void ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer& buffer,
 		if (shader_write_stages) {
 			ShaderWriteBarrier(state.vk_buffer, shader_write_stages);
 		}
+		buffer.FlushStorageStreamWritebacks();
 		LogDrawPhase(draw.name, "EndRenderPass");
 		if (set_auto_debug) {
 			SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
@@ -1031,7 +1037,7 @@ void RenderDrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t i
 			index_size           = static_cast<uint64_t>(index_count);
 			expand_index8_to_u16 = true;
 			break;
-		default: EXIT("unknown index_type_and_size: %u\n", index_type_and_size);
+		default: EXIT("unsupported index_type_and_size: %u\n", index_type_and_size);
 	}
 
 	EXIT_NOT_IMPLEMENTED(flags != 0);
@@ -1068,7 +1074,9 @@ void RenderDrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t i
 		return;
 	}
 
-	RefreshShaders(buffer, draw, true, state);
+	if (!RefreshShaders(buffer, draw, true, state)) {
+		return;
+	}
 
 	LogDrawStateIfNeeded(buffer, draw, state, true, false, index_type_and_size, index_addr);
 
@@ -1160,7 +1168,9 @@ void RenderDrawIndexAuto(uint64_t submit_id, RenderCommandBuffer& buffer, uint32
 	    (use_ngg_rectlist_draw &&
 	     ucfg.GetPrimType() == Prospero::GpuEnumValue(Prospero::PrimitiveType::kRectList));
 
-	RefreshShaders(buffer, draw, false, state);
+	if (!RefreshShaders(buffer, draw, false, state)) {
+		return;
+	}
 
 	if (draw_prim7_as_ngg && state.vs_input_info.buffers_num == 0 &&
 	    state.vs_input_info.param_export_mask == 0 && state.ps_input_info.input_num != 0) {

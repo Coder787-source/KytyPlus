@@ -663,8 +663,11 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 [[nodiscard]] inline bool IsRgba8UnormUintReinterpretation(vk::Format cached,
                                                            vk::Format requested) noexcept {
 	switch (cached) {
-		case vk::Format::eR8G8B8A8Unorm: return requested == vk::Format::eR8G8B8A8Uint;
-		case vk::Format::eR8G8B8A8Uint: return requested == vk::Format::eR8G8B8A8Unorm;
+		case vk::Format::eR8G8B8A8Unorm:
+		case vk::Format::eR8G8B8A8Srgb: return requested == vk::Format::eR8G8B8A8Uint;
+		case vk::Format::eR8G8B8A8Uint:
+			return requested == vk::Format::eR8G8B8A8Unorm ||
+			       requested == vk::Format::eR8G8B8A8Srgb;
 		default: return false;
 	}
 }
@@ -713,8 +716,9 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 		return StorageSampledOverlap::RetireStorage;
 	}
 	// Mid-mip sampled view of a full mip-chain storage image (same allocation, different
-	// base_level / view_levels). Mortal Shell (#58) hits this with base=3 of levels=11 while
-	// storage owns base=0 of the same chain — download and rebuild the sampled view.
+	// base_level / view_levels). Prefer ExactImage so the GPU-resident storage contents are
+	// sampled directly via a subresource view — retiring+uploading destroys compute results and
+	// is a common black-screen path (Mortal Shell / #58).
 	const bool same_allocation_mip_view =
 	    requested.address == cached.address && requested.size == cached.size &&
 	    requested.width == cached.width && requested.height == cached.height &&
@@ -724,6 +728,10 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 	    requested.format == cached.format &&
 	    (requested.base_level != cached.base_level ||
 	     requested.view_levels != cached.view_levels);
+	if (same_allocation_mip_view && compatible_format && cached_gpu_modified &&
+	    !cached_cpu_dirty && !cached_buffer_modified) {
+		return StorageSampledOverlap::ExactImage;
+	}
 	if (same_allocation_mip_view && compatible_format && cached_gpu_modified &&
 	    tracker_gpu_modified && !cached_buffer_modified && !cached_cpu_dirty) {
 		return StorageSampledOverlap::RetireStorage;
@@ -735,7 +743,16 @@ SelectDepthTransitionSource(bool depth_load_clear, bool sampled_native_available
 		return StorageSampledOverlap::RetireStorage;
 	}
 	// Differently shaped storage vs sampled alias of the same pages (e.g. 1024² storage vs
-	// 2048x1080 sampled). Prefer download+retire over EXIT — common in UE/Unity heap reuse.
+	// 2048x1080 sampled — #78 Jedi Fallen Order / #62 Sackboy). Download+retire when the storage
+	// image is the authoritative GPU copy; ResolveStorageImageOverlaps materializes before
+	// Unregister. Clean images (no GPU marker) retire even with a stale buffer bit — the sampled
+	// path refreshes from guest/buffer (#62).
+	if (cached_gpu_modified && tracker_gpu_modified && !cached_cpu_dirty) {
+		return StorageSampledOverlap::RetireStorage;
+	}
+	if (!cached_gpu_modified && !cached_cpu_dirty) {
+		return StorageSampledOverlap::RetireStorage;
+	}
 	if (!cached_cpu_dirty && !cached_buffer_modified) {
 		return StorageSampledOverlap::RetireStorage;
 	}
@@ -971,6 +988,11 @@ ClassifyStorageRenderTargetOverlap(const ImageInfo& storage, vk::Format storage_
 	                                  storage_cpu_dirty, tracker_gpu_modified)) {
 		return RenderTargetOverlap::RetireStorage;
 	}
+	// Non-GPU storage discarded for an RT on the same pages (#52 class), including buffer-marked
+	// entries that will be refreshed from guest memory.
+	if (!storage_gpu_modified && !tracker_gpu_modified && !storage_cpu_dirty) {
+		return RenderTargetOverlap::RetireStorage;
+	}
 	// GPU-modified storage that is still tracker-owned can be downloaded then retired when a
 	// render target reclaims the range (common single-layer color UAVs rebound as RTs).
 	if (storage_gpu_modified && tracker_gpu_modified && !storage_buffer_modified &&
@@ -1033,8 +1055,10 @@ ClassifyStorageImageOverlap(uint64_t requested_address, uint64_t requested_size,
 	// Sampled/storage heap reuse: retire a guest-current image, or a GPU-owned image that the
 	// caller can download before retirement (ResolveStorageImageOverlaps already materializes).
 	(void)sampled;
-	if ((!gpu_modified && !buffer_modified && !tracker_gpu_modified) ||
-	    (gpu_modified && tracker_gpu_modified && !buffer_modified)) {
+	if (!gpu_modified && !tracker_gpu_modified) {
+		return StorageImageOverlap::RetireSampled;
+	}
+	if (gpu_modified && tracker_gpu_modified && !buffer_modified) {
 		return StorageImageOverlap::RetireSampled;
 	}
 	return StorageImageOverlap::Unsupported;
@@ -1121,14 +1145,24 @@ ClassifyRenderTargetOverlap(const RenderTargetInfo& cached, bool cached_gpu_modi
 	    cached.layers != requested.layers || cached.samples != requested.samples;
 	const bool new_allocation = cached.address != requested.address ||
 	                            cached.size != requested.size || pool_storage_shape_changed;
-	const bool guest_owned = HasGuestCurrentImageOwnership(
-	    cached_gpu_modified, cached_buffer_modified, false, tracker_gpu_modified);
-	// Pool reuse only needs guest-owned cache state. guest_source_current gates uploading the
-	// *new* target; a clean retired image can be dropped even when the new range will later
-	// refresh from a buffer-backed source.
+	// guest_source_current gates uploading the *new* target; retirement of a clean/stale shape
+	// does not require the new range to already be guest-current.
 	(void)guest_source_current;
-	return page_isolated && new_allocation && guest_owned ? RenderTargetOverlap::RetireTarget
-	                                                      : RenderTargetOverlap::Unsupported;
+	(void)cached_buffer_modified;
+	// Non-GPU page-isolated pool reuse (#54 Juicy Realm / #59): discard the stale Vulkan shape
+	// even when buffer_modified is set — the new target refreshes from guest/buffer.
+	// Also ignore a stale tracker GPU bit when the image itself is not gpu_modified: heap reuse
+	// during screen transitions often leaves the tracker dirty after the RT marker was cleared.
+	if (page_isolated && new_allocation && !cached_gpu_modified) {
+		return RenderTargetOverlap::RetireTarget;
+	}
+	// GPU-owned RT replaced by a differently shaped target on the same pages. Caller downloads
+	// before RetireImages.
+	if (page_isolated && new_allocation && cached_gpu_modified && tracker_gpu_modified &&
+	    !cached_buffer_modified) {
+		return RenderTargetOverlap::RetireTarget;
+	}
+	return RenderTargetOverlap::Unsupported;
 }
 
 [[nodiscard]] inline DepthOverlap ClassifyDepthTargetOverlap(const DepthTargetInfo& cached,

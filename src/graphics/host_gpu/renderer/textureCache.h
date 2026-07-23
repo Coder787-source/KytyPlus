@@ -100,6 +100,7 @@ public:
 	[[nodiscard]] vk::ImageView GetStorageTextureSampledView(StorageTextureVulkanImage& image,
 	                                                         const ImageInfo&           info);
 	[[nodiscard]] vk::ImageView GetStorageTextureStorageView(StorageTextureVulkanImage& image,
+	                                                         const ImageInfo&           info,
 	                                                         uint32_t                   base_level);
 	[[nodiscard]] DepthStencilVulkanImage*
 	FindDepthTargetByRange(CommandBuffer& command, uint64_t vaddr, uint64_t size,
@@ -147,6 +148,8 @@ private:
 	void RequireRetirementIsolation(const std::vector<CachedImage*>& retire, const char* operation,
 	                                uint64_t address, uint64_t size) const;
 	void ExpandRetirementAliases(std::vector<CachedImage*>& retire);
+	// Expand aliases, then forcibly pull any remaining conflicting retained images (#84).
+	void IsolateRetirementSet(std::vector<CachedImage*>& retire);
 	void RetireImages(const std::vector<CachedImage*>& retire,
 	                  const CachedImage*               native_image_source = nullptr);
 	void RetireDepthMetadataLocked(const std::vector<CachedImage*>& retire,

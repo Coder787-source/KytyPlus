@@ -685,13 +685,9 @@ BufferBinding BufferCache::ObtainBuffer(CommandBuffer& command, uint64_t vaddr, 
 	                               ? texture_region
 	                               : m_texture_cache->QueryRegion(begin, end - begin);
 	if (texture_pages.metadata_pages) {
-		EXIT("BufferCache: buffer aliases metadata pages, request=0x%016" PRIx64 "+0x%016" PRIx64
-		     " aligned=0x%016" PRIx64 "+0x%016" PRIx64 " read=%d written=%d formatted=%d"
-		     " request_meta=%d/%d/%d aligned_meta=%d/%d/%d\n",
-		     vaddr, size, begin, end - begin, is_read, is_written, is_formatted,
-		     texture_region.metadata_pages, texture_region.metadata_bytes,
-		     texture_region.gpu_metadata_bytes, texture_pages.metadata_pages,
-		     texture_pages.metadata_bytes, texture_pages.gpu_metadata_bytes);
+		EXIT("BufferCache: buffer aliases metadata pages, request=0x%016" PRIx64
+		     "+0x%016" PRIx64 " read=%d written=%d\n",
+		     vaddr, size, is_read, is_written);
 	}
 	// Cache allocations are tracker-page aligned, but byte-disjoint buffers and images may share
 	// an edge page. Clean read-only buffer and image views may coexist; Kyty retains a hard failure
@@ -944,7 +940,7 @@ BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t
 			     vaddr, size, GraphicsRunIsCommandProcessorThread(),
 			     GraphicsRunSubmissionLockHeld(), LabelInCallback());
 		}
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForSubmittedGraphics();
 		auto     backing_writes = ReserveBackingWrites(m_page_manager, dirty_ranges);
 		uint64_t downloaded     = 0;
 		m_memory_tracker.ForEachDownloadRange<true>(

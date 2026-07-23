@@ -612,7 +612,12 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 		return;
 	}
 	if ((wait_op & ~1u) != 0) {
-		EXIT("unsupported wait_reg_mem operation: 0x%08" PRIx32 "\n", wait_op);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "wait_reg_mem: soft-ignore unsupported wait_op 0x%08" PRIx32 "\n", wait_op);
+		}
+		return;
 	}
 
 	const auto addr_value = reinterpret_cast<uint64_t>(addr);
@@ -1042,7 +1047,20 @@ void CommandProcessor::Run(uint32_t* data, uint32_t num_dw) {
 			for (uint32_t i = dump_begin; i < dump_end; i++) {
 				LOGF("\t%05" PRIx32 "%s %08" PRIx32 "\n", i, (i == offset ? ":" : " "), data[i]);
 			}
-			EXIT("unknown op\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32 "\n", num_dw - dw, cmd_id);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-skip unknown PM4 op cmd_id=0x%08" PRIx32 " at 0x%05" PRIx32 "\n",
+				           cmd_id, num_dw - dw);
+			}
+			// Prefer the encoded packet length when present; otherwise skip one header dword.
+			auto packet_len = KYTY_PM4_LEN(cmd_id);
+			if (packet_len == 0 || packet_len > dw) {
+				packet_len = 1;
+			}
+			cmd += packet_len - 1u;
+			dw -= packet_len;
+			continue;
 		}
 
 		auto s = pfunc(*this, cmd_id & ~1u, cmd, dw, num_dw);
@@ -1138,6 +1156,8 @@ void CommandProcessor::DrawIndex(uint32_t index_count, const void* index_addr, u
 	Common::LockGuard lock(m_mutex);
 
 	CheckBuffer();
+
+	m_memory_barrier_coalesced = false;
 
 	if (instance_count == 0) {
 		instance_count = m_num_instances;
@@ -1371,6 +1391,7 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 		Common::LockGuard lock(m_mutex);
 
 		CheckBuffer();
+		m_memory_barrier_coalesced = false;
 		frame_num = GraphicsRunGetFrameNum();
 		if (GraphicsRunDebugDumpEnabled()) {
 			static std::atomic<uint32_t> log_count {0};
@@ -1454,6 +1475,8 @@ void CommandProcessor::DrawIndexAuto(uint32_t index_count, uint32_t flags,
 
 	CheckBuffer();
 
+	m_memory_barrier_coalesced = false;
+
 	RenderDrawIndexAuto(m_submit_id, CurrentBuffer(), index_count, flags,
 	                    render_target_slice_offset, instance_count, first_vertex, first_instance);
 }
@@ -1506,7 +1529,17 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		case 0x03: with_interrupt = false; break;
 		case 0x01: Sync::TriggerEopEventAtEndOfPipe(CurrentBuffer(), interrupt_context_id); return;
 		case 0x02: with_interrupt = true; break;
-		default: EXIT("unknown interrupt_selector\n");
+		default: {
+			static std::atomic_uint32_t soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "WriteAtEndOfPipe: soft-ignore unknown interrupt_selector=0x%08" PRIx32
+				           "\n",
+				           interrupt_selector);
+			}
+			with_interrupt = false;
+			break;
+		}
 	}
 
 	auto write32 = [&](bool with_writeback) {
@@ -1740,7 +1773,11 @@ void CommandProcessor::MemoryBarrier() {
 
 	CheckBuffer();
 
+	if (m_memory_barrier_coalesced) {
+		return;
+	}
 	GraphicsRenderMemoryBarrier(CurrentBuffer());
+	m_memory_barrier_coalesced = true;
 }
 
 void CommandProcessor::TriggerEopEventAtEndOfPipe(uint32_t interrupt_context_id) {
@@ -1785,8 +1822,13 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
 		case 0x00000016:
 		case 0x00000031:
 			if (!valid_cache_event_index) {
-				EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type,
-				     event_index);
+				static std::atomic_uint32_t log_count {0};
+				if (log_count.fetch_add(1, std::memory_order_relaxed) < 32) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "TriggerEvent: unusual index for cache event_type=0x%08" PRIx32
+					           " index=0x%08" PRIx32 " — treating as barrier\n",
+					           event_type, event_index);
+				}
 			}
 			MemoryBarrier();
 			SynchronizeGpu();
@@ -1796,8 +1838,13 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
 		case 0x0000002c:
 		case 0x0000002e:
 			if (!valid_cache_event_index) {
-				EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type,
-				     event_index);
+				static std::atomic_uint32_t log_count {0};
+				if (log_count.fetch_add(1, std::memory_order_relaxed) < 32) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "TriggerEvent: unusual index for meta event_type=0x%08" PRIx32
+					           " index=0x%08" PRIx32 " — treating as barrier\n",
+					           event_type, event_index);
+				}
 			}
 			MemoryBarrier();
 			break;
@@ -1837,6 +1884,8 @@ void CommandProcessor::Flip() {
 	Common::LockGuard lock(m_mutex);
 
 	CheckBuffer();
+
+	m_memory_barrier_coalesced = false;
 
 	if (GraphicsRunDebugDumpEnabled()) {
 		LOGF("CommandProcessor::Flip()\n");
@@ -1888,7 +1937,13 @@ void CommandProcessor::FlipWithInterrupt(uint32_t eop_event_type, uint32_t cache
 	}
 
 	if (eop_event_type != 0x00000004 || cache_action != 0x00000038) {
-		EXIT("unknown event type\n");
+		static std::atomic_uint32_t log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "FlipWithInterrupt: unusual eop/cache (0x%08" PRIx32 "/0x%08" PRIx32
+			           ") — proceeding with flip writeback\n",
+			           eop_event_type, cache_action);
+		}
 	}
 	std::memcpy(dst_gpu_addr, &value, sizeof(value));
 	auto& command = CurrentBuffer();

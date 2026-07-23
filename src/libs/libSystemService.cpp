@@ -7,6 +7,7 @@
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
 
+#include <atomic>
 #include <cstring>
 
 namespace Libs {
@@ -127,7 +128,15 @@ static int KYTY_SYSV_ABI SystemServiceParamGetInt(int param_id, int* value) {
 		case PARAM_ID_SUMMERTIME: v = 0; break;
 		case PARAM_ID_GAME_PARENTAL_LEVEL: v = PARAM_GAME_PARENTAL_OFF; break;
 		case PARAM_ID_ENTER_BUTTON_ASSIGN: v = PARAM_ENTER_BUTTON_ASSIGN_CROSS; break;
-		default: EXIT("unknown param_id: %d\n", param_id);
+		default: {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "SystemServiceParamGetInt: soft-zero unknown param_id=%d\n", param_id);
+			}
+			v = 0;
+			break;
+		}
 	}
 
 	LOGF(" %d = %d\n", param_id, v);

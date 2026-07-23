@@ -1411,6 +1411,28 @@ bool Structurize(Graph& graph, std::string* error) {
 		block.terminator.merge_block = merge;
 	}
 
+	// SPIR-V structured nesting: any header strictly inside a loop construct must keep its
+	// merge inside that construct. Escaping merges fail validation with
+	// "Header block is contained in the loop construct..., but its merge block is not"
+	// (Beyond a Steel Sky / #67). Reject here so the recompiler falls back to the dispatcher.
+	for (const auto& loop: graph.natural_loops) {
+		for (const auto& block: graph.blocks) {
+			if (block.terminator.merge_block == UINT32_MAX || block.id == loop.header) {
+				continue;
+			}
+			if (IsInsideLoopConstruct(graph, loop, block.id) &&
+			    !IsInsideLoopConstruct(graph, loop, block.terminator.merge_block)) {
+				SetFailure(
+				    graph, FailureKind::StructuredControlFlow, block.id,
+				    fmt::format(
+				        "structured merge {} for header {} escapes containing loop headed by {}",
+				        block.terminator.merge_block, block.id, loop.header),
+				    error);
+				return false;
+			}
+		}
+	}
+
 	return true;
 }
 

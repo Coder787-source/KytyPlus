@@ -4,6 +4,7 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/threads.h"
+#include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/gpuTiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/imageView.h"
@@ -118,6 +119,30 @@ void WaitForGraphicsIdle() {
 		     static_cast<int>(result));
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+}
+
+void WaitForSubmittedGraphics() {
+	// CP-thread refresh/upload paths only need submitted guest GPU work to finish — not a
+	// full vkDeviceWaitIdle across every queue (the main 5–15 FPS tax on light titles).
+	if (GraphicsRunIsCommandProcessorThread()) {
+		GraphicsRunFinishCommandProcessors();
+		return;
+	}
+	auto& graphics = GetRenderContext().GetGraphics();
+	auto* gfx      = &graphics.queues[GraphicContext::QUEUE_GFX];
+	if (gfx->vk_queue == nullptr || gfx->mutex == nullptr) {
+		WaitForGraphicsIdle();
+		return;
+	}
+	gfx->mutex->Lock();
+	const auto result = gfx->vk_queue.waitIdle();
+	gfx->mutex->Unlock();
+	if (result != vk::Result::eSuccess) {
+		LOGF("vkQueueWaitIdle(GFX) failed: %s (%d) — falling back to device idle\n",
+		     VulkanToString(result).c_str(), static_cast<int>(result));
+		WaitForGraphicsIdle();
+		return;
+	}
 }
 
 static void SetImageLayout(vk::CommandBuffer buffer, VulkanImage& dst_image, uint32_t base_level,

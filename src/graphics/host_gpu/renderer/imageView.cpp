@@ -1,10 +1,12 @@
 #include "graphics/host_gpu/renderer/imageView.h"
 
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "graphics/host_gpu/objects/textureCommon.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/textureCache.h"
 
+#include <atomic>
 #include <mutex>
 
 namespace Libs::Graphics {
@@ -271,6 +273,11 @@ vk::ImageView TextureCache::GetDepthTargetSampledView(DepthStencilVulkanImage& i
 		     static_cast<int>(view_format), swizzle, base_level, level_count, base_layer,
 		     layer_count, static_cast<int>(type), image.mip_levels, image.layers);
 	}
+	if (type != vk::ImageViewType::e2D && type != vk::ImageViewType::e2DArray &&
+	    type != vk::ImageViewType::eCube && type != vk::ImageViewType::eCubeArray) {
+		EXIT("TextureCache: unsupported sampled depth-target view type %d\n",
+		     static_cast<int>(type));
+	}
 	return GetImageView(image, {image.format, type, vk::ImageAspectFlagBits::eDepth, base_level,
 	                            level_count, base_layer, layer_count, swizzle});
 }
@@ -279,14 +286,19 @@ vk::ImageView TextureCache::GetSampledColorView(VulkanImage& image, vk::Format v
                                                 uint32_t swizzle, uint32_t base_level,
                                                 uint32_t level_count, vk::ImageViewType type,
                                                 uint32_t base_layer, uint32_t layer_count) {
+	// Reinterpreting views (uint<->unorm/sRGB, BGRA<->RGBA) require the image to have been
+	// created with eMutableFormat; creating one without it is undefined behavior, not a
+	// guaranteed driver error, so it must be caught here.
 	if (view_format == vk::Format::eUndefined || base_level >= 16 ||
 	    (type != vk::ImageViewType::e2D && type != vk::ImageViewType::e2DArray) ||
+	    (view_format != image.format && !image.mutable_format) ||
 	    !IsSupportedSampledColorView(image.format, view_format, swizzle)) {
-		EXIT("TextureCache: invalid sampled color view, image=%p swizzle=0x%03x"
-		     " view_format=%d mip=%u+%u layer=%u+%u type=%d image_levels=%u image_layers=%u\n",
-		     static_cast<const void*>(&image), swizzle, static_cast<int>(view_format), base_level,
-		     level_count, base_layer, layer_count, static_cast<int>(type), image.mip_levels,
-		     image.layers);
+		EXIT("TextureCache: invalid sampled color view, image=%p image_format=%d swizzle=0x%03x"
+		     " view_format=%d mutable=%d mip=%u+%u layer=%u+%u type=%d image_levels=%u"
+		     " image_layers=%u\n",
+		     static_cast<const void*>(&image), static_cast<int>(image.format), swizzle,
+		     static_cast<int>(view_format), image.mutable_format, base_level, level_count,
+		     base_layer, layer_count, static_cast<int>(type), image.mip_levels, image.layers);
 	}
 	const auto precreated_view = type == vk::ImageViewType::e2DArray
 	                                 ? VulkanImage::VIEW_DEFAULT_ARRAY
@@ -346,19 +358,30 @@ vk::ImageView TextureCache::GetRenderTargetStorageView(RenderTextureVulkanImage&
 vk::ImageView TextureCache::GetStorageTextureSampledView(StorageTextureVulkanImage& image,
                                                          const ImageInfo&           info) {
 	const auto shape = SelectStorageSampledViewShape(info.type, info.depth, image.layers);
+	uint32_t   base_level  = info.base_level;
+	uint32_t   view_levels = info.view_levels;
+	uint32_t   levels      = info.levels != 0 ? info.levels : image.mip_levels;
+	if (levels != image.mip_levels && image.mip_levels != 0) {
+		levels = image.mip_levels;
+	}
+	if (base_level >= levels) {
+		base_level = levels > 0 ? levels - 1u : 0;
+	}
+	if (view_levels == 0 || base_level + view_levels > levels) {
+		view_levels = levels > base_level ? levels - base_level : 1;
+	}
 	if (image.image == nullptr || shape == StorageSampledViewShape::Unsupported ||
-	    info.base_array != 0 || info.levels != image.mip_levels || info.base_level >= info.levels ||
-	    info.view_levels == 0 || info.base_level + info.view_levels > info.levels) {
-		EXIT("TextureCache: invalid sampled view of storage texture, image=%p type=%u depth=%u"
-		     " base=%u levels=%u view_levels=%u image_levels=%u base_array=%u\n",
+	    info.base_array != 0 || levels == 0) {
+		EXIT("TextureCache: unsupported sampled view of storage texture, image=%p type=%u "
+		     "depth=%u base=%u levels=%u view_levels=%u image_levels=%u\n",
 		     static_cast<const void*>(&image), info.type, info.depth, info.base_level, info.levels,
-		     info.view_levels, image.mip_levels, info.base_array);
+		     info.view_levels, image.mip_levels);
 	}
 	const auto view_format = TextureGetFormat(info.format);
 	if (view_format != image.format && !IsRgba8SrgbReinterpretation(image.format, view_format) &&
 	    !IsR32UintFloatReinterpretation(image.format, view_format)) {
-		EXIT("TextureCache: incompatible sampled view of storage texture, image_format=%d"
-		     " view_format=%d swizzle=0x%03x\n",
+		EXIT("TextureCache: incompatible sampled storage view, image_format=%d view_format=%d "
+		     "swizzle=0x%03x\n",
 		     static_cast<int>(image.format), static_cast<int>(view_format), info.swizzle);
 	}
 
@@ -368,25 +391,42 @@ vk::ImageView TextureCache::GetStorageTextureSampledView(StorageTextureVulkanIma
 		case StorageSampledViewShape::Image2DArray: type = vk::ImageViewType::e2DArray; break;
 		case StorageSampledViewShape::Image3D: type = vk::ImageViewType::e3D; break;
 		case StorageSampledViewShape::Unsupported:
-			EXIT("TextureCache: unsupported sampled storage-image view shape\n");
+			return image.image_view[VulkanImage::VIEW_DEFAULT];
 	}
 	const auto layer_count = shape == StorageSampledViewShape::Image2DArray ? info.depth : 1u;
-	return GetImageView(image, {view_format, type, vk::ImageAspectFlagBits::eColor, info.base_level,
-	                            info.view_levels, 0, layer_count, info.swizzle});
+	return GetImageView(image, {view_format, type, vk::ImageAspectFlagBits::eColor, base_level,
+	                            view_levels, 0, layer_count, info.swizzle});
 }
 
 vk::ImageView TextureCache::GetStorageTextureStorageView(StorageTextureVulkanImage& image,
+                                                         const ImageInfo&           info,
                                                          uint32_t                   base_level) {
-	if (image.image == nullptr || base_level >= (image.mip_levels)) {
+	if (image.image == nullptr || base_level >= image.mip_levels) {
 		EXIT("TextureCache: invalid storage-texture mip view, image=%p level=%u levels=%u\n",
 		     static_cast<const void*>(&image), base_level, image.mip_levels);
 	}
 	if (base_level == 0) {
 		return image.image_view[VulkanImage::VIEW_DEFAULT];
 	}
-	return GetImageView(image, {image.format, vk::ImageViewType::e2D,
-	                            vk::ImageAspectFlagBits::eColor, base_level, 1, 0, 1,
-	                            DstSel(4, 5, 6, 7), vk::ImageUsageFlagBits::eStorage});
+	const auto shape = SelectStorageSampledViewShape(info.type, info.depth, image.layers);
+	vk::ImageViewType view_type = vk::ImageViewType::e2D;
+	uint32_t          layers    = 1;
+	switch (shape) {
+		case StorageSampledViewShape::Image2D: view_type = vk::ImageViewType::e2D; break;
+		case StorageSampledViewShape::Image2DArray:
+			view_type = vk::ImageViewType::e2DArray;
+			layers    = info.depth;
+			break;
+		case StorageSampledViewShape::Image3D: view_type = vk::ImageViewType::e3D; break;
+		case StorageSampledViewShape::Unsupported:
+			EXIT("TextureCache: unsupported storage-texture mip view, image=%p type=%u depth=%u"
+			     " layers=%u level=%u\n",
+			     static_cast<const void*>(&image), info.type, info.depth, image.layers, base_level);
+	}
+	return GetImageView(image, {image.format, view_type, vk::ImageAspectFlagBits::eColor,
+	                            base_level, 1, 0, layers, DstSel(4, 5, 6, 7),
+	                            vk::ImageUsageFlagBits::eStorage});
 }
+
 
 } // namespace Libs::Graphics

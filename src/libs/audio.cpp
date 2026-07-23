@@ -1884,7 +1884,8 @@ static void Ngs2FillDefaultRackOption(uint32_t rack_id, Ngs2RackOptionUnion* opt
 			option->custom_mastering.max_channels                                          = 8;
 			option->custom_mastering.num_peak_meter_blocks                                 = 8;
 			break;
-		default: EXIT("unknown rack_id for default option: 0x%" PRIx32 "\n", rack_id);
+		default:
+			EXIT("Ngs2: unsupported rack_id 0x%" PRIx32 "\n", rack_id);
 	}
 }
 
@@ -2072,7 +2073,7 @@ int KYTY_SYSV_ABI Ngs2RackCreate(uintptr_t system_handle, uint32_t rack_id,
 			    *reinterpret_cast<const Ngs2CustomMasteringRackOption*>(option);
 			rack->type = Ngs2RackType::CustomMastering;
 			break;
-		default: EXIT("unknown rack_id: 0x%" PRIx32 "\n", rack_id);
+		default: EXIT("Ngs2: unsupported rack_id 0x%" PRIx32 "\n", rack_id);
 	}
 
 	LOGF("\t type                   = %s\n", Common::EnumName(rack->type).c_str());
@@ -2535,7 +2536,16 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 							case 0x0008: voice->event = Ngs2VoicePlayEvent::Kill; break;
 							case 0x0010: voice->event = Ngs2VoicePlayEvent::Pause; break;
 							case 0x0020: voice->event = Ngs2VoicePlayEvent::Resume; break;
-							default: EXIT("unknown event_id: 0x%08" PRIx32 "\n", event->event_id);
+							default: {
+								static std::atomic_uint32_t soft_logs {0};
+								if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+									LOGF_COLOR(Log::Color::Yellow,
+									           "Ngs2: soft-ignore unknown voice event_id=0x%08" PRIx32
+									           "\n",
+									           event->event_id);
+								}
+								break;
+							}
 						}
 						LOGF("\t event = %u\n", event->event_id);
 						break;
@@ -2582,7 +2592,14 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 			case 0x4003:
 				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::CustomMastering);
 				break;
-			default: EXIT("unknown rack_id: 0x%" PRIx32 "\n", rack_id);
+			default: {
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "Ngs2: soft-ignore unknown voice rack_id 0x%" PRIx32 "\n", rack_id);
+				}
+				break;
+			}
 		}
 
 		if (param->next == 0) {

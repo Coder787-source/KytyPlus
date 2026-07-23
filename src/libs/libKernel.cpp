@@ -2712,6 +2712,53 @@ int KYTY_SYSV_ABI KernelAioWaitRequest(int32_t id, int32_t* state, uint32_t* use
 	return OK;
 }
 
+// Plural wait used by CFB25 CAS I/O (NID lgK+oIWkJyA). Submit paths complete synchronously, so
+// this usually returns immediately; keep the shadPS4-compatible wait loop for future async I/O.
+int KYTY_SYSV_ABI KernelAioWaitRequests(int32_t* ids, int32_t num, int32_t* states, uint32_t mode,
+                                        uint32_t* usec) {
+	PRINT_NAME();
+
+	if (states == nullptr || ids == nullptr) {
+		return LibKernel::KERNEL_ERROR_EFAULT;
+	}
+	if (num <= 0 || num > KERNEL_AIO_MAX_REQUESTS) {
+		return LibKernel::KERNEL_ERROR_EINVAL;
+	}
+
+	uint32_t waited     = 0;
+	bool     timed_out  = false;
+	bool     completion = false;
+
+	for (int32_t i = 0; i < num; i++) {
+		const auto id = ids[i];
+		if (!kernel_aio_is_valid_id(id)) {
+			states[i] = 0;
+			continue;
+		}
+
+		if (!completion && !timed_out) {
+			auto current = g_kernel_aio_state[id].load(std::memory_order_acquire);
+			while (current == KERNEL_AIO_STATE_PROCESSING) {
+				if (usec != nullptr && *usec != 0 && waited >= *usec) {
+					timed_out = true;
+					break;
+				}
+				Common::Thread::SleepMicro(10);
+				waited += 10;
+				current = g_kernel_aio_state[id].load(std::memory_order_acquire);
+			}
+		}
+
+		const auto current = g_kernel_aio_state[id].load(std::memory_order_acquire);
+		if (mode == 0x02u && current == KERNEL_AIO_STATE_COMPLETED) {
+			completion = true;
+		}
+		states[i] = current;
+	}
+
+	return timed_out ? LibKernel::KERNEL_ERROR_ETIMEDOUT : OK;
+}
+
 int KYTY_SYSV_ABI KernelAioDeleteRequest(int32_t id, int32_t* ret) {
 	PRINT_NAME();
 
@@ -2762,6 +2809,68 @@ LIB_DEFINE(InitCoredump_1) {
 	LIB_FUNC("fFkhOgztiCA", Coredump::sceCoredumpUnregisterCoredumpHandler);
 }
 
+static int KYTY_SYSV_ABI KernelMlock(const void* addr, size_t len) {
+	PRINT_NAME();
+	(void)addr;
+	(void)len;
+	return OK;
+}
+
+static int KYTY_SYSV_ABI KernelTruncate(const char* path, int64_t length) {
+	PRINT_NAME();
+	(void)path;
+	(void)length;
+	return OK;
+}
+
+static int KYTY_SYSV_ABI KernelUtimes(const char* path, const void* times) {
+	PRINT_NAME();
+	(void)path;
+	(void)times;
+	return OK;
+}
+
+struct KernelRusage {
+	int64_t ru_utime_sec;
+	int64_t ru_utime_usec;
+	int64_t ru_stime_sec;
+	int64_t ru_stime_usec;
+	int64_t unused[14];
+};
+
+static int KYTY_SYSV_ABI KernelGetrusage(int who, KernelRusage* usage) {
+	PRINT_NAME();
+	(void)who;
+	if (usage == nullptr) {
+		return LibKernel::KERNEL_ERROR_EFAULT;
+	}
+	*usage = {};
+	return OK;
+}
+
+static void* KYTY_SYSV_ABI KernelSignal(int sig, void* handler) {
+	PRINT_NAME();
+	LOGF("\t signal stub: sig=%d handler=0x%016" PRIx64 "\n", sig,
+	     reinterpret_cast<uint64_t>(handler));
+	(void)sig;
+	(void)handler;
+	return nullptr;
+}
+
+// Prospero export used by libc.prx. Exact segment layout is unknown; refuse cleanly.
+static int KYTY_SYSV_ABI KernelInternalMemoryGetModuleSegmentInfo(void* out) {
+	PRINT_NAME();
+	static std::atomic<uint32_t> soft_logs {0};
+	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "libkernel: soft-ENOSYS sceKernelInternalMemoryGetModuleSegmentInfo "
+		           "out=0x%016" PRIx64 "\n",
+		           reinterpret_cast<uint64_t>(out));
+	}
+	(void)out;
+	return LibKernel::KERNEL_ERROR_ENOSYS;
+}
+
 LIB_DEFINE(InitLibKernel_1_FS) {
 	LIB_FUNC("1G3lF1Gg1k8", FileSystem::KernelOpen);
 	LIB_FUNC("UK2Tl2DWUns", FileSystem::KernelClose);
@@ -2779,6 +2888,11 @@ LIB_DEFINE(InitLibKernel_1_FS) {
 	LIB_FUNC("1-LFLmRFxxM", FileSystem::KernelMkdir);
 	LIB_FUNC("naInUjYt3so", FileSystem::KernelRmdir);
 	LIB_FUNC("uWyW3v98sU4", FileSystem::KernelCheckReachability);
+	// Alan Wake / libc.prx aliases (posix + sceKernel forms resolved via NID brute-force).
+	LIB_FUNC("WlyEA-sLDf0", KernelTruncate);
+	LIB_FUNC("fgIsQ10xYVA", chmod);
+	LIB_FUNC("0Cq8ipKr9n0", KernelUtimes);
+	LIB_FUNC("3k6kx-zOOSQ", KernelMlock);
 }
 
 LIB_DEFINE(InitLibKernel_1_Mem) {
@@ -2882,6 +2996,7 @@ LIB_DEFINE(InitLibKernel_1_Pthread) {
 	LIB_FUNC("aI+OeCz8xrQ", LibKernel::PthreadSelf);
 	LIB_FUNC("EotR8a3ASf4", LibKernel::PthreadSelf);
 	LIB_FUNC("6UgtwV+0zb4", LibKernel::PthreadCreate);
+	LIB_FUNC("qBDmpCyGssE", LibKernel::PthreadCancel);
 	LIB_FUNC("3PtV6p3QNX4", LibKernel::PthreadEqual);
 	LIB_FUNC("onNY9Byn-W8", LibKernel::PthreadJoin);
 	LIB_FUNC("4qGrR6eoP9Y", LibKernel::PthreadDetach);
@@ -3033,6 +3148,11 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("959qrazPIrg", LibKernel::KernelGetProcParam);
 	LIB_FUNC("tU5e3f9gSiU", LibKernel::KernelIsTrinityMode);
 	LIB_FUNC("fTx66l5iWIA", LibKernel::KernelFsync);
+	LIB_FUNC("juWbTNM+8hw", LibKernel::KernelFsync);
+	LIB_FUNC("c7ZnT7V1B98", FileSystem::KernelRmdir);
+	LIB_FUNC("hHlZQUnlxSM", KernelGetrusage);
+	LIB_FUNC("VADc3MNQ3cM", KernelSignal);
+	LIB_FUNC("-YTW+qXc3CQ", KernelInternalMemoryGetModuleSegmentInfo);
 	LIB_FUNC("uvT2iYBBnkY", LibKernel::KernelSync);
 	LIB_FUNC("HoLVWNanBBc", LibKernel::getpid);
 	LIB_FUNC("9BcDykPmo1I", LibKernel::get_error_addr);
@@ -3052,6 +3172,7 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("5TgME6AYty4", KernelAioDeleteRequest);
 	LIB_FUNC("HgX7+AORI58", KernelAioSubmitReadCommands);
 	LIB_FUNC("KOF-oJbQVvc", KernelAioWaitRequest);
+	LIB_FUNC("lgK+oIWkJyA", KernelAioWaitRequests);
 	LIB_FUNC("XQ8C8y+de+E", KernelAioSubmitWriteCommands);
 	LIB_FUNC("nu4a0-arQis", KernelAioInitializeParam);
 	LIB_FUNC("il03nluKfMk", LibKernel::KernelRaiseException);

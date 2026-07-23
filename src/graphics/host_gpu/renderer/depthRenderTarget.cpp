@@ -160,6 +160,14 @@ void ResolveRenderDepthTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 	}
 	r.base_array_layer = view.base_layer;
 	r.layer_count      = view.layer_count;
+	if (z.z_info.zrange_precision > 1) {
+		static std::atomic<uint32_t> zrange_logs {0};
+		if (zrange_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "DepthTarget: ignoring zrange_precision=0x%08" PRIx32 "\n",
+			           z.z_info.zrange_precision);
+		}
+	}
 	// Prospero defines the compression-disable bits as tile writeback policy. Vulkan attachments
 	// expose the same logical depth/stencil values regardless of the driver's backing compression.
 	if ((stencil_active && !has_stencil) || rc.resummarize_enable || rc.copy_centroid ||
@@ -167,7 +175,7 @@ void ResolveRenderDepthTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 	    z.z_info.embedded_sample_locations || z.z_info.partially_resident ||
 	    z.stencil_info.partially_resident || z.z_info.plane_compression != 0 ||
 	    z.z_info.num_mip_levels != 0 || z.z_info.tile_mode_index != 0 ||
-	    z.z_info.zrange_precision > 1 || z.depth_view.current_mip_level != 0 ||
+	    z.depth_view.current_mip_level != 0 ||
 	    z.depth_info.addr5_swizzle_mask != 0 || z.depth_info.array_mode != 0 ||
 	    z.depth_info.pipe_config != 0 || z.depth_info.bank_width != 0 ||
 	    z.depth_info.bank_height != 0 || z.depth_info.macro_tile_aspect != 0 ||

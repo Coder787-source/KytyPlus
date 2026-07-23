@@ -125,6 +125,33 @@ bool NeedsDispatcherForStructuredLoopHeader(const IR::Program& ir, std::string* 
 	return false;
 }
 
+// Nested natural loops often emit OpLoopMerge nests that SPIR-V validators reject
+// ("header contained in outer loop but merge is not") — Beyond a Steel Sky / #67.
+bool NeedsDispatcherForNestedLoops(const CFG::Graph& cfg, std::string* reason) {
+	for (size_t outer_i = 0; outer_i < cfg.natural_loops.size(); ++outer_i) {
+		const auto& outer = cfg.natural_loops[outer_i];
+		for (size_t inner_i = 0; inner_i < cfg.natural_loops.size(); ++inner_i) {
+			if (outer_i == inner_i) {
+				continue;
+			}
+			const auto& inner = cfg.natural_loops[inner_i];
+			const bool header_in_outer =
+			    std::find(outer.body_blocks.begin(), outer.body_blocks.end(), inner.header) !=
+			    outer.body_blocks.end();
+			if (!header_in_outer) {
+				continue;
+			}
+			if (reason != nullptr) {
+				*reason = fmt::format("nested natural loops: inner header {} inside outer header "
+				                      "{} (SPIR-V loop-merge nesting is unsafe)",
+				                      inner.header, outer.header);
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
 enum class EmbeddedFetchValueType {
 	Unknown,
 	Constant,
@@ -721,6 +748,16 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 		} else {
 			LOGF("%s structured CFG success: blocks=%" PRIu64 "\n", GetDumpLabel(options),
 			     static_cast<uint64_t>(cfg.blocks.size()));
+			std::string nested_reason;
+			if (NeedsDispatcherForNestedLoops(cfg, &nested_reason)) {
+				LOGF("%s nested loops → dispatcher fallback: %s\n", GetDumpLabel(options),
+				     nested_reason.c_str());
+				dispatcher_fallback = true;
+				dispatcher_reason   = nested_reason;
+				cfg                 = unstructured_cfg;
+				cfg.unsupported     = true;
+				cfg.unsupported_reason = nested_reason;
+			}
 		}
 		LOGF("%s phase end: stage=%s hash=0x%016" PRIx64 " CFG Structurize blocks=%" PRIu64
 		     " loops=%" PRIu64 " elapsed_ms=%" PRIu64 "\n",

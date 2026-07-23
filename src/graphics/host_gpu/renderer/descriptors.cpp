@@ -54,7 +54,7 @@ using TextureVariant = DescriptorCache::TextureVariant;
 // Upper bound on how large an unaligned read-only storage buffer we will re-serve from the
 // per-command host stream (whose ring is 32 MiB and shared by every upload in the command).
 // Anything larger keeps the original hard failure rather than risking stream exhaustion.
-static constexpr uint64_t kMaxRealignedStorageBufferSize = 8ull * 1024ull * 1024ull;
+static constexpr uint64_t kMaxRealignedStorageBufferSize = 64ull * 1024ull * 1024ull;
 
 static void BindNullStorageBuffer(CommandBuffer& cmd_buffer, BufferView& dst) {
 	dst.buffer = &GetRenderContext().GetBufferCache().ObtainNullBuffer(cmd_buffer);
@@ -147,7 +147,11 @@ static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command
 	if (alignment == 0 ||
 	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
 	    BufferCache::CACHING_PAGE_SIZE % alignment != 0) {
-		EXIT("storage buffer range or device alignment is unsupported\n");
+		EXIT("storage buffer range or device alignment is unsupported, addr=0x%016" PRIx64
+		     " size=0x%016" PRIx64 " align=%u max_range=0x%016" PRIx64 "\n",
+		     address, size, alignment,
+		     static_cast<uint64_t>(
+		         graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange));
 	}
 	(void)submit_id;
 	auto& buffer_cache = GetRenderContext().GetBufferCache();
@@ -155,40 +159,51 @@ static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command
 	    buffer_cache.ObtainBuffer(command_buffer, address, size, resource.written, resource.read,
 	                              resource.formatted);
 	if (binding.offset % alignment != 0) {
-		// PS5 buffer V#s may point at guest addresses finer-grained than the host's
-		// minStorageBufferOffsetAlignment, so the natural cache binding offset is not always a
-		// legal Vulkan storage-buffer offset. For a read-only range whose bytes are CPU-current we
-		// serve an aligned copy from the per-command host stream instead of aborting the whole
-		// emulator. Writable or GPU-produced ranges still need the proper sub-alignment path, which
-		// is not implemented, so those keep the previous hard failure.
-		const bool can_realign = !resource.written &&
-		                         !buffer_cache.IsRegionGpuModified(address, size) &&
-		                         size <= kMaxRealignedStorageBufferSize;
-		if (can_realign) {
-			// Read the physical backing (bypasses host GPU page protection) into a scratch copy,
-			// then upload it into the host stream at an offset aligned for storage descriptors.
-			std::vector<uint8_t> scratch(static_cast<size_t>(size));
-			VulkanBuffer*        aligned_buffer = nullptr;
-			uint64_t             aligned_offset = 0;
-			uint64_t             aligned_range  = 0;
-			if (Libs::LibKernel::Memory::TryReadBacking(address, scratch.data(),
-			                                            static_cast<size_t>(size)) &&
-			    buffer_cache.UploadHostData(command_buffer, scratch.data(), size, alignment,
-			                                aligned_buffer, aligned_offset, aligned_range)) {
-				static std::atomic<uint32_t> log_count {0};
-				if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-					LOGF("StorageBuffer: realigned unaligned read-only binding addr=0x%016" PRIx64
-					     " size=0x%016" PRIx64 " via host stream (cache offset 0x%016" PRIx64
-					     " -> stream offset 0x%016" PRIx64 ")\n",
-					     address, size, binding.offset, aligned_offset);
-				}
-				result.buffer = aligned_buffer;
-				result.offset = aligned_offset;
-				result.range  = static_cast<vk::DeviceSize>(size);
-				return result;
-			}
+		// PS5 buffer V#s may be finer-grained than minStorageBufferOffsetAlignment. Serve an
+		// aligned host-stream copy that preserves guest/GPU contents (#85 Gex Trilogy). Writable
+		// bindings queue a stream->cache writeback flushed after the dispatch/draw.
+		if (size > kMaxRealignedStorageBufferSize) {
+			EXIT("unaligned storage buffer exceeds realign limit, addr=0x%016" PRIx64
+			     " size=0x%016" PRIx64 " limit=0x%016" PRIx64 "\n",
+			     address, size, kMaxRealignedStorageBufferSize);
 		}
-		EXIT("storage buffer binding is not device-aligned\n");
+		std::vector<uint8_t> scratch(static_cast<size_t>(size));
+		bool                 have_bytes = false;
+		const char*          source     = "guest";
+		if (!buffer_cache.IsRegionGpuModified(address, size)) {
+			have_bytes = Libs::LibKernel::Memory::TryReadBacking(address, scratch.data(),
+			                                                    static_cast<size_t>(size));
+		} else {
+			Transfer::DownloadBuffer(binding.buffer, binding.offset, scratch.data(), size);
+			have_bytes = true;
+			source     = "gpu";
+		}
+		VulkanBuffer* aligned_buffer = nullptr;
+		uint64_t      aligned_offset = 0;
+		uint64_t      aligned_range  = 0;
+		if (!have_bytes ||
+		    !buffer_cache.UploadHostData(command_buffer, scratch.data(), size, alignment,
+		                                 aligned_buffer, aligned_offset, aligned_range)) {
+			EXIT("failed to realign storage buffer binding, addr=0x%016" PRIx64
+			     " size=0x%016" PRIx64 " offset=0x%016" PRIx64 "\n",
+			     address, size, binding.offset);
+		}
+		if (resource.written) {
+			command_buffer.QueueStorageStreamWriteback(*aligned_buffer, aligned_offset,
+			                                           binding.buffer, binding.offset, size);
+			source = "gpu+writeback";
+		}
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("StorageBuffer: realigned unaligned binding addr=0x%016" PRIx64
+			     " size=0x%016" PRIx64 " via %s stream "
+			     "(cache offset 0x%016" PRIx64 " -> stream offset 0x%016" PRIx64 ")\n",
+			     address, size, source, binding.offset, aligned_offset);
+		}
+		result.buffer = aligned_buffer;
+		result.offset = aligned_offset;
+		result.range  = static_cast<vk::DeviceSize>(size);
+		return result;
 	}
 	result.buffer = &binding.buffer;
 	result.offset = binding.offset;
@@ -205,9 +220,6 @@ NativeAddressBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
 		BindNullStorageBuffer(command_buffer, result);
 		return result;
 	}
-	if (resource.written) {
-		EXIT("writable address resources are unsupported\n");
-	}
 	const auto limit  = resource.kind == ShaderRecompiler::IR::ResourceKind::Flat
 	                        ? ShaderRecompiler::IR::FlatAddressWindowSize
 	                        : static_cast<uint64_t>(GetRenderContext()
@@ -217,19 +229,56 @@ NativeAddressBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
 	uint64_t   size   = 0;
 	const auto access = HostMemoryAccess::Mapped;
 	if (!HostMemoryQueryRange(address.binding_base, limit, access, size)) {
-		EXIT("address resource is not host-accessible: base=0x%016" PRIx64 "\n",
-		     address.binding_base);
+		EXIT("address resource is not host-accessible: base=0x%016" PRIx64 " written=%d\n",
+		     address.binding_base, resource.written);
 	}
 	const auto& graphics  = GetRenderContext().GetGraphics();
 	const auto  alignment = graphics.StorageMinAlignment();
 	if (alignment == 0 ||
 	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
-	    BufferCache::GetBufferOffset(address.binding_base) % alignment != 0) {
-		EXIT("address resource range or alignment is unsupported\n");
+	    BufferCache::CACHING_PAGE_SIZE % alignment != 0) {
+		EXIT("address resource range or device alignment is unsupported, base=0x%016" PRIx64
+		     " size=0x%016" PRIx64 " align=%u written=%d\n",
+		     address.binding_base, size, alignment, resource.written);
 	}
 	(void)submit_id;
-	auto binding  = GetRenderContext().GetBufferCache().ObtainBuffer(command_buffer,
-	                                                                 address.binding_base, size);
+	auto& buffer_cache = GetRenderContext().GetBufferCache();
+	auto  binding = buffer_cache.ObtainBuffer(command_buffer, address.binding_base, size,
+	                                          resource.written, resource.read);
+	if (binding.offset % alignment != 0) {
+		if (size > kMaxRealignedStorageBufferSize) {
+			EXIT("unaligned address resource exceeds realign limit, base=0x%016" PRIx64
+			     " size=0x%016" PRIx64 " written=%d\n",
+			     address.binding_base, size, resource.written);
+		}
+		std::vector<uint8_t> scratch(static_cast<size_t>(size));
+		bool                 have_bytes = false;
+		if (!buffer_cache.IsRegionGpuModified(address.binding_base, size)) {
+			have_bytes = Libs::LibKernel::Memory::TryReadBacking(
+			    address.binding_base, scratch.data(), static_cast<size_t>(size));
+		} else {
+			Transfer::DownloadBuffer(binding.buffer, binding.offset, scratch.data(), size);
+			have_bytes = true;
+		}
+		VulkanBuffer* aligned_buffer = nullptr;
+		uint64_t      aligned_offset = 0;
+		uint64_t      aligned_range  = 0;
+		if (!have_bytes ||
+		    !buffer_cache.UploadHostData(command_buffer, scratch.data(), size, alignment,
+		                                 aligned_buffer, aligned_offset, aligned_range)) {
+			EXIT("failed to realign address resource binding, base=0x%016" PRIx64
+			     " size=0x%016" PRIx64 " offset=0x%016" PRIx64 " written=%d\n",
+			     address.binding_base, size, binding.offset, resource.written);
+		}
+		if (resource.written) {
+			command_buffer.QueueStorageStreamWriteback(*aligned_buffer, aligned_offset,
+			                                           binding.buffer, binding.offset, size);
+		}
+		result.buffer = aligned_buffer;
+		result.offset = aligned_offset;
+		result.range  = static_cast<vk::DeviceSize>(size);
+		return result;
+	}
 	result.buffer = &binding.buffer;
 	result.offset = binding.offset;
 	result.range  = static_cast<vk::DeviceSize>(size);
@@ -278,6 +327,9 @@ TargetTextureViewInfo ResolveTargetTextureView(const ShaderRecompiler::IR::Image
 			    base_layer >= image_layers || (image_layers - base_layer) % 6u != 0) {
 				return {};
 			}
+			// Cubes are materialized as Dim2DArray in the shader IR (face = array layer). Bind a
+			// matching 2D-array view so the Vulkan image view type agrees with OpTypeImage.
+			// Using eCube here previously mismatched Dim2D Arrayed=1 (#43 3D Billiards shadows).
 			return {vk::ImageViewType::e2DArray, base_layer, image_layers - base_layer};
 		case Prospero::ImageType::kColor2DArray:
 			if (resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D &&
@@ -309,35 +361,47 @@ bool IsSupportedDepthTargetDescriptor(const ShaderTextureResource& descriptor,
 	const auto height = static_cast<uint32_t>(descriptor.Height5()) + 1u;
 	const auto pitch  = TileGetTexturePitch(descriptor.Format(), width, 1, descriptor.TileMode());
 	const auto type   = static_cast<Prospero::ImageType>(descriptor.Type());
+	const auto depth_layers = static_cast<uint32_t>(descriptor.Depth()) + 1u;
 	const bool supported_single_layer =
 	    image.layers == 1 && descriptor.Depth() == 0 && descriptor.BaseArray5() == 0 &&
 	    (type == Prospero::ImageType::kColor2D || type == Prospero::ImageType::kColor2DArray);
 	const bool supported_cube = type == Prospero::ImageType::kCube && width == height &&
 	                            image.layers >= 6 && image.layers % 6u == 0 &&
-	                            static_cast<uint32_t>(descriptor.Depth()) + 1u == image.layers &&
-	                            descriptor.BaseArray5() == 0;
+	                            depth_layers == image.layers && descriptor.BaseArray5() == 0;
+	// Layered depth targets sampled as 2D arrays (shadow atlas / cascaded maps).
+	const bool supported_array =
+	    type == Prospero::ImageType::kColor2DArray && descriptor.BaseArray5() == 0 &&
+	    depth_layers == image.layers && image.layers > 1 && image.layers <= 2048;
+	const bool pitch_ok = pitch >= width && (pitch == image.guest_pitch || image.guest_pitch == 0);
+	// Prospero depth T#s reuse field1[8:19] for NUM_FORMAT/meta (see #43 cube shadows); do not
+	// treat those bits as a MinLod reject when sampling an already-created depth image.
 	return image.type == VulkanImageType::DepthStencil && width == image.extent.width &&
-	       height == image.extent.height && (supported_single_layer || supported_cube) &&
+	       height == image.extent.height &&
+	       (supported_single_layer || supported_cube || supported_array) &&
 	       descriptor.BaseLevel() == 0 && descriptor.LastLevel() == 0 && descriptor.MaxMip() == 0 &&
-	       descriptor.MinLod() == 0 && descriptor.BaseArray5() == 0 &&
+	       descriptor.BaseArray5() == 0 &&
 	       descriptor.TileMode() == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
-	       descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth() && pitch >= width &&
-	       pitch == image.guest_pitch;
+	       descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth() && pitch_ok;
 }
 
 bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor) {
-	constexpr uint32_t field1_reserved_mask = 0x200fff00u;
 	constexpr uint32_t field2_reserved_mask = 0xf0003000u;
 	constexpr uint32_t field3_common        = 0x01800000u;
 	constexpr uint32_t field5_expected      = 0x00700000u;
+	constexpr uint32_t field5_max_mip_mask  = 0x000000f0u;
+	// Depth descriptors sometimes carry non-zero DCC/meta hints in fields[1]/[6]/[7]. Host depth
+	// images are not DCC-backed. field1 bits 8-19 also carry NUM_FORMAT / meta on cube shadow
+	// descriptors (e.g. #43 Billiards field1=0xc0700000); width is decoded via Width5().
+	constexpr uint32_t field6_reserved_mask       = 0x00007b00u;
+	constexpr uint32_t field1_depth_reserved_mask = 0x20000000u;
 	const uint32_t     field3_expected =
 	    (descriptor.Type() << 28u) | field3_common | descriptor.DstSelXYZW();
 	const uint32_t field4_expected = descriptor.Depth() | (descriptor.BaseArray5() << 16u);
-	return (descriptor.fields[1] & field1_reserved_mask) == 0 &&
+	return (descriptor.fields[1] & field1_depth_reserved_mask) == 0 &&
 	       (descriptor.fields[2] & field2_reserved_mask) == 0 &&
 	       descriptor.fields[3] == field3_expected && descriptor.fields[4] == field4_expected &&
-	       descriptor.fields[5] == field5_expected && descriptor.fields[6] == 0 &&
-	       descriptor.fields[7] == 0;
+	       (descriptor.fields[5] & ~field5_max_mip_mask) == field5_expected &&
+	       (descriptor.fields[6] & field6_reserved_mask) == 0;
 }
 
 static void ValidateDepthTargetBinding(const ShaderRecompiler::IR::ImageResource& resource,
@@ -409,32 +473,44 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	    IsSupportedStorageSwizzle(descriptor.Format(), descriptor.DstSelXYZW()) &&
 	    (descriptor.DstSelXYZW() == DstSel(4, 5, 6, 7) || !resource.read);
 	const bool supported_mip_view = descriptor.BaseLevel() == 0 || is_2d;
+	// 2D arrays may bind a non-zero base array; 2D/3D volumes must start at layer 0.
+	const bool supported_base_array =
+	    is_2d_array ? descriptor.BaseArray5() <= descriptor.Depth() : descriptor.BaseArray5() == 0;
+	// field1[8:19] often carries MinLod / NUM_FORMAT-style meta on storage T#s (Demon's Souls
+	// #63 16_16Float UAV). Write-only images never sample via MinLod — accept any MinLod when
+	// the resource is not read.
+	const bool supported_min_lod = descriptor.MinLod() == 0 || !resource.read;
 	return (is_2d || is_2d_array || is_3d) && supported_tile && supported_mip_view &&
 	       descriptor.BaseLevel() == descriptor.LastLevel() &&
-	       descriptor.LastLevel() <= descriptor.MaxMip() && descriptor.MinLod() == 0 &&
-	       descriptor.BaseArray5() == 0 && supported_swizzle && descriptor.BCSwizzle() == 0 &&
+	       descriptor.LastLevel() <= descriptor.MaxMip() && supported_min_lod &&
+	       supported_base_array && supported_swizzle && descriptor.BCSwizzle() == 0 &&
 	       !descriptor.MsaaDepth();
 }
 
 static bool IsSupportedStorageTextureEncoding(const ShaderTextureResource& descriptor) {
-	constexpr uint32_t field1_reserved_mask = 0x200fff00u;
+	// field1[8:19] often carries MinLod / NUM_FORMAT-style meta on storage T#s (e.g. #64 3D
+	// RGBA16F UAV). Width5 still decodes correctly from field1[30:31]|field2; only reject the
+	// undefined reserved bit.
+	constexpr uint32_t field1_reserved_mask = 0x20000000u;
 	constexpr uint32_t field2_reserved_mask = 0xf0003000u;
 	constexpr uint32_t field5_expected      = 0x00700000u;
 	constexpr uint32_t field5_max_mip_mask  = 0x000000f0u;
-	// fields[6]/[7] hold the DCC compression configuration and the metadata surface address
-	// (see ShaderTextureResource accessors). The texture cache keeps the host image natively
-	// coherent and guest-side DCC metadata is never produced or consumed, so compression hints
-	// are ignored instead of rejected. Only the genuinely undefined bits (8-9, 11-14 of
-	// fields[6]; bit 10 is msaa-depth and is validated separately) still fail validation.
-	constexpr uint32_t field6_reserved_mask = 0x00007b00u;
-	const uint32_t     expected_field3 = descriptor.DstSelXYZW() |
-	                                     (static_cast<uint32_t>(descriptor.BaseLevel()) << 12u) |
-	                                     (static_cast<uint32_t>(descriptor.LastLevel()) << 16u) |
-	                                     (static_cast<uint32_t>(descriptor.TileMode()) << 20u) |
-	                                     (static_cast<uint32_t>(descriptor.Type()) << 28u);
+	// fields[6]/[7] hold DCC compression configuration and the metadata surface address.
+	// Host images are never DCC-backed; first-party titles (e.g. Demon's Souls / #63) still pack
+	// those bits. Ignore them entirely — MsaaDepth is validated via descriptor.MsaaDepth().
+	constexpr uint32_t field6_reserved_mask = 0u;
+	const uint32_t expected_field3 = descriptor.DstSelXYZW() |
+	                                 (static_cast<uint32_t>(descriptor.BaseLevel()) << 12u) |
+	                                 (static_cast<uint32_t>(descriptor.LastLevel()) << 16u) |
+	                                 (static_cast<uint32_t>(descriptor.TileMode()) << 20u) |
+	                                 (static_cast<uint32_t>(descriptor.Type()) << 28u);
+	// fields[4] packs depth/last-array in the low 13 bits and base_array in [16:28] for arrayed
+	// storage images (same layout as sampled depth T#s).
+	const uint32_t expected_field4 =
+	    descriptor.Depth() | (static_cast<uint32_t>(descriptor.BaseArray5()) << 16u);
 	return (descriptor.fields[1] & field1_reserved_mask) == 0 &&
 	       (descriptor.fields[2] & field2_reserved_mask) == 0 &&
-	       descriptor.fields[3] == expected_field3 && descriptor.fields[4] == descriptor.Depth() &&
+	       descriptor.fields[3] == expected_field3 && descriptor.fields[4] == expected_field4 &&
 	       (descriptor.fields[5] & ~field5_max_mip_mask) == field5_expected &&
 	       (descriptor.fields[6] & field6_reserved_mask) == 0;
 }
@@ -450,24 +526,6 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	const bool format_ok = Prospero::IsSupportedTextureFormat(format) &&
 	                       uint_resource == Prospero::IsUintTextureFormat(format);
 	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
-		return;
-	}
-	// Soft-continue for write-only storage that the tiler can still size. Titles bind unusual
-	// tile/swizzle combos that we do not yet fully classify (#76/#77/#87).
-	if (size != 0 && resource.written && !resource.read && !resource.atomic && format_ok) {
-		static std::atomic<uint32_t> soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "soft-allow storage texture: resource=%d descriptor=%d encoding=%d "
-			           "format=%d kind=%u dim=%u tile=%u fmt=%u swizzle=0x%03x "
-			           "extent=%ux%ux%u addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
-			           resource_ok, descriptor_ok, encoding_ok, format_ok,
-			           static_cast<uint32_t>(resource.kind),
-			           static_cast<uint32_t>(resource.dimension), descriptor.TileMode(), format,
-			           descriptor.DstSelXYZW(), static_cast<uint32_t>(descriptor.Width5()) + 1u,
-			           static_cast<uint32_t>(descriptor.Height5()) + 1u,
-			           static_cast<uint32_t>(descriptor.Depth()) + 1u, descriptor.Base40(), size);
-		}
 		return;
 	}
 	EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
@@ -527,6 +585,19 @@ void ValidateMetadataReuseTexture(const ShaderRecompiler::IR::ImageResource& res
 	const bool format_ok =
 	    Prospero::IsSupportedTextureFormat(format) && !Prospero::IsUintTextureFormat(format);
 	if (!resource_ok || !descriptor_ok || !encoding_ok || !format_ok || size == 0) {
+		if (size != 0 && format_ok) {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-allow metadata-reuse sampled texture: resource=%d descriptor=%d "
+				           "encoding=%d format=%d kind=%u dim=%u addr=0x%016" PRIx64
+				           " size=0x%016" PRIx64 "\n",
+				           resource_ok, descriptor_ok, encoding_ok, format_ok,
+				           static_cast<uint32_t>(resource.kind),
+				           static_cast<uint32_t>(resource.dimension), descriptor.Base40(), size);
+			}
+			return;
+		}
 		EXIT("unsupported metadata-reuse sampled texture: resource=%d descriptor=%d encoding=%d "
 		     "format=%d "
 		     "kind=%u dimension=%u mip_mode=%u read=%d written=%d atomic=%d compare=%d "
@@ -566,15 +637,27 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 		               : DescriptorCache::TextureBinding {&GetDummySampledTexture(variant),
 		                                                  TextureVariantDefaultView(variant)};
 	}
-	const auto address    = descriptor.Base40();
-	const auto width      = static_cast<uint32_t>(descriptor.Width5()) + 1u;
-	const auto height     = static_cast<uint32_t>(descriptor.Height5()) + 1u;
-	const auto base_level = descriptor.BaseLevel();
-	const auto last_level = descriptor.LastLevel();
-	const auto levels     = static_cast<uint32_t>(descriptor.MaxMip()) + 1u;
-	if (base_level > last_level || last_level >= levels) {
-		EXIT("unsupported texture mip view: base=%u last=%u levels=%u\n", base_level, last_level,
-		     levels);
+	const auto address = descriptor.Base40();
+	const auto width   = static_cast<uint32_t>(descriptor.Width5()) + 1u;
+	const auto height  = static_cast<uint32_t>(descriptor.Height5()) + 1u;
+	const auto levels  = static_cast<uint32_t>(descriptor.MaxMip()) + 1u;
+	auto       base_level = static_cast<uint32_t>(descriptor.BaseLevel());
+	auto       last_level = static_cast<uint32_t>(descriptor.LastLevel());
+	if (levels == 0 || base_level > last_level || last_level >= levels) {
+		static std::atomic<uint32_t> mip_logs {0};
+		if (mip_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-clamp texture mip view: base=%u last=%u levels=%u\n", base_level,
+			           last_level, levels);
+		}
+		if (levels == 0) {
+			return storage ? DescriptorCache::TextureBinding {&GetDummyStorageTexture(variant),
+			                                                  TextureVariantDefaultView(variant)}
+			               : DescriptorCache::TextureBinding {&GetDummySampledTexture(variant),
+			                                                  TextureVariantDefaultView(variant)};
+		}
+		last_level = std::min(last_level, levels - 1u);
+		base_level = std::min(base_level, last_level);
 	}
 	const auto view_levels = last_level - base_level + 1u;
 	const auto depth       = static_cast<uint32_t>(descriptor.Depth()) + 1u;
@@ -587,8 +670,13 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 	    (resource.kind == ShaderRecompiler::IR::ResourceKind::Image ||
 	     resource.kind == ShaderRecompiler::IR::ResourceKind::ImageUint) &&
 	    !sampled_numeric_class) {
-		EXIT("sampled image numeric class mismatch: kind=%u format=%u addr=0x%016" PRIx64 "\n",
-		     static_cast<uint32_t>(resource.kind), format, address);
+		static std::atomic<uint32_t> num_logs {0};
+		if (num_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-allow sampled image numeric class mismatch: kind=%u format=%u "
+			           "addr=0x%016" PRIx64 "\n",
+			           static_cast<uint32_t>(resource.kind), format, address);
+		}
 	}
 	const auto view_format = TextureGetFormat(format);
 	const auto type        = static_cast<Prospero::ImageType>(descriptor.Type());
@@ -599,8 +687,21 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 	TileSizeAlign size;
 	TileGetTextureTotalSize(format, width, height, depth, pitch, levels, tile,
 	                        type == Prospero::ImageType::kColor3D, size);
-	EXIT_NOT_IMPLEMENTED(size.size == 0 ||
-	                     (address & (static_cast<uint64_t>(size.align) - 1u)) != 0);
+	if (size.size == 0 || (address & (static_cast<uint64_t>(size.align) - 1u)) != 0) {
+		static std::atomic<uint32_t> align_logs {0};
+		if (align_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-allow unaligned/zero texture footprint: addr=0x%016" PRIx64
+			           " size=0x%016" PRIx64 " align=%u\n",
+			           address, size.size, size.align);
+		}
+		if (size.size == 0) {
+			return storage ? DescriptorCache::TextureBinding {&GetDummyStorageTexture(variant),
+			                                                  TextureVariantDefaultView(variant)}
+			               : DescriptorCache::TextureBinding {&GetDummySampledTexture(variant),
+			                                                  TextureVariantDefaultView(variant)};
+		}
+	}
 	if (storage) {
 		ValidateStorageTexture(resource, descriptor, size.size);
 		GetRenderContext().GetBufferCache().ValidateGpuAccess(address, size.size, resource.read,
@@ -637,20 +738,38 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 				if (uint_reinterpret || uint_storage_reinterpret) {
 					image = nullptr;
 				} else {
+					ValidateDepthTargetBinding(resource, descriptor, image, view_format, size.size);
 					const auto depth_view = ResolveTargetTextureView(
 					    resource, type, descriptor.BaseArray5(), image->layers);
-					ValidateDepthTargetBinding(resource, descriptor, image, view_format, size.size);
-					if (depth_view.type ==
+					TargetTextureViewInfo resolved = depth_view;
+					if (resolved.type ==
 					    static_cast<vk::ImageViewType>(VK_IMAGE_VIEW_TYPE_MAX_ENUM)) {
-						EXIT("unsupported sampled depth target view: dimension=%u "
-						     "descriptor_type=%u "
-						     "base_array=%u image_layers=%u\n",
-						     static_cast<uint32_t>(resource.dimension), descriptor.Type(),
-						     descriptor.BaseArray5(), image->layers);
+						// Last-resort view: treat as a full 2D array of the depth image.
+						if (image->layers > 1) {
+							resolved = {vk::ImageViewType::e2DArray, 0, image->layers};
+							static std::atomic<uint32_t> soft_view_logs {0};
+							if (soft_view_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+								LOGF_COLOR(Log::Color::Yellow,
+								           "soft-allow sampled depth view as 2D array: "
+								           "dimension=%u descriptor_type=%u layers=%u\n",
+								           static_cast<uint32_t>(resource.dimension),
+								           descriptor.Type(), image->layers);
+							}
+						} else {
+							resolved = {vk::ImageViewType::e2D, 0, 1};
+							static std::atomic<uint32_t> soft_view_logs {0};
+							if (soft_view_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+								LOGF_COLOR(Log::Color::Yellow,
+								           "soft-allow sampled depth view as 2D: "
+								           "dimension=%u descriptor_type=%u layers=%u\n",
+								           static_cast<uint32_t>(resource.dimension),
+								           descriptor.Type(), image->layers);
+							}
+						}
 					}
 					image_view = GetRenderContext().GetTextureCache().GetDepthTargetSampledView(
 					    *static_cast<DepthStencilVulkanImage*>(image), view_format, swizzle, 0, 1,
-					    depth_view.type, depth_view.base_layer, depth_view.layer_count);
+					    resolved.type, resolved.base_layer, resolved.layer_count);
 				}
 			} else {
 				if (!(storage ? IsSupportedStorageImageResource(resource)
@@ -664,17 +783,13 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 				    target_view.base_layer >= image->layers ||
 				    target_view.layer_count > image->layers - target_view.base_layer) {
 					EXIT("unsupported cached render-target image view: storage=%d resource=%u "
-					     "dimension=%u"
-					     " image_type=%u layers=%u extent=%ux%u/%ux%u depth=%u"
-					     " levels=%u/%u base_level=%u base_array=%u descriptor_type=%u\n",
+					     "dimension=%u layers=%u extent=%ux%u/%ux%u levels=%u/%u base_level=%u "
+					     "view_base=%u view_layers=%u\n",
 					     storage, static_cast<uint32_t>(resource.kind),
-					     static_cast<uint32_t>(resource.dimension),
-					     static_cast<uint32_t>(image->type), image->layers, width, height,
-					     image->extent.width, image->extent.height, depth, levels,
-					     image->mip_levels, base_level, descriptor.BaseArray5(),
-					     static_cast<uint32_t>(type));
-				}
-				if (storage) {
+					     static_cast<uint32_t>(resource.dimension), image->layers, width, height,
+					     image->extent.width, image->extent.height, levels, image->mip_levels,
+					     base_level, target_view.base_layer, target_view.layer_count);
+				} else if (storage) {
 					view       = SelectStorageColorView(image->format, view_format, swizzle);
 					image_view = GetRenderContext().GetTextureCache().GetRenderTargetStorageView(
 					    *static_cast<RenderTextureVulkanImage*>(image), view_format, base_level,
@@ -712,8 +827,8 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 				     video.image->format == vk::Format::eB8G8R8A8Srgb) &&
 				    video.image->image_view[VulkanImage::VIEW_STORAGE] != nullptr;
 				if (!exact) {
-					EXIT("unsupported storage access to video-out surface: format=%u view=%d"
-					     " extent=%ux%u size=0x%016" PRIx64 " pitch=%u\n",
+					EXIT("unsupported storage access to video-out surface: format=%u view=%d "
+					     "extent=%ux%u size=0x%016" PRIx64 " pitch=%u\n",
 					     format, static_cast<int>(view_format), width, height, size.size, pitch);
 				}
 				image = video.image;
@@ -726,16 +841,19 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 				    levels == 1 && base_level == 0 && view_levels == 1 && video.size == size.size &&
 				    video.pitch == pitch;
 				if (!exact) {
-					EXIT("unsupported sampled access to video-out surface: resource=%u dimension=%u"
-					     " image_format=%d view_format=%d swizzle=0x%03x extent=%ux%u/%ux%u"
-					     " depth=%u levels=%u base=%u count=%u type=%u size=0x%016" PRIx64
-					     "/0x%016" PRIx64 " pitch=%u/%u\n",
-					     static_cast<uint32_t>(resource.kind),
-					     static_cast<uint32_t>(resource.dimension),
-					     static_cast<int>(video.image->format), static_cast<int>(view_format),
-					     swizzle, width, height, video.image->extent.width,
-					     video.image->extent.height, depth, levels, base_level, view_levels,
-					     static_cast<uint32_t>(type), size.size, video.size, pitch, video.pitch);
+					static std::atomic<uint32_t> soft_logs {0};
+					if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+						LOGF_COLOR(Log::Color::Yellow,
+						           "soft-allow sampled access to video-out surface: resource=%u "
+						           "dimension=%u image_format=%d view_format=%d extent=%ux%u/%ux%u "
+						           "levels=%u base=%u\n",
+						           static_cast<uint32_t>(resource.kind),
+						           static_cast<uint32_t>(resource.dimension),
+						           static_cast<int>(video.image->format),
+						           static_cast<int>(view_format), width, height,
+						           video.image->extent.width, video.image->extent.height, levels,
+						           base_level);
+					}
 				}
 				image      = video.image;
 				image_view = GetRenderContext().GetTextureCache().GetSampledColorView(
@@ -747,7 +865,9 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 		auto&      texture_cache = GetRenderContext().GetTextureCache();
 		const bool metadata_read = texture_cache.QueryRegion(address, size.size).metadata_pages;
 		if (storage && metadata_read) {
-			EXIT("storage texture overlaps surface metadata\n");
+			EXIT("unsupported storage texture that overlaps surface metadata: addr=0x%016" PRIx64
+			     " size=0x%016" PRIx64 "\n",
+			     address, size.size);
 		}
 		if (!storage && metadata_read) {
 			ValidateMetadataReuseTexture(resource, descriptor, size.size);
@@ -772,8 +892,7 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 		if (storage) {
 			image      = &texture_cache.FindStorageTexture(command_buffer, info);
 			view       = VulkanImage::VIEW_DEFAULT;
-			image_view = texture_cache.GetStorageTextureStorageView(
-			    *static_cast<StorageTextureVulkanImage*>(image), base_level);
+			image_view = texture_cache.GetStorageTextureStorageView(*static_cast<StorageTextureVulkanImage*>(image), info, base_level);
 		} else {
 			image = &texture_cache.FindTexture(command_buffer, info, metadata_read);
 			if (image->type == VulkanImageType::StorageTexture) {
@@ -845,7 +964,12 @@ void BindDescriptors(uint64_t submit_id, CommandBuffer& buffer,
 		if ((kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
 		     kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint) &&
 		    vk_stage != vk::ShaderStageFlagBits::eCompute) {
-			EXIT("storage images are unsupported outside compute shaders\n");
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-allow storage image outside compute (stage=0x%x)\n",
+				           static_cast<uint32_t>(vk_stage));
+			}
 		}
 		descriptors.images.push_back(
 		    NativeTexture(submit_id, buffer, program.info.images[i], snapshot.images[i]));
