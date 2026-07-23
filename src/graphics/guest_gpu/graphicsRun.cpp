@@ -1538,10 +1538,6 @@ void GraphicsRunSubmitFlipPreparation() {
 	g_gpu->SubmitFlipPreparation();
 }
 
-void GraphicsRunWait() {
-	GraphicsRunSubmissionLock lock;
-}
-
 GraphicsRunSubmissionLock::GraphicsRunSubmissionLock() {
 	if (g_gpu == nullptr || g_current_processor != nullptr ||
 	    g_submission_pause_depth == UINT32_MAX) {

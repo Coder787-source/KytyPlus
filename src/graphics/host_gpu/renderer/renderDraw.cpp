@@ -1120,7 +1120,6 @@ void RenderDrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t i
 		     instance_count, render_target_slice_offset, static_cast<uint32_t>(vertex_offset_add),
 		     first_instance);
 	}
-	sh_check(sh_ctx);
 
 	uc_check(ucfg);
 
@@ -1248,7 +1247,6 @@ void RenderDrawIndexAuto(uint64_t submit_id, RenderCommandBuffer& buffer, uint32
 		     index_count, flags, render_target_slice_offset, instance_count, first_vertex,
 		     first_instance);
 	}
-	sh_check(sh_ctx);
 
 	uc_check(ucfg);
 

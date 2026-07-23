@@ -22,7 +22,6 @@ void GraphicsRunSubmit(uint32_t* cmd_draw_buffer, uint32_t num_draw_dw, uint32_t
 void GraphicsRunSubmitCompute(uint32_t queue, uint32_t* cmd_buffer, uint32_t num_dw,
                               bool trigger_agc_interrupt_on_done = false);
 void GraphicsRunSubmitFlipPreparation();
-void GraphicsRunWait();
 void GraphicsRunDone();
 int  GraphicsRunGetFrameNum();
 [[nodiscard]] bool              GraphicsRunIsCommandProcessorThread() noexcept;

@@ -100,6 +100,10 @@ CommandBuffer::CommandBuffer()
     : m_graphics(GetRenderContext().GetGraphics()), m_slot(g_command_pool.Allocate()),
       m_host_stream(m_graphics) {}
 
+CommandBuffer::~CommandBuffer() {
+	Release();
+}
+
 void ThreadCommandPool::Create() {
 	auto& graphics = GetRenderContext().GetGraphics();
 	EXIT_IF(m_pool != nullptr || graphics.queue_family == static_cast<uint32_t>(-1));
@@ -200,8 +204,11 @@ void CommandBuffer::Release() {
 	EXIT_NOT_IMPLEMENTED(!IsInvalid());
 }
 
-void CommandBuffer::DeleteAfterFence(VulkanBuffer& buffer) {
-	m_delete_after_fence.push_back(&buffer);
+void CommandBuffer::RetireBufferAfterFence(std::unique_ptr<VulkanBuffer> buffer) {
+	if (IsInvalid() || m_execute || buffer == nullptr || buffer->buffer == nullptr) {
+		EXIT("cannot retire a buffer on an invalid or submitted command buffer\n");
+	}
+	m_retired_buffers.push_back(std::move(buffer));
 }
 
 void CommandBuffer::RetainResourceUntilFence(std::shared_ptr<void> resource) {
@@ -375,11 +382,10 @@ void CommandBuffer::ReleaseResourcesAfterFence() {
 }
 
 void CommandBuffer::DeleteBuffersAfterFence() {
-	for (auto* buffer: m_delete_after_fence) {
+	for (const auto& buffer: m_retired_buffers) {
 		GetRenderContext().GetGraphics().DeleteBuffer(*buffer);
-		delete buffer;
 	}
-	m_delete_after_fence.clear();
+	m_retired_buffers.clear();
 }
 
 void CommandBuffer::BeginRenderPass(VulkanFramebuffer& framebuffer, RenderColorInfo* colors,

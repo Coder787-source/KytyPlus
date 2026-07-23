@@ -23,6 +23,23 @@ uint32_t ConstantImageGatherHorizontalOffsets(EmitterState& state) {
 	return value;
 }
 
+IR::DescriptorBindingKind StorageImageBindingKind(ImageViewKind view, bool uint_image) {
+	switch (view) {
+		case ImageViewKind::Dim2D:
+			return uint_image ? IR::DescriptorBindingKind::StorageUint2D
+			                  : IR::DescriptorBindingKind::Storage2D;
+		case ImageViewKind::Dim2DArray:
+			return uint_image ? IR::DescriptorBindingKind::StorageUint2DArray
+			                  : IR::DescriptorBindingKind::Storage2DArray;
+		case ImageViewKind::Dim3D:
+			return uint_image ? IR::DescriptorBindingKind::StorageUint3D
+			                  : IR::DescriptorBindingKind::Storage3D;
+		default:
+			return uint_image ? IR::DescriptorBindingKind::StorageUint2D
+			                  : IR::DescriptorBindingKind::Storage2D;
+	}
+}
+
 uint32_t LoadStorageImageDescriptorAtIndex(EmitterState& state, uint32_t resource,
                                            uint32_t array_index, bool uint_image,
                                            ImageViewKind view) {
@@ -30,9 +47,8 @@ uint32_t LoadStorageImageDescriptorAtIndex(EmitterState& state, uint32_t resourc
 	    uint_image ? state.ptr_uniform_storage_image_uint : state.ptr_uniform_storage_image;
 	uint32_t variable =
 	    uint_image ? state.storage_image_uint_variable : state.storage_image_variable;
-	uint32_t image_type = uint_image ? state.storage_image_uint_type : state.storage_image_type;
-	IR::DescriptorBindingKind kind = uint_image ? IR::DescriptorBindingKind::StorageUint2D
-	                                            : IR::DescriptorBindingKind::Storage2D;
+	uint32_t   image_type = uint_image ? state.storage_image_uint_type : state.storage_image_type;
+	const auto kind       = StorageImageBindingKind(view, uint_image);
 	switch (view) {
 		case ImageViewKind::Dim2D: break;
 		case ImageViewKind::Dim2DArray:
@@ -42,8 +58,6 @@ uint32_t LoadStorageImageDescriptorAtIndex(EmitterState& state, uint32_t resourc
 			                          : state.storage_image_2d_array_variable;
 			image_type   = uint_image ? state.storage_image_uint_2d_array_type
 			                          : state.storage_image_2d_array_type;
-			kind         = uint_image ? IR::DescriptorBindingKind::StorageUint2DArray
-			                          : IR::DescriptorBindingKind::Storage2DArray;
 			break;
 		case ImageViewKind::Dim3D:
 			pointer_type = uint_image ? state.ptr_uniform_storage_image_uint_3d
@@ -52,8 +66,6 @@ uint32_t LoadStorageImageDescriptorAtIndex(EmitterState& state, uint32_t resourc
 			    uint_image ? state.storage_image_uint_3d_variable : state.storage_image_3d_variable;
 			image_type =
 			    uint_image ? state.storage_image_uint_3d_type : state.storage_image_3d_type;
-			kind = uint_image ? IR::DescriptorBindingKind::StorageUint3D
-			                  : IR::DescriptorBindingKind::Storage3D;
 			break;
 	}
 	const auto pointer =
@@ -170,16 +182,8 @@ void EmitImageLoad(EmitterState& state, const IR::Instruction& inst) {
 void EmitImageStore(EmitterState& state, const IR::Instruction& inst) {
 	const auto uint_image = inst.memory.kind == IR::ResourceKind::StorageImageUint;
 	const auto view       = StorageImageViewKind(state, inst.memory, uint_image, inst.pc);
-	const auto binding    = ResourceForDescriptor(
-	    state,
-	    uint_image
-	        ? (view == ImageViewKind::Dim2DArray ? IR::DescriptorBindingKind::StorageUint2DArray
-	           : view == ImageViewKind::Dim3D    ? IR::DescriptorBindingKind::StorageUint3D
-	                                             : IR::DescriptorBindingKind::StorageUint2D)
-	        : (view == ImageViewKind::Dim2DArray ? IR::DescriptorBindingKind::Storage2DArray
-	           : view == ImageViewKind::Dim3D    ? IR::DescriptorBindingKind::Storage3D
-	                                             : IR::DescriptorBindingKind::Storage2D),
-	    inst.memory.resource);
+	const auto binding    = ResourceForDescriptor(state, StorageImageBindingKind(view, uint_image),
+	                                              inst.memory.resource);
 	const auto image = LoadStorageImageDescriptorAtIndex(state, inst.memory.resource,
 	                                                     binding.array_index, uint_image, view);
 
@@ -269,14 +273,17 @@ void EmitImageSample(EmitterState& state, const IR::Instruction& inst) {
 	const auto view          = SampledImageViewKind(state, inst.memory, inst.pc);
 	const auto sampled_image = MakeSampledImage(state, inst.memory, inst.pc, view);
 
-	const auto layout       = MakeImageSampleLayout(inst, view);
-	const auto base_coord   = EmitImageCoordF32(state, inst, layout, view);
-	const auto sample       = state.builder.AllocateId();
-	const auto dref         = HasImageSampleFlag(inst, Decoder::ImageSampleFlagCompare);
-	const bool integer      = inst.memory.kind == IR::ResourceKind::ImageUint;
-	const auto result_type  = dref      ? state.float_type
-	                          : integer ? state.vec4_uint_type
-	                                    : state.vec4_float_type;
+	const auto layout      = MakeImageSampleLayout(inst, view);
+	const auto base_coord  = EmitImageCoordF32(state, inst, layout, view);
+	const auto sample      = state.builder.AllocateId();
+	const auto dref        = HasImageSampleFlag(inst, Decoder::ImageSampleFlagCompare);
+	const bool integer     = inst.memory.kind == IR::ResourceKind::ImageUint;
+	uint32_t   result_type = state.vec4_float_type;
+	if (dref) {
+		result_type = state.float_type;
+	} else if (integer) {
+		result_type = state.vec4_uint_type;
+	}
 	const auto explicit_lod = ImageSampleNeedsExplicitLod(state, inst);
 	const auto opcode       = ImageSampleOpcode(state, inst);
 	const auto coord =

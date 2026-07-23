@@ -774,14 +774,16 @@ void CopyImage(CommandBuffer& buffer, std::span<const ImageImageCopy> regions,
 		compressed_copy_size =
 		    std::max(compressed_copy_size, CompressedImageCopyBufferSize(r, dst_image));
 	}
-	VulkanBuffer* compressed_copy_buffer = nullptr;
+	std::unique_ptr<VulkanBuffer> compressed_copy_owner;
+	VulkanBuffer*                 compressed_copy_buffer = nullptr;
 	if (compressed_copy_size != 0) {
-		compressed_copy_buffer = new VulkanBuffer;
+		compressed_copy_owner  = std::make_unique<VulkanBuffer>();
+		compressed_copy_buffer = compressed_copy_owner.get();
 		compressed_copy_buffer->usage =
 		    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
 		compressed_copy_buffer->memory.property = {};
 		buffer.GetGraphics().CreateBuffer(compressed_copy_size, *compressed_copy_buffer);
-		buffer.DeleteAfterFence(*compressed_copy_buffer);
+		buffer.RetireBufferAfterFence(std::move(compressed_copy_owner));
 	}
 
 	for (const auto& r: regions) {
@@ -850,13 +852,14 @@ void CopyImageViaBuffer(CommandBuffer& buffer, VulkanImage& src_image,
 	    std::min<uint64_t>(src_image.extent.height, MAX_COPY_BUFFER_SIZE / row_bytes));
 	const auto copy_buffer_size = row_bytes * rows_per_chunk;
 
-	auto& graphics    = buffer.GetGraphics();
-	auto* copy_buffer = new VulkanBuffer;
+	auto& graphics          = buffer.GetGraphics();
+	auto  copy_buffer_owner = std::make_unique<VulkanBuffer>();
+	auto* copy_buffer       = copy_buffer_owner.get();
 	copy_buffer->usage =
 	    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
 	copy_buffer->memory.property = vk::MemoryPropertyFlagBits::eDeviceLocal;
 	graphics.CreateBuffer(copy_buffer_size, *copy_buffer);
-	buffer.DeleteAfterFence(*copy_buffer);
+	buffer.RetireBufferAfterFence(std::move(copy_buffer_owner));
 
 	auto       vk_buffer    = buffer.Handle();
 	const auto src_layout   = src_image.layout;

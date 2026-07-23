@@ -120,11 +120,7 @@ public:
 
 	void SetUserDataMarker(HW::UserSgprType type) { m_user_data_marker = type; }
 	[[nodiscard]] HW::UserSgprType GetUserDataMarker() const { return m_user_data_marker; }
-	void SetEmbeddedDataMarker(const uint32_t* buffer, uint32_t num_dw, uint32_t align) {}
-	void PushMarker(const char* str) {}
-	void PopMarker() {}
 
-	void PrefetchL2(void* addr, uint32_t size) {}
 	void ResetDeCe();
 	void SetCeComplete(bool complete) { m_ce_complete = complete; }
 	void WaitCe();

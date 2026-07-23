@@ -2249,9 +2249,6 @@ KYTY_CP_OP_PARSER(CpOpDmaData) {
 	const uint64_t dst      = buffer[3] | (static_cast<uint64_t>(buffer[4]) << 32u);
 
 	if (control == 0x60000000 && dst == 0x0003022c && (control2 >> 21u) == 0x141u) {
-		auto* addr = reinterpret_cast<void*>(src);
-
-		cp.PrefetchL2(addr, control2 & 0x1fffffu);
 		return 6;
 	}
 
@@ -2799,11 +2796,10 @@ KYTY_CP_OP_PARSER(CpOpMarker) {
 	// EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0001000);
 
 	uint32_t id     = buffer[0] & 0xfffu;
-	uint32_t align  = (buffer[0] >> 12u) & 0xfu;
 	uint32_t len_dw = ((cmd_id >> 16u) & 0x3fffu);
 
 	switch (id) {
-		case 0x0: cp.SetEmbeddedDataMarker(buffer + 1, len_dw, align); break;
+		case 0x0: break;
 		case 0x4: cp.SetUserDataMarker(HW::UserSgprType::Vsharp); break;
 		case 0xd: cp.SetUserDataMarker(HW::UserSgprType::Region); break;
 		case 0x777: {
@@ -2875,8 +2871,6 @@ KYTY_CP_OP_PARSER(CpOpPopMarker) {
 		LOGF("Pop marker\n");
 	}
 
-	cp.PopMarker();
-
 	return dw_num + 1;
 }
 
@@ -2891,8 +2885,6 @@ KYTY_CP_OP_PARSER(CpOpPushMarker) {
 	if (push_marker_log_count.fetch_add(1) < 128) {
 		LOGF("Push marker: %s\n", str);
 	}
-
-	cp.PushMarker(str);
 
 	return dw_num + 1;
 }

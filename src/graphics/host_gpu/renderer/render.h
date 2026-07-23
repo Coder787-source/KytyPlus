@@ -69,7 +69,7 @@ private:
 class CommandBuffer {
 public:
 	CommandBuffer();
-	~CommandBuffer() { Release(); }
+	~CommandBuffer();
 
 	KYTY_CLASS_NO_COPY(CommandBuffer);
 
@@ -88,7 +88,7 @@ public:
 	void WaitForFenceOnly();
 	void WaitForFence();
 	void WaitForFenceAndReset();
-	void DeleteAfterFence(VulkanBuffer& buffer);
+	void RetireBufferAfterFence(std::unique_ptr<VulkanBuffer> buffer);
 	void RetainResourceUntilFence(std::shared_ptr<void> resource);
 	void RecycleDescriptorAfterFence(VulkanDescriptorSet& set);
 
@@ -107,22 +107,22 @@ private:
 	void DeleteBuffersAfterFence();
 	void RecycleDescriptorsAfterFence();
 
-	GraphicContext&                   m_graphics;
-	CommandSlot*                      m_slot                 = nullptr;
-	bool                              m_execute              = false;
-	bool                              m_fence_waited         = false;
-	uint64_t                          m_submit_seq           = 0;
-	uint32_t                          m_debug_op             = 0;
-	uint64_t                          m_debug_submit_id      = 0;
-	uint32_t                          m_debug_arg0           = 0;
-	uint32_t                          m_debug_arg1           = 0;
-	uint32_t                          m_debug_arg2           = 0;
-	uint32_t                          m_debug_arg3           = 0;
-	uint64_t                          m_debug_arg4           = 0;
-	std::vector<VulkanBuffer*>        m_delete_after_fence;
-	FenceResourceRetainer             m_fence_resources;
-	std::vector<VulkanDescriptorSet*> m_descriptor_sets_after_fence;
-	HostStreamBuffer                  m_host_stream;
+	GraphicContext&                            m_graphics;
+	CommandSlot*                               m_slot            = nullptr;
+	bool                                       m_execute         = false;
+	bool                                       m_fence_waited    = false;
+	uint64_t                                   m_submit_seq      = 0;
+	uint32_t                                   m_debug_op        = 0;
+	uint64_t                                   m_debug_submit_id = 0;
+	uint32_t                                   m_debug_arg0      = 0;
+	uint32_t                                   m_debug_arg1      = 0;
+	uint32_t                                   m_debug_arg2      = 0;
+	uint32_t                                   m_debug_arg3      = 0;
+	uint64_t                                   m_debug_arg4      = 0;
+	std::vector<std::unique_ptr<VulkanBuffer>> m_retired_buffers;
+	FenceResourceRetainer                      m_fence_resources;
+	std::vector<VulkanDescriptorSet*>          m_descriptor_sets_after_fence;
+	HostStreamBuffer                           m_host_stream;
 };
 
 class RenderCommandBuffer final: public CommandBuffer {

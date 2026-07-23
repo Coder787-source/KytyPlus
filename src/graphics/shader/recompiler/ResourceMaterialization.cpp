@@ -201,7 +201,7 @@ bool ValidateResourceSpecialization(const Program& program, const ResourceSnapsh
 }
 
 bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
-	                      ResourceSnapshot& snapshot, std::string* error) {
+                          ResourceSnapshot& snapshot, std::string* error) {
 	if (!program.resource_tracking_complete) {
 		if (error != nullptr) {
 			*error = "shader resources were not tracked";
@@ -256,10 +256,12 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 				base &= ~uint64_t {3};
 			}
 			const auto before = static_cast<uint64_t>(-static_cast<int64_t>(address.min_offset));
-			const auto binding_base = address.kind == ResourceKind::Flat
-			                              ? base & ~(FlatAddressWindowSize - 1u)
-			                          : base >= before ? base - before
-			                                           : 0;
+			uint64_t   binding_base = 0;
+			if (address.kind == ResourceKind::Flat) {
+				binding_base = base & ~(FlatAddressWindowSize - 1u);
+			} else if (base >= before) {
+				binding_base = base - before;
+			}
 			next.addresses.push_back({base, binding_base});
 		} else {
 			if (!runtime.flat_memory_base.has_value()) {
@@ -289,7 +291,7 @@ bool SpecializeResources(Program& program, const ResourceSnapshot& snapshot, std
 	    program.binding_layout_complete) {
 		if (error != nullptr) {
 			*error = !program.resource_tracking_complete ? "shader resources were not tracked"
-			                                            : "resource specialization is too late";
+			                                             : "resource specialization is too late";
 		}
 		return false;
 	}
@@ -347,8 +349,8 @@ bool SpecializeResources(Program& program, const ResourceSnapshot& snapshot, std
 	}
 	struct ImagePatch {
 		std::reference_wrapper<Instruction> inst;
-		ResourceKind            kind;
-		Decoder::ImageDimension dimension;
+		ResourceKind                        kind;
+		Decoder::ImageDimension             dimension;
 	};
 	std::vector<ImagePatch> patches;
 	for (auto& block: program.blocks) {

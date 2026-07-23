@@ -9,6 +9,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <fmt/format.h>
@@ -99,8 +100,6 @@ void uc_check(const HW::UserConfig& uc) {
 void sh_print(const char* func, const HW::Shader& /*uc*/) {
 	LOGF("%s\n", func);
 }
-
-void sh_check(const HW::Shader& /*uc*/) {}
 
 std::vector<std::string> rt_print(const char* func, const HW::RenderTarget& rt) {
 	std::vector<std::string> dst;
@@ -1135,10 +1134,10 @@ static ScissorRect ScissorRectClamp(ScissorRect r, uint32_t width, uint32_t heig
 	int max_right  = static_cast<int>(width);
 	int max_bottom = static_cast<int>(height);
 
-	r.left   = (r.left < 0 ? 0 : (r.left > max_right ? max_right : r.left));
-	r.right  = (r.right < 0 ? 0 : (r.right > max_right ? max_right : r.right));
-	r.top    = (r.top < 0 ? 0 : (r.top > max_bottom ? max_bottom : r.top));
-	r.bottom = (r.bottom < 0 ? 0 : (r.bottom > max_bottom ? max_bottom : r.bottom));
+	r.left   = std::clamp(r.left, 0, max_right);
+	r.right  = std::clamp(r.right, 0, max_right);
+	r.top    = std::clamp(r.top, 0, max_bottom);
+	r.bottom = std::clamp(r.bottom, 0, max_bottom);
 
 	if (!ScissorRectValid(r)) {
 		r.right  = r.left;

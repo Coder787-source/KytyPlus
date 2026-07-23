@@ -620,10 +620,13 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::Rende
 					break;
 				}
 				case 3: {
-					auto swizzle = vs_input_info.resources[index].DstSelXYZ();
-					auto expected =
-					    (attr_size == 1 ? DstSel(4, 0, 0)
-					                    : (attr_size == 2 ? DstSel(4, 5, 0) : DstSel(4, 5, 6)));
+					auto swizzle  = vs_input_info.resources[index].DstSelXYZ();
+					auto expected = DstSel(4, 5, 6);
+					switch (attr_size) {
+						case 1: expected = DstSel(4, 0, 0); break;
+						case 2: expected = DstSel(4, 5, 0); break;
+						default: break;
+					}
 					if (swizzle != expected) {
 						log_unsupported_vertex_swizzle(swizzle, expected);
 					}
