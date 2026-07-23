@@ -41,14 +41,32 @@ jobs:
           echo Qt6_DIR=%Qt6_DIR%
 
       - name: Configure
-        shell: cmd
+        shell: pwsh
         run: |
-          cmake -S src -B _Build/windows ^
-            -G Ninja ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_C_COMPILER=clang-cl ^
-            -DCMAKE_CXX_COMPILER=clang-cl ^
-            -DCMAKE_PREFIX_PATH="%Qt6_DIR%"
+          cmake -S src -B _Build/windows `
+            -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl `
+            -DCMAKE_CXX_COMPILER=clang-cl `
+            "-DCMAKE_PREFIX_PATH=$env:Qt6_DIR" 2>&1 | Tee-Object configure.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            # Surface the failure in the run summary so it is visible without log access.
+            "### Configure failed (exit $code)" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            Get-Content configure.log -Tail 150 | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            foreach ($f in @('CMakeError.log', 'CMakeConfigureLog.yaml')) {
+              $p = "_Build/windows/CMakeFiles/$f"
+              if (Test-Path $p) {
+                "### $f (tail)" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+                '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+                Get-Content $p -Tail 100 | Out-File $env:GITHUB_STEP_SUMMARY -Append
+                '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+              }
+            }
+          }
+          exit $code
 
       - name: Build
         shell: cmd
