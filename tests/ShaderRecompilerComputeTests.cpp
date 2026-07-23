@@ -10557,6 +10557,56 @@ void CheckBufferCacheRangeMerge() {
   std::printf("[host]    %-32s ok\n", "BufferCacheRangeMerge");
 }
 
+void CheckBufferBindingStabilization() {
+  constexpr std::array<BufferCacheRange, 4> requests{{
+      {0x10000, 0x4000},
+      {0x12000, 0x6000},
+      {0x17000, 0x5000},
+      {0x11000, 0x1000},
+  }};
+  BufferCacheRange allocation = requests.front();
+  for (const auto request : std::span{requests}.subspan(1)) {
+    Require("BufferBindingStabilization", "discovery",
+            MergeOverlappingBufferCacheRange(allocation, request),
+            "overlapping discovery request did not join the cache allocation");
+  }
+  Require("BufferBindingStabilization", "canonical range",
+          allocation.address == 0x10000 && allocation.size == 0xc000,
+          "discovery did not produce the complete cache allocation");
+
+  for (const auto request : requests) {
+    const auto before = allocation;
+    Require("BufferBindingStabilization", "second pass",
+            MergeOverlappingBufferCacheRange(allocation, request) &&
+                allocation.address == before.address &&
+                allocation.size == before.size,
+            "second-pass binding changed a fully discovered allocation");
+  }
+  std::printf("[host]    %-32s ok\n", "BufferBindingStabilization");
+}
+
+void CheckImageWriteActivationPolicy() {
+  Require("ImageWriteActivationPolicy", "standalone storage",
+          ClassifyImageWriteActivation(VulkanImageType::StorageTexture) ==
+              ImageWriteActivation::Implicit,
+          "standalone storage image was sent through target write activation");
+  for (const auto type : {VulkanImageType::VideoOut,
+                          VulkanImageType::DepthStencil,
+                          VulkanImageType::RenderTexture}) {
+    Require("ImageWriteActivationPolicy", "cache target",
+            ClassifyImageWriteActivation(type) ==
+                ImageWriteActivation::Explicit,
+            "writable cache target skipped explicit write activation");
+  }
+  for (const auto type : {VulkanImageType::Unknown, VulkanImageType::Texture}) {
+    Require("ImageWriteActivationPolicy", "unsupported",
+            ClassifyImageWriteActivation(type) ==
+                ImageWriteActivation::Unsupported,
+            "unsupported writable image type received an activation policy");
+  }
+  std::printf("[host]    %-32s ok\n", "ImageWriteActivationPolicy");
+}
+
 ShaderRecompiler::IR::ImageResource BasicStorageTextureResource() {
   ShaderRecompiler::IR::ImageResource resource{};
   resource.kind = ShaderRecompiler::IR::ResourceKind::StorageImage;
@@ -14245,6 +14295,8 @@ int main(int argc, char **argv) {
   }
   if (argc == 2 && std::strcmp(argv[1], "--buffer-cache-range-only") == 0) {
     CheckBufferCacheRangeMerge();
+    CheckBufferBindingStabilization();
+    CheckImageWriteActivationPolicy();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--storage-bgra-only") == 0) {
@@ -14296,6 +14348,8 @@ int main(int argc, char **argv) {
   CheckSampledDepthResource();
   CheckSampledDepthDescriptor();
   CheckBufferCacheRangeMerge();
+  CheckBufferBindingStabilization();
+  CheckImageWriteActivationPolicy();
   CheckBasicStorageTextureDescriptor();
   CheckStorageTextureLinearUploadLayout();
   CheckStorageTextureDepthTileUploadLayout();

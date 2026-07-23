@@ -501,37 +501,33 @@ void RenderDispatchDirect(uint64_t submit_id, RenderCommandBuffer& buffer, uint3
 		return;
 	}
 
-	for (;;) {
-		const auto recording_generation = buffer.GetRecordingGeneration();
-		auto       vk_buffer            = buffer.Handle();
-		auto&      pipeline = GetRenderContext().GetPipelineCache().CreateComputePipeline(
-		    input_info, sh_ctx.GetCs(), cs_shader);
+	auto& pipeline = GetRenderContext().GetPipelineCache().CreateComputePipeline(
+	    input_info, sh_ctx.GetCs(), cs_shader);
+	auto bindings = PrepareBindings(buffer, input_info.stage,
+	                                vk::ShaderStageFlagBits::eCompute,
+	                                DescriptorCache::Stage::Compute);
+	RebindBuffers(buffer, bindings);
+	RebindImages(buffer, bindings);
+	DescriptorCache::PreparedBindings* binding_sets[] = {&bindings};
+	ActivateImageWrites(binding_sets);
 
-		vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	auto vk_buffer = buffer.Handle();
+	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline.pipeline_layout, bindings);
+	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
 
-		BindDescriptors(submit_id, buffer, vk::PipelineBindPoint::eCompute,
-		                pipeline.pipeline_layout, input_info.stage,
-		                vk::ShaderStageFlagBits::eCompute, DescriptorCache::Stage::Compute);
-		if (buffer.GetRecordingGeneration() != recording_generation) {
-			continue;
-		}
-
-		vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
-
-		bool has_storage_writes = HasShaderBufferWrites(input_info.stage);
-		has_storage_writes =
-		    std::any_of(
-		        program.info.images.begin(), program.info.images.end(),
-		        [](const auto& image) {
-			        return image.written &&
-			               (image.kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
-			                image.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint);
-		        }) ||
-		    has_storage_writes;
-		if (has_storage_writes) {
-			ShaderWriteBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
-		}
-		break;
+	bool has_storage_writes = HasShaderBufferWrites(input_info.stage);
+	has_storage_writes =
+	    std::any_of(
+	        program.info.images.begin(), program.info.images.end(),
+	        [](const auto& image) {
+		        return image.written &&
+		               (image.kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
+		                image.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint);
+	        }) ||
+	    has_storage_writes;
+	if (has_storage_writes) {
+		ShaderWriteBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	}
 }
 

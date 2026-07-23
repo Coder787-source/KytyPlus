@@ -13,6 +13,12 @@
 namespace Libs::Graphics {
 
 struct VulkanImage;
+enum class VulkanImageType;
+
+enum class ImageWriteActivation { Unsupported, Implicit, Explicit };
+
+[[nodiscard]] ImageWriteActivation
+ClassifyImageWriteActivation(VulkanImageType type) noexcept;
 
 template <typename T>
 [[nodiscard]] T DecodeNativeDescriptor(const ShaderRecompiler::IR::DescriptorValue& value) {

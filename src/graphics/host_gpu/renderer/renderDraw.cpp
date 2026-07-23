@@ -39,6 +39,8 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -487,11 +489,11 @@ struct DrawRenderState {
 	uint32_t                  color_count                              = 0;
 	bool                      ps_active                                = true;
 	VulkanFramebuffer*        framebuffer                              = nullptr;
-	vk::CommandBuffer         vk_buffer                                = nullptr;
 	ShaderVertexInputInfo     vs_input_info;
 	ShaderPixelInputInfo      ps_input_info;
 	std::span<const uint32_t> vs_shader;
 	std::span<const uint32_t> ps_shader;
+	std::vector<std::shared_ptr<void>> target_owners;
 };
 
 struct DrawCallInfo {
@@ -556,6 +558,16 @@ struct DrawIndexBufferSource {
 	const void*   host_data = nullptr;
 	uint64_t      size      = 0;
 	vk::IndexType type      = vk::IndexType::eUint16;
+};
+
+struct PreparedIndexBuffer {
+	std::shared_ptr<VulkanBuffer> buffer;
+	const void*                   host_data = nullptr;
+	std::vector<uint8_t>          owned_data;
+	uint64_t                      address   = 0;
+	uint64_t                      size      = 0;
+	vk::DeviceSize                offset    = 0;
+	vk::IndexType                 type      = vk::IndexType::eUint16;
 };
 
 static uint64_t VertexBufferDescriptorSize(const ShaderVertexInputBuffer& buffer) {
@@ -626,10 +638,12 @@ static bool PrepareDrawRenderState(uint64_t submit_id, RenderCommandBuffer& buff
 	ResolveRenderDepthTarget(submit_id, buffer, state.depth_info);
 
 	if (ResolveColorTargets(submit_id, buffer, render_target_slice_offset)) {
-		MarkRenderTargetGpuWritten(state.depth_info);
 		return false;
 	}
-	MarkRenderTargetGpuWritten(state.depth_info);
+	if (state.depth_info.vulkan_buffer != nullptr) {
+		state.target_owners.push_back(
+		    GetRenderContext().GetTextureCache().GetImageOwner(*state.depth_info.vulkan_buffer));
+	}
 
 	if (log_setup_phases) {
 		LogDrawPhase(draw.name, "ResolveRenderColorTarget");
@@ -640,7 +654,12 @@ static bool PrepareDrawRenderState(uint64_t submit_id, RenderCommandBuffer& buff
 			ResolveRenderColorTarget(submit_id, buffer, state.color_info[state.color_count],
 			                         render_target_slice_offset, slot);
 			if (state.color_info[state.color_count].vulkan_buffer != nullptr) {
-				MarkRenderTargetGpuWritten(state.color_info[state.color_count]);
+				if (state.color_info[state.color_count].type == RenderColorType::RenderTexture) {
+					state.target_owners.push_back(GetRenderContext()
+					                                  .GetTextureCache()
+					                                  .GetImageOwner(*state.color_info[state.color_count]
+					                                                      .vulkan_buffer));
+				}
 				state.color_count++;
 			}
 		}
@@ -668,8 +687,6 @@ static bool PrepareDrawRenderState(uint64_t submit_id, RenderCommandBuffer& buff
 	}
 	EXIT_NOT_IMPLEMENTED(state.framebuffer == nullptr);
 	EXIT_NOT_IMPLEMENTED(state.framebuffer->render_pass == nullptr);
-
-	state.vk_buffer = buffer.Handle();
 
 	return true;
 }
@@ -714,56 +731,138 @@ static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	}
 }
 
-static void BindDrawVertexBuffers(uint64_t submit_id, RenderCommandBuffer& buffer,
-                                  const DrawCallInfo& draw, vk::CommandBuffer vk_buffer,
-                                  const ShaderVertexInputInfo& vs_input_info) {
+static std::vector<BufferBinding>
+PrepareVertexBuffers(uint64_t submit_id, RenderCommandBuffer& buffer, const DrawCallInfo& draw,
+                     const ShaderVertexInputInfo& vs_input_info) {
 	EXIT_IF(draw.name == nullptr);
 	(void)submit_id;
 
-	LogDrawPhase(draw.name, "BindVertexBuffers");
+	LogDrawPhase(draw.name, "PrepareVertexBuffers");
+	std::vector<BufferBinding> bindings;
+	bindings.reserve(vs_input_info.buffers_num);
 	for (int i = 0; i < vs_input_info.buffers_num; i++) {
-		const auto&    b        = vs_input_info.buffers[i];
-		uint64_t       addr     = b.addr;
-		uint64_t       size     = VertexBufferDescriptorSize(b);
-		VulkanBuffer*  vertices = nullptr;
-		vk::DeviceSize offset   = 0;
-
+		const auto& b    = vs_input_info.buffers[i];
+		const auto  size = VertexBufferDescriptorSize(b);
 		if (size == 0) {
-			vertices = &GetRenderContext().GetBufferCache().ObtainNullBuffer(buffer);
+			bindings.push_back({GetRenderContext().GetBufferCache().ObtainNullBuffer(), 0});
 		} else {
-			auto binding = GetRenderContext().GetBufferCache().ObtainBuffer(buffer, addr, size);
-			vertices     = &binding.buffer;
-			offset       = binding.offset;
+			bindings.push_back(
+			    GetRenderContext().GetBufferCache().ObtainBuffer(buffer, b.addr, size));
 		}
-		EXIT_NOT_IMPLEMENTED(vertices == nullptr);
+	}
+	return bindings;
+}
 
-		vk_buffer.bindVertexBuffers(i, 1, &vertices->buffer, &offset);
+static void RebindVertexBuffers(RenderCommandBuffer& buffer,
+                                const ShaderVertexInputInfo& vs_input_info,
+                                std::vector<BufferBinding>& bindings) {
+	EXIT_IF(bindings.size() != static_cast<size_t>(vs_input_info.buffers_num));
+	for (int i = 0; i < vs_input_info.buffers_num; i++) {
+		const auto& vertex = vs_input_info.buffers[i];
+		const auto  size   = VertexBufferDescriptorSize(vertex);
+		bindings[i] = size == 0
+		                  ? BufferBinding {GetRenderContext().GetBufferCache().ObtainNullBuffer(), 0}
+		                  : GetRenderContext().GetBufferCache().ObtainBuffer(buffer, vertex.addr, size);
 	}
 }
 
-static void BindDrawIndexBuffer(RenderCommandBuffer& buffer, vk::CommandBuffer vk_buffer,
-                                const DrawIndexBufferSource& source) {
+static PreparedIndexBuffer PrepareIndexBuffer(RenderCommandBuffer& buffer,
+                                              const DrawIndexBufferSource& source) {
+	PreparedIndexBuffer prepared;
 	if (!source.enabled) {
-		return;
+		return prepared;
 	}
 	EXIT_IF(source.size == 0);
-
-	VulkanBuffer*  index_buffer = nullptr;
-	vk::DeviceSize index_offset = 0;
+	prepared.host_data = source.host_data;
+	prepared.address   = source.address;
+	prepared.size      = source.size;
+	prepared.type      = source.type;
 	if (source.host_data != nullptr) {
+		return prepared;
+	} else {
+		auto binding     = GetRenderContext().GetBufferCache().ObtainBuffer(
+		    buffer, source.address, source.size);
+		prepared.buffer     = std::move(binding.buffer);
+		prepared.owned_data = std::move(binding.host_data);
+		prepared.offset     = binding.offset;
+	}
+	return prepared;
+}
+
+static void RebindIndexBuffer(RenderCommandBuffer& buffer, PreparedIndexBuffer& prepared) {
+	if (prepared.size == 0 || prepared.host_data != nullptr) {
+		return;
+	}
+	auto binding     = GetRenderContext().GetBufferCache().ObtainBuffer(
+	    buffer, prepared.address, prepared.size);
+	prepared.buffer     = std::move(binding.buffer);
+	prepared.owned_data = std::move(binding.host_data);
+	prepared.offset     = binding.offset;
+}
+
+static void RevalidateDrawTargets(DrawRenderState& state) {
+	auto old_owners = std::move(state.target_owners);
+	std::vector<std::shared_ptr<void>> current_owners;
+	auto validate = [&](VulkanImage& image) {
+		auto owner = GetRenderContext().GetTextureCache().GetImageOwner(image);
+		const auto found = std::find_if(old_owners.begin(), old_owners.end(), [&](const auto& old) {
+			return old.get() == owner.get();
+		});
+		EXIT_IF(found == old_owners.end());
+		current_owners.push_back(std::move(owner));
+	};
+	if (state.depth_info.vulkan_buffer != nullptr) {
+		validate(*state.depth_info.vulkan_buffer);
+	}
+	for (uint32_t i = 0; i < state.color_count; i++) {
+		if (state.color_info[i].type == RenderColorType::RenderTexture) {
+			validate(*state.color_info[i].vulkan_buffer);
+		}
+	}
+	state.target_owners = std::move(current_owners);
+}
+
+static void CommitVertexBuffers(RenderCommandBuffer& buffer, vk::CommandBuffer vk_buffer,
+                                std::vector<BufferBinding>& bindings) {
+	for (uint32_t slot = 0; slot < bindings.size(); slot++) {
+		auto&          binding      = bindings[slot];
+		VulkanBuffer*  vertex_buffer = binding.buffer.get();
+		vk::DeviceSize vertex_offset = binding.offset;
+		if (!binding.host_data.empty()) {
+			vk::DeviceSize range = 0;
+			EXIT_IF(!GetRenderContext().GetBufferCache().UploadHostData(
+			    buffer, binding.host_data.data(), binding.host_data.size(), 16, vertex_buffer,
+			    vertex_offset, range));
+		} else {
+			buffer.RetainResourceUntilFence(binding.buffer);
+		}
+		EXIT_IF(vertex_buffer == nullptr);
+		vk_buffer.bindVertexBuffers(slot, 1, &vertex_buffer->buffer, &vertex_offset);
+	}
+}
+
+static void CommitIndexBuffer(RenderCommandBuffer& buffer, vk::CommandBuffer vk_buffer,
+                              const PreparedIndexBuffer& prepared) {
+	if (prepared.size == 0) {
+		return;
+	}
+	VulkanBuffer*  index_buffer = prepared.buffer.get();
+	vk::DeviceSize index_offset = prepared.offset;
+	const void* host_data = prepared.host_data;
+	if (host_data == nullptr && !prepared.owned_data.empty()) {
+		host_data = prepared.owned_data.data();
+	}
+	if (host_data != nullptr) {
 		vk::DeviceSize range = 0;
 		if (!GetRenderContext().GetBufferCache().UploadHostData(
-		        buffer, source.host_data, source.size, 16, index_buffer, index_offset, range)) {
+		        buffer, host_data, prepared.size, 16, index_buffer, index_offset, range)) {
 			EXIT("failed to upload host index buffer\n");
 		}
 	} else {
-		auto binding =
-		    GetRenderContext().GetBufferCache().ObtainBuffer(buffer, source.address, source.size);
-		index_buffer = &binding.buffer;
-		index_offset = binding.offset;
+		buffer.RetainResourceUntilFence(prepared.buffer);
 	}
 	EXIT_IF(index_buffer == nullptr);
-	vk_buffer.bindIndexBuffer(index_buffer->buffer, index_offset, source.type);
+	vk_buffer.bindIndexBuffer(index_buffer->buffer, index_offset, prepared.type);
 }
 
 static void LogDrawStateIfNeeded(const RenderCommandBuffer& buffer, const DrawCallInfo& draw,
@@ -865,88 +964,108 @@ static void ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer& buffer,
                                 bool set_bind_debug, bool set_auto_debug) {
 	EXIT_IF(draw.name == nullptr);
 	auto& ucfg = buffer.GetUserConfig();
+	if (log_pipeline_phase) {
+		LogDrawPhase(draw.name, "CreatePipeline");
+	}
+	auto& pipeline = GetRenderContext().GetPipelineCache().CreateGraphicsPipeline(
+	    *state.framebuffer, state.color_info, state.color_count, state.depth_info,
+	    state.vs_input_info, buffer, &state.ps_input_info, topology, state.ps_active,
+	    state.vs_shader, state.ps_shader);
 
-	for (;;) {
-		const auto recording_generation = buffer.GetRecordingGeneration();
-		if (log_pipeline_phase) {
-			LogDrawPhase(draw.name, "CreatePipeline");
-		}
-		auto& pipeline = GetRenderContext().GetPipelineCache().CreateGraphicsPipeline(
-		    *state.framebuffer, state.color_info, state.color_count, state.depth_info,
-		    state.vs_input_info, buffer, &state.ps_input_info, topology, state.ps_active,
-		    state.vs_shader, state.ps_shader);
+	LogDrawPhase(draw.name, "PrepareBindingsVS");
+	auto vs_bindings = PrepareBindings(buffer, state.vs_input_info.stage,
+	                                   vk::ShaderStageFlagBits::eVertex,
+	                                   DescriptorCache::Stage::Vertex);
+	std::optional<DescriptorCache::PreparedBindings> ps_bindings;
+	if (state.ps_active) {
+		LogDrawPhase(draw.name, "PrepareBindingsPS");
+		ps_bindings.emplace(PrepareBindings(buffer, state.ps_input_info.stage,
+		                                    vk::ShaderStageFlagBits::eFragment,
+		                                    DescriptorCache::Stage::Pixel));
+	}
+	auto vertex_bindings = PrepareVertexBuffers(submit_id, buffer, draw, state.vs_input_info);
+	auto index_binding   = PrepareIndexBuffer(buffer, index_source);
 
-		if (set_bind_debug) {
-			SetDrawDebugPhase(buffer, submit_id, draw, 0x100u);
-		}
-		state.vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
-		const auto dynamic_params = BuildGraphicsDynamicParams(buffer, state.color_info,
-		                                                       state.color_count, state.depth_info);
-		SetDynamicParams(buffer, state.vk_buffer, dynamic_params);
+	// The discovery pass above can merge cache allocations. Rebind every buffer only after the
+	// complete draw resource set is known.
+	RebindBuffers(buffer, vs_bindings);
+	if (ps_bindings.has_value()) {
+		RebindBuffers(buffer, *ps_bindings);
+	}
+	RebindVertexBuffers(buffer, state.vs_input_info, vertex_bindings);
+	RebindIndexBuffer(buffer, index_binding);
+	RebindImages(buffer, vs_bindings);
+	if (ps_bindings.has_value()) {
+		RebindImages(buffer, *ps_bindings);
+	}
 
-		// EXIT_NOT_IMPLEMENTED(vs_input_info.buffers_num > 1);
-		BindDrawVertexBuffers(submit_id, buffer, draw, state.vk_buffer, state.vs_input_info);
+	// Resource preparation above may synchronously finish and restart the scheduler. From this
+	// point onward, every operation targets the current command buffer and cannot touch guest
+	// memory.
+	RevalidateDrawTargets(state);
+	DescriptorCache::PreparedBindings* binding_sets[] = {
+	    &vs_bindings, ps_bindings.has_value() ? &*ps_bindings : nullptr};
+	ActivateImageWrites(binding_sets);
+	MarkRenderTargetGpuWritten(state.depth_info);
+	for (uint32_t i = 0; i < state.color_count; i++) {
+		MarkRenderTargetGpuWritten(state.color_info[i]);
+	}
+	for (const auto& owner: state.target_owners) {
+		buffer.RetainResourceUntilFence(owner);
+	}
 
-		LogDrawPhase(draw.name, "BindDescriptorsVS");
+	auto vk_buffer = buffer.Handle();
+	if (set_bind_debug) {
+		SetDrawDebugPhase(buffer, submit_id, draw, 0x100u);
+	}
+	if (set_auto_debug) {
+		SetDrawDebugPhase(buffer, submit_id, draw, 0x200u);
+	}
+	CommitVertexBuffers(buffer, vk_buffer, vertex_bindings);
+	CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline.pipeline_layout,
+	               vs_bindings);
+	if (ps_bindings.has_value()) {
 		if (set_auto_debug) {
-			SetDrawDebugPhase(buffer, submit_id, draw, 0x200u);
+			SetDrawDebugPhase(buffer, submit_id, draw, 0x300u);
 		}
-		BindDescriptors(submit_id, buffer, vk::PipelineBindPoint::eGraphics,
-		                pipeline.pipeline_layout, state.vs_input_info.stage,
-		                vk::ShaderStageFlagBits::eVertex, DescriptorCache::Stage::Vertex);
+		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline.pipeline_layout,
+		               *ps_bindings);
+	}
+	CommitIndexBuffer(buffer, vk_buffer, index_binding);
 
-		if (state.ps_active) {
-			LogDrawPhase(draw.name, "BindDescriptorsPS");
-			if (set_auto_debug) {
-				SetDrawDebugPhase(buffer, submit_id, draw, 0x300u);
-			}
-			BindDescriptors(submit_id, buffer, vk::PipelineBindPoint::eGraphics,
-			                pipeline.pipeline_layout, state.ps_input_info.stage,
-			                vk::ShaderStageFlagBits::eFragment, DescriptorCache::Stage::Pixel);
-		}
-		if (buffer.GetRecordingGeneration() != recording_generation) {
-			continue;
-		}
-		// Index data may use this command buffer's host stream. Resolve it only after the other
-		// fault-capable bindings, and rebuild it whenever a fault reset changes the generation.
-		BindDrawIndexBuffer(buffer, state.vk_buffer, index_source);
-		if (buffer.GetRecordingGeneration() != recording_generation) {
-			continue;
-		}
+	const auto dynamic_params = BuildGraphicsDynamicParams(buffer, state.color_info,
+	                                                       state.color_count, state.depth_info);
+	SetDynamicParams(buffer, vk_buffer, dynamic_params);
 
-		LogDrawPhase(draw.name, "BeginRenderPass");
-		if (set_auto_debug) {
-			SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
-		}
-		buffer.BeginRenderPass(*state.framebuffer, state.color_info, state.color_count,
-		                       state.depth_info);
-		if (set_auto_debug) {
-			SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
-		}
+	LogDrawPhase(draw.name, "BeginRenderPass");
+	if (set_auto_debug) {
+		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
+	}
+	buffer.BeginRenderPass(*state.framebuffer, state.color_info, state.color_count,
+	                       state.depth_info);
+	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
+	if (set_auto_debug) {
+		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
+	}
+	EmitDrawPrimitives(ucfg, vk_buffer, state.vs_input_info, draw, emit);
 
-		EmitDrawPrimitives(ucfg, state.vk_buffer, state.vs_input_info, draw, emit);
-
-		if (set_auto_debug) {
-			SetDrawDebugPhase(buffer, submit_id, draw, 0x600u);
-		}
-		buffer.EndRenderPass();
-		vk::PipelineStageFlags shader_write_stages = {};
-		if (HasShaderBufferWrites(state.vs_input_info.stage)) {
-			shader_write_stages |= vk::PipelineStageFlagBits::eVertexShader;
-		}
-		if (state.ps_active) {
-			if (HasShaderBufferWrites(state.ps_input_info.stage)) {
-				shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
-			}
-		}
-		if (shader_write_stages) {
-			ShaderWriteBarrier(state.vk_buffer, shader_write_stages);
-		}
-		LogDrawPhase(draw.name, "EndRenderPass");
-		if (set_auto_debug) {
-			SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
-		}
-		break;
+	if (set_auto_debug) {
+		SetDrawDebugPhase(buffer, submit_id, draw, 0x600u);
+	}
+	buffer.EndRenderPass();
+	vk::PipelineStageFlags shader_write_stages = {};
+	if (HasShaderBufferWrites(state.vs_input_info.stage)) {
+		shader_write_stages |= vk::PipelineStageFlagBits::eVertexShader;
+	}
+	if (state.ps_active && HasShaderBufferWrites(state.ps_input_info.stage)) {
+		shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
+	}
+	if (shader_write_stages) {
+		ShaderWriteBarrier(vk_buffer, shader_write_stages);
+	}
+	LogDrawPhase(draw.name, "EndRenderPass");
+	if (set_auto_debug) {
+		SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
 	}
 }
 

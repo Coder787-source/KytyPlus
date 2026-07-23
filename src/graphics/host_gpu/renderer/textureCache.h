@@ -118,6 +118,7 @@ public:
 
 	VulkanImage& GetDummySampledTexture(bool uint_format, bool image_3d);
 	VulkanImage& GetDummyStorageTexture(bool uint_format, bool image_3d);
+	[[nodiscard]] std::shared_ptr<void> GetImageOwner(const VulkanImage& image);
 
 private:
 	struct CachedImage;

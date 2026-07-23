@@ -95,7 +95,6 @@ public:
 	[[nodiscard]] vk::CommandBuffer Handle() const;
 	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
 	[[nodiscard]] bool              IsExecute() const { return m_execute; }
-	[[nodiscard]] uint64_t GetRecordingGeneration() const { return m_recording_generation; }
 
 private:
 	friend class BufferCache;
@@ -113,7 +112,6 @@ private:
 	bool                              m_execute              = false;
 	bool                              m_fence_waited         = false;
 	uint64_t                          m_submit_seq           = 0;
-	uint64_t                          m_recording_generation = 0;
 	uint32_t                          m_debug_op             = 0;
 	uint64_t                          m_debug_submit_id      = 0;
 	uint32_t                          m_debug_arg0           = 0;

@@ -358,7 +358,6 @@ void CommandBuffer::FinalizeFence(bool reset_recording) {
 		m_fence_waited = false;
 		if (reset_recording) {
 			ResetNativeCommandBuffer(m_slot->buffer);
-			m_recording_generation++;
 		}
 	}
 	if (reset_recording) {

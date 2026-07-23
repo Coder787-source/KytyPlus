@@ -636,24 +636,16 @@ BufferBinding BufferCache::ObtainBuffer(CommandBuffer& command, uint64_t vaddr, 
 	const auto      end   = AlignUp(vaddr + size);
 	std::lock_guard transaction(m_resource_mutex);
 	const auto      texture_region = m_texture_cache->QueryRegion(vaddr, size);
-	// Use the stream-buffer fast path before image/buffer alias handling. Clean image and metadata
-	// views may coexist with a small CPU-current read; Kyty's separate image trackers require
-	// GPU-dirty ownership guards here. Read physical backing so
-	// host page protection is irrelevant.
+	// Snapshot small CPU-current reads now and upload them only during the final non-resetting
+	// commit. This keeps unaligned guest addresses valid without tying preparation to a command-local
+	// stream allocation.
 	if (is_read && !is_written && size <= CACHING_PAGE_SIZE &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
 	    m_memory_tracker.IsRegionCpuModified(vaddr, size) && !texture_region.gpu_image_bytes &&
 	    !texture_region.gpu_metadata_bytes) {
-		std::array<uint8_t, CACHING_PAGE_SIZE> guest_data;
+		std::vector<uint8_t> guest_data(size);
 		if (Libs::LibKernel::Memory::TryReadBacking(vaddr, guest_data.data(), size)) {
-			VulkanBuffer*  stream_buffer = nullptr;
-			vk::DeviceSize stream_offset = 0;
-			vk::DeviceSize stream_range  = 0;
-			const auto stream_alignment  = std::max<uint64_t>(m_graphics.StorageMinAlignment(), 16);
-			if (UploadHostData(command, guest_data.data(), size, stream_alignment, stream_buffer,
-			                   stream_offset, stream_range)) {
-				return {*stream_buffer, stream_offset};
-			}
+			return {nullptr, 0, std::move(guest_data)};
 		}
 	}
 	const auto texture_pages = begin == vaddr && end - begin == size
@@ -829,8 +821,7 @@ BufferBinding BufferCache::ObtainBuffer(CommandBuffer& command, uint64_t vaddr, 
 	if (is_written) {
 		m_gpu_modified_ranges.Add(vaddr, size);
 	}
-	command.RetainResourceUntilFence(cached.buffer);
-	return {*cached.buffer, vaddr - cached.vaddr};
+	return {cached.buffer, vaddr - cached.vaddr};
 }
 
 bool BufferCache::UploadHostData(CommandBuffer& command, const void* src, uint64_t size,
@@ -842,10 +833,7 @@ bool BufferCache::UploadHostData(CommandBuffer& command, const void* src, uint64
 	return command.m_host_stream.Copy(src, size, alignment, out_buffer, out_offset, out_range);
 }
 
-VulkanBuffer& BufferCache::ObtainNullBuffer(CommandBuffer& command) {
-	if (command.IsInvalid() || command.IsExecute()) {
-		EXIT("BufferCache: null buffer requires a graphics context\n");
-	}
+std::shared_ptr<VulkanBuffer> BufferCache::ObtainNullBuffer() {
 	FaultSafeCacheLock lock(this, m_mutex);
 	if (m_null_buffer == nullptr) {
 		// robustBufferAccess makes every fetch safe; TODO: Use a
@@ -865,10 +853,7 @@ VulkanBuffer& BufferCache::ObtainNullBuffer(CommandBuffer& command) {
 		m_null_buffer = std::move(buffer);
 	}
 
-	// The buffer remains cache-persistent, while every recorded consumer keeps the allocation
-	// alive until its own fence even if an unrelated command processor resets the global cache.
-	command.RetainResourceUntilFence(m_null_buffer);
-	return *m_null_buffer;
+	return m_null_buffer;
 }
 
 BufferImageCopySource BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t size) {
@@ -1046,17 +1031,20 @@ void BufferCache::FillBuffer(CommandBuffer* command, uint64_t vaddr, uint64_t si
 		}
 	}
 	EXIT_IF(command == nullptr);
-	const auto [dst, dst_offset] = ObtainBuffer(*command, vaddr, size, true, false);
-	const auto before            = MakeDmaBarrier(
-	    dst, dst_offset, size, vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+	auto dst = ObtainBuffer(*command, vaddr, size, true, false);
+	EXIT_IF(dst.buffer == nullptr || !dst.host_data.empty());
+	command->RetainResourceUntilFence(dst.buffer);
+	const auto before = MakeDmaBarrier(
+	    *dst.buffer, dst.offset, size,
+	    vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
 	    vk::AccessFlagBits::eTransferWrite);
 	const auto vk_buffer = command->Handle();
 	vk_buffer.pipelineBarrier(
 	    vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer,
 	    vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &before, 0, nullptr);
-	vk_buffer.fillBuffer(dst.buffer, dst_offset, size, value);
+	vk_buffer.fillBuffer(dst.buffer->buffer, dst.offset, size, value);
 	const auto after =
-	    MakeDmaBarrier(dst, dst_offset, size, vk::AccessFlagBits::eTransferWrite,
+	    MakeDmaBarrier(*dst.buffer, dst.offset, size, vk::AccessFlagBits::eTransferWrite,
 	                   vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite);
 	vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
 	                          vk::PipelineStageFlagBits::eAllCommands,
@@ -1128,31 +1116,44 @@ void BufferCache::CopyBuffer(CommandBuffer* command, uint64_t dst_vaddr, uint64_
 		}
 	}
 	EXIT_IF(command == nullptr);
-	const auto [src, src_offset] = ObtainBuffer(*command, src_vaddr, size, false, true);
-	const auto [dst, dst_offset] =
-	    ObtainBuffer(*command, dst_vaddr, size, true, false, dst_image_transition);
-	if (&src == &dst && src_offset < dst_offset + size && dst_offset < src_offset + size) {
+	auto src = ObtainBuffer(*command, src_vaddr, size, false, true);
+	auto dst = ObtainBuffer(*command, dst_vaddr, size, true, false, dst_image_transition);
+	EXIT_IF(dst.buffer == nullptr || !dst.host_data.empty());
+	VulkanBuffer*  src_buffer = src.buffer.get();
+	vk::DeviceSize src_offset = src.offset;
+	if (!src.host_data.empty()) {
+		vk::DeviceSize range = 0;
+		EXIT_IF(!UploadHostData(*command, src.host_data.data(), src.host_data.size(), 16,
+		                        src_buffer, src_offset, range) ||
+		        range != size);
+	} else {
+		command->RetainResourceUntilFence(src.buffer);
+	}
+	command->RetainResourceUntilFence(dst.buffer);
+	EXIT_IF(src_buffer == nullptr);
+	if (src.buffer == dst.buffer && src.offset < dst.offset + size &&
+	    dst.offset < src.offset + size) {
 		EXIT("BufferCache: resolved Vulkan copy ranges overlap, src_offset=0x%016" PRIx64
 		     " dst_offset=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
-		     src_offset, dst_offset, size);
+		     src.offset, dst.offset, size);
 	}
 	const vk::BufferMemoryBarrier before[] = {
-	    MakeDmaBarrier(dst, dst_offset, size,
+	    MakeDmaBarrier(*dst.buffer, dst.offset, size,
 	                   vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
 	                   vk::AccessFlagBits::eTransferWrite),
-	    MakeDmaBarrier(src, src_offset, size, vk::AccessFlagBits::eMemoryWrite,
+	    MakeDmaBarrier(*src_buffer, src_offset, size, vk::AccessFlagBits::eMemoryWrite,
 	                   vk::AccessFlagBits::eTransferRead),
 	};
 	const auto vk_buffer = command->Handle();
 	vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                          vk::PipelineStageFlagBits::eTransfer,
 	                          vk::DependencyFlagBits::eByRegion, 0, nullptr, 2, before, 0, nullptr);
-	const vk::BufferCopy copy {src_offset, dst_offset, size};
-	vk_buffer.copyBuffer(src.buffer, dst.buffer, 1, &copy);
+	const vk::BufferCopy copy {src_offset, dst.offset, size};
+	vk_buffer.copyBuffer(src_buffer->buffer, dst.buffer->buffer, 1, &copy);
 	const vk::BufferMemoryBarrier after[] = {
-	    MakeDmaBarrier(dst, dst_offset, size, vk::AccessFlagBits::eTransferWrite,
+	    MakeDmaBarrier(*dst.buffer, dst.offset, size, vk::AccessFlagBits::eTransferWrite,
 	                   vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite),
-	    MakeDmaBarrier(src, src_offset, size, vk::AccessFlagBits::eTransferRead,
+	    MakeDmaBarrier(*src_buffer, src_offset, size, vk::AccessFlagBits::eTransferRead,
 	                   vk::AccessFlagBits::eMemoryWrite),
 	};
 	vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,

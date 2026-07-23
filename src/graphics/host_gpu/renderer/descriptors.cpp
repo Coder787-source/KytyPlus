@@ -37,6 +37,7 @@
 #include <fmt/format.h>
 #include <limits>
 #include <span>
+#include <unordered_set>
 
 #ifdef min
 #undef min
@@ -49,8 +50,21 @@ namespace Libs::Graphics {
 
 using TextureVariant = DescriptorCache::TextureVariant;
 
-static void BindNullStorageBuffer(CommandBuffer& cmd_buffer, BufferView& dst) {
-	dst.buffer = &GetRenderContext().GetBufferCache().ObtainNullBuffer(cmd_buffer);
+ImageWriteActivation ClassifyImageWriteActivation(VulkanImageType type) noexcept {
+	switch (type) {
+		case VulkanImageType::StorageTexture: return ImageWriteActivation::Implicit;
+		case VulkanImageType::VideoOut:
+		case VulkanImageType::DepthStencil:
+		case VulkanImageType::RenderTexture: return ImageWriteActivation::Explicit;
+		case VulkanImageType::Unknown:
+		case VulkanImageType::Texture: return ImageWriteActivation::Unsupported;
+	}
+	return ImageWriteActivation::Unsupported;
+}
+
+static void BindNullStorageBuffer(BufferView& dst) {
+	dst.owner  = GetRenderContext().GetBufferCache().ObtainNullBuffer();
+	dst.buffer = dst.owner.get();
 	dst.offset = 0;
 	dst.range  = 16;
 }
@@ -119,7 +133,7 @@ static void CopyNativeDescriptor(const ShaderRecompiler::IR::DescriptorValue& so
 	std::copy_n(source.dwords.begin(), destination.size(), destination.begin());
 }
 
-static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
+static BufferView NativeStorageBuffer(CommandBuffer& command_buffer,
                                       const ShaderBufferResource&                 descriptor,
                                       const ShaderRecompiler::IR::BufferResource& resource) {
 	BufferView result;
@@ -132,7 +146,7 @@ static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command
 	}
 	const auto size = stride != 0 ? static_cast<uint64_t>(stride) * records : records;
 	if (address == 0 || size == 0) {
-		BindNullStorageBuffer(command_buffer, result);
+		BindNullStorageBuffer(result);
 		return result;
 	}
 	const auto& graphics  = GetRenderContext().GetGraphics();
@@ -142,25 +156,26 @@ static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command
 	    BufferCache::CACHING_PAGE_SIZE % alignment != 0) {
 		EXIT("storage buffer range or device alignment is unsupported\n");
 	}
-	(void)submit_id;
 	auto binding = GetRenderContext().GetBufferCache().ObtainBuffer(
 	    command_buffer, address, size, resource.written, resource.read, resource.formatted);
-	if (binding.offset % alignment != 0) {
+	if (binding.host_data.empty() && binding.offset % alignment != 0) {
 		EXIT("storage buffer binding is not device-aligned\n");
 	}
-	result.buffer = &binding.buffer;
-	result.offset = binding.offset;
-	result.range  = static_cast<vk::DeviceSize>(size);
+	result.owner     = std::move(binding.buffer);
+	result.buffer    = result.owner.get();
+	result.offset    = binding.offset;
+	result.range     = static_cast<vk::DeviceSize>(size);
+	result.host_data = std::move(binding.host_data);
 	return result;
 }
 
 static BufferView
-NativeAddressBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
+NativeAddressBuffer(CommandBuffer& command_buffer,
                     const ShaderRecompiler::IR::AddressResource&           resource,
                     const ShaderRecompiler::IR::ResourceSnapshot::Address& address) {
 	BufferView result;
 	if (address.binding_base == 0) {
-		BindNullStorageBuffer(command_buffer, result);
+		BindNullStorageBuffer(result);
 		return result;
 	}
 	if (resource.written) {
@@ -185,12 +200,13 @@ NativeAddressBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
 	    BufferCache::GetBufferOffset(address.binding_base) % alignment != 0) {
 		EXIT("address resource range or alignment is unsupported\n");
 	}
-	(void)submit_id;
 	auto binding  = GetRenderContext().GetBufferCache().ObtainBuffer(command_buffer,
 	                                                                 address.binding_base, size);
-	result.buffer = &binding.buffer;
-	result.offset = binding.offset;
-	result.range  = static_cast<vk::DeviceSize>(size);
+	result.owner     = std::move(binding.buffer);
+	result.buffer    = result.owner.get();
+	result.offset    = binding.offset;
+	result.range     = static_cast<vk::DeviceSize>(size);
+	result.host_data = std::move(binding.host_data);
 	return result;
 }
 
@@ -475,8 +491,7 @@ void ValidateMetadataReuseTexture(const ShaderRecompiler::IR::ImageResource& res
 }
 
 static DescriptorCache::TextureBinding
-NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
-              const ShaderRecompiler::IR::ImageResource&   resource,
+NativeTexture(CommandBuffer& command_buffer, const ShaderRecompiler::IR::ImageResource& resource,
               const ShaderRecompiler::IR::DescriptorValue& value) {
 	ShaderTextureResource descriptor;
 	CopyNativeDescriptor(value, descriptor.fields);
@@ -536,6 +551,7 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 	VulkanImage*  image      = nullptr;
 	int           view       = VulkanImage::VIEW_DEFAULT;
 	vk::ImageView image_view = nullptr;
+	bool          external   = false;
 	const bool check_depth = static_cast<Prospero::TileMode>(tile) == Prospero::TileMode::kDepth ||
 	                         descriptor.MsaaDepth();
 	if (image == nullptr) {
@@ -615,14 +631,12 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 			if (image != nullptr && image_view == nullptr && image->image_view[view] == nullptr) {
 				EXIT("required cached texture image view is missing\n");
 			}
-			if (storage && image != nullptr) {
-				GetRenderContext().GetTextureCache().MarkGpuWritten(*image);
-			}
 		}
 	}
 	if (image == nullptr) {
 		const auto video = Presentation::DisplayBufferFind(address);
 		if (video.image != nullptr) {
+			external = true;
 			if (storage) {
 				const bool exact =
 				    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint &&
@@ -644,7 +658,6 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 				}
 				image = video.image;
 				view  = VulkanImage::VIEW_STORAGE;
-				GetRenderContext().GetTextureCache().MarkGpuWritten(*image);
 			} else {
 				const bool exact =
 				    IsSupportedSampledVideoOutView(resource, descriptor, *video.image) &&
@@ -678,7 +691,6 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 		if (!storage && metadata_read) {
 			ValidateMetadataReuseTexture(resource, descriptor, size.size);
 		}
-		(void)submit_id;
 		(void)command_buffer;
 		ImageInfo info {};
 		info.address     = address;
@@ -714,7 +726,9 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 	                                image_view != nullptr)) {
 		view = SelectSampledTextureArrayView(*image, view);
 	}
-	return {image, view, image_view};
+	return {image, view, image_view,
+	        external ? std::shared_ptr<void> {}
+	                 : GetRenderContext().GetTextureCache().GetImageOwner(*image)};
 }
 
 static vk::Sampler NativeSampler(const ShaderRecompiler::IR::Program& program, uint32_t index,
@@ -742,10 +756,9 @@ static BufferView NativeUpload(CommandBuffer& command_buffer, std::span<const ui
 	return result;
 }
 
-void BindDescriptors(uint64_t submit_id, CommandBuffer& buffer,
-                     vk::PipelineBindPoint pipeline_bind_point, vk::PipelineLayout layout,
-                     const ShaderStageRuntime& runtime, vk::ShaderStageFlags vk_stage,
-                     DescriptorCache::Stage stage) {
+DescriptorCache::PreparedBindings
+PrepareBindings(CommandBuffer& buffer, const ShaderStageRuntime& runtime,
+                vk::ShaderStageFlags shader_stage, DescriptorCache::Stage stage) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(!runtime);
 	const auto& program  = *runtime.program;
@@ -754,27 +767,30 @@ void BindDescriptors(uint64_t submit_id, CommandBuffer& buffer,
 	if (!ShaderRecompiler::IR::ValidateResourceSpecialization(program, snapshot, &error)) {
 		EXIT("invalid native shader runtime snapshot: %s\n", error.c_str());
 	}
-	auto       vk_buffer     = buffer.Handle();
-	const auto shader_stages = ShaderPipelineStages(vk_stage);
 
-	DescriptorCache::NativeDescriptors descriptors;
+	DescriptorCache::PreparedBindings prepared;
+	prepared.program      = runtime.program;
+	prepared.snapshot     = runtime.resources;
+	prepared.shader_stage = shader_stage;
+	prepared.stage        = stage;
+	auto& descriptors     = prepared.resources;
 	descriptors.buffers.reserve(program.info.buffers.size());
 	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 		ShaderBufferResource descriptor;
 		CopyNativeDescriptor(snapshot.buffers[i], descriptor.fields);
 		descriptors.buffers.push_back(
-		    NativeStorageBuffer(submit_id, buffer, descriptor, program.info.buffers[i]));
+		    NativeStorageBuffer(buffer, descriptor, program.info.buffers[i]));
 	}
 	descriptors.images.reserve(program.info.images.size());
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
 		const auto kind = program.info.images[i].kind;
 		if ((kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
 		     kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint) &&
-		    vk_stage != vk::ShaderStageFlagBits::eCompute) {
+		    shader_stage != vk::ShaderStageFlagBits::eCompute) {
 			EXIT("storage images are unsupported outside compute shaders\n");
 		}
 		descriptors.images.push_back(
-		    NativeTexture(submit_id, buffer, program.info.images[i], snapshot.images[i]));
+		    NativeTexture(buffer, program.info.images[i], snapshot.images[i]));
 	}
 	descriptors.samplers.reserve(program.info.samplers.size());
 	for (uint32_t i = 0; i < program.info.samplers.size(); i++) {
@@ -782,28 +798,150 @@ void BindDescriptors(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	descriptors.addresses.reserve(program.info.addresses.size());
 	for (uint32_t i = 0; i < program.info.addresses.size(); i++) {
-		descriptors.addresses.push_back(NativeAddressBuffer(
-		    submit_id, buffer, program.info.addresses[i], snapshot.addresses[i]));
+		descriptors.addresses.push_back(
+		    NativeAddressBuffer(buffer, program.info.addresses[i], snapshot.addresses[i]));
 	}
 	if (ShaderRecompiler::IR::FindBinding(
 	        program.bindings, ShaderRecompiler::IR::DescriptorBindingKind::FlattenedSrt) !=
 	    nullptr) {
-		descriptors.flattened_srt = NativeUpload(buffer, snapshot.flattened_srt);
+		prepared.flattened_srt.assign(snapshot.flattened_srt.begin(), snapshot.flattened_srt.end());
 	}
 
-	std::vector<uint32_t> user_data;
-	user_data.reserve(program.bindings.user_data_registers.size());
+	prepared.user_data.reserve(program.bindings.user_data_registers.size());
 	for (const auto reg: program.bindings.user_data_registers) {
-		user_data.push_back(snapshot.user_data[reg - program.user_data_base]);
-	}
-	if (ShaderRecompiler::IR::FindBinding(
-	        program.bindings, ShaderRecompiler::IR::DescriptorBindingKind::UserData) != nullptr) {
-		descriptors.user_data = NativeUpload(buffer, user_data);
+		prepared.user_data.push_back(snapshot.user_data[reg - program.user_data_base]);
 	}
 	if (ShaderRecompiler::IR::FindBinding(
 	        program.bindings, ShaderRecompiler::IR::DescriptorBindingKind::Gds) != nullptr) {
 		descriptors.gds.buffer = &GetRenderContext().GetGdsBuffer().GetBuffer();
-		const auto barrier     = MakeGdsDependency(*descriptors.gds.buffer);
+	}
+	return prepared;
+}
+
+void RebindBuffers(CommandBuffer& buffer, DescriptorCache::PreparedBindings& prepared) {
+	KYTY_PROFILER_FUNCTION();
+	EXIT_IF(prepared.program == nullptr || prepared.snapshot == nullptr);
+	const auto& program  = *prepared.program;
+	const auto& snapshot = *prepared.snapshot;
+	auto&       resources = prepared.resources;
+
+	resources.buffers.clear();
+	resources.buffers.reserve(program.info.buffers.size());
+	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
+		ShaderBufferResource descriptor;
+		CopyNativeDescriptor(snapshot.buffers[i], descriptor.fields);
+		resources.buffers.push_back(
+		    NativeStorageBuffer(buffer, descriptor, program.info.buffers[i]));
+	}
+	resources.addresses.clear();
+	resources.addresses.reserve(program.info.addresses.size());
+	for (uint32_t i = 0; i < program.info.addresses.size(); i++) {
+		resources.addresses.push_back(
+		    NativeAddressBuffer(buffer, program.info.addresses[i], snapshot.addresses[i]));
+	}
+}
+
+void RebindImages(CommandBuffer& buffer, DescriptorCache::PreparedBindings& prepared) {
+	KYTY_PROFILER_FUNCTION();
+	EXIT_IF(prepared.program == nullptr || prepared.snapshot == nullptr);
+	const auto& program  = *prepared.program;
+	const auto& snapshot = *prepared.snapshot;
+	auto&       images   = prepared.resources.images;
+	images.clear();
+	images.reserve(program.info.images.size());
+	for (uint32_t i = 0; i < program.info.images.size(); i++) {
+		images.push_back(NativeTexture(buffer, program.info.images[i], snapshot.images[i]));
+	}
+}
+
+void ActivateImageWrites(std::span<DescriptorCache::PreparedBindings*> bindings) {
+	std::unordered_set<VulkanImage*> writable;
+	for (const auto* prepared: bindings) {
+		if (prepared == nullptr) {
+			continue;
+		}
+		EXIT_IF(prepared->program == nullptr ||
+		        prepared->resources.images.size() != prepared->program->info.images.size());
+		for (uint32_t i = 0; i < prepared->program->info.images.size(); i++) {
+			const auto& binding = prepared->resources.images[i];
+			EXIT_IF(binding.image == nullptr);
+			if (binding.owner != nullptr) {
+				auto current = GetRenderContext().GetTextureCache().GetImageOwner(*binding.image);
+				EXIT_IF(current.get() != binding.owner.get());
+			}
+			if (prepared->program->info.images[i].written) {
+				switch (ClassifyImageWriteActivation(binding.image->type)) {
+					case ImageWriteActivation::Implicit: break;
+					case ImageWriteActivation::Explicit: writable.insert(binding.image); break;
+					case ImageWriteActivation::Unsupported:
+						EXIT("unsupported writable image type: %u\n",
+						     static_cast<uint32_t>(binding.image->type));
+				}
+			}
+		}
+	}
+	for (auto* image: writable) {
+		GetRenderContext().GetTextureCache().MarkGpuWritten(*image);
+	}
+}
+
+static void RetainBindings(CommandBuffer& buffer,
+                           const DescriptorCache::NativeDescriptors& resources) {
+	for (const auto& view: resources.buffers) {
+		if (view.owner != nullptr) {
+			buffer.RetainResourceUntilFence(view.owner);
+		}
+	}
+	for (const auto& view: resources.addresses) {
+		if (view.owner != nullptr) {
+			buffer.RetainResourceUntilFence(view.owner);
+		}
+	}
+	for (const auto& image: resources.images) {
+		if (image.owner != nullptr) {
+			buffer.RetainResourceUntilFence(image.owner);
+		}
+	}
+}
+
+static void CommitHostBuffers(CommandBuffer& buffer, std::vector<BufferView>& views) {
+	const auto alignment = GetRenderContext().GetGraphics().StorageMinAlignment();
+	EXIT_IF(alignment == 0);
+	for (auto& view: views) {
+		if (view.host_data.empty()) {
+			continue;
+		}
+		EXIT_IF(view.owner != nullptr || view.buffer != nullptr);
+		vk::DeviceSize uploaded_range = 0;
+		EXIT_IF(!GetRenderContext().GetBufferCache().UploadHostData(
+		    buffer, view.host_data.data(), view.host_data.size(), alignment, view.buffer,
+		    view.offset, uploaded_range));
+		EXIT_IF(uploaded_range != view.range);
+	}
+}
+
+void CommitBindings(CommandBuffer& buffer, vk::PipelineBindPoint pipeline_bind_point,
+                    vk::PipelineLayout layout, DescriptorCache::PreparedBindings& prepared) {
+	KYTY_PROFILER_FUNCTION();
+	EXIT_IF(prepared.program == nullptr || prepared.stage == DescriptorCache::Stage::Unknown ||
+	        prepared.committed);
+	const auto& program     = *prepared.program;
+	auto&       descriptors = prepared.resources;
+	CommitHostBuffers(buffer, descriptors.buffers);
+	CommitHostBuffers(buffer, descriptors.addresses);
+	if (!prepared.flattened_srt.empty()) {
+		descriptors.flattened_srt = NativeUpload(buffer, prepared.flattened_srt);
+	}
+	if (ShaderRecompiler::IR::FindBinding(
+	        program.bindings, ShaderRecompiler::IR::DescriptorBindingKind::UserData) != nullptr) {
+		descriptors.user_data = NativeUpload(buffer, prepared.user_data);
+	}
+	RetainBindings(buffer, descriptors);
+
+	auto       vk_buffer     = buffer.Handle();
+	const auto shader_stages = ShaderPipelineStages(prepared.shader_stage);
+	if (descriptors.gds.buffer != nullptr) {
+		const auto barrier = MakeGdsDependency(*descriptors.gds.buffer);
 		vk_buffer.pipelineBarrier(
 		    vk::PipelineStageFlagBits::eHost | vk::PipelineStageFlagBits::eTransfer |
 		        vk::PipelineStageFlagBits::eAllGraphics | vk::PipelineStageFlagBits::eComputeShader,
@@ -838,17 +976,19 @@ void BindDescriptors(uint64_t submit_id, CommandBuffer& buffer,
 	}
 
 	if (!program.bindings.descriptors.empty()) {
-		auto& set =
-		    GetRenderContext().GetDescriptorCache().GetDescriptor(stage, program, descriptors);
+		auto& set = GetRenderContext().GetDescriptorCache().GetDescriptor(
+		    prepared.stage, program, descriptors);
 		vk_buffer.bindDescriptorSets(pipeline_bind_point, layout, program.bindings.descriptor_set,
 		                             1, &set.set, 0, nullptr);
 		buffer.RecycleDescriptorAfterFence(set);
 	}
 	if (program.bindings.push_constant_size != 0) {
-		EXIT_IF(program.bindings.push_constant_size != user_data.size() * sizeof(uint32_t));
-		vk_buffer.pushConstants(layout, vk_stage, program.bindings.push_constant_offset,
-		                        program.bindings.push_constant_size, user_data.data());
+		EXIT_IF(program.bindings.push_constant_size !=
+		        prepared.user_data.size() * sizeof(uint32_t));
+		vk_buffer.pushConstants(layout, prepared.shader_stage, program.bindings.push_constant_offset,
+		                        program.bindings.push_constant_size, prepared.user_data.data());
 	}
+	prepared.committed = true;
 }
 
 } // namespace Libs::Graphics

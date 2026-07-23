@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 namespace Libs::Graphics {
 
@@ -36,8 +37,9 @@ struct BufferCacheRange {
 };
 
 struct BufferBinding {
-	VulkanBuffer& buffer;
-	uint64_t      offset;
+	std::shared_ptr<VulkanBuffer> buffer;
+	uint64_t                      offset = 0;
+	std::vector<uint8_t>          host_data;
 };
 
 [[nodiscard]] bool MergeOverlappingBufferCacheRange(BufferCacheRange& merged,
@@ -65,7 +67,7 @@ public:
 	[[nodiscard]] bool UploadHostData(CommandBuffer& command, const void* src, uint64_t size,
 	                                  uint64_t alignment, VulkanBuffer*& out_buffer,
 	                                  uint64_t& out_offset, uint64_t& out_range);
-	[[nodiscard]] VulkanBuffer&         ObtainNullBuffer(CommandBuffer& command);
+	[[nodiscard]] std::shared_ptr<VulkanBuffer> ObtainNullBuffer();
 	[[nodiscard]] BufferImageCopySource ObtainBufferForImage(uint64_t vaddr, uint64_t size);
 	void FillBuffer(CommandBuffer* command, uint64_t vaddr, uint64_t size, uint32_t value);
 	void CopyBuffer(CommandBuffer* command, uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t size);

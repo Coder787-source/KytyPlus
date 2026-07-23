@@ -340,6 +340,17 @@ VulkanImage& TextureCache::PublishImage(CommandBuffer&               command,
 	return result;
 }
 
+std::shared_ptr<void> TextureCache::GetImageOwner(const VulkanImage& image) {
+	FaultSafeTextureLock lock(this, m_lock);
+	const auto owner = std::ranges::find_if(
+	    m_images, [&](const auto& cached) { return cached->image == &image; });
+	if (owner == m_images.end()) {
+		EXIT("TextureCache: image has no cache owner, image=%p\n",
+		     static_cast<const void*>(&image));
+	}
+	return *owner;
+}
+
 std::vector<TextureCache::CachedImage*>
 TextureCache::FindImagesInRegionLocked(uint64_t vaddr, uint64_t size, bool page_overlap) {
 	return page_overlap ? m_image_owner_index.QueryCandidates(vaddr, size)
@@ -1484,7 +1495,7 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 		return *storage_match->image;
 	}
 	if (!storage_retire.empty()) {
-		// shadPS4 resolves a modified cached mip before replacing it with the containing image.
+		// Resolve a modified cached mip before replacing it with the containing image.
 		// Kyty does not yet copy between those independently allocated Vulkan images, so use the
 		// existing synchronized tiled readback seam and rebuild the complete chain from coherent
 		// guest backing. This is an uncommon ownership transition, not a frame lookup fast path.
