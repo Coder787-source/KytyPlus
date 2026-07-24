@@ -22,6 +22,7 @@ int KYTY_SYSV_ABI AudioOutOutputs(AudioOutOutputParam* param, uint32_t num);
 int KYTY_SYSV_ABI AudioOutOutput(int handle, const void* ptr);
 int KYTY_SYSV_ABI AudioOutClose(int handle);
 int KYTY_SYSV_ABI AudioOutGetPortState(int handle, AudioOutPortState* state);
+int KYTY_SYSV_ABI AudioOutGetLastOutputTime(int handle, uint64_t* output_time);
 
 } // namespace AudioOut
 
@@ -265,17 +266,29 @@ int KYTY_SYSV_ABI      AvPlayerSetLogCallback(void* callback, void* user_data);
 namespace Audio3d {
 
 struct Audio3dOpenParameters;
+struct Audio3dAttribute;
 
 int KYTY_SYSV_ABI  Audio3dInitialize(int64_t reserved);
 void KYTY_SYSV_ABI Audio3dGetDefaultOpenParameters(Audio3dOpenParameters* p);
 int KYTY_SYSV_ABI  Audio3dPortOpen(int user_id, const Audio3dOpenParameters* parameters,
                                    uint32_t* id);
+int KYTY_SYSV_ABI  Audio3dPortClose(uint32_t port_id);
 int KYTY_SYSV_ABI  Audio3dPortSetAttribute(uint32_t port_id, uint32_t attribute_id,
                                            const void* attribute, size_t attribute_size);
 int KYTY_SYSV_ABI  Audio3dPortGetQueueLevel(uint32_t port_id, uint32_t* queue_level,
                                             uint32_t* queue_available);
 int KYTY_SYSV_ABI  Audio3dPortAdvance(uint32_t port_id);
 int KYTY_SYSV_ABI  Audio3dPortPush(uint32_t port_id, uint32_t blocking);
+int KYTY_SYSV_ABI  Audio3dObjectReserve(uint32_t port_id, uint32_t* object_id);
+int KYTY_SYSV_ABI  Audio3dObjectUnreserve(uint32_t port_id, uint32_t object_id);
+int KYTY_SYSV_ABI  Audio3dObjectSetAttributes(uint32_t port_id, uint32_t object_id,
+                                              uint64_t num_attributes,
+                                              const Audio3dAttribute* attribute_array);
+int KYTY_SYSV_ABI  Audio3dBedWrite(uint32_t port_id, uint32_t num_channels, uint32_t format,
+                                   void* buffer, uint32_t num_samples);
+int KYTY_SYSV_ABI  Audio3dBedWrite2(uint32_t port_id, uint32_t num_channels, uint32_t format,
+                                    void* buffer, uint32_t num_samples, uint32_t output_route,
+                                    bool restricted);
 
 } // namespace Audio3d
 

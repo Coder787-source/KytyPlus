@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <cstdio>
 #include <vector>
 
@@ -949,23 +950,48 @@ KYTY_HW_CTX_PARSER(HwCtxSetModeControl) {
 	return 1;
 }
 
-static void HwCtxIgnorePolyOffsetRegister(uint32_t cmd_offset, uint32_t value) {
-	static std::atomic<uint32_t> log_count = 0;
+static float HwCtxBitsToFloat(uint32_t value) {
+	float result = 0.0f;
+	std::memcpy(&result, &value, sizeof(result));
+	return result;
+}
 
-	auto count = log_count.fetch_add(1);
-	if (count < 8) {
-		LOGF_COLOR(Log::Color::Red,
-		           "\t temporary: ignoring polygon offset context register 0x%03" PRIx32
-		           " = 0x%08" PRIx32 " (depth bias not implemented)\n",
-		           cmd_offset, value);
+static void HwCtxSetPolyOffsetRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_t value) {
+	auto offset = cp.GetCtx().GetPolyOffset();
+	switch (cmd_offset) {
+		case Pm4::PA_SU_POLY_OFFSET_CLAMP: offset.clamp = HwCtxBitsToFloat(value); break;
+		case Pm4::PA_SU_POLY_OFFSET_FRONT_SCALE:
+			offset.front_scale = HwCtxBitsToFloat(value);
+			break;
+		case Pm4::PA_SU_POLY_OFFSET_FRONT_OFFSET:
+			offset.front_offset = HwCtxBitsToFloat(value);
+			break;
+		case Pm4::PA_SU_POLY_OFFSET_BACK_SCALE: offset.back_scale = HwCtxBitsToFloat(value); break;
+		case Pm4::PA_SU_POLY_OFFSET_BACK_OFFSET:
+			offset.back_offset = HwCtxBitsToFloat(value);
+			break;
+		case Pm4::PA_SU_POLY_OFFSET_DB_FMT_CNTL:
+			// Format control for poly-offset units; Vulkan bias path ignores the DB format bits.
+			break;
+		default: {
+			static std::atomic<uint32_t> log_count = 0;
+			if (log_count.fetch_add(1) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "\t soft-ignore unknown poly offset register 0x%03" PRIx32
+				           " = 0x%08" PRIx32 "\n",
+				           cmd_offset, value);
+			}
+			break;
+		}
 	}
+	cp.GetCtx().SetPolyOffset(offset);
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetPolyOffsetRegisters) {
 	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
 
 	for (uint32_t i = 0; i < num_values; i++) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset + i, buffer[i]);
+		HwCtxSetPolyOffsetRegister(cp, cmd_offset + i, buffer[i]);
 	}
 
 	return num_values;
@@ -1425,9 +1451,17 @@ static void HwShSetCsRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_
 		case Pm4::COMPUTE_PGM_RSRC3:
 		case Pm4::COMPUTE_SHADER_CHKSUM:
 		case Pm4::COMPUTE_DISPATCH_TUNNEL: HwShIgnoreComputeRegister(cmd_offset, value); break;
-		default:
-			EXIT("unsupported compute SH register 0x%08" PRIx32 " = 0x%08" PRIx32 "\n", cmd_offset,
-			     value);
+		default: {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-ignore unsupported compute SH register 0x%08" PRIx32
+				           " = 0x%08" PRIx32 "\n",
+				           cmd_offset, value);
+			}
+			HwShIgnoreComputeRegister(cmd_offset, value);
+			break;
+		}
 	}
 
 	cp.GetShCtx().SetCsShader(cs_regs);
@@ -2204,7 +2238,12 @@ static uint8_t CopyDataDstToDma(uint32_t dst) {
 		default: break;
 	}
 
-	EXIT("unsupported copyData destination selector 0x%02" PRIx32 "\n", dst);
+	static std::atomic<uint32_t> soft_logs {0};
+	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "soft-ignore unsupported copyData destination selector 0x%02" PRIx32 "\n", dst);
+	}
+	return 3;
 }
 
 static uint8_t CopyDataSrcToDma(uint32_t src) {
@@ -2220,7 +2259,12 @@ static uint8_t CopyDataSrcToDma(uint32_t src) {
 		default: break;
 	}
 
-	EXIT("unsupported copyData source selector 0x%02" PRIx32 "\n", src);
+	static std::atomic<uint32_t> soft_logs {0};
+	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "soft-ignore unsupported copyData source selector 0x%02" PRIx32 "\n", src);
+	}
+	return 3;
 }
 
 KYTY_CP_OP_PARSER(CpOpCopyData) {
@@ -2239,16 +2283,25 @@ KYTY_CP_OP_PARSER(CpOpCopyData) {
 	const uint64_t dst           = buffer[3] | (static_cast<uint64_t>(buffer[4]) << 32u);
 	if (src_sel == (9u << 1u)) {
 		if (dst_sel != (2u << 1u) || dst == 0 || (dst & (num_bytes - 1u)) != 0) {
-			EXIT("unsupported reference-clock copyData, src_sel=0x%02" PRIx32
-			     " dst_sel=0x%02" PRIx32 " dst=0x%016" PRIx64 " size=%u\n",
-			     src_sel, dst_sel, dst, num_bytes);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-ignore unsupported reference-clock copyData, src_sel=0x%02" PRIx32
+				           " dst_sel=0x%02" PRIx32 " dst=0x%016" PRIx64 " size=%u\n",
+				           src_sel, dst_sel, dst, num_bytes);
+			}
+			return 5;
 		}
 		cp.WriteReferenceClock(dst, num_bytes);
 		return 5;
 	}
 	const auto dma_src = CopyDataSrcToDma(src_sel);
 	if (dma_src == 2 && num_bytes == 8) {
-		EXIT("unsupported 64-bit immediate copyData\n");
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow, "soft-ignore unsupported 64-bit immediate copyData\n");
+		}
+		return 5;
 	}
 
 	cp.DmaData(0, CopyDataDstToDma(dst_sel), dst_cache, dst, dma_src, src_cache, src, num_bytes, 1,
@@ -2679,7 +2732,13 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 		auto pfunc = g_hw_ctx_indirect_func[cmd_offset & (Pm4::CX_NUM - 1)];
 
 		if (pfunc == nullptr) {
-			EXIT("unknown cx reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-ignore unknown cx reg at %05" PRIx32 ": 0x%" PRIx32 "\n",
+				           num_dw - dw, cmd_offset);
+			}
+			continue;
 		}
 
 		pfunc(cp, cmd_offset, value);
@@ -2705,7 +2764,7 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 	if (indirect_buffer == nullptr) {
 		EXIT("indirect SH registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
 	}
-	const auto indirect_address = reinterpret_cast<uint64_t>(indirect_buffer);
+	(void)reinterpret_cast<uint64_t>(indirect_buffer);
 
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
 		auto raw_cmd_offset = indirect_buffer[0];
@@ -2726,23 +2785,26 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 		}
 
 		if (cmd_offset >= Pm4::SH_NUM) {
-			EXIT("unsupported indirect SH register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
-			     "), value = 0x%08" PRIx32 "\n",
-			     cmd_offset, raw_cmd_offset, value);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-ignore unsupported indirect SH register offset 0x%08" PRIx32
+				           " (raw 0x%08" PRIx32 "), value = 0x%08" PRIx32 "\n",
+				           cmd_offset, raw_cmd_offset, value);
+			}
+			continue;
 		}
 
 		auto pfunc = g_hw_sh_indirect_func[cmd_offset];
 
 		if (pfunc == nullptr) {
-			LOGF("unknown indirect SH register: index=%" PRIu32 "/%" PRIu32 ", regs=0x%016" PRIx64
-			     ", offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
-			     i, indirect_num_dw, indirect_address, cmd_offset, value);
-			auto* dump_regs = indirect_buffer - i * 2;
-			for (uint32_t j = 0; j < indirect_num_dw && j < 16; j++) {
-				LOGF("\t sh_indirect[%" PRIu32 "] offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
-				     j, dump_regs[j * 2], dump_regs[j * 2 + 1]);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-ignore unknown sh reg at %05" PRIx32 ": 0x%" PRIx32 "\n",
+				           num_dw - dw, cmd_offset);
 			}
-			EXIT("unknown sh reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
+			continue;
 		}
 
 		pfunc(cp, cmd_offset, value);
@@ -2791,20 +2853,26 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 			}
 		}
 		if (cmd_offset >= Pm4::UC_NUM) {
-			EXIT("unsupported indirect UC register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
-			     "), value = 0x%08" PRIx32 "\n",
-			     cmd_offset, raw_cmd_offset, value);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-ignore unsupported indirect UC register offset 0x%08" PRIx32
+				           " (raw 0x%08" PRIx32 "), value = 0x%08" PRIx32 "\n",
+				           cmd_offset, raw_cmd_offset, value);
+			}
+			continue;
 		}
 
 		auto pfunc = g_hw_uc_indirect_func[cmd_offset & (Pm4::UC_NUM - 1)];
 
 		if (pfunc == nullptr) {
-			auto* dump_regs = indirect_buffer - i * 2;
-			for (uint32_t j = 0; j < indirect_num_dw && j < 16; j++) {
-				LOGF("\t uc_indirect[%" PRIu32 "] offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
-				     j, dump_regs[j * 2], dump_regs[j * 2 + 1]);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-ignore unknown uc reg at %05" PRIx32 ": 0x%" PRIx32 "\n",
+				           num_dw - dw, cmd_offset);
 			}
-			EXIT("unknown uc reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
+			continue;
 		}
 		pfunc(cp, cmd_offset, value);
 	}
@@ -2845,7 +2913,15 @@ KYTY_CP_OP_PARSER(CpOpMarker) {
 			cp.FlipWithInterrupt(eop_event_type, cache_action, addr, value);
 			break;
 		}
-		default: EXIT("unknown marker at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, id);
+		default: {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-ignore unknown marker at %05" PRIx32 ": 0x%" PRIx32 "\n",
+				           num_dw - dw, id);
+			}
+			break;
+		}
 	}
 
 	return len_dw + 1;
@@ -2869,9 +2945,13 @@ KYTY_CP_OP_PARSER(CpOpNop) {
 		return cp_op(cp, cmd_id, buffer, dw, num_dw);
 	}
 
-	EXIT("unknown custom code at 0x%05" PRIx32 ": 0x%02" PRIx32 "\n", num_dw - dw, r);
-
-	return 0;
+	static std::atomic<uint32_t> soft_logs {0};
+	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "soft-ignore unknown custom code at 0x%05" PRIx32 ": 0x%02" PRIx32 "\n",
+		           num_dw - dw, r);
+	}
+	return KYTY_PM4_LEN(cmd_id) - 1;
 }
 
 KYTY_CP_OP_PARSER(CpOpNumInstances) {
@@ -3058,9 +3138,15 @@ KYTY_CP_OP_PARSER(CpOpSetContextReg) {
 	}
 
 	if (cmd_offset >= Pm4::CX_NUM) {
-		EXIT("unknown extended context register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-		     "\n\tcmd_offset = %08" PRIx32 "\n\tvalue = %08" PRIx32 "\n",
-		     num_dw - dw, cmd_id, cmd_offset, buffer[1]);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-ignore unknown extended context register\n\t%05" PRIx32
+			           ":\n\tcmd_id = %08" PRIx32 "\n\tcmd_offset = %08" PRIx32
+			           "\n\tvalue = %08" PRIx32 "\n",
+			           num_dw - dw, cmd_id, cmd_offset, buffer[1]);
+		}
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto pfunc = g_hw_ctx_func[cmd_offset & (Pm4::CX_NUM - 1)];
@@ -3082,9 +3168,14 @@ KYTY_CP_OP_PARSER(CpOpSetContextReg) {
 			}
 			return num_values + 1u;
 		}
-		EXIT("unknown context register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-		     "\n\tcmd_offset = %08" PRIx32 "\n",
-		     num_dw - dw, cmd_id, cmd_offset);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-ignore unknown context register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
+			           "\n\tcmd_offset = %08" PRIx32 "\n",
+			           num_dw - dw, cmd_id, cmd_offset);
+		}
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);
@@ -3107,9 +3198,14 @@ KYTY_CP_OP_PARSER(CpOpSetShaderReg) {
 	auto pfunc = g_hw_sh_func[cmd_offset];
 
 	if (pfunc == nullptr) {
-		EXIT("unknown shader register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-		     "\n\tcmd_offset = %08" PRIx32 "\n",
-		     num_dw - dw, cmd_id, cmd_offset);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-ignore unknown shader register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
+			           "\n\tcmd_offset = %08" PRIx32 "\n",
+			           num_dw - dw, cmd_id, cmd_offset);
+		}
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);
@@ -3137,9 +3233,14 @@ KYTY_CP_OP_PARSER(CpOpSetUconfigReg) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	if (cmd_offset >= Pm4::UC_NUM) {
-		EXIT("unsupported UC register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
-		     "), cmd_id = 0x%08" PRIx32 "\n",
-		     cmd_offset, raw_cmd_offset, cmd_id);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-ignore unsupported UC register offset 0x%08" PRIx32
+			           " (raw 0x%08" PRIx32 "), cmd_id = 0x%08" PRIx32 "\n",
+			           cmd_offset, raw_cmd_offset, cmd_id);
+		}
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto pfunc = g_hw_uc_func[cmd_offset & (Pm4::UC_NUM - 1)];
@@ -3161,9 +3262,14 @@ KYTY_CP_OP_PARSER(CpOpSetUconfigReg) {
 			}
 			return num_values + 1u;
 		}
-		EXIT("unknown user config register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-		     "\n\tcmd_offset = %08" PRIx32 "\n",
-		     num_dw - dw, cmd_id, cmd_offset);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-ignore unknown user config register\n\t%05" PRIx32
+			           ":\n\tcmd_id = %08" PRIx32 "\n\tcmd_offset = %08" PRIx32 "\n",
+			           num_dw - dw, cmd_id, cmd_offset);
+		}
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);
@@ -3979,22 +4085,22 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_DB_FMT_CNTL] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_CLAMP] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_FRONT_SCALE] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_FRONT_OFFSET] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_BACK_SCALE] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_BACK_OFFSET] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_Z_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {

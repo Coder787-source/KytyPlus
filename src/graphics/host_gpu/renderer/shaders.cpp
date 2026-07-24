@@ -203,6 +203,14 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, 
 			format = vk::Format::eR8G8B8A8Unorm;
 			size   = 4;
 			break;
+		case Prospero::BufferFormat::k8_8_8_8SInt:
+			format = vk::Format::eR8G8B8A8Sint;
+			size   = 4;
+			break;
+		case Prospero::BufferFormat::k8_8_8_8Srgb:
+			format = vk::Format::eR8G8B8A8Srgb;
+			size   = 4;
+			break;
 		case Prospero::BufferFormat::k10_10_10_2UNorm:
 			format = vk::Format::eA2B10G10R10UnormPack32;
 			size   = 4;
@@ -210,6 +218,35 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, 
 		case Prospero::BufferFormat::k10_10_10_2SNorm:
 			format = vk::Format::eA2B10G10R10SnormPack32;
 			size   = 4;
+			break;
+		case Prospero::BufferFormat::k10_10_10_2UInt:
+			format = vk::Format::eA2B10G10R10UintPack32;
+			size   = 4;
+			break;
+		case Prospero::BufferFormat::k10_10_10_2SInt:
+			format = vk::Format::eA2B10G10R10SintPack32;
+			size   = 4;
+			break;
+		case Prospero::BufferFormat::k2_10_10_10UNorm:
+			format = vk::Format::eA2R10G10B10UnormPack32;
+			size   = 4;
+			break;
+		case Prospero::BufferFormat::k2_10_10_10SNorm:
+			format = vk::Format::eA2R10G10B10SnormPack32;
+			size   = 4;
+			break;
+		case Prospero::BufferFormat::k2_10_10_10UInt:
+			format = vk::Format::eA2R10G10B10UintPack32;
+			size   = 4;
+			break;
+		case Prospero::BufferFormat::k2_10_10_10SInt:
+			format = vk::Format::eA2R10G10B10SintPack32;
+			size   = 4;
+			break;
+		case Prospero::BufferFormat::k11_11_10Float:
+		case Prospero::BufferFormat::k10_11_11Float:
+			format = vk::Format::eB10G11R11UfloatPack32;
+			size   = 3;
 			break;
 		case Prospero::BufferFormat::k16_16Float:
 			format = vk::Format::eR16G16Sfloat;
@@ -328,10 +365,7 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, 
 			size   = 1;
 			break;
 		default:
-			EXIT("unknown format: fmt = %u\n", fmt);
-			format = vk::Format::eUndefined;
-			size   = 4;
-			break;
+			EXIT("unknown vertex input format: fmt = %u\n", fmt);
 	}
 
 	if (NarrowInputFormat(format, size, used_components)) {
@@ -368,7 +402,7 @@ static vk::BlendFactor GetBlendFactor(uint32_t factor) {
 		case Prospero::BlendFactor::kConstantAlpha: return vk::BlendFactor::eConstantAlpha;
 		case Prospero::BlendFactor::kOneMinusConstantAlpha:
 			return vk::BlendFactor::eOneMinusConstantAlpha;
-		default: EXIT("unknown factor: %u\n", factor);
+		default: EXIT("unknown blend factor: %u\n", factor);
 	}
 	return vk::BlendFactor::eZero;
 }
@@ -380,7 +414,7 @@ static vk::BlendOp GetBlendOp(uint32_t op) {
 		case Prospero::BlendOp::kMin: return vk::BlendOp::eMin;
 		case Prospero::BlendOp::kMax: return vk::BlendOp::eMax;
 		case Prospero::BlendOp::kReverseSubtract: return vk::BlendOp::eReverseSubtract;
-		default: EXIT("unknown op: %u\n", op);
+		default: EXIT("unknown blend op: %u\n", op);
 	}
 	return vk::BlendOp::eAdd;
 }
@@ -731,7 +765,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::Rende
 	rasterizer.polygonMode             = vk::PolygonMode::eFill;
 	rasterizer.cullMode                = cull_mode;
 	rasterizer.frontFace               = front_face;
-	rasterizer.depthBiasEnable         = VK_FALSE;
+	rasterizer.depthBiasEnable         = static_params.depth_bias_enable ? VK_TRUE : VK_FALSE;
 	rasterizer.depthBiasConstantFactor = 0.0f;
 	rasterizer.depthBiasClamp          = 0.0f;
 	rasterizer.depthBiasSlopeFactor    = 0.0f;
@@ -883,6 +917,7 @@ void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::Rende
 	    vk::DynamicState::eViewport,
 	    vk::DynamicState::eScissor,
 	    vk::DynamicState::eLineWidth,
+	    vk::DynamicState::eDepthBias,
 	    vk::DynamicState::eStencilCompareMask,
 	    vk::DynamicState::eStencilReference,
 	    vk::DynamicState::eStencilWriteMask,

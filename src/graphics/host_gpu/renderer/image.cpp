@@ -45,9 +45,14 @@ TextureImageCreateParams MakeImageParams(const ImageInfo& info, bool storage) {
 	params.image_layout    = TextureUploadDestination::MipLevels;
 	params.allow_cube_view = !storage;
 	params.compatible_format_views =
-	    storage && (IsRgba8SrgbViewFormat(TextureGetFormat(info.format)) ||
-	                info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) ||
-	                info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float));
+	    IsRgba8SrgbViewFormat(TextureGetFormat(info.format)) ||
+	    info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UNorm) ||
+	    info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb) ||
+	    info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UInt) ||
+	    info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) ||
+	    info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float) ||
+	    info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16Float) ||
+	    info.format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16UInt);
 	params.owner = storage ? "StorageTextureCache" : "TextureCache";
 	return params;
 }
@@ -66,7 +71,11 @@ vk::ImageCreateFlags RenderTargetCreateFlags(vk::Format format) {
 	const bool compatible_format_view =
 	    IsRgba8SrgbViewFormat(format) ||
 	    BgraToRgbaSampledViewFormat(format) != vk::Format::eUndefined ||
-	    format == vk::Format::eR8G8B8A8Uint || format == vk::Format::eR16G16B16A16Sfloat ||
+	    IsRgba8UnormUintReinterpretation(format, vk::Format::eR8G8B8A8Uint) ||
+	    IsRgba8UnormUintReinterpretation(vk::Format::eR8G8B8A8Uint, format) ||
+	    format == vk::Format::eR8G8B8A8Uint || format == vk::Format::eR8G8B8A8Unorm ||
+	    format == vk::Format::eR8G8B8A8Srgb || format == vk::Format::eB8G8R8A8Unorm ||
+	    format == vk::Format::eB8G8R8A8Srgb || format == vk::Format::eR16G16B16A16Sfloat ||
 	    format == vk::Format::eR16G16B16A16Uint;
 	return compatible_format_view
 	           ? vk::ImageCreateFlagBits::eMutableFormat | vk::ImageCreateFlagBits::eExtendedUsage

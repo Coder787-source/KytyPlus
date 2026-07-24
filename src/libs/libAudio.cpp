@@ -126,6 +126,7 @@ LIB_DEFINE(InitAudio_1_AudioOut) {
 	LIB_FUNC("QOQtbeDqsT4", AudioOut::AudioOutOutput);
 	LIB_FUNC("s1--uE9mBFw", AudioOut::AudioOutClose);
 	LIB_FUNC("GrQ9s4IrNaQ", AudioOut::AudioOutGetPortState);
+	LIB_FUNC("Ptlts326pds", AudioOut::AudioOutGetLastOutputTime);
 }
 
 } // namespace LibAudioOut
@@ -1071,10 +1072,16 @@ LIB_DEFINE(InitAudio_1_Audio3d) {
 	LIB_FUNC("UmCvjSmuZIw", Audio3d::Audio3dInitialize);
 	LIB_FUNC("Im+jOoa5WAI", Audio3d::Audio3dGetDefaultOpenParameters);
 	LIB_FUNC("XeDDK0xJWQA", Audio3d::Audio3dPortOpen);
+	LIB_FUNC("OyVqOeVNtSk", Audio3d::Audio3dPortClose);
 	LIB_FUNC("Yq9bfUQ0uJg", Audio3d::Audio3dPortSetAttribute);
 	LIB_FUNC("YaaDbDwKpFM", Audio3d::Audio3dPortGetQueueLevel);
 	LIB_FUNC("lw0qrdSjZt8", Audio3d::Audio3dPortAdvance);
 	LIB_FUNC("VEVhZ9qd4ZY", Audio3d::Audio3dPortPush);
+	LIB_FUNC("jO2tec4dJ2M", Audio3d::Audio3dObjectReserve);
+	LIB_FUNC("1HXxo-+1qCw", Audio3d::Audio3dObjectUnreserve);
+	LIB_FUNC("4uyHN9q4ZeU", Audio3d::Audio3dObjectSetAttributes);
+	LIB_FUNC("9tEwE0GV0qo", Audio3d::Audio3dBedWrite);
+	LIB_FUNC("xH4Q9UILL3o", Audio3d::Audio3dBedWrite2);
 }
 
 } // namespace LibAudio3d

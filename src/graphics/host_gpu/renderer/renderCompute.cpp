@@ -152,7 +152,7 @@ bool ResolveHtileClearTarget(const HW::DepthRenderTarget& z, uint64_t descriptor
 	return false;
 }
 
-static void ValidateFullHtileClearDispatch(const ShaderComputeInputInfo& input,
+static bool ValidateFullHtileClearDispatch(const ShaderComputeInputInfo& input,
                                            const ShaderBufferResource& metadata, uint32_t group_x,
                                            uint32_t group_y, uint32_t group_z, uint32_t mode) {
 	const bool thread_dimensions = input.dispatch_thread_dimensions;
@@ -169,10 +169,8 @@ static void ValidateFullHtileClearDispatch(const ShaderComputeInputInfo& input,
 	              input.dispatch_threads_num[2] == 0;
 	const uint64_t launched_threads =
 	    thread_dimensions ? group_x : static_cast<uint64_t>(group_x) * input.threads_num[0];
-	if (!supported_shape || !dimensions_match || metadata.Stride() == 0 ||
-	    launched_threads != metadata.NumRecords()) {
-		EXIT("HTile compute clear does not cover the complete metadata surface\n");
-	}
+	return supported_shape && dimensions_match && metadata.Stride() != 0 &&
+	       launched_threads == metadata.NumRecords();
 }
 
 static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
@@ -213,16 +211,14 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
 	if (current_references == 0 && registered_writes == 0) {
 		return false;
 	}
+	// Ambiguous or incomplete HTile patterns fall through to the real compute shader.
 	if (current_references > 1 || (current_references == 0 && registered_writes > 1)) {
-		EXIT("ambiguous HTile clear: current=%u registered=%u\n", current_references,
-		     registered_writes);
+		return false;
 	}
 	HtileClearTarget target {};
 	if (current_references != 0) {
 		if (!ResolveHtileClearTarget(z, described_meta_size, target)) {
-			EXIT("unsupported HTile compute-clear target state, meta=0x%016" PRIx64
-			     " descriptor_size=0x%016" PRIx64 " slices=%u..%u\n",
-			     meta_addr, described_meta_size, z.depth_view.slice_start, z.depth_view.slice_max);
+			return false;
 		}
 		const uint32_t meta_layers =
 		    z.depth_view.slice_max >= z.depth_view.slice_start
@@ -230,9 +226,7 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
 		        : 1u;
 		cache.RegisterMeta(target.address, target.size, meta_layers);
 		if (!cache.ResolveMetaRange(target.address, target.size, registered_meta)) {
-			EXIT("failed to resolve registered HTile clear range addr=0x%016" PRIx64
-			     " size=0x%016" PRIx64 "\n",
-			     target.address, target.size);
+			return false;
 		}
 	} else {
 		target = registered_target;
@@ -243,9 +237,7 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
 	ShaderBufferResource metadata_descriptor {};
 	if (!program.info.images.empty() || !program.info.samplers.empty() ||
 	    !program.info.addresses.empty()) {
-		EXIT("HTile clear with non-buffer resources: images=%zu samplers=%zu addresses=%zu\n",
-		     program.info.images.size(), program.info.samplers.size(),
-		     program.info.addresses.size());
+		return false;
 	}
 	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 		const auto& resource   = program.info.buffers[i];
@@ -256,7 +248,7 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
 			    descriptor_size != target.size || descriptor.SwizzleEnabled() ||
 			    descriptor.IndexStride() != 0 || descriptor.AddTid() ||
 			    resource.packed_stride != descriptor.PackedStride()) {
-				EXIT("unsupported HTile compute metadata access\n");
+				return false;
 			}
 			metadata_descriptor = descriptor;
 			metadata_writes++;
@@ -265,22 +257,21 @@ static bool TryConsumeComputeMetaClear(const ShaderComputeInputInfo& input,
 		if (resource.written || !resource.read || resource.atomic || descriptor.Base48() == 0 ||
 		    descriptor_size == 0 ||
 		    cache.QueryRegion(descriptor.Base48(), descriptor_size).metadata_pages) {
-			EXIT("unsupported HTile clear side-buffer access\n");
+			return false;
 		}
 		GetRenderContext().GetBufferCache().ValidateGpuAccess(descriptor.Base48(), descriptor_size,
 		                                                      true, false);
 	}
 	if (metadata_writes != 1) {
-		EXIT("HTile clear requires exactly one metadata write, writes=%u\n", metadata_writes);
+		return false;
 	}
-	ValidateFullHtileClearDispatch(input, metadata_descriptor, group_x, group_y, group_z, mode);
-	const bool recorded = registered_meta.full ? cache.ClearMeta(registered_meta.metadata_address)
-	                                           : cache.TouchMeta(registered_meta.metadata_address,
-	                                                             registered_meta.slice, true);
-	if (!recorded) {
-		EXIT("failed to record HTile compute clear\n");
+	if (!ValidateFullHtileClearDispatch(input, metadata_descriptor, group_x, group_y, group_z,
+	                                    mode)) {
+		return false;
 	}
-	return true;
+	return registered_meta.full ? cache.ClearMeta(registered_meta.metadata_address)
+	                            : cache.TouchMeta(registered_meta.metadata_address,
+	                                              registered_meta.slice, true);
 }
 
 bool ResolveComputeImageClear(const ShaderComputeInputInfo& input, uint32_t group_x,
@@ -404,8 +395,14 @@ void RenderDispatchDirect(uint64_t submit_id, RenderCommandBuffer& buffer, uint3
 	ShaderComputeInputInfo    input_info {};
 	std::span<const uint32_t> cs_shader;
 	if (!ShaderCompileInfoCS(cs_regs, sh_regs, input_info, cs_shader)) {
-		EXIT("dispatch: ShaderCompileInfoCS failed for CS 0x%016" PRIx64 "\n",
-		     cs_regs.cs_regs.data_addr);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "GraphicsRenderDispatchDirect: soft-skip CS compile failure "
+			           "shader=0x%016" PRIx64 " groups=%ux%ux%u\n",
+			           cs_regs.cs_regs.data_addr, thread_group_x, thread_group_y, thread_group_z);
+		}
+		return;
 	}
 
 	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;

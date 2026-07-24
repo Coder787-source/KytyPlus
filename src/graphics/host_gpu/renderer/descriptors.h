@@ -42,6 +42,9 @@ IsSupportedSampledVideoOutView(const ShaderRecompiler::IR::ImageResource& resour
                                const ShaderTextureResource& descriptor, const VulkanImage& image);
 void ValidateMetadataReuseTexture(const ShaderRecompiler::IR::ImageResource& resource,
                                   const ShaderTextureResource& descriptor, uint64_t size);
+[[nodiscard]] bool IsSupportedStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
+                                             const ShaderTextureResource& descriptor,
+                                             uint64_t                     size);
 void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
                             const ShaderTextureResource& descriptor, uint64_t size);
 

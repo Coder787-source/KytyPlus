@@ -147,11 +147,18 @@ static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command
 	if (alignment == 0 ||
 	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
 	    BufferCache::CACHING_PAGE_SIZE % alignment != 0) {
-		EXIT("storage buffer range or device alignment is unsupported, addr=0x%016" PRIx64
-		     " size=0x%016" PRIx64 " align=%u max_range=0x%016" PRIx64 "\n",
-		     address, size, alignment,
-		     static_cast<uint64_t>(
-		         graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange));
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-null storage buffer range or device alignment unsupported, "
+			           "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " align=%u max_range=0x%016" PRIx64
+			           "\n",
+			           address, size, alignment,
+			           static_cast<uint64_t>(
+			               graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange));
+		}
+		BindNullStorageBuffer(command_buffer, result);
+		return result;
 	}
 	(void)submit_id;
 	auto& buffer_cache = GetRenderContext().GetBufferCache();
@@ -163,9 +170,15 @@ static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command
 		// aligned host-stream copy that preserves guest/GPU contents (#85 Gex Trilogy). Writable
 		// bindings queue a stream->cache writeback flushed after the dispatch/draw.
 		if (size > kMaxRealignedStorageBufferSize) {
-			EXIT("unaligned storage buffer exceeds realign limit, addr=0x%016" PRIx64
-			     " size=0x%016" PRIx64 " limit=0x%016" PRIx64 "\n",
-			     address, size, kMaxRealignedStorageBufferSize);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-null unaligned storage buffer exceeds realign limit, "
+				           "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " limit=0x%016" PRIx64 "\n",
+				           address, size, kMaxRealignedStorageBufferSize);
+			}
+			BindNullStorageBuffer(command_buffer, result);
+			return result;
 		}
 		std::vector<uint8_t> scratch(static_cast<size_t>(size));
 		bool                 have_bytes = false;
@@ -184,9 +197,15 @@ static BufferView NativeStorageBuffer(uint64_t submit_id, CommandBuffer& command
 		if (!have_bytes ||
 		    !buffer_cache.UploadHostData(command_buffer, scratch.data(), size, alignment,
 		                                 aligned_buffer, aligned_offset, aligned_range)) {
-			EXIT("failed to realign storage buffer binding, addr=0x%016" PRIx64
-			     " size=0x%016" PRIx64 " offset=0x%016" PRIx64 "\n",
-			     address, size, binding.offset);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-null failed to realign storage buffer binding, addr=0x%016" PRIx64
+				           " size=0x%016" PRIx64 " offset=0x%016" PRIx64 "\n",
+				           address, size, binding.offset);
+			}
+			BindNullStorageBuffer(command_buffer, result);
+			return result;
 		}
 		if (resource.written) {
 			command_buffer.QueueStorageStreamWriteback(*aligned_buffer, aligned_offset,
@@ -229,17 +248,30 @@ NativeAddressBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
 	uint64_t   size   = 0;
 	const auto access = HostMemoryAccess::Mapped;
 	if (!HostMemoryQueryRange(address.binding_base, limit, access, size)) {
-		EXIT("address resource is not host-accessible: base=0x%016" PRIx64 " written=%d\n",
-		     address.binding_base, resource.written);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-null address resource is not host-accessible: base=0x%016" PRIx64
+			           " written=%d\n",
+			           address.binding_base, resource.written);
+		}
+		BindNullStorageBuffer(command_buffer, result);
+		return result;
 	}
 	const auto& graphics  = GetRenderContext().GetGraphics();
 	const auto  alignment = graphics.StorageMinAlignment();
 	if (alignment == 0 ||
 	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
 	    BufferCache::CACHING_PAGE_SIZE % alignment != 0) {
-		EXIT("address resource range or device alignment is unsupported, base=0x%016" PRIx64
-		     " size=0x%016" PRIx64 " align=%u written=%d\n",
-		     address.binding_base, size, alignment, resource.written);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-null address resource range or device alignment unsupported, "
+			           "base=0x%016" PRIx64 " size=0x%016" PRIx64 " align=%u written=%d\n",
+			           address.binding_base, size, alignment, resource.written);
+		}
+		BindNullStorageBuffer(command_buffer, result);
+		return result;
 	}
 	(void)submit_id;
 	auto& buffer_cache = GetRenderContext().GetBufferCache();
@@ -247,9 +279,15 @@ NativeAddressBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
 	                                          resource.written, resource.read);
 	if (binding.offset % alignment != 0) {
 		if (size > kMaxRealignedStorageBufferSize) {
-			EXIT("unaligned address resource exceeds realign limit, base=0x%016" PRIx64
-			     " size=0x%016" PRIx64 " written=%d\n",
-			     address.binding_base, size, resource.written);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-null unaligned address resource exceeds realign limit, "
+				           "base=0x%016" PRIx64 " size=0x%016" PRIx64 " written=%d\n",
+				           address.binding_base, size, resource.written);
+			}
+			BindNullStorageBuffer(command_buffer, result);
+			return result;
 		}
 		std::vector<uint8_t> scratch(static_cast<size_t>(size));
 		bool                 have_bytes = false;
@@ -266,9 +304,16 @@ NativeAddressBuffer(uint64_t submit_id, CommandBuffer& command_buffer,
 		if (!have_bytes ||
 		    !buffer_cache.UploadHostData(command_buffer, scratch.data(), size, alignment,
 		                                 aligned_buffer, aligned_offset, aligned_range)) {
-			EXIT("failed to realign address resource binding, base=0x%016" PRIx64
-			     " size=0x%016" PRIx64 " offset=0x%016" PRIx64 " written=%d\n",
-			     address.binding_base, size, binding.offset, resource.written);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-null failed to realign address resource binding, "
+				           "base=0x%016" PRIx64 " size=0x%016" PRIx64 " offset=0x%016" PRIx64
+				           " written=%d\n",
+				           address.binding_base, size, binding.offset, resource.written);
+			}
+			BindNullStorageBuffer(command_buffer, result);
+			return result;
 		}
 		if (resource.written) {
 			command_buffer.QueueStorageStreamWriteback(*aligned_buffer, aligned_offset,
@@ -404,10 +449,10 @@ bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor) {
 	       (descriptor.fields[6] & field6_reserved_mask) == 0;
 }
 
-static void ValidateDepthTargetBinding(const ShaderRecompiler::IR::ImageResource& resource,
-                                       const ShaderTextureResource&               descriptor,
-                                       const VulkanImage* image, vk::Format view_format,
-                                       uint64_t size) {
+static bool ValidateDepthTargetBinding(const ShaderRecompiler::IR::ImageResource& resource,
+                                        const ShaderTextureResource&               descriptor,
+                                        const VulkanImage* image, vk::Format view_format,
+                                        uint64_t size) {
 	const bool resource_ok = IsSupportedSampledDepthResource(resource);
 	const bool descriptor_ok =
 	    image != nullptr && IsSupportedDepthTargetDescriptor(descriptor, *image);
@@ -415,28 +460,34 @@ static void ValidateDepthTargetBinding(const ShaderRecompiler::IR::ImageResource
 	const bool format_ok   = image != nullptr && IsSupportedSampledDepthFormat(
 	                                                 image->format, descriptor.Format(), view_format);
 	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
-		return;
+		return true;
 	}
 	const auto descriptor_pitch =
 	    TileGetTexturePitch(descriptor.Format(), static_cast<uint32_t>(descriptor.Width5()) + 1u, 1,
 	                        descriptor.TileMode());
-	EXIT("unsupported sampled depth target: resource=%d descriptor=%d encoding=%d format=%d "
-	     "kind=%u dimension=%u mip_mode=%u read=%d written=%d atomic=%d compare=%d "
-	     "guest_format=%u swizzle=0x%03x image_format=%d view_format=%d image_layers=%u "
-	     "descriptor_type=%u base_array=%u depth=%u descriptor_pitch=%u target_pitch=%u "
-	     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-	     " dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
-	     resource_ok, descriptor_ok, encoding_ok, format_ok, static_cast<uint32_t>(resource.kind),
-	     static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
-	     resource.read, resource.written, resource.atomic, resource.depth_compare,
-	     descriptor.Format(), descriptor.DstSelXYZW(),
-	     image == nullptr ? static_cast<int>(vk::Format::eUndefined)
-	                      : static_cast<int>(image->format),
-	     static_cast<int>(view_format), image == nullptr ? 0u : image->layers, descriptor.Type(),
-	     descriptor.BaseArray5(), descriptor.Depth(), descriptor_pitch,
-	     image == nullptr ? 0u : image->guest_pitch, descriptor.Base40(), size,
-	     descriptor.fields[0], descriptor.fields[1], descriptor.fields[2], descriptor.fields[3],
-	     descriptor.fields[4], descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
+	static std::atomic<uint32_t> soft_logs {0};
+	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+		LOGF_COLOR(
+		    Log::Color::Yellow,
+		    "soft-null unsupported sampled depth target: resource=%d descriptor=%d encoding=%d "
+		    "format=%d kind=%u dimension=%u mip_mode=%u read=%d written=%d atomic=%d compare=%d "
+		    "guest_format=%u swizzle=0x%03x image_format=%d view_format=%d image_layers=%u "
+		    "descriptor_type=%u base_array=%u depth=%u descriptor_pitch=%u target_pitch=%u "
+		    "addr=0x%016" PRIx64 " size=0x%016" PRIx64
+		    " dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+		    resource_ok, descriptor_ok, encoding_ok, format_ok, static_cast<uint32_t>(resource.kind),
+		    static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
+		    resource.read, resource.written, resource.atomic, resource.depth_compare,
+		    descriptor.Format(), descriptor.DstSelXYZW(),
+		    image == nullptr ? static_cast<int>(vk::Format::eUndefined)
+		                     : static_cast<int>(image->format),
+		    static_cast<int>(view_format), image == nullptr ? 0u : image->layers, descriptor.Type(),
+		    descriptor.BaseArray5(), descriptor.Depth(), descriptor_pitch,
+		    image == nullptr ? 0u : image->guest_pitch, descriptor.Base40(), size,
+		    descriptor.fields[0], descriptor.fields[1], descriptor.fields[2], descriptor.fields[3],
+		    descriptor.fields[4], descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
+	}
+	return false;
 }
 
 static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::ImageResource& resource,
@@ -489,15 +540,21 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 
 static bool IsSupportedStorageTextureEncoding(const ShaderTextureResource& descriptor) {
 	// field1[8:19] often carries MinLod / NUM_FORMAT-style meta on storage T#s (e.g. #64 3D
-	// RGBA16F UAV). Width5 still decodes correctly from field1[30:31]|field2; only reject the
-	// undefined reserved bit.
-	constexpr uint32_t field1_reserved_mask = 0x20000000u;
-	constexpr uint32_t field2_reserved_mask = 0xf0003000u;
+	// RGBA16F UAV). Width5 still decodes correctly from field1[30:31]|field2.
+	// field1[29] also appears on legitimate write-only UAVs (41 Hours / #45, Lies of P / #55:
+	// k11_11_10Float 3D RT-tiled storage with DstSel(4,5,6,1)). Format is in [20:28] and width
+	// high bits in [30:31] — bit 29 is unused by our decoder, so do not reject it.
+	constexpr uint32_t field1_reserved_mask = 0u;
+	// field2[12:13] are set on real 3D Standard4KB UAVs (Invincible VS / #82, R-Type Final 3 /
+	// #40: 16³×k16UInt tile=5 with fields[2]=0x0003c003). Width/height still decode from the
+	// documented bitfields; do not treat those meta bits as reserved.
+	constexpr uint32_t field2_reserved_mask = 0xf0000000u;
 	constexpr uint32_t field5_expected      = 0x00700000u;
 	constexpr uint32_t field5_max_mip_mask  = 0x000000f0u;
 	// fields[6]/[7] hold DCC compression configuration and the metadata surface address.
-	// Host images are never DCC-backed; first-party titles (e.g. Demon's Souls / #63) still pack
-	// those bits. Ignore them entirely — MsaaDepth is validated via descriptor.MsaaDepth().
+	// Host images are never DCC-backed; titles still pack those bits (Hogwarts Legacy / #64
+	// 64³×16 RGBA16F RT-tiled UAV with fields[6]=0x006b0000; Demon's Souls / #63). Ignore them
+	// entirely — MsaaDepth is validated via descriptor.MsaaDepth().
 	constexpr uint32_t field6_reserved_mask = 0u;
 	const uint32_t expected_field3 = descriptor.DstSelXYZW() |
 	                                 (static_cast<uint32_t>(descriptor.BaseLevel()) << 12u) |
@@ -515,8 +572,8 @@ static bool IsSupportedStorageTextureEncoding(const ShaderTextureResource& descr
 	       (descriptor.fields[6] & field6_reserved_mask) == 0;
 }
 
-void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
-                            const ShaderTextureResource& descriptor, uint64_t size) {
+bool IsSupportedStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
+                               const ShaderTextureResource& descriptor, uint64_t size) {
 	const auto format        = descriptor.Format();
 	const bool resource_ok   = IsSupportedStorageImageResource(resource);
 	const bool descriptor_ok = IsSupportedStorageTextureDescriptor(resource, descriptor);
@@ -525,9 +582,22 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint;
 	const bool format_ok = Prospero::IsSupportedTextureFormat(format) &&
 	                       uint_resource == Prospero::IsUintTextureFormat(format);
-	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
+	return resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0;
+}
+
+void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
+                            const ShaderTextureResource& descriptor, uint64_t size) {
+	if (IsSupportedStorageTexture(resource, descriptor, size)) {
 		return;
 	}
+	const auto format        = descriptor.Format();
+	const bool resource_ok   = IsSupportedStorageImageResource(resource);
+	const bool descriptor_ok = IsSupportedStorageTextureDescriptor(resource, descriptor);
+	const bool encoding_ok   = IsSupportedStorageTextureEncoding(descriptor);
+	const bool uint_resource =
+	    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint;
+	const bool format_ok = Prospero::IsSupportedTextureFormat(format) &&
+	                       uint_resource == Prospero::IsUintTextureFormat(format);
 	EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
 	     "kind=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
 	     "base_level=%u last_level=%u max_mip=%u min_lod=%u base_array=%u bc=%u msaa=%d "
@@ -703,7 +773,11 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 		}
 	}
 	if (storage) {
-		ValidateStorageTexture(resource, descriptor, size.size);
+		if (!IsSupportedStorageTexture(resource, descriptor, size.size)) {
+			// Prefer a hard EXIT with full descriptor dump over soft-null dummies so missing
+			// real UAV layouts surface in game-bug reports (e.g. #40 / #82 before encoding fix).
+			ValidateStorageTexture(resource, descriptor, size.size);
+		}
 		GetRenderContext().GetBufferCache().ValidateGpuAccess(address, size.size, resource.read,
 		                                                      resource.written);
 	}
@@ -737,8 +811,13 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 				                                       view_format);
 				if (uint_reinterpret || uint_storage_reinterpret) {
 					image = nullptr;
+				} else if (!ValidateDepthTargetBinding(resource, descriptor, image, view_format,
+				                                       size.size)) {
+					return storage ? DescriptorCache::TextureBinding {&GetDummyStorageTexture(variant),
+					                                                  TextureVariantDefaultView(variant)}
+					               : DescriptorCache::TextureBinding {&GetDummySampledTexture(variant),
+					                                                  TextureVariantDefaultView(variant)};
 				} else {
-					ValidateDepthTargetBinding(resource, descriptor, image, view_format, size.size);
 					const auto depth_view = ResolveTargetTextureView(
 					    resource, type, descriptor.BaseArray5(), image->layers);
 					TargetTextureViewInfo resolved = depth_view;
@@ -782,13 +861,24 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 				        static_cast<vk::ImageViewType>(VK_IMAGE_VIEW_TYPE_MAX_ENUM) ||
 				    target_view.base_layer >= image->layers ||
 				    target_view.layer_count > image->layers - target_view.base_layer) {
-					EXIT("unsupported cached render-target image view: storage=%d resource=%u "
-					     "dimension=%u layers=%u extent=%ux%u/%ux%u levels=%u/%u base_level=%u "
-					     "view_base=%u view_layers=%u\n",
-					     storage, static_cast<uint32_t>(resource.kind),
-					     static_cast<uint32_t>(resource.dimension), image->layers, width, height,
-					     image->extent.width, image->extent.height, levels, image->mip_levels,
-					     base_level, target_view.base_layer, target_view.layer_count);
+					static std::atomic<uint32_t> soft_logs {0};
+					if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+						LOGF_COLOR(Log::Color::Yellow,
+						           "soft-null unsupported cached render-target image view: "
+						           "storage=%d resource=%u dimension=%u layers=%u "
+						           "extent=%ux%u/%ux%u levels=%u/%u base_level=%u "
+						           "view_base=%u view_layers=%u\n",
+						           storage, static_cast<uint32_t>(resource.kind),
+						           static_cast<uint32_t>(resource.dimension), image->layers, width,
+						           height, image->extent.width, image->extent.height, levels,
+						           image->mip_levels, base_level, target_view.base_layer,
+						           target_view.layer_count);
+					}
+					return storage
+					           ? DescriptorCache::TextureBinding {&GetDummyStorageTexture(variant),
+					                                              TextureVariantDefaultView(variant)}
+					           : DescriptorCache::TextureBinding {&GetDummySampledTexture(variant),
+					                                              TextureVariantDefaultView(variant)};
 				} else if (storage) {
 					view       = SelectStorageColorView(image->format, view_format, swizzle);
 					image_view = GetRenderContext().GetTextureCache().GetRenderTargetStorageView(
@@ -802,7 +892,18 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 				}
 			}
 			if (image != nullptr && image_view == nullptr && image->image_view[view] == nullptr) {
-				EXIT("required cached texture image view is missing\n");
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "soft-null required cached texture image view is missing "
+					           "(storage=%d view=%d)\n",
+					           storage, view);
+				}
+				return storage
+				           ? DescriptorCache::TextureBinding {&GetDummyStorageTexture(variant),
+				                                              TextureVariantDefaultView(variant)}
+				           : DescriptorCache::TextureBinding {&GetDummySampledTexture(variant),
+				                                              TextureVariantDefaultView(variant)};
 			}
 			if (storage && image != nullptr) {
 				GetRenderContext().GetTextureCache().MarkGpuWritten(*image);
@@ -827,9 +928,17 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 				     video.image->format == vk::Format::eB8G8R8A8Srgb) &&
 				    video.image->image_view[VulkanImage::VIEW_STORAGE] != nullptr;
 				if (!exact) {
-					EXIT("unsupported storage access to video-out surface: format=%u view=%d "
-					     "extent=%ux%u size=0x%016" PRIx64 " pitch=%u\n",
-					     format, static_cast<int>(view_format), width, height, size.size, pitch);
+					static std::atomic<uint32_t> soft_logs {0};
+					if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+						LOGF_COLOR(Log::Color::Yellow,
+						           "soft-null unsupported storage access to video-out surface: "
+						           "format=%u view=%d extent=%ux%u size=0x%016" PRIx64
+						           " pitch=%u\n",
+						           format, static_cast<int>(view_format), width, height, size.size,
+						           pitch);
+					}
+					return DescriptorCache::TextureBinding {&GetDummyStorageTexture(variant),
+					                                        TextureVariantDefaultView(variant)};
 				}
 				image = video.image;
 				view  = VulkanImage::VIEW_STORAGE;
@@ -865,9 +974,15 @@ NativeTexture(uint64_t submit_id, CommandBuffer& command_buffer,
 		auto&      texture_cache = GetRenderContext().GetTextureCache();
 		const bool metadata_read = texture_cache.QueryRegion(address, size.size).metadata_pages;
 		if (storage && metadata_read) {
-			EXIT("unsupported storage texture that overlaps surface metadata: addr=0x%016" PRIx64
-			     " size=0x%016" PRIx64 "\n",
-			     address, size.size);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-null unsupported storage texture that overlaps surface metadata: "
+				           "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+				           address, size.size);
+			}
+			return DescriptorCache::TextureBinding {&GetDummyStorageTexture(variant),
+			                                        TextureVariantDefaultView(variant)};
 		}
 		if (!storage && metadata_read) {
 			ValidateMetadataReuseTexture(resource, descriptor, size.size);

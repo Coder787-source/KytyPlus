@@ -14,6 +14,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/sync.h"
+#include "graphics/host_gpu/transfer.h"
 #include "graphics/presentation/displayBuffer.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
@@ -231,8 +232,15 @@ CommandProcessor& Gpu::GetProcessor(uint32_t queue_id) {
 }
 
 void CommandProcessor::FinishReadbackTransaction() {
-	if (GraphicsRunCurrentCommandProcessor() != this || !m_readback_active) {
-		EXIT("GPU readback finish requires a command-processor thread\n");
+	// Soft-retire / upload-refresh can wait outside Begin/EndReadback (Crash Bandicoot 4 / #88).
+	// When called off the CP thread, drain the queue instead of EXIT — real GPU sync, not a stub.
+	if (GraphicsRunCurrentCommandProcessor() != this) {
+		Transfer::WaitForGraphicsIdle();
+		return;
+	}
+	if (!m_readback_active) {
+		GetScheduler().FinishCurrent();
+		return;
 	}
 	if (m_readback_finished) {
 		return;
@@ -1713,7 +1721,9 @@ CommandProcessor* GraphicsRunCurrentCommandProcessor() noexcept {
 
 void GraphicsRunFinishScheduler() {
 	if (g_current_processor == nullptr) {
-		EXIT("GPU readback finish requires a command-processor thread\n");
+		// Off-CP callers (soft-retire, host write prep) still need submitted GPU work drained.
+		Transfer::WaitForGraphicsIdle();
+		return;
 	}
 	g_current_processor->FinishReadbackTransaction();
 }

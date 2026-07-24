@@ -15,6 +15,7 @@
 #include "libs/errno.h"
 
 #include <array>
+#include <atomic>
 #include <limits>
 #include <optional>
 
@@ -134,7 +135,10 @@ static CommandBufferDebugOp DebugOperation(EndOfPipeWriteAction action) {
 		case EndOfPipeWriteAction::InterruptWriteBack: return CommandBufferDebugOp::EopWriteBack;
 		case EndOfPipeWriteAction::Interrupt: return CommandBufferDebugOp::EopInterrupt;
 	}
-	EXIT("unsupported end-of-pipe write action\n");
+	static std::atomic<uint32_t> soft_logs {0};
+	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+		LOGF_COLOR(Log::Color::Yellow, "soft-ignore unsupported end-of-pipe write action\n");
+	}
 	return CommandBufferDebugOp::Unknown;
 }
 

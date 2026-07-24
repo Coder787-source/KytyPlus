@@ -18,6 +18,19 @@ constexpr int PRINT_STACK_FROM = 4;
 constexpr int PRINT_STACK_FROM = 2;
 #endif
 
+static const char* SourceBasename(const char* file) noexcept {
+	if (file == nullptr || file[0] == '\0') {
+		return "unknown";
+	}
+	const char* base = file;
+	for (const char* p = file; *p != '\0'; ++p) {
+		if (*p == '/' || *p == '\\') {
+			base = p + 1;
+		}
+	}
+	return base[0] != '\0' ? base : file;
+}
+
 static std::string BuildFatalReport(const char* title, std::string_view text, const char* file,
                                     int line) {
 	DebugStack stack;
@@ -28,7 +41,8 @@ static std::string BuildFatalReport(const char* title, std::string_view text, co
 		report += fmt::format("[{}] {:016x}\n", i - PRINT_STACK_FROM,
 		                      static_cast<uint64_t>(stack.GetAddr(i)));
 	}
-	report += fmt::format("{}\n{} in {}:{}\n", title, text, file, line);
+	// Filename only — never ship absolute build-machine paths in public EXIT text.
+	report += fmt::format("{}\n{} in {}:{}\n", title, text, SourceBasename(file), line);
 	return report;
 }
 

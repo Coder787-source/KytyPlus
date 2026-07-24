@@ -104,7 +104,7 @@ void WaitForSubmittedGraphics() {
 	// CP-thread refresh/upload paths only need submitted guest GPU work to finish — not a
 	// full queue idle across every outstanding host transfer.
 	if (GraphicsRunIsCommandProcessorThread()) {
-		GraphicsRunFinishCommandProcessors();
+		GraphicsRunFinishScheduler();
 		return;
 	}
 	WaitForQueueIdle();
