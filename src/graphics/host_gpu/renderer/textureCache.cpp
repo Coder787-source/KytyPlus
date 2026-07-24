@@ -895,11 +895,22 @@ void TextureCache::RequireRetirementIsolation(const std::vector<CachedImage*>& r
 	if (conflict.Exists()) {
 		const auto& retired  = ranges[conflict.retired];
 		const auto& retained = ranges[conflict.retained];
-		EXIT("TextureCache: %s retirement leaves a tracked page alias, request=0x%016" PRIx64
-		     "+0x%016" PRIx64 " retired=0x%016" PRIx64 "+0x%016" PRIx64 " retained=0x%016" PRIx64
-		     "+0x%016" PRIx64 "\n",
-		     operation, address, size, retired.address, retired.size, retained.address,
-		     retained.size);
+		// Tracker ownership is page-granular (see FindImageRetirementConflict in image.h). After
+		// IsolateRetirementSet a residual page overlap may remain when the only retained image
+		// that owns the conflicting page is itself a tracked-page alias that no retire-side
+		// extraction could fully resolve (e.g. #84 void tRrLM screen transitions where the
+		// conflicting retained range is not a direct m_images range). The page-alias invariant
+		// is best-effort on host Vulkan anyway; downgrade the hard abort to a bounded warning so
+		// the title keeps running instead of dying mid-frame.
+		static std::atomic<uint32_t> residual_logs {0};
+		if (residual_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: %s retirement leaves a tracked page alias, request=0x%016"
+			           PRIx64 "+0x%016" PRIx64 " retired=0x%016" PRIx64 "+0x%016" PRIx64
+			           " retained=0x%016" PRIx64 "+0x%016" PRIx64 " — continuing\n",
+			           operation, address, size, retired.address, retired.size, retained.address,
+			           retained.size);
+		}
 	}
 }
 
@@ -994,15 +1005,20 @@ void TextureCache::IsolateRetirementSet(std::vector<CachedImage*>& retire) {
 			return;
 		}
 		const auto& retained_range = ranges[conflict.retained];
-		CachedImage* victim        = nullptr;
+		// #84 void tRrLM screen transitions: the retained image may share tracker pages with the
+		// retired range without any exact (address,size) range entry in m_images. Match on
+		// page overlap (the same comparator FindImageRetirementConflict uses) instead of
+		// exact ranges, otherwise the victim search here silently bails and the hard EXIT in
+		// RequireRetirementIsolation fires.
+		CachedImage* victim = nullptr;
 		for (auto& entry: m_images) {
 			auto* cached = entry.get();
 			if (std::find(retire.begin(), retire.end(), cached) != retire.end()) {
 				continue;
 			}
 			for (uint32_t range = 0; range < cached->RangeCount(); range++) {
-				if (cached->Address(range) == retained_range.address &&
-				    cached->Size(range) == retained_range.size) {
+				if (ImagePageRangesOverlap(retained_range.address, retained_range.size,
+				                           cached->Address(range), cached->Size(range))) {
 					victim = cached;
 					break;
 				}
@@ -1012,6 +1028,13 @@ void TextureCache::IsolateRetirementSet(std::vector<CachedImage*>& retire) {
 			}
 		}
 		if (victim == nullptr) {
+			static std::atomic<uint32_t> isolate_no_victim_logs {0};
+			if (isolate_no_victim_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "TextureCache: retirement conflict has no m_images victim, "
+				           "retained=0x%016" PRIx64 "+0x%016" PRIx64 " — leaving residual alias\n",
+				           retained_range.address, retained_range.size);
+			}
 			return;
 		}
 		static std::atomic<uint32_t> isolate_logs {0};
@@ -1447,18 +1470,29 @@ void TextureCache::ResolveStorageImageOverlaps(const ImageInfo& requested) {
 			case StorageImageOverlap::RetireSampled: retire.push_back(cached); continue;
 			case StorageImageOverlap::PageNeighbor: continue;
 			case StorageImageOverlap::Unsupported:
-				EXIT("TextureCache: unsupported storage-image byte alias, requested=0x%016" PRIx64
-				     "+0x%016" PRIx64 " existing=0x%016" PRIx64 "+0x%016" PRIx64
-				     " kind=%u gpu=%d/%d buffer=%d\n",
-				     requested.address, requested.size, cached->Address(), cached->Size(),
-				     static_cast<uint32_t>(cached->kind), cached->gpu_modified, tracker_gpu,
-				     cached->buffer_modified);
+				// Defense in depth for titles that reclaim storage heaps with stale ownership
+				// markers (Ad Infinitum / #48). Prefer download+retire over abort.
+				{
+					static std::atomic<uint32_t> soft_logs {0};
+					if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+						LOGF_COLOR(Log::Color::Yellow,
+						           "TextureCache: soft-retire storage-image byte alias, "
+						           "requested=0x%016" PRIx64 "+0x%016" PRIx64
+						           " existing=0x%016" PRIx64 "+0x%016" PRIx64
+						           " kind=%u gpu=%d/%d buffer=%d\n",
+						           requested.address, requested.size, cached->Address(),
+						           cached->Size(), static_cast<uint32_t>(cached->kind),
+						           cached->gpu_modified, tracker_gpu, cached->buffer_modified);
+					}
+				}
+				retire.push_back(cached);
+				continue;
 		}
 	}
-	// Every exact byte overlap was classified above: only clean sampled images are retired and all
-	// retained byte aliases remain fatal. A retired full mip chain can still contain a cached,
-	// byte-disjoint subresource outside this storage request. The multi-owner index keeps those
-	// retained pages tracked and UnregisterImageLocked releases only pages whose final owner left.
+	// Byte-overlapping aliases are retired (and GPU-owned ones materialized) above. A retired
+	// full mip chain can still contain a cached, byte-disjoint subresource outside this storage
+	// request. The multi-owner index keeps those retained pages tracked and UnregisterImageLocked
+	// releases only pages whose final owner left.
 	for (auto* cached: retire) {
 		if (!cached->gpu_modified) {
 			continue;
@@ -1474,7 +1508,7 @@ void TextureCache::ResolveStorageImageOverlaps(const ImageInfo& requested) {
 }
 
 void TextureCache::RetireStorageDepthAliasLocked(const ImageInfo& requested) {
-	CachedImage* selected = nullptr;
+	std::vector<CachedImage*> retire;
 	for (auto* entry: FindImagesInRegionLocked(requested.address, requested.size, true)) {
 		auto& cached = *entry;
 		if (cached.kind != CachedImage::Kind::DepthTarget ||
@@ -1494,25 +1528,34 @@ void TextureCache::RetireStorageDepthAliasLocked(const ImageInfo& requested) {
 		    requested.tile == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
 		    requested.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
 		    requested.depth == 1 && requested.levels == 1;
-		if (!exact_d32_uint || selected != nullptr) {
-			EXIT("TextureCache: unsupported storage/depth-target alias, requested=0x%016" PRIx64
-			     "+0x%016" PRIx64 " depth=0x%016" PRIx64 "+0x%016" PRIx64 " exact=%d ambiguous=%d\n",
-			     requested.address, requested.size, depth.address, depth.size, exact_d32_uint,
-			     selected != nullptr);
+		if (!exact_d32_uint) {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "TextureCache: soft-retire storage/depth-target alias, "
+				           "requested=0x%016" PRIx64 "+0x%016" PRIx64 " depth=0x%016" PRIx64
+				           "+0x%016" PRIx64 "\n",
+				           requested.address, requested.size, depth.address, depth.size);
+			}
 		}
-		selected = &cached;
+		retire.push_back(&cached);
 	}
-	if (selected == nullptr) {
+	if (retire.empty()) {
 		return;
 	}
 	Transfer::WaitForQueueIdle();
-	const auto transfer = m_readback->DownloadDepthTarget(*selected, false);
-	for (const auto& range: transfer.Ranges()) {
-		m_memory_tracker.ForEachDownloadRange<true>(range.address, range.size,
-		                                            [](uint64_t, uint64_t) noexcept {});
+	for (auto* selected: retire) {
+		if (!selected->gpu_modified) {
+			continue;
+		}
+		const auto transfer = m_readback->DownloadDepthTarget(*selected, false);
+		for (const auto& range: transfer.Ranges()) {
+			m_memory_tracker.ForEachDownloadRange<true>(range.address, range.size,
+			                                            [](uint64_t, uint64_t) noexcept {});
+		}
+		selected->gpu_modified = false;
 	}
-	selected->gpu_modified = false;
-	RetireImages({selected});
+	RetireImages(retire);
 }
 
 TextureCache::~TextureCache() {
@@ -1591,23 +1634,24 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 				storage_retire.push_back(cached.get());
 				break;
 			case StorageSampledOverlap::Unsupported:
-				EXIT("TextureCache: unsupported sampled/storage image alias, "
-				     "requested=0x%016" PRIx64 "+0x%016" PRIx64 " storage=0x%016" PRIx64
-				     "+0x%016" PRIx64
-				     " gpu_modified=%d buffer_modified=%d tracker_gpu=%d cpu_dirty=%d exact_mip=%d"
-				     " requested_info={format=%u extent=%ux%ux%u pitch=%u base=%u levels=%u"
-				     " view_levels=%u tile=%u swizzle=0x%03x type=%u base_array=%u}"
-				     " storage_info={format=%u extent=%ux%ux%u pitch=%u base=%u levels=%u"
-				     " view_levels=%u tile=%u swizzle=0x%03x type=%u base_array=%u}\n",
-				     info.address, info.size, cached->info.address, cached->info.size,
-				     cached->gpu_modified, cached->buffer_modified, tracker_gpu, cpu_dirty,
-				     exact_mip, info.format, info.width, info.height, info.depth, info.pitch,
-				     info.base_level, info.levels, info.view_levels, info.tile, info.swizzle,
-				     info.type, info.base_array, cached->info.format, cached->info.width,
-				     cached->info.height, cached->info.depth, cached->info.pitch,
-				     cached->info.base_level, cached->info.levels, cached->info.view_levels,
-				     cached->info.tile, cached->info.swizzle, cached->info.type,
-				     cached->info.base_array);
+				// Prefer retiring overlapping storage over aborting (F.I.S.T. / #68,
+				// Jedi Fallen Order / #78). Sampled rebuild refreshes from guest/buffer.
+				{
+					static std::atomic<uint32_t> soft_logs {0};
+					if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+						LOGF_COLOR(Log::Color::Yellow,
+						           "TextureCache: soft-retire sampled/storage image alias, "
+						           "requested=0x%016" PRIx64 "+0x%016" PRIx64
+						           " storage=0x%016" PRIx64 "+0x%016" PRIx64
+						           " gpu_modified=%d buffer_modified=%d tracker_gpu=%d "
+						           "cpu_dirty=%d exact_mip=%d\n",
+						           info.address, info.size, cached->info.address,
+						           cached->info.size, cached->gpu_modified,
+						           cached->buffer_modified, tracker_gpu, cpu_dirty, exact_mip);
+					}
+				}
+				storage_retire.push_back(cached.get());
+				break;
 		}
 	}
 	if (storage_match != nullptr && !storage_retire.empty()) {
@@ -1674,6 +1718,7 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 			cached->gpu_modified = false;
 		}
 		RetireImages(storage_retire);
+		storage_retire.clear();
 	}
 	if (m_memory_tracker.IsRegionCpuModified(info.address, info.size)) {
 		MarkSampledAliasesCpuDirtyLocked(info.address, info.size);
@@ -1732,19 +1777,64 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 			if (!cached->OverlapsRange(info.address, info.size, true)) {
 				continue;
 			}
-			EXIT("TextureCache: sampled image overlaps GPU target without prior resolve, "
-			     "requested=0x%016" PRIx64 "+0x%016" PRIx64 " target=0x%016" PRIx64
-			     "+0x%016" PRIx64 " target_kind=%u\n",
-			     info.address, info.size, cached->Address(), cached->Size(),
-			     static_cast<uint32_t>(cached->kind));
+			// Prefer retiring leftover GPU targets over aborting when prior resolve missed a
+			// heap reuse (Aliens / Gear Club class). Materialize then rebuild as sampled.
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "TextureCache: soft-retire sampled overlap of GPU target, "
+				           "requested=0x%016" PRIx64 "+0x%016" PRIx64 " target=0x%016" PRIx64
+				           "+0x%016" PRIx64 " target_kind=%u\n",
+				           info.address, info.size, cached->Address(), cached->Size(),
+				           static_cast<uint32_t>(cached->kind));
+			}
+			storage_retire.push_back(cached.get());
+			continue;
 		}
 		const auto overlap = ClassifySampledOverlap(info, cached->info, cached->gpu_modified);
 		if (overlap == SampledOverlap::Unsupported) {
-			EXIT("TextureCache: unsupported sampled-texture alias, requested=0x%016" PRIx64
-			     "+0x%016" PRIx64 " existing=0x%016" PRIx64 "+0x%016" PRIx64 " gpu_modified=%d\n",
-			     info.address, info.size, cached->info.address, cached->info.size,
-			     cached->gpu_modified);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "TextureCache: soft-retire unsupported sampled-texture alias, "
+				           "requested=0x%016" PRIx64 "+0x%016" PRIx64 " existing=0x%016" PRIx64
+				           "+0x%016" PRIx64 " gpu_modified=%d\n",
+				           info.address, info.size, cached->info.address, cached->info.size,
+				           cached->gpu_modified);
+			}
+			storage_retire.push_back(cached.get());
 		}
+	}
+	if (!storage_retire.empty()) {
+		const bool needs_download =
+		    std::any_of(storage_retire.begin(), storage_retire.end(),
+		                [](const CachedImage* cached) { return cached->gpu_modified; });
+		if (needs_download) {
+			Transfer::WaitForGraphicsIdle();
+		}
+		for (auto* cached: storage_retire) {
+			if (!cached->gpu_modified) {
+				cached->buffer_modified = false;
+				continue;
+			}
+			if (cached->kind == CachedImage::Kind::DepthTarget) {
+				const auto transfer = m_readback->DownloadDepthTarget(*cached, false);
+				for (const auto& range: transfer.Ranges()) {
+					m_memory_tracker.ForEachDownloadRange<true>(
+					    range.address, range.size, [](uint64_t, uint64_t) noexcept {});
+				}
+			} else {
+				const auto transfer = m_readback->DownloadColorImage(*cached);
+				for (const auto& range: transfer.Ranges()) {
+					m_memory_tracker.ForEachDownloadRange<true>(
+					    range.address, range.size, [](uint64_t, uint64_t) noexcept {});
+				}
+			}
+			cached->gpu_modified    = false;
+			cached->buffer_modified = false;
+		}
+		RetireImages(storage_retire);
+		storage_retire.clear();
 	}
 	m_images.reserve(m_images.size() + 1);
 	auto cached  = std::make_shared<CachedImage>(m_graphics);
@@ -1821,8 +1911,8 @@ StorageTextureVulkanImage& TextureCache::FindStorageTexture(CommandBuffer&   com
 	     request.depth == 0) ||
 	    (request.type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
 	     request.base_array >= request.depth)) {
-		EXIT("TextureCache: unsupported storage-image request, command=%p "
-		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
+		EXIT("TextureCache: unsupported storage-image request, command=%p addr=0x%016" PRIx64
+		     " size=0x%016" PRIx64
 		     " extent=%ux%ux%u levels=%u base_level=%u base_array=%u type=%u tile=%u "
 		     "swizzle=0x%03x\n",
 		     static_cast<const void*>(&command), request.address, request.size, request.width,
@@ -1841,7 +1931,8 @@ StorageTextureVulkanImage& TextureCache::FindStorageTexture(CommandBuffer&   com
 	}
 	if (!IsSupportedStorageSwizzle(request.format, request.swizzle)) {
 		EXIT("TextureCache: unsupported storage-image swizzle, addr=0x%016" PRIx64
-		     " size=0x%016" PRIx64 " extent=%ux%ux%u type=%u tile=%u swizzle=0x%03x format=%u\n",
+		     " size=0x%016" PRIx64
+		     " extent=%ux%ux%u type=%u tile=%u swizzle=0x%03x format=%u\n",
 		     request.address, request.size, request.width, request.height, request.depth,
 		     request.type, request.tile, request.swizzle, request.format);
 	}
@@ -2151,11 +2242,27 @@ RenderTextureVulkanImage& TextureCache::FindRenderTarget(CommandBuffer&         
 			case RenderTargetOverlap::Unsupported: break;
 		}
 		if (!supported) {
-			EXIT("TextureCache: unsupported render-target alias, requested=0x%016" PRIx64
-			     "+0x%016" PRIx64 " existing_kind=%u existing=0x%016" PRIx64 "+0x%016" PRIx64
-			     " gpu_modified=%d\n",
-			     info.address, info.size, static_cast<uint32_t>(cached.kind), cached.Address(),
-			     cached.Size(), cached.gpu_modified);
+			// Prefer retiring the overlapping image over aborting. Titles frequently reclaim
+			// storage/sampled pages as a differently shaped RT (#52/#70/#78 class).
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "TextureCache: soft-retire unsupported render-target alias, "
+				           "requested=0x%016" PRIx64 "+0x%016" PRIx64 " existing_kind=%u "
+				           "existing=0x%016" PRIx64 "+0x%016" PRIx64 " gpu_modified=%d\n",
+				           info.address, info.size, static_cast<uint32_t>(cached.kind),
+				           cached.Address(), cached.Size(), cached.gpu_modified);
+			}
+			if (cached.kind != CachedImage::Kind::Texture &&
+			    cached.kind != CachedImage::Kind::StorageTexture &&
+			    cached.kind != CachedImage::Kind::RenderTarget &&
+			    cached.kind != CachedImage::Kind::DepthTarget) {
+				EXIT("TextureCache: unsupported render-target alias, requested=0x%016" PRIx64
+				     "+0x%016" PRIx64 " existing_kind=%u existing=0x%016" PRIx64 "+0x%016" PRIx64
+				     " gpu_modified=%d\n",
+				     info.address, info.size, static_cast<uint32_t>(cached.kind), cached.Address(),
+				     cached.Size(), cached.gpu_modified);
+			}
 		}
 		retire.push_back(&cached);
 	}

@@ -10669,6 +10669,43 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
            0x00700000u, 0x00000000u, 0x00000000u}};
 }
 
+// Hogwarts Legacy / #64: write-only 64x64x16 RGBA16F RT-tiled 3D UAV with DCC
+// metadata packed in fields[6]/[7]. Captured EXIT had encoding=0 solely from those
+// bits; host images are never DCC-backed.
+ShaderRecompiler::IR::ImageResource Ppsa01593HogwartsStorageTextureResource() {
+  auto resource = BasicUintVolumeStorageTextureResource();
+  resource.kind = ShaderRecompiler::IR::ResourceKind::StorageImage;
+  return resource;
+}
+
+ShaderTextureResource Ppsa01593HogwartsStorageTextureDescriptor() {
+  return {{0x20453800u, 0xc4700000u, 0x000fc00fu, 0xa1b00facu, 0x0000000fu,
+           0x00700000u, 0x006b0000u, 0x00204548u}};
+}
+
+// Chronos / Silent Hill 2 / Invincible (#87/#77/#82): write-only 16³ R16_UINT
+// Standard4KB 3D UAV. Stock EXIT had descriptor=0 solely from the Standard4KB tile.
+ShaderRecompiler::IR::ImageResource Ppsa087ChronosStorageTextureResource() {
+  return BasicUintVolumeStorageTextureResource();
+}
+
+ShaderTextureResource Ppsa087ChronosStorageTextureDescriptor() {
+  return {{0x1b400e10u, 0xc0b00000u, 0x0003c003u, 0xa0500004u, 0x0000000fu,
+           0x00700000u, 0x00000000u, 0x00000000u}};
+}
+
+// Shadow Warrior 3 (#76): write-only 2x2 R8G8B8A8_UINT Standard256B 2D UAV.
+ShaderRecompiler::IR::ImageResource Ppsa076ShadowWarriorStorageTextureResource() {
+  auto resource = BasicUintVolumeStorageTextureResource();
+  resource.dimension = ShaderRecompiler::Decoder::ImageDimension::Dim2D;
+  return resource;
+}
+
+ShaderTextureResource Ppsa076ShadowWarriorStorageTextureDescriptor() {
+  return {{0x201ebd00u, 0x43c00000u, 0x00004000u, 0x90100facu, 0x00000000u,
+           0x00700000u, 0x00000000u, 0x00000000u}};
+}
+
 [[noreturn]] void RunStorageTextureDescriptorDeathCase(const char *kind) {
   auto resource = BasicStorageTextureResource();
   auto descriptor = BasicStorageTextureDescriptor();
@@ -10706,9 +10743,10 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
         (descriptor.fields[3] & 0x0fffffffu) |
         (Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) << 28u);
   } else if (std::strcmp(kind, "tile") == 0) {
+    // Standard4KB/256B storage tiles are supported; PRT remains rejected.
     descriptor.fields[3] =
         (descriptor.fields[3] & ~(0x1fu << 20u)) |
-        (Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) << 20u);
+        (Prospero::GpuEnumValue(Prospero::TileMode::kPrt) << 20u);
   } else if (std::strcmp(kind, "mip") == 0) {
     descriptor.fields[3] |= 1u << 16u;
   } else if (std::strcmp(kind, "swizzle") == 0) {
@@ -10723,10 +10761,6 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
     descriptor = BasicArrayStorageTextureDescriptor();
     descriptor.fields[3] |= (1u << 12u) | (1u << 16u);
     descriptor.fields[5] |= 1u << 4u;
-  } else if (std::strcmp(kind, "reserved") == 0) {
-    descriptor.fields[1] |= 1u << 29u;
-  } else if (std::strcmp(kind, "metadata") == 0) {
-    descriptor.fields[6] |= 1u << 21u;
   } else if (std::strcmp(kind, "uint-format") == 0) {
     descriptor.fields[1] =
         (descriptor.fields[1] & ~0x1ff00000u) |
@@ -10905,6 +10939,77 @@ void CheckBasicStorageTextureDescriptor() {
   ValidateStorageTexture(BasicUintVolumeStorageTextureResource(), uint_volume,
                          0x10000);
 
+  const auto chronos = Ppsa087ChronosStorageTextureDescriptor();
+  Require("BasicStorageTexture", "PPSA087 Chronos Standard4KB UAV",
+          chronos.Base40() == 0x1b400e1000ull && chronos.Width5() + 1u == 16 &&
+              chronos.Height5() + 1u == 16 && chronos.Depth() + 1u == 16 &&
+              chronos.Format() ==
+                  Prospero::GpuEnumValue(Prospero::BufferFormat::k16UInt) &&
+              chronos.TileMode() ==
+                  Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
+              chronos.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor3D) &&
+              chronos.DstSelXYZW() == DstSel(4, 0, 0, 0),
+          "Chronos/SH2 #87 Standard4KB 3D storage descriptor fixture is "
+          "malformed");
+  Require("BasicStorageTexture", "PPSA087 Chronos accepted",
+          IsSupportedStorageTexture(Ppsa087ChronosStorageTextureResource(),
+                                    chronos, 0x2000),
+          "Chronos/SH2 #87 Standard4KB 3D UAV was rejected");
+  ValidateStorageTexture(Ppsa087ChronosStorageTextureResource(), chronos,
+                         0x2000);
+
+  const auto shadow_warrior = Ppsa076ShadowWarriorStorageTextureDescriptor();
+  Require(
+      "BasicStorageTexture", "PPSA076 Shadow Warrior Standard256B UAV",
+      shadow_warrior.Base40() == 0x201ebd0000ull &&
+          shadow_warrior.Width5() + 1u == 2 &&
+          shadow_warrior.Height5() + 1u == 2 &&
+          shadow_warrior.Depth() + 1u == 1 &&
+          shadow_warrior.Format() ==
+              Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UInt) &&
+          shadow_warrior.TileMode() ==
+              Prospero::GpuEnumValue(Prospero::TileMode::kStandard256B) &&
+          shadow_warrior.Type() ==
+              Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
+          shadow_warrior.DstSelXYZW() == DstSel(4, 5, 6, 7),
+      "Shadow Warrior 3 #76 Standard256B storage descriptor fixture is "
+      "malformed");
+  Require("BasicStorageTexture", "PPSA076 Shadow Warrior accepted",
+          IsSupportedStorageTexture(
+              Ppsa076ShadowWarriorStorageTextureResource(), shadow_warrior,
+              0x100),
+          "Shadow Warrior 3 #76 Standard256B 2D UAV was rejected");
+  ValidateStorageTexture(Ppsa076ShadowWarriorStorageTextureResource(),
+                         shadow_warrior, 0x100);
+
+  auto prt_reject = chronos;
+  prt_reject.fields[3] =
+      (prt_reject.fields[3] & ~(0x1fu << 20u)) |
+      (Prospero::GpuEnumValue(Prospero::TileMode::kPrt) << 20u);
+  Require("BasicStorageTexture", "PRT storage still rejected",
+          !IsSupportedStorageTexture(Ppsa087ChronosStorageTextureResource(),
+                                     prt_reject, 0x2000),
+          "PRT-tiled storage UAV was accepted; soft-null path needs a reject");
+
+  const auto hogwarts = Ppsa01593HogwartsStorageTextureDescriptor();
+  Require("BasicStorageTexture", "PPSA01593 Hogwarts DCC UAV",
+          hogwarts.Base40() == 0x2045380000ull && hogwarts.Width5() + 1u == 64 &&
+              hogwarts.Height5() + 1u == 64 && hogwarts.Depth() + 1u == 16 &&
+              hogwarts.Format() == Prospero::GpuEnumValue(
+                                       Prospero::BufferFormat::k16_16_16_16Float) &&
+              hogwarts.TileMode() ==
+                  Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) &&
+              hogwarts.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor3D) &&
+              hogwarts.DstSelXYZW() == DstSel(4, 5, 6, 7) &&
+              hogwarts.fields[6] == 0x006b0000u &&
+              hogwarts.fields[7] == 0x00204548u,
+          "PPSA01593 Hogwarts Legacy #64 storage descriptor fixture is "
+          "malformed");
+  ValidateStorageTexture(Ppsa01593HogwartsStorageTextureResource(), hogwarts,
+                         0x100000);
+
   const auto depth_tile = Ppsa14053DepthTileStorageTextureDescriptor();
   Require("BasicStorageTexture", "PPSA14053 depth-tile descriptor",
           depth_tile.Base40() == 0x20144c0000ull &&
@@ -10939,9 +11044,8 @@ void CheckBasicStorageTextureDescriptor() {
   for (const char *kind :
        {"resource", "type", "tile", "mip", "swizzle", "linear-rgb1-read",
         "bgra-read", "r16-float-read", "r8-unorm-read", "yzwx-read",
-        "yzwx-format", "array-base-view", "array-mip-view", "reserved",
-        "metadata", "uint-format", "uint-resource-float-format",
-        "depth-tile-read", "depth-tile-extent"}) {
+        "yzwx-format", "array-base-view", "array-mip-view", "uint-format",
+        "uint-resource-float-format", "depth-tile-read", "depth-tile-extent"}) {
     std::string command = std::string("\"") + path +
                           "\" --storage-texture-descriptor-death " + kind;
     std::vector<char> mutable_command(command.begin(), command.end());
@@ -11420,16 +11524,16 @@ void CheckStorageTextureSampledReuse() {
           ClassifyStorageSampledOverlap(
               incompatible, storage, vk::Format::eR16G16B16A16Unorm,
               vk::Format::eR16G16B16A16Sfloat, true,
-              false) == StorageSampledOverlap::Unsupported &&
+              false) == StorageSampledOverlap::RetireStorage &&
               ClassifyStorageSampledOverlap(
                   storage, storage, vk::Format::eR16G16B16A16Sfloat,
                   vk::Format::eR16G16B16A16Sfloat, false,
-                  false) == StorageSampledOverlap::Unsupported &&
+                  false) == StorageSampledOverlap::RetireStorage &&
               ClassifyStorageSampledOverlap(
                   storage, storage, vk::Format::eR16G16B16A16Sfloat,
                   vk::Format::eR16G16B16A16Sfloat, true,
-                  true) == StorageSampledOverlap::Unsupported,
-          "incompatible storage-image state was accepted for sampling");
+                  true) == StorageSampledOverlap::RetireStorage,
+          "incompatible storage-image state was not retired for sampling");
   auto separate = storage;
   separate.address += 0x400000;
   Require("StorageTextureSampledReuse", "separate",
@@ -11509,16 +11613,16 @@ void CheckStorageTextureSampledReuse() {
               ClassifyStorageSampledOverlap(
                   mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
                   vk::Format::eR16G16B16A16Sfloat, true, false, true, true,
-                  true) == StorageSampledOverlap::Unsupported &&
+                  true) == StorageSampledOverlap::RetireStorage &&
               ClassifyStorageSampledOverlap(
                   mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
                   vk::Format::eR16G16B16A16Sfloat, true, false, true, false,
-                  false) == StorageSampledOverlap::Unsupported &&
+                  false) == StorageSampledOverlap::RetireStorage &&
               ClassifyStorageSampledOverlap(
                   mip_chain, mip_storage, vk::Format::eR16G16B16A16Sfloat,
                   vk::Format::eR16G16B16A16Sfloat, true, true, true, false,
-                  true) == StorageSampledOverlap::Unsupported,
-          "malformed or unsafe mip-storage ownership was accepted");
+                  true) == StorageSampledOverlap::RetireStorage,
+          "malformed or unsafe mip-storage ownership was not retired");
 
   ImageInfo ppsa02604_storage{};
   ppsa02604_storage.address = 0x7c690000;
@@ -12626,12 +12730,12 @@ void CheckImageOverlapResolution() {
                                       true, false, false, false) ==
               StorageImageOverlap::RetireSampled,
           "clean sampled subrange was not retired before storage creation");
-  Require("ImageOverlapResolution", "storage preserves dirty sampled backing",
+  Require("ImageOverlapResolution", "storage retires dirty sampled backing",
           ClassifyStorageImageOverlap(storage_subrange, storage_subrange_size,
                                       sampled_backing, sampled_backing_size,
                                       true, true, false,
-                                      true) == StorageImageOverlap::Unsupported,
-          "GPU-owned sampled subrange was admitted as storage backing");
+                                      true) == StorageImageOverlap::RetireSampled,
+          "GPU-owned sampled subrange was not retired before storage creation");
   ImageInfo page_left = sampled;
   page_left.size = TRACKER_PAGE_SIZE / 2;
   ImageInfo same_page = page_left;

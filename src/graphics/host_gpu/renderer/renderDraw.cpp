@@ -347,6 +347,18 @@ static PipelineDynamicParameters BuildGraphicsDynamicParams(const RenderCommandB
 	ret.stencil_front      = depth.stencil_dynamic_front;
 	ret.stencil_back       = depth.stencil_dynamic_back;
 
+	const auto& mc     = ctx.GetModeControl();
+	const auto& poff   = ctx.GetPolyOffset();
+	ret.depth_bias_enable = mc.poly_offset_front_enable || mc.poly_offset_back_enable;
+	if (mc.poly_offset_front_enable) {
+		ret.depth_bias_constant = poff.front_offset;
+		ret.depth_bias_slope    = poff.front_scale;
+	} else {
+		ret.depth_bias_constant = poff.back_offset;
+		ret.depth_bias_slope    = poff.back_scale;
+	}
+	ret.depth_bias_clamp = poff.clamp;
+
 	// CB_COLOR_CONTROL.operation controls special CB operations, not the normal color component
 	// write mask. Use CB_TARGET_MASK here so scanout passes with mode=Disable do not go black.
 	for (uint32_t i = 0; i < RENDER_COLOR_ATTACHMENTS_MAX; i++) {
@@ -390,6 +402,13 @@ static void SetDynamicParams(const RenderCommandBuffer& buffer, vk::CommandBuffe
 		line_width = 1.0f;
 	}
 	vk_buffer.setLineWidth(line_width);
+
+	if (dynamic_params.depth_bias_enable) {
+		vk_buffer.setDepthBias(dynamic_params.depth_bias_constant, dynamic_params.depth_bias_clamp,
+		                       dynamic_params.depth_bias_slope);
+	} else {
+		vk_buffer.setDepthBias(0.0f, 0.0f, 0.0f);
+	}
 
 	if (dynamic_params.stencil_test_enable) {
 		vk_buffer.setStencilCompareMask(vk::StencilFaceFlagBits::eFront,
@@ -606,8 +625,14 @@ static bool GetDrawTopology(const HW::UserConfig& ucfg, bool auto_draw, bool use
 		case Prospero::PrimitiveType::kQuadListLegacy:
 			topology = vk::PrimitiveTopology::eTriangleFan;
 			break;
-		default:
-			EXIT("unsupported primitive type: %u\n", ucfg.GetPrimType());
+		default: {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-skip unsupported primitive type: %u\n", ucfg.GetPrimType());
+			}
+			return false;
+		}
 	}
 
 	return true;
@@ -699,7 +724,12 @@ static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	}
 	if (!ShaderCompileInfoVS(vertex_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
 	                         state.vs_shader)) {
-		EXIT("draw %s: ShaderCompileInfoVS failed\n", draw.name);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow, "draw %s: soft-skip ShaderCompileInfoVS failure\n",
+			           draw.name);
+		}
+		return false;
 	}
 
 	if (!state.ps_active) {
@@ -710,7 +740,12 @@ static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	}
 	if (!ShaderCompileInfoPS(pixel_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
 	                         target_export_mapping, state.ps_input_info, state.ps_shader)) {
-		EXIT("draw %s: ShaderCompileInfoPS failed\n", draw.name);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow, "draw %s: soft-skip ShaderCompileInfoPS failure\n",
+			           draw.name);
+		}
+		return false;
 	}
 	return true;
 }
@@ -755,7 +790,13 @@ static void BindDrawIndexBuffer(RenderCommandBuffer& buffer, vk::CommandBuffer v
 		vk::DeviceSize range = 0;
 		if (!GetRenderContext().GetBufferCache().UploadHostData(
 		        buffer, source.host_data, source.size, 16, index_buffer, index_offset, range)) {
-			EXIT("failed to upload host index buffer\n");
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-skip failed to upload host index buffer size=0x%016" PRIx64 "\n",
+				           source.size);
+			}
+			return;
 		}
 	} else {
 		auto binding =
@@ -857,7 +898,15 @@ static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_
 				}
 			}
 			break;
-		default: EXIT("unsupported emit primitive type: %u\n", ucfg.GetPrimType());
+		default: {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-skip unsupported emit primitive type: %u\n",
+				           ucfg.GetPrimType());
+			}
+			return;
+		}
 	}
 }
 
@@ -1037,7 +1086,15 @@ void RenderDrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t i
 			index_size           = static_cast<uint64_t>(index_count);
 			expand_index8_to_u16 = true;
 			break;
-		default: EXIT("unsupported index_type_and_size: %u\n", index_type_and_size);
+		default: {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-skip unsupported index_type_and_size: %u\n",
+				           index_type_and_size);
+			}
+			return;
+		}
 	}
 
 	EXIT_NOT_IMPLEMENTED(flags != 0);

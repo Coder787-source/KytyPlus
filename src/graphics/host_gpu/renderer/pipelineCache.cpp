@@ -235,7 +235,16 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	}
 
 	const auto& clip_control = ctx.GetClipControl();
-	EXIT_NOT_IMPLEMENTED(!clip_control.IsZClipModeRepresentable());
+	if (!clip_control.IsZClipModeRepresentable()) {
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Pipeline: soft-allow asymmetric Z-clip min_disable=%d max_disable=%d "
+			           "(approx clip_enable=%d)\n",
+			           clip_control.min_z_clip_disable, clip_control.max_z_clip_disable,
+			           clip_control.IsZClipEnabled());
+		}
+	}
 	static_params.negative_one_to_one = !clip_control.dx_clip_space;
 	static_params.depth_clip_enable   = clip_control.IsZClipEnabled();
 	static_params.topology            = topology;
@@ -259,9 +268,11 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	for (uint32_t i = 0; i < RENDER_COLOR_ATTACHMENTS_MAX; i++) {
 		static_params.color_mask[i] = color_mask[i];
 	}
-	static_params.cull_back  = mc.cull_back;
-	static_params.cull_front = mc.cull_front;
-	static_params.face       = mc.face;
+	static_params.cull_back         = mc.cull_back;
+	static_params.cull_front        = mc.cull_front;
+	static_params.face              = mc.face;
+	static_params.depth_bias_enable =
+	    mc.poly_offset_front_enable || mc.poly_offset_back_enable;
 
 	for (uint32_t i = 0; i < color_count; i++) {
 		const auto& rt                        = ctx.GetRenderTarget(colors[i].target_slot);

@@ -9,50 +9,88 @@
 
 namespace Libs::Graphics {
 
+[[nodiscard]] inline bool IsValidSampledColorSwizzle(uint32_t swizzle) noexcept {
+	if ((swizzle & ~0xfffu) != 0) {
+		return false;
+	}
+	for (uint32_t channel = 0; channel < 4; channel++) {
+		switch (GetDstSel(swizzle, channel)) {
+			case 0:
+			case 1:
+			case 4:
+			case 5:
+			case 6:
+			case 7: break;
+			default: return false;
+		}
+	}
+	return true;
+}
+
 [[nodiscard]] inline bool IsSupportedStorageSwizzle(uint32_t format, uint32_t swizzle) noexcept {
+	// Storage image component remaps are applied in the SPIR-V emitter
+	// (InverseStorageSwizzleComponent). Any valid channel sel for a supported storage format is
+	// real hardware-correct behavior — do not dummy-null just because the sel is uncommon.
+	if (!IsValidSampledColorSwizzle(swizzle)) {
+		return false;
+	}
 	const bool single_channel =
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8UNorm) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8SInt) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16SInt) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32SInt) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16Float) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float);
 	const bool two_channel =
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32SInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32Float) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16UInt) ||
-	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16Float);
-	const bool rgba8 =
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16SInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16Float) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8UNorm);
+	const bool four_channel =
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UNorm) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8SNorm) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UInt) ||
-	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb);
-	const bool rgba16f =
-	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16Float);
-	const bool packed_float =
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8SInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16Float) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16SInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32_32_32Float) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32_32_32UInt) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32_32_32SInt) ||
 	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k11_11_10Float) ||
-	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k10_11_11Float);
-	return swizzle == DstSel(4, 5, 6, 7) ||
-	       (single_channel && (swizzle == DstSel(4, 0, 0, 0) || swizzle == DstSel(4, 0, 0, 1) ||
-	                           swizzle == DstSel(4, 4, 4, 4))) ||
-	       (two_channel && (swizzle == DstSel(4, 5, 0, 1) || swizzle == DstSel(4, 5, 0, 0) ||
-	                        swizzle == DstSel(4, 5, 4, 5) || swizzle == DstSel(4, 5, 1, 1) ||
-	                        swizzle == DstSel(4, 5, 1, 0))) ||
-	       ((rgba8 || packed_float || rgba16f) &&
-	        (swizzle == DstSel(4, 5, 6, 1) || swizzle == DstSel(4, 5, 6, 0))) ||
-	       (rgba8 && swizzle == DstSel(6, 5, 4, 7)) ||
-	       (rgba16f && swizzle == DstSel(4, 5, 6, 7)) ||
-	       (format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32_32_32Float) &&
-	        swizzle == DstSel(5, 6, 7, 4));
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k10_11_11Float) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k10_10_10_2UNorm) ||
+	    format == Prospero::GpuEnumValue(Prospero::BufferFormat::k2_10_10_10UNorm);
+	return single_channel || two_channel || four_channel;
 }
 
 [[nodiscard]] inline bool IsSupportedStorageDepthTile(uint32_t format, uint32_t type,
                                                       uint32_t width, uint32_t height,
                                                       uint32_t depth) noexcept {
-	return (format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt) &&
-	        type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) && width != 0 &&
-	        height != 0 && depth == 1) ||
-	       (format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) &&
-	        type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) && width != 0 &&
-	        height != 0 && depth == 1);
+	// Depth-tiled uint UAVs (#23 launcher path: 3840x2160 k8UInt 2D-array tile=kDepth;
+	// stencil/HTile-adjacent write-only images).
+	if (format != Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt) &&
+	    format != Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt)) {
+		return false;
+	}
+	if (width == 0 || height == 0 || depth == 0) {
+		return false;
+	}
+	if (format == Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt) &&
+	    (type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) ||
+	     type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D))) {
+		return true;
+	}
+	return format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) &&
+	       type == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D);
 }
 
 [[noreturn]] inline void UnsupportedColorView(const char* usage, vk::Format image_format,
@@ -99,24 +137,6 @@ namespace Libs::Graphics {
 [[nodiscard]] inline bool IsBgraSrgbStorageView(vk::Format image_format, vk::Format view_format,
                                                 uint32_t swizzle) noexcept {
 	return view_format == BgraSrgbStorageViewFormat(image_format) && swizzle == DstSel(6, 5, 4, 7);
-}
-
-[[nodiscard]] inline bool IsValidSampledColorSwizzle(uint32_t swizzle) noexcept {
-	if ((swizzle & ~0xfffu) != 0) {
-		return false;
-	}
-	for (uint32_t channel = 0; channel < 4; channel++) {
-		switch (GetDstSel(swizzle, channel)) {
-			case 0:
-			case 1:
-			case 4:
-			case 5:
-			case 6:
-			case 7: break;
-			default: return false;
-		}
-	}
-	return true;
 }
 
 [[nodiscard]] inline bool IsSupportedSampledColorView(vk::Format image_format,
@@ -197,26 +217,7 @@ IsSupportedSampledDepthUintResource(const ShaderRecompiler::IR::ImageResource& r
 
 [[nodiscard]] inline int SelectStorageColorView(vk::Format image_format, vk::Format view_format,
                                                 uint32_t swizzle) noexcept {
-	const bool single_channel =
-	    view_format == vk::Format::eR8Unorm || view_format == vk::Format::eR8Uint ||
-	    view_format == vk::Format::eR16Uint || view_format == vk::Format::eR32Uint ||
-	    view_format == vk::Format::eR16Sfloat || view_format == vk::Format::eR32Sfloat;
-	const bool two_channel = view_format == vk::Format::eR32G32Uint ||
-	                         view_format == vk::Format::eR16G16Uint ||
-	                         view_format == vk::Format::eR16G16Sfloat;
-	const bool swizzle_ok =
-	    swizzle == DstSel(4, 5, 6, 7) ||
-	    (single_channel && (swizzle == DstSel(4, 0, 0, 0) || swizzle == DstSel(4, 0, 0, 1) ||
-	                        swizzle == DstSel(4, 4, 4, 4))) ||
-	    (two_channel && (swizzle == DstSel(4, 5, 0, 1) || swizzle == DstSel(4, 5, 0, 0) ||
-	                     swizzle == DstSel(4, 5, 1, 1))) ||
-	    ((view_format == vk::Format::eR8G8B8A8Unorm || view_format == vk::Format::eR8G8B8A8Uint ||
-	      view_format == vk::Format::eB10G11R11UfloatPack32 ||
-	      view_format == vk::Format::eR16G16B16A16Sfloat) &&
-	     (swizzle == DstSel(4, 5, 6, 1) || swizzle == DstSel(4, 5, 6, 0))) ||
-	    ((view_format == vk::Format::eR8G8B8A8Unorm || view_format == vk::Format::eR8G8B8A8Uint) &&
-	     swizzle == DstSel(6, 5, 4, 7)) ||
-	    (view_format == vk::Format::eR32G32B32A32Sfloat && swizzle == DstSel(5, 6, 7, 4));
+	const bool swizzle_ok = IsValidSampledColorSwizzle(swizzle);
 	if ((image_format != view_format &&
 	     !IsBgraSrgbStorageView(image_format, view_format, swizzle)) ||
 	    !swizzle_ok) {

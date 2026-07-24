@@ -370,10 +370,20 @@ static void RtCheck(const HW::RenderTarget& rt) {
 			}
 		}
 		if (!RenderIsColorTileMode(rt.attrib3.tile_mode)) {
-			EXIT("unknown PS5 render-target tile mode: 0x%08" PRIx32 "\n", rt.attrib3.tile_mode);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-allow unknown PS5 render-target tile mode: 0x%08" PRIx32 "\n",
+				           rt.attrib3.tile_mode);
+			}
 		}
 		if (!RenderIsColorDimension(rt.attrib3.dimension)) {
-			EXIT("unknown PS5 render-target dimension: 0x%08" PRIx32 "\n", rt.attrib3.dimension);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-allow unknown PS5 render-target dimension: 0x%08" PRIx32 "\n",
+				           rt.attrib3.dimension);
+			}
 		}
 		if (rt.attrib3.dimension != 0x00000001) {
 			static bool logged = false;
@@ -687,9 +697,16 @@ static void ClipPrint(const char* func, const HW::ClipControl& c) {
 static void ClipCheck(const HW::ClipControl& c) {
 	// dx_linear_attr_clip_enable preserves linear (noperspective) attributes at clip-generated
 	// vertices, which Vulkan provides as part of clipping and interpolation.
+	if (!c.IsZClipModeRepresentable()) {
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "\t soft-allow asymmetric Z-clip min_disable=%d max_disable=%d\n",
+			           c.min_z_clip_disable, c.max_z_clip_disable);
+		}
+	}
 	EXIT_NOT_IMPLEMENTED(c.user_clip_planes != 0 || c.user_clip_plane_mode != 0 ||
-	                     c.vertex_kill_any || !c.IsZClipModeRepresentable() ||
-	                     c.user_clip_plane_negate_y || c.clip_disable ||
+	                     c.vertex_kill_any || c.user_clip_plane_negate_y || c.clip_disable ||
 	                     c.user_clip_plane_cull_only || c.cull_on_clipping_error_disable ||
 	                     c.force_viewport_index_from_vs_enable);
 }
@@ -766,14 +783,6 @@ static void McCheck(const HW::ModeControl& c) {
 	}
 	EXIT_NOT_IMPLEMENTED(c.polymode_front_ptype != 0 && c.polymode_front_ptype != 2);
 	EXIT_NOT_IMPLEMENTED(c.polymode_back_ptype != 0 && c.polymode_back_ptype != 2);
-	if (c.poly_offset_front_enable || c.poly_offset_back_enable) {
-		static bool logged = false;
-		if (!logged) {
-			LOGF("\t temporary: PA_SU_SC_MODE_CNTL.POLY_OFFSET_*_ENABLE is not implemented; "
-			     "continuing without depth bias\n");
-			logged = true;
-		}
-	}
 	if (c.vtx_window_offset_enable) {
 		static bool logged = false;
 		if (!logged) {

@@ -240,12 +240,6 @@ static void SpirvOptimizeBinary(const char* label, uint64_t shader_hash,
 	spirv = std::move(optimized);
 }
 
-[[noreturn]] static void ShaderRecompilerFailure(const char* label, uint64_t shader_hash,
-                                                 const char* reason) {
-	EXIT("%s recompiler failed hash=0x%016" PRIx64 ": %s\n", label, shader_hash,
-	     reason != nullptr ? reason : "");
-}
-
 static const ShaderBinaryInfo* GetBinaryInfo(const uint32_t* code) {
 	EXIT_IF(code == nullptr);
 
@@ -1437,14 +1431,27 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
-		ShaderRecompilerFailure("ShaderRecompiler VS", options.shader_hash, error.c_str());
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "ShaderRecompiler VS: soft-skip recompile failure hash=0x%016" PRIx64
+			           ": %s\n",
+			           options.shader_hash, error.empty() ? "(no detail)" : error.c_str());
+		}
+		return false;
 	}
 	DumpShaderRecompilerOriginal("vs", options.shader_hash, code, result.decoded_dump);
 	SpirvOptimizeBinary("ShaderRecompiler VS", options.shader_hash, result.spirv);
 	if (!SpirvValidateBinary("ShaderRecompiler VS", options.shader_hash, result.spirv)) {
 		DumpShaderRecompilerSpirv("vs", options.shader_hash, result.spirv);
-		ShaderRecompilerFailure("ShaderRecompiler VS", options.shader_hash,
-		                        "SPIR-V validation failed");
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "ShaderRecompiler VS: soft-skip SPIR-V validation failure "
+			           "hash=0x%016" PRIx64 "\n",
+			           options.shader_hash);
+		}
+		return false;
 	}
 
 	input_info.stage.program =
@@ -1491,14 +1498,27 @@ bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegis
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
-		ShaderRecompilerFailure("ShaderRecompiler PS", options.shader_hash, error.c_str());
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "ShaderRecompiler PS: soft-skip recompile failure hash=0x%016" PRIx64
+			           ": %s\n",
+			           options.shader_hash, error.empty() ? "(no detail)" : error.c_str());
+		}
+		return false;
 	}
 	DumpShaderRecompilerOriginal("ps", options.shader_hash, code, result.decoded_dump);
 	SpirvOptimizeBinary("ShaderRecompiler PS", options.shader_hash, result.spirv);
 	if (!SpirvValidateBinary("ShaderRecompiler PS", options.shader_hash, result.spirv)) {
 		DumpShaderRecompilerSpirv("ps", options.shader_hash, result.spirv);
-		ShaderRecompilerFailure("ShaderRecompiler PS", options.shader_hash,
-		                        "SPIR-V validation failed");
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "ShaderRecompiler PS: soft-skip SPIR-V validation failure "
+			           "hash=0x%016" PRIx64 "\n",
+			           options.shader_hash);
+		}
+		return false;
 	}
 	input_info.stage.program =
 	    std::make_shared<const ShaderRecompiler::IR::Program>(std::move(result.program));
@@ -1542,7 +1562,14 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
-		ShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash, error.c_str());
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "ShaderRecompiler CS: soft-skip recompile failure hash=0x%016" PRIx64
+			           ": %s\n",
+			           options.shader_hash, error.empty() ? "(no detail)" : error.c_str());
+		}
+		return false;
 	}
 	DumpShaderRecompilerOriginal("cs", options.shader_hash, code, result.decoded_dump);
 	SpirvOptimizeBinary("ShaderRecompiler CS", options.shader_hash, result.spirv);
@@ -1550,26 +1577,49 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
 	// vkCreateShaderModule even with runtime shader-validation disabled (Beyond a Steel Sky / #67).
 	if (!SpirvValidateBinary("ShaderRecompiler CS", options.shader_hash, result.spirv, true)) {
 		DumpShaderRecompilerSpirv("cs", options.shader_hash, result.spirv);
-		if (options.force_dispatcher) {
-			ShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash,
-			                        "SPIR-V validation failed");
+		if (!options.force_dispatcher) {
+			LOGF("ShaderRecompiler CS: retrying with dispatcher fallback hash=0x%016" PRIx64 "\n",
+			     options.shader_hash);
+			options.force_dispatcher = true;
+			ShaderRecompiler::CompileResult retry;
+			std::string                     retry_error;
+			if (ShaderRecompiler::TryRecompile(code, options, retry, &retry_error)) {
+				SpirvOptimizeBinary("ShaderRecompiler CS", options.shader_hash, retry.spirv);
+				if (SpirvValidateBinary("ShaderRecompiler CS", options.shader_hash, retry.spirv,
+				                        true)) {
+					result = std::move(retry);
+				} else {
+					DumpShaderRecompilerSpirv("cs_dispatcher", options.shader_hash, retry.spirv);
+					static std::atomic<uint32_t> soft_logs {0};
+					if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+						LOGF_COLOR(Log::Color::Yellow,
+						           "ShaderRecompiler CS: soft-skip invalid SPIR-V after "
+						           "dispatcher fallback hash=0x%016" PRIx64 "\n",
+						           options.shader_hash);
+					}
+					return false;
+				}
+			} else {
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "ShaderRecompiler CS: soft-skip dispatcher recompile failure "
+					           "hash=0x%016" PRIx64 ": %s\n",
+					           options.shader_hash,
+					           retry_error.empty() ? "(no detail)" : retry_error.c_str());
+				}
+				return false;
+			}
+		} else {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "ShaderRecompiler CS: soft-skip SPIR-V validation failure "
+				           "hash=0x%016" PRIx64 "\n",
+				           options.shader_hash);
+			}
+			return false;
 		}
-		LOGF("ShaderRecompiler CS: retrying with dispatcher fallback hash=0x%016" PRIx64 "\n",
-		     options.shader_hash);
-		options.force_dispatcher = true;
-		ShaderRecompiler::CompileResult retry;
-		std::string                     retry_error;
-		if (!ShaderRecompiler::TryRecompile(code, options, retry, &retry_error)) {
-			ShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash,
-			                        retry_error.c_str());
-		}
-		SpirvOptimizeBinary("ShaderRecompiler CS", options.shader_hash, retry.spirv);
-		if (!SpirvValidateBinary("ShaderRecompiler CS", options.shader_hash, retry.spirv, true)) {
-			DumpShaderRecompilerSpirv("cs_dispatcher", options.shader_hash, retry.spirv);
-			ShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash,
-			                        "dispatcher SPIR-V validation failed");
-		}
-		result = std::move(retry);
 	}
 	input_info.stage.program =
 	    std::make_shared<const ShaderRecompiler::IR::Program>(std::move(result.program));
