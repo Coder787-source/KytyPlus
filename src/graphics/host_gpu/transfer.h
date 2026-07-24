@@ -52,10 +52,10 @@ struct ImageImageCopy {
 	explicit ImageImageCopy(VulkanImage& source): src_image(source) {}
 
 	VulkanImage&         src_image;
-	uint32_t             src_level = 0;
-	uint32_t             dst_level = 0;
-	uint32_t             width     = 0;
-	uint32_t             height    = 0;
+	uint32_t             src_level  = 0;
+	uint32_t             dst_level  = 0;
+	uint32_t             width      = 0;
+	uint32_t             height     = 0;
 	uint32_t             src_layer  = 0;
 	uint32_t             dst_layer  = 0;
 	vk::ImageAspectFlags src_aspect = vk::ImageAspectFlagBits::eColor;
@@ -134,9 +134,10 @@ bool GuestBufferIsTiled(uint64_t vaddr, uint64_t size);
 bool IsBlockCompressedFormat(vk::Format format);
 uint32_t BlockCompressedBytesPerBlock(vk::Format format);
 
-void WaitForGraphicsIdle();
-// Prefer CP drain over vkDeviceWaitIdle when called from a command-processor thread.
+void WaitForQueueIdle();
+// Prefer CP drain over full queue idle when called from a command-processor thread.
 void WaitForSubmittedGraphics();
+void WaitForGraphicsIdle();
 
 inline std::pair<int, int> MipmapAtlasOffset(uint32_t lod, uint32_t width, uint32_t height) {
 	uint32_t mip_width  = width;

@@ -42,7 +42,6 @@ struct BufferBinding {
 
 [[nodiscard]] bool MergeOverlappingBufferCacheRange(BufferCacheRange& merged,
                                                     BufferCacheRange  candidate) noexcept;
-[[nodiscard]] bool CanMergeBufferCacheQueueMask(uint64_t queue_mask, uint32_t queue) noexcept;
 
 class BufferCache {
 public:

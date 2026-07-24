@@ -1147,7 +1147,7 @@ void TextureCache::MaterializeImagesToGuestLocked(
     const std::vector<std::shared_ptr<CachedImage>>& images) {
 	if (std::any_of(images.begin(), images.end(),
 	                [](const auto& cached) { return cached->gpu_modified; })) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 	}
 	for (const auto& cached: images) {
 		if (!cached->gpu_modified) {
@@ -1415,7 +1415,7 @@ void TextureCache::RetireSampledTargetAliases(const ImageInfo& requested) {
 	IsolateRetirementSet(retire);
 	RequireRetirementIsolation(retire, "sampled target", requested.address, requested.size);
 	if (wait_idle) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 	}
 	for (auto* cached: retire) {
 		if (!cached->gpu_modified) {
@@ -1505,7 +1505,7 @@ void TextureCache::RetireStorageDepthAliasLocked(const ImageInfo& requested) {
 	if (selected == nullptr) {
 		return;
 	}
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 	const auto transfer = m_readback->DownloadDepthTarget(*selected, false);
 	for (const auto& range: transfer.Ranges()) {
 		m_memory_tracker.ForEachDownloadRange<true>(range.address, range.size,
@@ -1518,7 +1518,7 @@ void TextureCache::RetireStorageDepthAliasLocked(const ImageInfo& requested) {
 TextureCache::~TextureCache() {
 	m_readback.reset();
 	if (!m_images.empty()) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 	}
 	for (const auto& image: m_images) {
 		UnregisterImageLocked(*image, false);
@@ -1628,14 +1628,11 @@ VulkanImage& TextureCache::FindTexture(CommandBuffer& command, const ImageInfo& 
 		}
 	}
 	if (!storage_retire.empty()) {
-		// Either a guest-current heap reuse (drop clean storage) or a modified mip/storage that
-		// must be read back before the sampled image rebuilds from coherent guest backing.
-		const bool needs_download =
-		    std::any_of(storage_retire.begin(), storage_retire.end(),
-		                [](const CachedImage* cached) { return cached->gpu_modified; });
-		if (needs_download) {
-			Transfer::WaitForGraphicsIdle();
-		}
+		// shadPS4 resolves a modified cached mip before replacing it with the containing image.
+		// Kyty does not yet copy between those independently allocated Vulkan images, so use the
+		// existing synchronized tiled readback seam and rebuild the complete chain from coherent
+		// guest backing. This is an uncommon ownership transition, not a frame lookup fast path.
+		Transfer::WaitForQueueIdle();
 		for (auto* cached: storage_retire) {
 			if (!cached->gpu_modified) {
 				if (cached->buffer_modified || cached->info.IsCpuDirty() ||
@@ -2896,7 +2893,7 @@ void TextureCache::UnregisterVideoOutSurfaces(const std::vector<VideoOutVulkanIm
 			     cached->Address(), cached->Size());
 		}
 	}
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 	for (auto* cached: selected) {
 		if (cached->gpu_modified) {
 			m_memory_tracker.UnmarkRegionAsGpuModified(cached->Address(), cached->Size());
@@ -3256,7 +3253,7 @@ void TextureCache::SynchronizeColorImageToBufferLocked(CachedImage& cached, uint
 		     target.address, target.size);
 	}
 
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 	std::vector<ImageBufferCopy> regions;
 	std::vector<BufferImageCopy> tiled_regions;
 	TextureUploadLayout          tiled_layout {};
@@ -3364,7 +3361,7 @@ void TextureCache::SynchronizeDepthImageToBufferLocked(CachedImage& cached, uint
 		     info.layers, static_cast<int>(info.format), info.guest_format, info.bytes_per_element,
 		     has_stencil, has_htile, cached.gpu_modified, cached.buffer_modified);
 	}
-	Transfer::WaitForGraphicsIdle();
+	Transfer::WaitForQueueIdle();
 	const auto regions = Transfer::MakeLayeredImageBufferCopies(
 	    1, info.size, info.pitch, info.width, info.height, vk::ImageAspectFlagBits::eDepth);
 	TileBlockLayout block {};
@@ -3969,7 +3966,7 @@ bool TextureCache::InvalidateMemory(PageFaultAccess access, uint64_t vaddr, uint
 
 		if (needs_readback) {
 			if (GraphicsRunIsCommandProcessorThread()) {
-				GraphicsRunFinishCommandProcessors();
+				GraphicsRunFinishScheduler();
 			}
 			m_readback->Request(access, vaddr, size);
 			action = m_memory_tracker.BeginCpuFault(vaddr, size, access);
@@ -4110,7 +4107,7 @@ void TextureCache::UnmapMemory(uint64_t vaddr, uint64_t size) {
 		}
 	}
 	if (wait_idle) {
-		Transfer::WaitForGraphicsIdle();
+		Transfer::WaitForQueueIdle();
 	}
 	for (auto& cached: m_images) {
 		if (!cached->OverlapsRange(vaddr, size, false) || !cached->gpu_modified) {
