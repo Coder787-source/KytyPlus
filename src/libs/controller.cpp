@@ -82,8 +82,8 @@ private:
 	[[nodiscard]] ControllerState GetLastState() const;
 	void                          AddState(const ControllerState& state);
 
-	Common::Mutex    m_mutex;
-	std::vector<int> m_connected_ids;
+	mutable Common::Mutex m_mutex;
+	std::vector<int>      m_connected_ids;
 	int              m_active_id       = -1;
 	bool             m_connected       = false;
 	int              m_connected_count = 0;
@@ -118,8 +118,6 @@ static void pad_fill_data(PadData* data, const ControllerState& state, bool conn
 	data->analog_buttons_l2      = state.axes[static_cast<int>(Axis::TriggerLeft)];
 	data->analog_buttons_r2      = state.axes[static_cast<int>(Axis::TriggerRight)];
 	data->orientation_w          = 1.0f;
-	data->touch_data_touch0_id   = 1;
-	data->touch_data_touch1_id   = 2;
 	data->connected              = connected;
 	data->timestamp              = state.time;
 	data->connected_count        = pad_connected_count_to_u8(connected_count);
@@ -137,13 +135,15 @@ static void pad_fill_data(PadData* data, const ControllerState& state, bool conn
 
 		uint8_t touch_num = 0;
 		if (ext->touch0_active) {
-			data->touch_data_touch0_x = ext->touch0_x;
-			data->touch_data_touch0_y = ext->touch0_y;
+			data->touch_data_touch0_x  = ext->touch0_x;
+			data->touch_data_touch0_y  = ext->touch0_y;
+			data->touch_data_touch0_id = 1;
 			touch_num++;
 		}
 		if (ext->touch1_active) {
-			data->touch_data_touch1_x = ext->touch1_x;
-			data->touch_data_touch1_y = ext->touch1_y;
+			data->touch_data_touch1_x  = ext->touch1_x;
+			data->touch_data_touch1_y  = ext->touch1_y;
+			data->touch_data_touch1_id = 2;
 			touch_num++;
 		}
 		data->touch_data_touch_num = touch_num;
@@ -323,6 +323,8 @@ void GameController::Axis(int id, Controller::Axis axis, int value) {
 }
 
 int GameController::GetActiveId() const {
+	Common::LockGuard lock(m_mutex);
+
 	return m_active_id;
 }
 
@@ -333,6 +335,8 @@ void GameController::SetMotionEnabled(bool enabled) {
 }
 
 bool GameController::GetMotionEnabled() const {
+	Common::LockGuard lock(m_mutex);
+
 	return m_motion_enabled;
 }
 
@@ -625,9 +629,17 @@ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num) {
 		ret_num = 1;
 	}
 
+	// Extended/motion state (gyro, accel, touch) is only polled once "now" per call, but
+	// ReadStates can return up to `num` buffered samples spanning many past frames (oldest
+	// first). Stamping the same current motion snapshot onto every historical sample would
+	// fabricate motion data games didn't actually see at those timestamps -- e.g. gyro-aim
+	// integration across buffered samples would get identical readings repeated `ret_num`
+	// times instead of the (unavailable) motion at each sample's own time. Only attach it to
+	// the most recent sample and leave older ones without fabricated extended data.
 	const auto ext = pad_poll_active_extended_state();
 	for (int i = 0; i < ret_num; i++) {
-		pad_fill_data(&data[i], states[i], connected, connected_count, &ext);
+		pad_fill_data(&data[i], states[i], connected, connected_count,
+		             (i == ret_num - 1) ? &ext : nullptr);
 	}
 
 	return ret_num;

@@ -1731,6 +1731,10 @@ struct Ngs2SamplerVoiceState {
 
 static Ngs2Internal*     g_ngs_list   = nullptr;
 static Ngs2RackInternal* g_racks_list = nullptr;
+// Guards mutation/traversal of the g_ngs_list/g_racks_list head pointers and next-links
+// themselves. Per-system ngs->mutex only protects a given system's own state (voices, render),
+// not the global intrusive lists that Destroy/Render/Create walk across all systems.
+static Common::Mutex g_ngs_lists_mutex;
 
 static_assert(sizeof(Ngs2SystemOption) == 144);
 static_assert(sizeof(Ngs2RackOption) == 176);
@@ -2017,10 +2021,45 @@ static Ngs2Internal* Ngs2CreateSystemInternal(const Ngs2SystemOption* option, vo
 	auto* ngs = new (host_buffer) Ngs2Internal;
 
 	ngs->option = *option;
-	ngs->next   = g_ngs_list;
-	g_ngs_list  = ngs;
+
+	Common::LockGuard lock(g_ngs_lists_mutex);
+	ngs->next  = g_ngs_list;
+	g_ngs_list = ngs;
 
 	return ngs;
+}
+
+// Unlinks and returns whether `ngs` was found in the global system list. Must be called
+// before the backing host_buffer for `ngs` is freed/reused, otherwise Ngs2SystemRender's
+// rack traversal (which filters on rack->ngs == ngs) and any lingering rack still pointing
+// at this system would read freed memory.
+static bool Ngs2UnlinkSystem(Ngs2Internal* ngs) {
+	Common::LockGuard lock(g_ngs_lists_mutex);
+	Ngs2Internal**    cur = &g_ngs_list;
+	while (*cur != nullptr) {
+		if (*cur == ngs) {
+			*cur = ngs->next;
+			return true;
+		}
+		cur = &(*cur)->next;
+	}
+	return false;
+}
+
+// Unlinks `rack` from the global rack list and returns whether it was found. Racks are never
+// pointed to after this returns, so it's safe for the caller to treat the backing buffer as
+// free once this returns.
+static bool Ngs2UnlinkRack(Ngs2RackInternal* rack) {
+	Common::LockGuard   lock(g_ngs_lists_mutex);
+	Ngs2RackInternal** cur = &g_racks_list;
+	while (*cur != nullptr) {
+		if (*cur == rack) {
+			*cur = rack->next;
+			return true;
+		}
+		cur = &(*cur)->next;
+	}
+	return false;
 }
 
 static bool Ngs2RackIsCustom(Ngs2RackType type) {
@@ -2273,6 +2312,27 @@ int KYTY_SYSV_ABI Ngs2SystemDestroy(uintptr_t system_handle, Ngs2ContextBufferIn
 	PRINT_NAME();
 	LOGF("\t system_handle = 0x%016" PRIx64 "\n", static_cast<uint64_t>(system_handle));
 
+	if (system_handle != 0) {
+		auto* ngs = reinterpret_cast<Ngs2Internal*>(system_handle);
+		// Any rack still pointing at this system is now dangling once the guest frees/reuses
+		// this system's host_buffer; racks must be destroyed before their owning system, but
+		// defensively drop them from the global list too so a stray Ngs2SystemRender walk
+		// never dereferences a rack whose ngs backpointer is about to go stale.
+		{
+			Common::LockGuard lock(g_ngs_lists_mutex);
+			Ngs2RackInternal** cur = &g_racks_list;
+			while (*cur != nullptr) {
+				if ((*cur)->ngs == ngs) {
+					*cur = (*cur)->next;
+				} else {
+					cur = &(*cur)->next;
+				}
+			}
+		}
+		Ngs2UnlinkSystem(ngs);
+		ngs->~Ngs2Internal();
+	}
+
 	if (buffer_info != nullptr) {
 		std::memset(buffer_info, 0, sizeof(Ngs2ContextBufferInfo));
 	}
@@ -2373,8 +2433,11 @@ int KYTY_SYSV_ABI Ngs2RackCreate(uintptr_t system_handle, uint32_t rack_id,
 	rack->allocator = Ngs2BufferAllocator();
 	rack->ngs       = ngs;
 
-	rack->next   = g_racks_list;
-	g_racks_list = rack;
+	{
+		Common::LockGuard lists_lock(g_ngs_lists_mutex);
+		rack->next   = g_racks_list;
+		g_racks_list = rack;
+	}
 
 	for (uint32_t i = 0; i < option->max_voices; i++) {
 		voices[i].rack  = rack;
@@ -2458,6 +2521,15 @@ int KYTY_SYSV_ABI Ngs2RackDestroy(uintptr_t rack_handle, Ngs2ContextBufferInfo* 
 	PRINT_NAME();
 	LOGF("\t rack_handle = 0x%016" PRIx64 "\n", static_cast<uint64_t>(rack_handle));
 
+	if (rack_handle != 0) {
+		auto* rack = reinterpret_cast<Ngs2RackInternal*>(rack_handle);
+		// Must unlink before the guest is allowed to free/reuse this rack's host_buffer,
+		// otherwise Ngs2SystemRender's `for (rack = g_racks_list; ...)` walk (which runs
+		// under a different system's lock, or concurrently on another thread) dereferences
+		// freed memory through the stale rack->next chain.
+		Ngs2UnlinkRack(rack);
+	}
+
 	if (buffer_info != nullptr) {
 		std::memset(buffer_info, 0, sizeof(Ngs2ContextBufferInfo));
 	}
@@ -2524,6 +2596,7 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 	    ngs->option.num_grain_samples != 0 ? ngs->option.num_grain_samples : 256;
 	const uint32_t out_rate = ngs->option.sample_rate != 0 ? ngs->option.sample_rate : 48000;
 
+	Common::LockGuard lists_lock(g_ngs_lists_mutex);
 	for (auto* rack = g_racks_list; rack != nullptr; rack = rack->next) {
 		if (rack->ngs != ngs) {
 			continue;
