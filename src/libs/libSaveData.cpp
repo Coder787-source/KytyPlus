@@ -312,6 +312,14 @@ int KYTY_SYSV_ABI SaveDataCreateTransactionResource(uint32_t size) {
 
 	LOGF("\t size = %" PRIu32 "\n", size);
 
+	// Demon's Souls fresh-save path (PPSA01341/01342) passes size=0xC0000 as a work
+	// buffer length and treats the returned value as a guest pointer (loads +0x08).
+	// Returning the small counter 1 caused a repeatable AV at guest address 0x9 on
+	// SharpEmu; return null for that call shape so the title skips the deref.
+	if (size == 0xC0000u) {
+		return 0;
+	}
+
 	return g_next_transaction_resource++;
 }
 

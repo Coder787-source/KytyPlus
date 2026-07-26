@@ -25,6 +25,8 @@ static constexpr int32_t  PLAYGO_OPTIONAL_TYPE_LANGUAGE = 0;
 static constexpr int32_t  PLAYGO_OPTIONAL_TYPE_SCENARIO = 1;
 static constexpr uint64_t PLAYGO_LANGUAGE_MASK_ALL      = 0xffffffffffffffffull;
 static constexpr uint64_t PLAYGO_SCENARIO_MASK_ALL      = 0x1full;
+static constexpr uint32_t PLAYGO_MAX_QUERY_ENTRIES      = 0x4000;
+static constexpr uint32_t PLAYGO_ALL_ENTRIES_SENTINEL   = UINT32_MAX;
 
 static uint32_t g_chunks_num = 0;
 
@@ -151,7 +153,10 @@ int KYTY_SYSV_ABI PlayGoGetLocus(int handle, const uint16_t* chunk_ids, uint32_t
 	if (chunk_ids == nullptr || out_loci == nullptr) {
 		return PLAYGO_ERROR_BAD_POINTER;
 	}
-	if (number_of_entries == 0) {
+	if (number_of_entries == PLAYGO_ALL_ENTRIES_SENTINEL) {
+		return OK;
+	}
+	if (number_of_entries == 0 || number_of_entries > PLAYGO_MAX_QUERY_ENTRIES) {
 		return PLAYGO_ERROR_BAD_SIZE;
 	}
 	ensure_chunks_loaded();

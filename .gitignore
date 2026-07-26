@@ -4,3 +4,4 @@
 build/
 _Build/
 _Build/vscode-clang/
+.aider*

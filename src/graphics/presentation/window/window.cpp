@@ -112,6 +112,7 @@ static uint32_t ControllerButtonToPadButton(int button) {
 		case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return Controller::PAD_BUTTON_DOWN;
 		case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return Controller::PAD_BUTTON_LEFT;
 		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return Controller::PAD_BUTTON_RIGHT;
+		case SDL_CONTROLLER_BUTTON_TOUCHPAD: return Controller::PAD_BUTTON_TOUCH_PAD;
 		default: return 0;
 	}
 }
@@ -474,6 +475,10 @@ void GameEventController([[maybe_unused]] WindowGame&            game,
 		const auto button = ControllerButtonToPadButton(f.button);
 		if (button != 0) {
 			Controller::ControllerButton(f.id, button, f.down);
+		} else if (f.button == SDL_CONTROLLER_BUTTON_MISC1) {
+			// DualSense's dedicated mic-mute button; not part of ScePadData's button mask on
+			// real hardware, so it only drives the mic LED rather than a PAD_BUTTON_* bit.
+			Controller::ControllerMicButton(f.id, f.down);
 		}
 	}
 
@@ -485,6 +490,254 @@ void GameEventController([[maybe_unused]] WindowGame&            game,
 		}
 	}
 }
+
+} // namespace Libs::Graphics
+
+namespace Libs::Controller {
+
+void ControllerSetRumble(int id, uint8_t large_motor, uint8_t small_motor) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	// The real ScePad API takes a persistent 0-255 motor intensity with no duration, while SDL's
+	// rumble is duration-based. Games poll/refresh vibration state frequently, so a short hold
+	// bridges the gap: a fresh call before it expires re-arms it, and calling with 0 stops it
+	// immediately (0-intensity rumble cancels any active effect).
+	constexpr Uint32 RUMBLE_HOLD_MS = 250;
+	const auto        low_freq       = static_cast<Uint16>(large_motor) * 257U;
+	const auto        high_freq      = static_cast<Uint16>(small_motor) * 257U;
+
+	SDL_GameControllerRumble(pad, low_freq, high_freq, RUMBLE_HOLD_MS);
+}
+
+void ControllerSetLightBar(int id, uint8_t r, uint8_t g, uint8_t b) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr || !SDL_GameControllerHasLED(pad)) {
+		return;
+	}
+
+	SDL_GameControllerSetLED(pad, r, g, b);
+}
+
+void ControllerSetPlayerIndex(int id, int player_index) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	// SDL's PS5 HIDAPI driver reproduces the same 5-LED centered mapping the console itself
+	// uses (see SetLightsForPlayerIndex()/dualsense_set_player_leds() in hid-playstation.c),
+	// triggered automatically whenever the player index changes.
+	SDL_GameControllerSetPlayerIndex(pad, player_index);
+}
+
+// Mirrors DS5EffectsState_t from SDL's bundled hidapi PS5 driver (SDL_hidapi_ps5.c), which in
+// turn is verified against Sony's own upstreamed Linux kernel driver's
+// dualsense_output_report_common (hid-playstation.c, GPL-2.0-or-later). Both agree on this exact
+// 47-byte layout. Sent as-is through SDL_GameControllerSendEffect(), which lets SDL2's own
+// HIDAPI PS5 driver handle the USB/Bluetooth framing (headers, CRC32) transparently -- so this
+// works unmodified on both Windows and Linux.
+struct DualSenseEffectsReport {
+	uint8_t enable_bits1               = 0;
+	uint8_t enable_bits2               = 0;
+	uint8_t rumble_right               = 0;
+	uint8_t rumble_left                = 0;
+	uint8_t headphone_volume           = 0;
+	uint8_t speaker_volume             = 0;
+	uint8_t microphone_volume          = 0;
+	uint8_t audio_enable_bits          = 0;
+	uint8_t mic_light_mode             = 0;
+	uint8_t audio_mute_bits            = 0;
+	uint8_t right_trigger_effect[11]   = {};
+	uint8_t left_trigger_effect[11]    = {};
+	uint8_t unknown1[6]                = {};
+	uint8_t enable_bits3               = 0;
+	uint8_t unknown2[2]                = {};
+	uint8_t led_anim                   = 0;
+	uint8_t led_brightness             = 0;
+	uint8_t pad_lights                 = 0;
+	uint8_t led_red                    = 0;
+	uint8_t led_green                  = 0;
+	uint8_t led_blue                   = 0;
+};
+
+static_assert(sizeof(DualSenseEffectsReport) == 47);
+
+// Enable-bit flags for enable_bits1/enable_bits2/audio_mute_bits. The trigger-effect and
+// mic-light bits are cross-referenced against widely-corroborated community reverse-engineering
+// of the DualSense output report and against SDL_hidapi_ps5.c's own k_EDS5Effect* enum. The
+// audio-related bits are directly verified against Linux's hid-playstation.c
+// (DS_OUTPUT_VALID_FLAG0_SPEAKER_VOLUME_ENABLE/MIC_VOLUME_ENABLE,
+// DS_OUTPUT_VALID_FLAG1_MIC_MUTE_LED_CONTROL_ENABLE/POWER_SAVE_CONTROL_ENABLE, and
+// DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE), which is an authoritative Sony-authored source.
+constexpr uint8_t DS5_ENABLE1_RIGHT_TRIGGER_EFFECT = 0x04;
+constexpr uint8_t DS5_ENABLE1_LEFT_TRIGGER_EFFECT  = 0x08;
+constexpr uint8_t DS5_ENABLE1_SPEAKER_VOLUME       = 0x20;
+constexpr uint8_t DS5_ENABLE1_MIC_VOLUME           = 0x40;
+constexpr uint8_t DS5_ENABLE2_MIC_LIGHT            = 0x01;
+constexpr uint8_t DS5_ENABLE2_POWER_SAVE_CONTROL   = 0x02;
+constexpr uint8_t DS5_POWER_SAVE_MIC_MUTE          = 0x10;
+
+static void WriteTriggerCommand(uint8_t* dest, const Controller::DualSenseTriggerCommand& cmd) {
+	dest[0] = cmd.mode;
+	std::memcpy(dest + 1, cmd.param, sizeof(cmd.param));
+}
+
+void DualSenseSetTriggerEffect(int id, const Controller::DualSenseTriggerCommand& left,
+                               const Controller::DualSenseTriggerCommand& right) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	DualSenseEffectsReport report {};
+	report.enable_bits1 = DS5_ENABLE1_RIGHT_TRIGGER_EFFECT | DS5_ENABLE1_LEFT_TRIGGER_EFFECT;
+	WriteTriggerCommand(report.right_trigger_effect, right);
+	WriteTriggerCommand(report.left_trigger_effect, left);
+
+	SDL_GameControllerSendEffect(pad, &report, sizeof(report));
+}
+
+void DualSenseSetMicMuted(int id, bool muted, uint8_t led_mode) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	DualSenseEffectsReport report {};
+	// valid_flag1 bits: enable both the mic-mute LED control and the power-save control that
+	// actually gates the microphone hardware (see hid-playstation.c's dualsense_output_worker).
+	report.enable_bits2   = static_cast<uint8_t>(DS5_ENABLE2_MIC_LIGHT | DS5_ENABLE2_POWER_SAVE_CONTROL);
+	report.mic_light_mode = led_mode;
+	report.audio_mute_bits =
+	    static_cast<uint8_t>(muted ? DS5_POWER_SAVE_MIC_MUTE : 0);
+
+	SDL_GameControllerSendEffect(pad, &report, sizeof(report));
+}
+
+void DualSenseSetAudioVolume(int id, uint8_t speaker_volume, uint8_t mic_volume) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	DualSenseEffectsReport report {};
+	report.enable_bits1      = static_cast<uint8_t>(DS5_ENABLE1_SPEAKER_VOLUME | DS5_ENABLE1_MIC_VOLUME);
+	report.speaker_volume    = speaker_volume;
+	report.microphone_volume = mic_volume;
+
+	SDL_GameControllerSendEffect(pad, &report, sizeof(report));
+}
+
+void ControllerSetMotionSensorsEnabled(int id, bool enabled) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	if (SDL_GameControllerHasSensor(pad, SDL_SENSOR_GYRO)) {
+		SDL_GameControllerSetSensorEnabled(pad, SDL_SENSOR_GYRO, enabled ? SDL_TRUE : SDL_FALSE);
+	}
+	if (SDL_GameControllerHasSensor(pad, SDL_SENSOR_ACCEL)) {
+		SDL_GameControllerSetSensorEnabled(pad, SDL_SENSOR_ACCEL, enabled ? SDL_TRUE : SDL_FALSE);
+	}
+}
+
+// Touchpad resolution matches what PadGetControllerInformation already reports to guests.
+constexpr float TOUCHPAD_RESOLUTION_X = 1920.0f;
+constexpr float TOUCHPAD_RESOLUTION_Y = 943.0f;
+
+static uint16_t NormalizedTouchToPixel(float normalized, float resolution) {
+	const float clamped = (normalized < 0.0f ? 0.0f : (normalized > 1.0f ? 1.0f : normalized));
+	return static_cast<uint16_t>(clamped * resolution);
+}
+
+void ControllerPollExtendedState(int id, bool motion_enabled, ControllerExtendedState* out) {
+	EXIT_IF(out == nullptr);
+
+	*out = ControllerExtendedState {};
+
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	if (SDL_GameControllerGetNumTouchpads(pad) > 0) {
+		Uint8 state    = 0;
+		float x        = 0.0f;
+		float y        = 0.0f;
+		float pressure = 0.0f;
+		if (SDL_GameControllerGetTouchpadFinger(pad, 0, 0, &state, &x, &y, &pressure) == 0 &&
+		    state != 0) {
+			out->touch0_active = true;
+			out->touch0_x      = NormalizedTouchToPixel(x, TOUCHPAD_RESOLUTION_X);
+			out->touch0_y      = NormalizedTouchToPixel(y, TOUCHPAD_RESOLUTION_Y);
+		}
+		if (SDL_GameControllerGetTouchpadFinger(pad, 0, 1, &state, &x, &y, &pressure) == 0 &&
+		    state != 0) {
+			out->touch1_active = true;
+			out->touch1_x      = NormalizedTouchToPixel(x, TOUCHPAD_RESOLUTION_X);
+			out->touch1_y      = NormalizedTouchToPixel(y, TOUCHPAD_RESOLUTION_Y);
+		}
+	}
+
+	// DualSense Edge extras: SDL's builtin PS5 mapping (SDL_gamecontroller.c) only assigns these
+	// PADDLE1..4 slots when the connected device is actually detected as an Edge, so this is a
+	// harmless SDL_FALSE/no-op query on a standard DualSense.
+	if (SDL_GameControllerHasButton(pad, SDL_CONTROLLER_BUTTON_PADDLE1)) {
+		out->edge_paddle_right = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_PADDLE1) != 0;
+		out->edge_paddle_left  = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_PADDLE2) != 0;
+		out->edge_function_right =
+		    SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_PADDLE3) != 0;
+		out->edge_function_left =
+		    SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_PADDLE4) != 0;
+	}
+
+	if (motion_enabled) {
+		float gyro[3]  = {0.0f, 0.0f, 0.0f};
+		float accel[3] = {0.0f, 0.0f, 0.0f};
+		// SDL's gyro (rad/s) and accel (m/s^2) use the same physical units as ScePadData's
+		// angular_velocity/acceleration fields, so no conversion is needed here.
+		const bool has_gyro  = SDL_GameControllerGetSensorData(pad, SDL_SENSOR_GYRO, gyro, 3) == 0;
+		const bool has_accel = SDL_GameControllerGetSensorData(pad, SDL_SENSOR_ACCEL, accel, 3) == 0;
+		if (has_gyro || has_accel) {
+			out->motion_valid = true;
+			out->gyro_x       = gyro[0];
+			out->gyro_y       = gyro[1];
+			out->gyro_z       = gyro[2];
+			out->accel_x      = accel[0];
+			out->accel_y      = accel[1];
+			out->accel_z      = accel[2];
+		}
+	}
+}
+
+BatteryLevel ControllerGetBatteryLevel(int id) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return BatteryLevel::Unknown;
+	}
+
+	auto* joystick = SDL_GameControllerGetJoystick(pad);
+	if (joystick == nullptr) {
+		return BatteryLevel::Unknown;
+	}
+
+	switch (SDL_JoystickCurrentPowerLevel(joystick)) {
+		case SDL_JOYSTICK_POWER_EMPTY: return BatteryLevel::Empty;
+		case SDL_JOYSTICK_POWER_LOW: return BatteryLevel::Low;
+		case SDL_JOYSTICK_POWER_MEDIUM: return BatteryLevel::Medium;
+		case SDL_JOYSTICK_POWER_FULL: return BatteryLevel::Full;
+		case SDL_JOYSTICK_POWER_WIRED: return BatteryLevel::Wired;
+		default: return BatteryLevel::Unknown;
+	}
+}
+
+} // namespace Libs::Controller
+
+namespace Libs::Graphics {
 
 void GameEventDisplay([[maybe_unused]] WindowGame& game) {
 	auto* p = static_cast<WindowGamePrivate*>(game.private_data);

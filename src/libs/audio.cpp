@@ -13,6 +13,9 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 
+#include <optional>
+#include <string>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -43,6 +46,34 @@ static bool audio_out_port_type_is_valid(int type) {
 	return (type >= AUDIO_OUT_PORT_TYPE_MAIN && type <= AUDIO_OUT_PORT_TYPE_PADSPK) ||
 	       type == AUDIO_OUT_PORT_TYPE_VIBRATION || type == AUDIO_OUT_PORT_TYPE_AUDIO3D ||
 	       type == AUDIO_OUT_PORT_TYPE_AUX;
+}
+
+// The DualSense exposes its built-in speaker and microphone to the host OS as an ordinary
+// USB/Bluetooth audio class device (separate from its HID interface), which is why it shows up
+// in the system's normal sound settings as an output+input device named after the controller
+// (Windows shows it as "Wireless Controller"; other platforms/OSes commonly report "DualSense").
+// SDL2 exposes it exactly like any other audio device once opened by name, so PADSPK (the
+// PS5 SDK's dedicated "output to the pad's speaker" port type) and microphone capture can
+// simply be pointed at that device by matching against known name substrings, falling back to
+// whatever the OS default is when no DualSense audio endpoint is present or connected.
+static std::optional<std::string> FindDualSenseAudioDeviceName(bool iscapture) {
+	static constexpr const char* kNameNeedles[] = {"dualsense", "wireless controller"};
+
+	const int count = SDL_GetNumAudioDevices(iscapture ? 1 : 0);
+	for (int i = 0; i < count; i++) {
+		const char* name = SDL_GetAudioDeviceName(i, iscapture ? 1 : 0);
+		if (name == nullptr) {
+			continue;
+		}
+		const auto lower = Common::ToLower(name);
+		for (const auto* needle: kNameNeedles) {
+			if (Common::ContainsStr(lower, needle)) {
+				return std::string(name);
+			}
+		}
+	}
+
+	return std::nullopt;
 }
 
 } // namespace
@@ -119,6 +150,9 @@ private:
 		uint32_t freq            = 0;
 		Format   format          = Format::Unknown;
 		uint64_t last_input_time = 0;
+
+		SDL_AudioDeviceID audio_device = 0;
+		SDL_AudioSpec     audio_spec   = {};
 	};
 
 	Common::Mutex m_mutex;
@@ -135,6 +169,9 @@ private:
 	static const void*     PrepareOutputBuffer(const PortOut& port, const void* data,
 	                                           std::vector<uint8_t>* buffer);
 	static bool            QueueSdlAudio(PortOut* port, const void* data, bool blocking);
+	static bool            OpenSdlCaptureDevice(PortIn* port);
+	static void            CloseSdlCaptureDevice(PortIn* port);
+	static uint32_t        DequeueSdlCapture(PortIn* port, void* dest, uint32_t dest_bytes);
 };
 
 static Audio* g_audio = nullptr;
@@ -197,6 +234,9 @@ Audio::~Audio() {
 	for (auto& port: m_out_ports) {
 		CloseSdlDevice(&port);
 	}
+	for (auto& port: m_in_ports) {
+		CloseSdlCaptureDevice(&port);
+	}
 }
 
 bool Audio::FormatIsFloat(Format format) {
@@ -237,8 +277,30 @@ bool Audio::OpenSdlDevice(PortOut* port) {
 
 	SDL_AudioSpec obtained {};
 
+	// ScePad's dedicated PADSPK port type means "play through the controller's own speaker" --
+	// route it there specifically instead of the system default output when a DualSense audio
+	// device is present, matching what the real console does.
+	const char* device_name = nullptr;
+	std::string dualsense_name;
+	if (port->type == AUDIO_OUT_PORT_TYPE_PADSPK) {
+		if (auto found = FindDualSenseAudioDeviceName(/* iscapture */ false)) {
+			dualsense_name = *found;
+			device_name    = dualsense_name.c_str();
+		}
+	}
+
 	port->audio_device =
-	    SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, SDL_AUDIO_ALLOW_ANY_CHANGE);
+	    SDL_OpenAudioDevice(device_name, 0, &desired, &obtained, SDL_AUDIO_ALLOW_ANY_CHANGE);
+	if (port->audio_device == 0 && device_name != nullptr) {
+		// The matched device may have been unplugged/reconnected between enumeration and open,
+		// or may simply refuse this format; fall back to the default output rather than
+		// failing the whole port.
+		LOGF("AudioOut: failed to open DualSense speaker device '%s' (%s), falling back to "
+		     "default\n",
+		     device_name, SDL_GetError());
+		port->audio_device =
+		    SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, SDL_AUDIO_ALLOW_ANY_CHANGE);
+	}
 	if (port->audio_device == 0) {
 		LOGF("AudioOut: SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
 		return false;
@@ -247,8 +309,9 @@ bool Audio::OpenSdlDevice(PortOut* port) {
 	port->audio_spec = obtained;
 	SDL_PauseAudioDevice(port->audio_device, 0);
 
-	LOGF("AudioOut: opened SDL device (%d Hz, %u ch, format 0x%04x)\n", obtained.freq,
-	     obtained.channels, obtained.format);
+	LOGF("AudioOut: opened SDL device%s%s (%d Hz, %u ch, format 0x%04x)\n",
+	     device_name != nullptr ? " " : "", device_name != nullptr ? device_name : "",
+	     obtained.freq, obtained.channels, obtained.format);
 	return true;
 }
 
@@ -262,6 +325,149 @@ void Audio::CloseSdlDevice(PortOut* port) {
 
 	port->audio_device = 0;
 	port->audio_spec   = {};
+}
+
+bool Audio::OpenSdlCaptureDevice(PortIn* port) {
+	EXIT_IF(port == nullptr);
+
+	if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+		LOGF("AudioIn: SDL audio init failed: %s\n", SDL_GetError());
+		return false;
+	}
+
+	// ScePad's audio-input port models the DualSense's own microphone specifically (as opposed
+	// to some other system mic), so prefer its capture device by name, same as the speaker
+	// output side; fall back to the OS default capture device if no DualSense mic is found.
+	const char* device_name = nullptr;
+	std::string dualsense_name;
+	if (auto found = FindDualSenseAudioDeviceName(/* iscapture */ true)) {
+		dualsense_name = *found;
+		device_name    = dualsense_name.c_str();
+	}
+
+	SDL_AudioSpec desired {};
+	desired.freq     = static_cast<int>(port->freq);
+	desired.format   = AUDIO_S16SYS;
+	desired.channels = static_cast<Uint8>(port->format == Format::Signed16bitStereo ? 2 : 1);
+	desired.samples  = static_cast<Uint16>(port->samples_num);
+	desired.callback = nullptr;
+
+	SDL_AudioSpec obtained {};
+
+	port->audio_device =
+	    SDL_OpenAudioDevice(device_name, 1, &desired, &obtained, SDL_AUDIO_ALLOW_ANY_CHANGE);
+	if (port->audio_device == 0 && device_name != nullptr) {
+		LOGF("AudioIn: failed to open DualSense mic device '%s' (%s), falling back to default\n",
+		     device_name, SDL_GetError());
+		port->audio_device =
+		    SDL_OpenAudioDevice(nullptr, 1, &desired, &obtained, SDL_AUDIO_ALLOW_ANY_CHANGE);
+	}
+	if (port->audio_device == 0) {
+		// No capture device available at all (e.g. headless CI, no mic hardware/permission).
+		// AudioInInput() falls back to silence in this case rather than failing the open call
+		// outright, since games generally tolerate a muted mic far better than a failed open.
+		LOGF("AudioIn: SDL_OpenAudioDevice (capture) failed: %s\n", SDL_GetError());
+		return false;
+	}
+
+	port->audio_spec = obtained;
+	SDL_PauseAudioDevice(port->audio_device, 0);
+
+	LOGF("AudioIn: opened SDL capture device%s%s (%d Hz, %u ch, format 0x%04x)\n",
+	     device_name != nullptr ? " " : "", device_name != nullptr ? device_name : "",
+	     obtained.freq, obtained.channels, obtained.format);
+	return true;
+}
+
+void Audio::CloseSdlCaptureDevice(PortIn* port) {
+	EXIT_IF(port == nullptr);
+
+	if (port->audio_device != 0 && SDL_WasInit(SDL_INIT_AUDIO) != 0) {
+		SDL_ClearQueuedAudio(port->audio_device);
+		SDL_CloseAudioDevice(port->audio_device);
+	}
+
+	port->audio_device = 0;
+	port->audio_spec   = {};
+}
+
+uint32_t Audio::DequeueSdlCapture(PortIn* port, void* dest, uint32_t dest_bytes) {
+	EXIT_IF(port == nullptr);
+	EXIT_IF(dest == nullptr);
+
+	if (port->audio_device == 0) {
+		std::memset(dest, 0, dest_bytes);
+		return 0;
+	}
+
+	const bool needs_convert = (port->audio_spec.format != AUDIO_S16SYS) ||
+	                           (static_cast<int>(port->audio_spec.freq) !=
+	                            static_cast<int>(port->freq)) ||
+	                           (port->audio_spec.channels !=
+	                            (port->format == Format::Signed16bitStereo ? 2 : 1));
+
+	if (!needs_convert) {
+		const auto got = SDL_DequeueAudio(port->audio_device, dest, dest_bytes);
+		if (got < dest_bytes) {
+			// Underrun: pad the remainder with silence rather than leaving stale/uninitialized
+			// data, matching how a real quiet microphone would behave.
+			std::memset(static_cast<uint8_t*>(dest) + got, 0, dest_bytes - got);
+		}
+		return dest_bytes;
+	}
+
+	// Hardware gave us a different rate/format/channel count than requested (common on capture
+	// devices, which often refuse SDL_AUDIO_ALLOW_ANY_CHANGE-driven adjustments to the same
+	// degree playback devices do) -- convert from what we actually got into the S16 mono/stereo
+	// format the guest asked for. Source-side sizing is approximate (converted size scales
+	// roughly with the requested/obtained rate and channel ratio), so this pulls a generously
+	// sized chunk of whatever is queued and converts as much of it as is available; any
+	// shortfall is padded with silence exactly like the direct (no-conversion) path above.
+	SDL_AudioCVT cvt {};
+	const int    channels = (port->format == Format::Signed16bitStereo ? 2 : 1);
+	const int    cvt_result =
+	    SDL_BuildAudioCVT(&cvt, port->audio_spec.format, port->audio_spec.channels,
+	                      port->audio_spec.freq, AUDIO_S16SYS, static_cast<Uint8>(channels),
+	                      static_cast<int>(port->freq));
+	if (cvt_result < 0) {
+		LOGF("AudioIn: SDL_BuildAudioCVT failed: %s\n", SDL_GetError());
+		std::memset(dest, 0, dest_bytes);
+		return dest_bytes;
+	}
+
+	if (cvt_result == 0) {
+		// Same layout after all, just a stale spec check false-positive; dequeue directly.
+		const auto got = SDL_DequeueAudio(port->audio_device, dest, dest_bytes);
+		if (got < dest_bytes) {
+			std::memset(static_cast<uint8_t*>(dest) + got, 0, dest_bytes - got);
+		}
+		return dest_bytes;
+	}
+
+	const auto            len_mult      = static_cast<uint32_t>(std::max(cvt.len_mult, 1));
+	const uint32_t        src_capacity  = dest_bytes * len_mult;
+	std::vector<uint8_t>  convert_buffer(src_capacity);
+	const auto            got =
+	    SDL_DequeueAudio(port->audio_device, convert_buffer.data(), src_capacity / len_mult);
+	if (got == 0) {
+		std::memset(dest, 0, dest_bytes);
+		return dest_bytes;
+	}
+
+	cvt.buf = convert_buffer.data();
+	cvt.len = static_cast<int>(got);
+	if (SDL_ConvertAudio(&cvt) < 0) {
+		LOGF("AudioIn: SDL_ConvertAudio failed: %s\n", SDL_GetError());
+		std::memset(dest, 0, dest_bytes);
+		return dest_bytes;
+	}
+
+	const auto copy_size = std::min<uint32_t>(static_cast<uint32_t>(cvt.len_cvt), dest_bytes);
+	std::memcpy(dest, cvt.buf, copy_size);
+	if (copy_size < dest_bytes) {
+		std::memset(static_cast<uint8_t*>(dest) + copy_size, 0, dest_bytes - copy_size);
+	}
+	return dest_bytes;
 }
 
 const void* Audio::PrepareOutputBuffer(const PortOut& port, const void* data,
@@ -585,6 +791,12 @@ Audio::Id Audio::AudioInOpen(uint32_t type, uint32_t samples_num, uint32_t freq,
 				default: EXIT("unknown format");
 			}
 
+			// Failing to open a capture device (no mic present/permitted, headless
+			// environment, etc.) is not fatal to opening the port -- AudioInInput() falls back
+			// to reporting silence, mirroring how a real DualSense with, say, a disabled
+			// microphone would still let the port open and just yield no signal.
+			OpenSdlCaptureDevice(&port);
+
 			return Id::Create(id);
 		}
 	}
@@ -603,18 +815,26 @@ uint32_t Audio::AudioInInput(Id handle, void* dest) {
 	EXIT_NOT_IMPLEMENTED(!AudioInValid(handle));
 	EXIT_NOT_IMPLEMENTED(dest == nullptr);
 
-	const auto& port = m_in_ports[handle.GetId()];
+	Common::LockGuard lock(m_mutex);
+
+	auto& port = m_in_ports[handle.GetId()];
 
 	uint64_t block_time   = (1000000 * port.samples_num) / port.freq;
 	uint64_t current_time = LibKernel::KernelGetProcessTime();
 
-	uint64_t next_time = m_in_ports[handle.GetId()].last_input_time + block_time;
+	uint64_t next_time = port.last_input_time + block_time;
 	uint64_t wait_time = (next_time > current_time ? next_time - current_time : 0);
 
-	// TODO(): Audio input is not yet implemented, so simulate audio delay
+	// Pace to the same wall-clock cadence the guest expects a real mic to deliver samples at,
+	// then hand back whatever's actually been captured since (or silence, if no capture device
+	// is available -- see AudioInOpen).
 	Common::Thread::SleepMicro(wait_time);
 
-	m_in_ports[handle.GetId()].last_input_time = LibKernel::KernelGetProcessTime();
+	const auto channels    = (port.format == Format::Signed16bitStereo ? 2u : 1u);
+	const auto dest_bytes  = port.samples_num * channels * sizeof(int16_t);
+	DequeueSdlCapture(&port, dest, dest_bytes);
+
+	port.last_input_time = LibKernel::KernelGetProcessTime();
 
 	return port.samples_num;
 }
@@ -1078,6 +1298,11 @@ namespace Ngs2 {
 
 LIB_NAME("Ngs2", "Ngs2");
 
+// PS-ADPCM ("VAGp") decode path (#69): included into namespace Libs::Audio::Ngs2
+// so the sampler mixer can detect VAG-wrapped sampler voices and decode them
+// to PCM16 on demand without touching the existing PCM plumbing.
+#include "libs/ngs2_vag_decoder.inc"
+
 struct Ngs2SystemOption {
 	size_t    size                     = 0;
 	char      name[64]                 = {};
@@ -1388,6 +1613,12 @@ struct Ngs2VoiceInternal {
 	uint64_t           num_decoded_samples = 0;
 	uint64_t           decoded_data_size   = 0;
 	uintptr_t          waveform_user_data  = 0;
+	// Lazily-decoded VAG container (#69): when waveform_data points at a "VAGp"
+	// blob, the first mix pass decodes it into pcm16_cache, then redirects
+	// waveform_data/size at the cache and rewrites format.waveform_type to the
+	// little-endian PCM16 the existing mixer already understands.
+	bool                vag_decoded         = false;
+	std::vector<int16_t> vag_pcm16_cache;
 	float              port_volume         = 1.0f;
 	float              pitch_ratio         = 1.0f;
 	float              matrix_levels[8]    = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
@@ -1650,6 +1881,31 @@ static void Ngs2MixVoiceIntoBuffer(Ngs2VoiceInternal* voice, const Ngs2RenderBuf
 	if (voice->state != Ngs2VoicePlayState::Playing || voice->waveform_data == nullptr) {
 		return;
 	}
+
+	// #69: lazy-decode VAG ("VAGp") sampler payloads to mono PCM16 on first mix.
+	// After this substitution the voice presents as a regular PCM I16 LE
+	// waveform and the rest of the existing PCM mixer handles it natively.
+	if (!voice->vag_decoded && VagIsVagContainer(voice->waveform_data, voice->waveform_data_size)) {
+		Ngs2VagWaveform decoded;
+		if (VagTryDecodeContainer(voice->waveform_data, voice->waveform_data_size, &decoded)) {
+			voice->vag_pcm16_cache   = std::move(decoded.samples);
+			voice->format.waveform_type = kNgs2WavePcmI16Little;
+			voice->format.sample_rate   = decoded.sample_rate > 0 ? decoded.sample_rate : 48000;
+			voice->format.num_channels  = 1;
+			voice->waveform_data      = reinterpret_cast<const uint8_t*>(voice->vag_pcm16_cache.data());
+			voice->waveform_data_size = static_cast<uint32_t>(voice->vag_pcm16_cache.size() * sizeof(int16_t));
+			voice->block_num_samples  = 0; // recompute via Ngs2VoiceTotalSamples
+			static std::atomic<uint32_t> vag_logs {0};
+			if (vag_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "Ngs2: decoded VAG sampler voice pcm16=%-6u rate=%u loops=[%d,%d]\n",
+				           static_cast<uint32_t>(voice->vag_pcm16_cache.size()),
+				           voice->format.sample_rate, decoded.loop_start, decoded.loop_end);
+			}
+		}
+		voice->vag_decoded = true;
+	}
+
 	if (!Ngs2IsSupportedPcm(voice->format.waveform_type) || !Ngs2IsSupportedPcm(out->waveform_type)) {
 		static std::atomic_uint32_t soft_logs {0};
 		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {

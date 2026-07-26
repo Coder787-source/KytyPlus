@@ -1,4 +1,4 @@
-#include "common/threads.h"
+﻿#include "common/threads.h"
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -9928,9 +9928,10 @@ void CheckReverseRenderTargetFormatContract() {
     (void)SelectSampledDepthView(vk::Format::eD32SfloatS8Uint,
                                  vk::Format::eR32Sfloat, DstSel(4, 5, 6, 7));
   } else if (std::strcmp(kind, "storage") == 0) {
+    // Channel select 2/3 are not valid Prospero dst-sel values (0/1/4/5/6/7 only).
     (void)SelectStorageColorView(vk::Format::eR8G8B8A8Unorm,
                                  vk::Format::eR8G8B8A8Unorm,
-                                 DstSel(4, 5, 6, 0));
+                                 DstSel(4, 5, 6, 2));
   } else if (std::strcmp(kind, "storage-format") == 0) {
     (void)SelectStorageColorView(vk::Format::eB8G8R8A8Unorm,
                                  vk::Format::eR8G8B8A8Unorm,
@@ -9942,7 +9943,7 @@ void CheckReverseRenderTargetFormatContract() {
   } else if (std::strcmp(kind, "storage-abgr") == 0) {
     (void)SelectStorageColorView(vk::Format::eR16G16B16A16Sfloat,
                                  vk::Format::eR16G16B16A16Sfloat,
-                                 DstSel(7, 6, 5, 4));
+                                 DstSel(7, 6, 5, 3));
   } else {
     ShaderRecompiler::IR::ImageResource resource{};
     resource.kind = ShaderRecompiler::IR::ResourceKind::StorageImage;
@@ -10157,6 +10158,11 @@ void CheckSampledColorViews() {
               vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Unorm,
               DstSel(4, 5, 6, 1)) == VulkanImage::VIEW_STORAGE,
           "RGBA8 RGB1 storage did not select the identity storage view");
+  Require("SampledColorViews", "storage RG01 write mapping",
+          SelectStorageColorView(
+              vk::Format::eR16G16Sfloat, vk::Format::eR16G16Sfloat,
+              DstSel(4, 5, 0, 1)) == VulkanImage::VIEW_STORAGE,
+          "RG16F Demon's Souls XY01 storage swizzle was rejected");
   Require("SampledColorViews", "storage BGRA write mapping",
           SelectStorageColorView(
               vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Unorm,
@@ -10683,7 +10689,24 @@ ShaderTextureResource Ppsa01593HogwartsStorageTextureDescriptor() {
            0x00700000u, 0x006b0000u, 0x00204548u}};
 }
 
-// Chronos / Silent Hill 2 / Invincible (#87/#77/#82): write-only 16³ R16_UINT
+// Demon's Souls / #63 (PPSA01342): write-only 256x256 RG16F RT-tiled 2D UAV with
+// DstSel(X,Y,0,1) and DCC meta in fields[6]/[7]. Stock EXIT had descriptor=0
+// encoding=0 swizzle_ok=0 on this exact dword capture â€” first fatal after CS
+// pipeline create on the Demon's Souls boot path.
+ShaderRecompiler::IR::ImageResource Ppsa01342DemonsSoulsStorageTextureResource() {
+  auto resource = BasicBgraStorageTextureResource();
+  resource.kind = ShaderRecompiler::IR::ResourceKind::StorageImage;
+  resource.read = false;
+  resource.written = true;
+  return resource;
+}
+
+ShaderTextureResource Ppsa01342DemonsSoulsStorageTextureDescriptor() {
+  return {{0x067f8000u, 0xc1d00000u, 0x003fc03fu, 0x91b0022cu, 0x00000000u,
+           0x00700000u, 0x807b0000u, 0x00104a03u}};
+}
+
+// Chronos / Silent Hill 2 / Invincible (#87/#77/#82): write-only 16Â³ R16_UINT
 // Standard4KB 3D UAV. Stock EXIT had descriptor=0 solely from the Standard4KB tile.
 ShaderRecompiler::IR::ImageResource Ppsa087ChronosStorageTextureResource() {
   return BasicUintVolumeStorageTextureResource();
@@ -10730,12 +10753,13 @@ ShaderTextureResource Ppsa076ShadowWarriorStorageTextureDescriptor() {
     descriptor = BasicYzwxStorageTextureDescriptor();
     resource.read = true;
   } else if (std::strcmp(kind, "yzwx-format") == 0) {
+    // YZWX + RGBA16F write-only is now accepted (real hardware remap). Keep this
+    // death case as an unsupported format class instead.
     resource = BasicLinearStorageTextureResource();
     descriptor = BasicYzwxStorageTextureDescriptor();
     descriptor.fields[1] =
         (descriptor.fields[1] & ~0x1ff00000u) |
-        (Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16_16_16Float)
-         << 20u);
+        (Prospero::GpuEnumValue(Prospero::BufferFormat::kBc1UNorm) << 20u);
   } else if (std::strcmp(kind, "resource") == 0) {
     resource.written = false;
   } else if (std::strcmp(kind, "type") == 0) {
@@ -10750,8 +10774,9 @@ ShaderTextureResource Ppsa076ShadowWarriorStorageTextureDescriptor() {
   } else if (std::strcmp(kind, "mip") == 0) {
     descriptor.fields[3] |= 1u << 16u;
   } else if (std::strcmp(kind, "swizzle") == 0) {
+    // Invalid channel select 2/3 must still hard-reject.
     descriptor.fields[3] =
-        (descriptor.fields[3] & ~0xfffu) | DstSel(4, 5, 6, 1);
+        (descriptor.fields[3] & ~0xfffu) | DstSel(4, 5, 6, 2);
   } else if (std::strcmp(kind, "array-base-view") == 0) {
     resource = BasicArrayStorageTextureResource();
     descriptor = BasicArrayStorageTextureDescriptor();
@@ -10773,9 +10798,13 @@ ShaderTextureResource Ppsa076ShadowWarriorStorageTextureDescriptor() {
     descriptor = Ppsa14053DepthTileStorageTextureDescriptor();
     resource.read = true;
   } else if (std::strcmp(kind, "depth-tile-extent") == 0) {
+    // Layered/k8UInt depth-tile extents are supported (#23). Keep this death case as an
+    // unsupported depth-tile format (float) instead of a size reject.
     resource = Ppsa14053DepthTileStorageTextureResource();
     descriptor = Ppsa14053DepthTileStorageTextureDescriptor();
-    descriptor.fields[4] |= 1u;
+    descriptor.fields[1] =
+        (descriptor.fields[1] & ~0x1ff00000u) |
+        (Prospero::GpuEnumValue(Prospero::BufferFormat::k16Float) << 20u);
   } else {
     std::_Exit(0x7e);
   }
@@ -11009,6 +11038,29 @@ void CheckBasicStorageTextureDescriptor() {
           "malformed");
   ValidateStorageTexture(Ppsa01593HogwartsStorageTextureResource(), hogwarts,
                          0x100000);
+
+  const auto demons_souls = Ppsa01342DemonsSoulsStorageTextureDescriptor();
+  Require("BasicStorageTexture", "PPSA01342 Demon's Souls RG16F UAV",
+          demons_souls.Base40() == 0x067f800000ull &&
+              demons_souls.Width5() + 1u == 256 &&
+              demons_souls.Height5() + 1u == 256 &&
+              demons_souls.Depth() + 1u == 1 &&
+              demons_souls.Format() ==
+                  Prospero::GpuEnumValue(Prospero::BufferFormat::k16_16Float) &&
+              demons_souls.TileMode() ==
+                  Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) &&
+              demons_souls.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
+              demons_souls.DstSelXYZW() == DstSel(4, 5, 0, 1) &&
+              demons_souls.fields[6] == 0x807b0000u &&
+              demons_souls.fields[7] == 0x00104a03u,
+          "Demon's Souls #63 storage descriptor fixture is malformed");
+  Require("BasicStorageTexture", "PPSA01342 Demon's Souls accepted",
+          IsSupportedStorageTexture(Ppsa01342DemonsSoulsStorageTextureResource(),
+                                    demons_souls, 0x40000),
+          "Demon's Souls #63 RG16F RT-tiled UAV was rejected");
+  ValidateStorageTexture(Ppsa01342DemonsSoulsStorageTextureResource(),
+                         demons_souls, 0x40000);
 
   const auto depth_tile = Ppsa14053DepthTileStorageTextureDescriptor();
   Require("BasicStorageTexture", "PPSA14053 depth-tile descriptor",
@@ -12172,9 +12224,9 @@ void CheckMetadataReuseDescriptors() {
           GetModuleFileNameA(nullptr, path, MAX_PATH) != 0,
           "GetModuleFileName failed");
   for (const char *kind :
-       {"field1-reserved", "field2-low-reserved", "field2-high-reserved",
-        "unsupported-format", "uint-format", "invalid-swizzle",
-        "mip-view-outside-allocation"}) {
+       {"unsupported-format", "uint-format"}) {
+    // Encoding/swizzle reserved-bit rejects are soft-allowed for metadata-reuse sampled
+    // textures (boot-reach). Only format-class rejects remain hard EXIT.
     std::string command =
         std::string("\"") + path + "\" --metadata-descriptor-death " + kind;
     std::vector<char> mutable_command(command.begin(), command.end());

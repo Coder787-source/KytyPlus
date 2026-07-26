@@ -39,6 +39,13 @@ struct PadVibrationParam {
 	uint8_t small_motor;
 };
 
+struct PadLightBarParam {
+	uint8_t r;
+	uint8_t g;
+	uint8_t b;
+	uint8_t reserve;
+};
+
 struct ControllerState {
 	uint64_t time                                  = 0;
 	uint32_t buttons                               = 0;
@@ -56,6 +63,10 @@ public:
 	void Disconnect(int id);
 	void Button(int id, uint32_t button, bool down);
 	void Axis(int id, Axis axis, int value);
+	[[nodiscard]] int GetActiveId() const;
+	void SetMotionEnabled(bool enabled);
+	[[nodiscard]] bool GetMotionEnabled() const;
+	void MicButton(int id, bool down);
 	void GetConnectionInfo(bool* flag, int* count);
 	void ReadState(ControllerState* state, bool* flag, int* count);
 	int  ReadStates(ControllerState* states, int states_num, bool* flag, int* count);
@@ -76,6 +87,8 @@ private:
 	int              m_active_id       = -1;
 	bool             m_connected       = false;
 	int              m_connected_count = 0;
+	bool             m_motion_enabled  = false;
+	bool             m_mic_muted       = false;
 	ControllerState  m_states[STATES_MAX];
 	StatePrivate     m_private[STATES_MAX];
 	ControllerState  m_last_state;
@@ -92,7 +105,7 @@ static uint8_t pad_connected_count_to_u8(int connected_count) {
 }
 
 static void pad_fill_data(PadData* data, const ControllerState& state, bool connected,
-                          int connected_count) {
+                          int connected_count, const ControllerExtendedState* ext) {
 	EXIT_IF(data == nullptr);
 
 	std::memset(data, 0, sizeof(*data));
@@ -111,6 +124,46 @@ static void pad_fill_data(PadData* data, const ControllerState& state, bool conn
 	data->timestamp              = state.time;
 	data->connected_count        = pad_connected_count_to_u8(connected_count);
 	data->device_unique_data_len = 0;
+
+	if (ext != nullptr) {
+		if (ext->motion_valid) {
+			data->angular_velocity_x = ext->gyro_x;
+			data->angular_velocity_y = ext->gyro_y;
+			data->angular_velocity_z = ext->gyro_z;
+			data->acceleration_x     = ext->accel_x;
+			data->acceleration_y     = ext->accel_y;
+			data->acceleration_z     = ext->accel_z;
+		}
+
+		uint8_t touch_num = 0;
+		if (ext->touch0_active) {
+			data->touch_data_touch0_x = ext->touch0_x;
+			data->touch_data_touch0_y = ext->touch0_y;
+			touch_num++;
+		}
+		if (ext->touch1_active) {
+			data->touch_data_touch1_x = ext->touch1_x;
+			data->touch_data_touch1_y = ext->touch1_y;
+			touch_num++;
+		}
+		data->touch_data_touch_num = touch_num;
+
+		// DualSense Edge back paddles/Fn buttons have no documented bit in Sony's real ScePad
+		// ABI (see ControllerExtendedState's doc comment), so they're surfaced through the
+		// device-unique-data extension bytes that PadDeviceClassParseData (libPad.cpp) already
+		// forwards to games as a bitmask, rather than a fabricated PAD_BUTTON_* bit.
+		if (ext->edge_paddle_right || ext->edge_paddle_left || ext->edge_function_right ||
+		    ext->edge_function_left) {
+			uint8_t edge_bits = 0;
+			edge_bits |= ext->edge_paddle_right ? 0x01 : 0;
+			edge_bits |= ext->edge_paddle_left ? 0x02 : 0;
+			edge_bits |= ext->edge_function_right ? 0x04 : 0;
+			edge_bits |= ext->edge_function_left ? 0x08 : 0;
+
+			data->device_unique_data_len = 1;
+			data->device_unique_data[0]  = edge_bits;
+		}
+	}
 }
 
 KYTY_SUBSYSTEM_INIT(Controller) {
@@ -164,6 +217,7 @@ void GameController::CheckActive() {
 	}
 
 	const bool was_connected = m_connected;
+	const int  old_active_id = m_active_id;
 
 	if (m_connected != new_connected || m_active_id != new_active_id) {
 		m_active_id = new_active_id;
@@ -177,6 +231,16 @@ void GameController::CheckActive() {
 	if (reset) {
 		m_states_num = 0;
 		m_last_state = ControllerState();
+
+		// Player index 0 ("player 1", the center LED) is always assigned to whichever
+		// physical controller is currently active, matching this emulator's single active-pad
+		// model. The keyboard's pseudo-id has no LEDs, so it's skipped.
+		if (old_active_id != KEYBOARD_CONTROLLER_ID && old_active_id != m_active_id) {
+			ControllerSetPlayerIndex(old_active_id, -1);
+		}
+		if (m_active_id != KEYBOARD_CONTROLLER_ID && m_active_id >= 0) {
+			ControllerSetPlayerIndex(m_active_id, 0);
+		}
 	}
 }
 
@@ -258,6 +322,34 @@ void GameController::Axis(int id, Controller::Axis axis, int value) {
 	}
 }
 
+int GameController::GetActiveId() const {
+	return m_active_id;
+}
+
+void GameController::SetMotionEnabled(bool enabled) {
+	Common::LockGuard lock(m_mutex);
+
+	m_motion_enabled = enabled;
+}
+
+bool GameController::GetMotionEnabled() const {
+	return m_motion_enabled;
+}
+
+void GameController::MicButton(int id, bool down) {
+	Common::LockGuard lock(m_mutex);
+
+	// Toggle-on-press, matching hid-playstation.c's dualsense_parse_report(): mute state flips
+	// once when the button goes down, and stays put while held or on release.
+	if (m_active_id == id && down) {
+		m_mic_muted = !m_mic_muted;
+
+		// mode 1 = solid LED, matching the console's own steady (non-pulsing) mic-mute
+		// indicator; see DS5EffectsState_t::ucMicLightMode's documented encoding.
+		DualSenseSetMicMuted(id, m_mic_muted, m_mic_muted ? 1 : 0);
+	}
+}
+
 void GameController::GetConnectionInfo(bool* flag, int* count) {
 	EXIT_IF(flag == nullptr);
 	EXIT_IF(count == nullptr);
@@ -336,6 +428,18 @@ void ControllerAxis(int id, Axis axis, int value) {
 	g_controller->Axis(id, axis, value);
 }
 
+void ControllerMicButton(int id, bool down) {
+	EXIT_IF(g_controller == nullptr);
+
+	g_controller->MicButton(id, down);
+}
+
+int ControllerGetActiveId() {
+	EXIT_IF(g_controller == nullptr);
+
+	return g_controller->GetActiveId();
+}
+
 int KYTY_SYSV_ABI PadInit() {
 	PRINT_NAME();
 
@@ -391,6 +495,15 @@ int KYTY_SYSV_ABI PadSetMotionSensorState(int handle, bool enable) {
 	}
 
 	LOGF("\t enable = %s\n", (enable ? "true" : "false"));
+
+	EXIT_IF(g_controller == nullptr);
+
+	g_controller->SetMotionEnabled(enable);
+
+	const int active_id = g_controller->GetActiveId();
+	if (active_id != KEYBOARD_CONTROLLER_ID) {
+		ControllerSetMotionSensorsEnabled(active_id, enable);
+	}
 
 	return OK;
 }
@@ -449,6 +562,17 @@ int KYTY_SYSV_ABI PadGetControllerInformation(int handle, PadControllerInformati
 	return OK;
 }
 
+static ControllerExtendedState pad_poll_active_extended_state() {
+	ControllerExtendedState ext;
+
+	const int active_id = g_controller->GetActiveId();
+	if (active_id != KEYBOARD_CONTROLLER_ID) {
+		ControllerPollExtendedState(active_id, g_controller->GetMotionEnabled(), &ext);
+	}
+
+	return ext;
+}
+
 int KYTY_SYSV_ABI PadReadState(int handle, PadData* data) {
 	PRINT_NAME();
 
@@ -467,7 +591,8 @@ int KYTY_SYSV_ABI PadReadState(int handle, PadData* data) {
 
 	g_controller->ReadState(&state, &connected, &connected_count);
 
-	pad_fill_data(data, state, connected, connected_count);
+	const auto ext = pad_poll_active_extended_state();
+	pad_fill_data(data, state, connected, connected_count, &ext);
 
 	return OK;
 }
@@ -500,8 +625,9 @@ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num) {
 		ret_num = 1;
 	}
 
+	const auto ext = pad_poll_active_extended_state();
 	for (int i = 0; i < ret_num; i++) {
-		pad_fill_data(&data[i], states[i], connected, connected_count);
+		pad_fill_data(&data[i], states[i], connected, connected_count, &ext);
 	}
 
 	return ret_num;
@@ -521,6 +647,13 @@ int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
 	     "\t small_motor = %d\n",
 	     static_cast<int>(param->large_motor), static_cast<int>(param->small_motor));
 
+	EXIT_IF(g_controller == nullptr);
+
+	const int active_id = g_controller->GetActiveId();
+	if (active_id != KEYBOARD_CONTROLLER_ID) {
+		ControllerSetRumble(active_id, param->large_motor, param->small_motor);
+	}
+
 	return OK;
 }
 
@@ -529,6 +662,13 @@ int KYTY_SYSV_ABI PadResetLightBar(int handle) {
 
 	if (handle != 1) {
 		return PAD_ERROR_INVALID_HANDLE;
+	}
+
+	EXIT_IF(g_controller == nullptr);
+
+	const int active_id = g_controller->GetActiveId();
+	if (active_id != KEYBOARD_CONTROLLER_ID) {
+		ControllerSetLightBar(active_id, 0, 0, 0);
 	}
 
 	return OK;
@@ -542,6 +682,18 @@ int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
 	}
 	if (param == nullptr) {
 		return PAD_ERROR_INVALID_ARG;
+	}
+
+	LOGF("\t r = %d\n"
+	     "\t g = %d\n"
+	     "\t b = %d\n",
+	     static_cast<int>(param->r), static_cast<int>(param->g), static_cast<int>(param->b));
+
+	EXIT_IF(g_controller == nullptr);
+
+	const int active_id = g_controller->GetActiveId();
+	if (active_id != KEYBOARD_CONTROLLER_ID) {
+		ControllerSetLightBar(active_id, param->r, param->g, param->b);
 	}
 
 	return OK;
