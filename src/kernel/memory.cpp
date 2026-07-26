@@ -1006,6 +1006,23 @@ KYTY_SUBSYSTEM_INIT(Memory) {
 	EXIT_IF(!g_direct_memory_backing->SelfTest());
 	g_placeholder_address_space->SelfTest();
 	SelfTestSub64SharedPlaceholderAlias();
+
+	// Claim the guest-thread-stack address range now, before Graphics/Audio (or anything else)
+	// initializes and can place an unrelated allocation on top of it. See GitHub issue #104:
+	// a regression let some later subsystem's allocation land on this fixed address, causing
+	// VirtualAlloc() to fail with ERROR_INVALID_ADDRESS when the first guest stack was created.
+	{
+		constexpr int MAP_FIXED = 0x10;
+		void*         guest_stack_region =
+		    reinterpret_cast<void*>(GUEST_STACK_REGION_TOP - GUEST_STACK_REGION_SIZE);
+		if (KernelReserveVirtualRange(&guest_stack_region, GUEST_STACK_REGION_SIZE, MAP_FIXED, 0) !=
+		    OK) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Memory: couldn't pre-reserve guest-stack address range at 0x%016" PRIx64
+			           "; a later fixed guest-stack allocation may fail\n",
+			           GUEST_STACK_REGION_TOP - GUEST_STACK_REGION_SIZE);
+		}
+	}
 }
 
 KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Memory) {}

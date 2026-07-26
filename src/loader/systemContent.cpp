@@ -9,6 +9,7 @@
 #include "common/threads.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <cstring>
@@ -75,6 +76,7 @@ public:
 	void Open(const std::filesystem::path& file_name);
 	void OpenChunkDefs(const std::filesystem::path& file_name);
 	void OpenChunkManifest(const std::filesystem::path& file_name);
+	void OpenInstalledChunks(const std::filesystem::path& root);
 	void Close();
 
 	bool IsValid();
@@ -539,6 +541,63 @@ void PlayGo::OpenChunkManifest(const std::filesystem::path& file_name) {
 	     Common::PathToString(file_name).c_str());
 }
 
+void PlayGo::OpenInstalledChunks(const std::filesystem::path& root) {
+	Common::LockGuard lock(m_mutex);
+
+	if (m_opened) {
+		return;
+	}
+
+	uint32_t        max_chunk_id = 0;
+	bool            found        = false;
+	std::error_code ec;
+	const auto      options = std::filesystem::directory_options::skip_permission_denied;
+
+	for (std::filesystem::recursive_directory_iterator it(root, options, ec), end; it != end;
+	     it.increment(ec)) {
+		if (ec) {
+			ec.clear();
+			continue;
+		}
+		if (!it->is_regular_file(ec)) {
+			ec.clear();
+			continue;
+		}
+
+		auto name = Common::PathToString(it->path().filename());
+		std::transform(name.begin(), name.end(), name.begin(),
+		               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+		constexpr std::string_view prefix = "pakchunk";
+		if (!name.starts_with(prefix) || !name.ends_with(".pak")) {
+			continue;
+		}
+
+		const auto digits_begin = name.data() + prefix.size();
+		const auto digits_end = std::find_if(digits_begin, name.data() + name.size(),
+		                                     [](char c) { return c < '0' || c > '9'; });
+		if (digits_begin == digits_end) {
+			continue;
+		}
+
+		uint32_t chunk_id = 0;
+		const auto [ptr, parse_error] = std::from_chars(digits_begin, digits_end, chunk_id);
+		if (parse_error == std::errc {} && ptr == digits_end && chunk_id < 1000) {
+			max_chunk_id = std::max(max_chunk_id, chunk_id);
+			found        = true;
+		}
+	}
+
+	if (!found) {
+		return;
+	}
+
+	m_chunks_num = static_cast<uint16_t>(max_chunk_id + 1);
+	m_opened     = true;
+	LOGF("PlayGo: inferred %" PRIu16 " installed chunks from %s\n", m_chunks_num,
+	     Common::PathToString(root).c_str());
+}
+
 void PlayGo::Close() {
 	Common::LockGuard lock(m_mutex);
 
@@ -605,6 +664,9 @@ void SystemContentLoadParamSfo(const std::filesystem::path& file_name) {
 	if (!sc->playgo.IsValid()) {
 		sc->playgo_path = file_name.parent_path().parent_path() / "Data" / "chunkmanifest";
 		sc->playgo.OpenChunkManifest(sc->playgo_path);
+	}
+	if (!sc->playgo.IsValid()) {
+		sc->playgo.OpenInstalledChunks(file_name.parent_path().parent_path());
 	}
 
 	if (sc->playgo.IsValid()) {

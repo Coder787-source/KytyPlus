@@ -42,6 +42,18 @@ static int KYTY_SYSV_ABI PadGetTriggerEffectState(int                           
 	return 0;
 }
 
+// Sony's actual ScePadTriggerEffectParam layout is proprietary and not publicly documented.
+// This is Kyty's own best-effort interpretation (two 11-byte "mode + 10 params" trigger
+// commands, L2 then R2) -- see DualSenseTriggerCommand's doc comment for the full caveat.
+// Titles that don't target this exact shape simply get a best-effort (possibly wrong, but never
+// crashing) trigger effect rather than none at all.
+struct PadTriggerEffectParam {
+	Controller::DualSenseTriggerCommand left;  // L2
+	Controller::DualSenseTriggerCommand right; // R2
+};
+
+static_assert(sizeof(PadTriggerEffectParam) == 22);
+
 static int KYTY_SYSV_ABI PadSetTriggerEffect(int handle, const void* param) {
 	PRINT_NAME();
 
@@ -55,6 +67,12 @@ static int KYTY_SYSV_ABI PadSetTriggerEffect(int handle, const void* param) {
 	if (param == nullptr) {
 		return -2137915391; /* 0x80920001 */
 	}
+
+	PadTriggerEffectParam parsed {};
+	std::memcpy(&parsed, param, sizeof(parsed));
+
+	const int active_id = Controller::ControllerGetActiveId();
+	Controller::DualSenseSetTriggerEffect(active_id, parsed.left, parsed.right);
 
 	return OK;
 }
