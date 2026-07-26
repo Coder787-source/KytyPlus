@@ -1,21 +1,12 @@
 #include "common/abi.h"
-#include "common/logging/log.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <mutex>
 #include <unordered_set>
-
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavutil/frame.h>
-#include <libswscale/swscale.h>
-}
 
 namespace Libs {
 
@@ -37,18 +28,10 @@ constexpr int32_t VIDEODEC2_ERROR_RESOURCE_TYPE        = -2128805373; // 0x811d0
 constexpr int32_t VIDEODEC2_ERROR_INPUT_QUEUE_DEPTH    = -2128805370; // 0x811d0206
 constexpr int32_t VIDEODEC2_ERROR_DPB_FRAME_COUNT      = -2128805367; // 0x811d0209
 constexpr int32_t VIDEODEC2_ERROR_FRAME_WIDTH_HEIGHT   = -2128805366; // 0x811d020a
-// Not a confirmed Sony error code -- synthetic value (same 0x811d component prefix as the real
-// codes above) used only to signal a host-side ffmpeg decode failure back to the caller.
-constexpr int32_t VIDEODEC2_ERROR_API_FAIL = -2128804864; // 0x811d0400
 
 constexpr uint32_t VIDEODEC2_RESOURCE_TYPE_COMPUTE = 1;
 constexpr size_t   VIDEODEC2_MIN_MEMORY_SIZE       = 16ull * 1024ull * 1024ull;
 constexpr uint32_t VIDEODEC2_FRAME_FORMAT_DEFAULT  = 0;
-// Confirmed via the shadPS4 reference implementation of the same NIDs/struct layout
-// (Libraries::Videodec2::VdecDecoder ctor asserts codecType == 1 for AVC/H264). No other
-// codec_type value has a confirmed mapping, so only AVC is decoded for real; anything else
-// is rejected explicitly rather than guessed at.
-constexpr uint32_t VIDEODEC2_CODEC_TYPE_AVC = 1;
 
 using Videodec2Decoder      = void*;
 using Videodec2ComputeQueue = void*;
@@ -134,10 +117,8 @@ struct Videodec2ComputeConfigInfo {
 };
 
 struct DecoderState {
-	uint64_t        magic;
-	uint32_t        codec_type;
-	AVCodecContext* codec_context = nullptr;
-	SwsContext*     sws_context   = nullptr; // Lazily created only if a frame isn't already NV12.
+	uint64_t magic;
+	uint32_t codec_type;
 };
 
 static_assert(sizeof(Videodec2ComputeMemoryInfo) == 24);
@@ -179,183 +160,6 @@ static void FillNoPictureOutput(const Videodec2FrameBuffer* frame_buffer,
 	output_info->frame_buffer_size = frame_buffer != nullptr ? frame_buffer->frame_buffer_size : 0;
 	output_info->frame_format      = VIDEODEC2_FRAME_FORMAT_DEFAULT;
 	output_info->frame_pitch_in_bytes = 0;
-}
-
-static uint32_t AlignUp(uint32_t value, uint32_t alignment) {
-	return alignment == 0 ? value : ((value + alignment - 1u) / alignment) * alignment;
-}
-
-// Converts an arbitrary decoded frame to NV12 (matching the PS5 guest's expected surface format),
-// reusing/creating `state`'s SwsContext as needed. Returns a new AVFrame the caller must free, or
-// nullptr on failure. If `frame` is already NV12, no conversion happens and a reference is
-// returned instead (still owned by the caller via av_frame_free).
-static AVFrame* ConvertToNv12(DecoderState* state, const AVFrame* frame) {
-	if (frame->format == AV_PIX_FMT_NV12) {
-		AVFrame* ref = av_frame_alloc();
-		if (ref == nullptr || av_frame_ref(ref, frame) < 0) {
-			av_frame_free(&ref);
-			return nullptr;
-		}
-		return ref;
-	}
-
-	AVFrame* nv12 = av_frame_alloc();
-	if (nv12 == nullptr) {
-		return nullptr;
-	}
-	nv12->format               = AV_PIX_FMT_NV12;
-	nv12->width                = frame->width;
-	nv12->height                = frame->height;
-	nv12->sample_aspect_ratio   = frame->sample_aspect_ratio;
-	nv12->crop_top              = frame->crop_top;
-	nv12->crop_bottom           = frame->crop_bottom;
-	nv12->crop_left             = frame->crop_left;
-	nv12->crop_right            = frame->crop_right;
-	nv12->pts                   = frame->pts;
-	nv12->pkt_dts               = (frame->pkt_dts < 0 ? 0 : frame->pkt_dts);
-
-	if (av_frame_get_buffer(nv12, 0) < 0) {
-		av_frame_free(&nv12);
-		return nullptr;
-	}
-
-	if (state->sws_context == nullptr) {
-		state->sws_context =
-		    sws_getContext(frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-		                   nv12->width, nv12->height, AV_PIX_FMT_NV12, SWS_FAST_BILINEAR, nullptr,
-		                   nullptr, nullptr);
-	}
-	if (state->sws_context == nullptr ||
-	    sws_scale(state->sws_context, frame->data, frame->linesize, 0, frame->height, nv12->data,
-	             nv12->linesize) < 0) {
-		av_frame_free(&nv12);
-		return nullptr;
-	}
-
-	return nv12;
-}
-
-// Copies an NV12 frame into the guest-provided frame buffer using the PS5 AVC decode surface
-// layout (luma plane, then chroma plane, each row-padded to `pitch`). Unlike a naive copy, this
-// validates the destination is actually large enough for the full padded surface before writing
-// anything -- a title reporting a frame_buffer_size smaller than pitch*height*3/2 gets a clean
-// error instead of a heap overflow.
-static bool CopyNv12ToFrameBuffer(uint8_t* dst, size_t dst_capacity, const AVFrame& src,
-                                  uint32_t pitch, uint32_t height) {
-	const auto required = static_cast<size_t>(pitch) * height * 3u / 2u;
-	if (dst == nullptr || required > dst_capacity) {
-		return false;
-	}
-
-	auto* luma_dst   = dst;
-	auto* chroma_dst = dst + static_cast<size_t>(pitch) * height;
-
-	const auto src_width  = static_cast<uint32_t>(std::max(src.width, 0));
-	const auto src_height = static_cast<uint32_t>(std::max(src.height, 0));
-	const auto copy_width  = std::min(src_width, pitch);
-	const auto copy_height = std::min(src_height, height);
-
-	for (uint32_t y = 0; y < copy_height; y++) {
-		std::memcpy(luma_dst + static_cast<size_t>(y) * pitch,
-		           src.data[0] + static_cast<size_t>(y) * src.linesize[0], copy_width);
-	}
-	for (uint32_t y = 0; y < copy_height / 2u; y++) {
-		std::memcpy(chroma_dst + static_cast<size_t>(y) * pitch,
-		           src.data[1] + static_cast<size_t>(y) * src.linesize[1], copy_width);
-	}
-
-	// Extend the last valid row downward/rightward into any alignment padding, matching the
-	// real hardware decoder's border-extend behavior for cropped dimensions (avoids leaving
-	// uninitialized padding that some titles sample from at surface edges).
-	if (copy_height > 0 && copy_height < height) {
-		for (uint32_t y = copy_height; y < height; y++) {
-			std::memcpy(luma_dst + static_cast<size_t>(y) * pitch,
-			           luma_dst + static_cast<size_t>(copy_height - 1) * pitch, pitch);
-		}
-		for (uint32_t y = copy_height / 2u; y < height / 2u; y++) {
-			std::memcpy(chroma_dst + static_cast<size_t>(y) * pitch,
-			           chroma_dst + static_cast<size_t>(std::max<uint32_t>(copy_height / 2u, 1u) - 1) *
-			                           pitch,
-			           pitch);
-		}
-	}
-
-	return true;
-}
-
-// Shared AVC decode path for Decode()/Flush(). `packet` is nullptr for a flush (drain) call.
-// Returns OK with output_info->is_valid left false if the decoder legitimately has no frame
-// ready yet (EAGAIN/EOF) -- that is not an error, just "no picture this call".
-static int32_t DecodeCommon(DecoderState* state, AVPacket* packet,
-                            Videodec2FrameBuffer* frame_buffer, Videodec2OutputInfo* output_info) {
-	int send_result = avcodec_send_packet(state->codec_context, packet);
-	// AVERROR_EOF from a second flush call after the decoder is already drained is not an error.
-	if (send_result < 0 && send_result != AVERROR_EOF) {
-		FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
-		output_info->is_error_frame = true;
-		return VIDEODEC2_ERROR_API_FAIL;
-	}
-
-	AVFrame* frame = av_frame_alloc();
-	if (frame == nullptr) {
-		FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
-		return VIDEODEC2_ERROR_API_FAIL;
-	}
-
-	const int receive_result = avcodec_receive_frame(state->codec_context, frame);
-	if (receive_result == AVERROR(EAGAIN) || receive_result == AVERROR_EOF) {
-		av_frame_free(&frame);
-		frame_buffer->is_accepted = false;
-		FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
-		return OK;
-	}
-	if (receive_result < 0) {
-		av_frame_free(&frame);
-		FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
-		output_info->is_error_frame = true;
-		return VIDEODEC2_ERROR_API_FAIL;
-	}
-
-	AVFrame* nv12 = ConvertToNv12(state, frame);
-	av_frame_free(&frame);
-	if (nv12 == nullptr) {
-		FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
-		output_info->is_error_frame = true;
-		return VIDEODEC2_ERROR_API_FAIL;
-	}
-
-	const auto width  = AlignUp(static_cast<uint32_t>(std::max(nv12->width, 0)), 16u);
-	const auto pitch  = AlignUp(static_cast<uint32_t>(std::max(nv12->width, 0)), 64u);
-	const auto height = AlignUp(static_cast<uint32_t>(std::max(nv12->height, 0)), 16u);
-
-	if (!CopyNv12ToFrameBuffer(static_cast<uint8_t*>(frame_buffer->frame_buffer),
-	                          frame_buffer->frame_buffer_size, *nv12, pitch, height)) {
-		av_frame_free(&nv12);
-		frame_buffer->is_accepted = false;
-		FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
-		output_info->is_error_frame = true;
-		return VIDEODEC2_ERROR_FRAME_BUFFER_SIZE;
-	}
-
-	frame_buffer->is_accepted = true;
-
-	output_info->is_valid           = true;
-	output_info->is_error_frame     = false;
-	output_info->picture_count      = 1;
-	output_info->is_discarded_frame = false;
-	output_info->codec_type         = state->codec_type;
-	output_info->frame_width        = width;
-	output_info->frame_pitch        = pitch;
-	output_info->frame_height       = height;
-	output_info->frame_buffer       = frame_buffer->frame_buffer;
-	output_info->frame_buffer_size  = static_cast<size_t>(pitch) * height * 3u / 2u;
-	output_info->frame_format       = VIDEODEC2_FRAME_FORMAT_DEFAULT;
-	if (output_info->this_size == sizeof(Videodec2OutputInfo)) {
-		output_info->frame_pitch_in_bytes = pitch;
-	}
-
-	av_frame_free(&nv12);
-	return OK;
 }
 
 static int32_t ValidateDecoderConfig(const Videodec2DecoderConfigInfo* config) {
@@ -513,36 +317,9 @@ static int32_t KYTY_SYSV_ABI CreateDecoder(const Videodec2DecoderConfigInfo* con
 		return VIDEODEC2_ERROR_MEMORY_POINTER;
 	}
 
-	// Only AVC has a confirmed codec_type mapping (see VIDEODEC2_CODEC_TYPE_AVC above). Reject
-	// anything else explicitly instead of silently no-op'ing or guessing an ffmpeg codec id.
-	if (config->codec_type != VIDEODEC2_CODEC_TYPE_AVC) {
-		LOGF_COLOR(Log::Color::Yellow,
-		           "Videodec2: unsupported codec_type=%" PRIu32 " (only AVC/H264 is implemented)\n",
-		           config->codec_type);
-		return VIDEODEC2_ERROR_CONFIG_INFO;
-	}
-
-	const auto* av_codec = avcodec_find_decoder(AV_CODEC_ID_H264);
-	if (av_codec == nullptr) {
-		return VIDEODEC2_ERROR_API_FAIL;
-	}
-
-	auto* codec_context = avcodec_alloc_context3(av_codec);
-	if (codec_context == nullptr) {
-		return VIDEODEC2_ERROR_API_FAIL;
-	}
-	codec_context->width  = config->max_frame_width;
-	codec_context->height = config->max_frame_height;
-
-	if (avcodec_open2(codec_context, av_codec, nullptr) < 0) {
-		avcodec_free_context(&codec_context);
-		return VIDEODEC2_ERROR_API_FAIL;
-	}
-
-	auto* state          = new DecoderState {};
-	state->magic         = DECODER_MAGIC;
-	state->codec_type    = config->codec_type;
-	state->codec_context = codec_context;
+	auto* state       = new DecoderState {};
+	state->magic      = DECODER_MAGIC;
+	state->codec_type = config->codec_type;
 
 	{
 		std::scoped_lock lock(g_decoder_mutex);
@@ -568,12 +345,6 @@ static int32_t KYTY_SYSV_ABI DeleteDecoder(Videodec2Decoder decoder) {
 		g_decoders.erase(it);
 	}
 
-	if (state->codec_context != nullptr) {
-		avcodec_free_context(&state->codec_context);
-	}
-	if (state->sws_context != nullptr) {
-		sws_freeContext(state->sws_context);
-	}
 	delete state;
 
 	return OK;
@@ -586,7 +357,7 @@ static int32_t KYTY_SYSV_ABI Decode(Videodec2Decoder decoder, const Videodec2Inp
 
 	std::scoped_lock lock(g_decoder_mutex);
 
-	auto* state = GetDecoderLocked(decoder);
+	const auto* state = GetDecoderLocked(decoder);
 	if (state == nullptr || state->magic != DECODER_MAGIC) {
 		return VIDEODEC2_ERROR_DECODER_INSTANCE;
 	}
@@ -614,33 +385,9 @@ static int32_t KYTY_SYSV_ABI Decode(Videodec2Decoder decoder, const Videodec2Inp
 	}
 
 	frame_buffer->is_accepted = false;
+	FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
 
-	if (input_data->au_size == 0) {
-		// Nothing to feed the decoder this call; report "no picture yet", not an error.
-		FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
-		return OK;
-	}
-
-	AVPacket* packet = av_packet_alloc();
-	if (packet == nullptr) {
-		FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
-		return VIDEODEC2_ERROR_API_FAIL;
-	}
-	packet->data = static_cast<uint8_t*>(input_data->au_data);
-	packet->size = static_cast<int>(input_data->au_size);
-	packet->pts  = static_cast<int64_t>(input_data->pts_data);
-	packet->dts  = static_cast<int64_t>(input_data->dts_data);
-
-	const auto result = DecodeCommon(state, packet, frame_buffer, output_info);
-
-	// packet->data points at guest memory owned by the caller, not something ffmpeg allocated;
-	// av_packet_free must not try to free it. Clear it first so the free only releases the
-	// AVPacket struct itself.
-	packet->data = nullptr;
-	packet->size = 0;
-	av_packet_free(&packet);
-
-	return result;
+	return OK;
 }
 
 static int32_t KYTY_SYSV_ABI Flush(Videodec2Decoder decoder, Videodec2FrameBuffer* frame_buffer,
@@ -649,7 +396,7 @@ static int32_t KYTY_SYSV_ABI Flush(Videodec2Decoder decoder, Videodec2FrameBuffe
 
 	std::scoped_lock lock(g_decoder_mutex);
 
-	auto* state = GetDecoderLocked(decoder);
+	const auto* state = GetDecoderLocked(decoder);
 	if (state == nullptr || state->magic != DECODER_MAGIC) {
 		return VIDEODEC2_ERROR_DECODER_INSTANCE;
 	}
@@ -664,9 +411,9 @@ static int32_t KYTY_SYSV_ABI Flush(Videodec2Decoder decoder, Videodec2FrameBuffe
 	}
 
 	frame_buffer->is_accepted = false;
+	FillNoPictureOutput(frame_buffer, output_info, state->codec_type);
 
-	// A flush call sends a null packet to drain any buffered frames out of the decoder.
-	return DecodeCommon(state, nullptr, frame_buffer, output_info);
+	return OK;
 }
 
 static int32_t KYTY_SYSV_ABI Reset(Videodec2Decoder decoder) {
@@ -674,16 +421,9 @@ static int32_t KYTY_SYSV_ABI Reset(Videodec2Decoder decoder) {
 
 	std::scoped_lock lock(g_decoder_mutex);
 
-	auto* state = GetDecoderLocked(decoder);
-	if (state == nullptr || state->magic != DECODER_MAGIC) {
-		return VIDEODEC2_ERROR_DECODER_INSTANCE;
-	}
-
-	if (state->codec_context != nullptr) {
-		avcodec_flush_buffers(state->codec_context);
-	}
-
-	return OK;
+	const auto* state = GetDecoderLocked(decoder);
+	return state != nullptr && state->magic == DECODER_MAGIC ? OK
+	                                                         : VIDEODEC2_ERROR_DECODER_INSTANCE;
 }
 
 static int32_t KYTY_SYSV_ABI GetPictureInfo(const Videodec2OutputInfo* output_info,
