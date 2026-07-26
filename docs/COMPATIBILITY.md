@@ -1,8 +1,8 @@
 # Compatibility List
 
 Community-reported results for KytyPlus. Entries here come **only** from user-submitted
-[Compatibility report](../../issues/new?template=compatibility.yml) issues — nobody on this
-project claims to have personally verified every row.
+[Compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)
+issues — nobody on this project claims to have personally verified every row.
 
 > [!CAUTION]
 > "Boots further" is not "playable." This table tracks how far a title gets, not whether it's
@@ -24,8 +24,8 @@ directly onto a row here.
 
 ## How this list is maintained
 
-1. Testers file a [Compatibility report](../../issues/new?template=compatibility.yml) issue for
-   a **legally obtained** title.
+1. Testers file a [Compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)
+   issue for a **legally obtained** title.
 2. A maintainer reviews the report (sanity-checks the log/version, no dump/firmware requests) and
    adds or updates a row below, linking back to the issue.
 3. If a newer report contradicts an older row for the same title, the newer report wins — link
@@ -41,9 +41,9 @@ single most useful contribution you can make here — see
 
 | Title | Title ID | Status | Last tested (version) | Reports |
 |---|---|---|---|---|
-| _No reports yet — be the first to [file one](../../issues/new?template=compatibility.yml)._ | | | | |
+| _No reports yet — be the first to [file one](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)._ | | | | |
 
 <!--
-Row template (copy/paste and fill in from the issue):
-| Game Name | PPSAxxxxx | Ingame (broken) | v1.3 | [#123](../../issues/123) |
+Row template (copy/paste and fill in from the issue). Use a full issue URL, not a relative link:
+| Game Name | PPSAxxxxx | Ingame (broken) | v1.3 | [#123](https://github.com/Coder787-source/KytyPlus/issues/123) |
 -->
