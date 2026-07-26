@@ -72,6 +72,10 @@ builds on that with focused changes such as:
 Compatibility is still **early**. A title that no longer hits one known crash will often hit the
 next unimplemented feature. Always test with a **fresh build** and attach logs when reporting.
 
+See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the community-reported compatibility list,
+or [file a report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)
+for a title you've tested.
+
 ---
 
 ## Screenshots

@@ -14,6 +14,9 @@ Thanks for taking an interest. KytyPlus is **experimental** — useful contribut
 1. Test an official [Release](https://github.com/Coder787-source/KytyPlus/releases) on hardware you own.
 2. File a **Bug** or **Compatibility** issue with a log excerpt (last error / EXIT block).
 3. Say whether stock KytyPS5 behaved differently, if you know.
+4. Compatibility reports get folded into [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — check
+   there first so you're not duplicating an existing report, and update it if you're a maintainer
+   reviewing a new one.
 
 ## Development setup (Windows)
 
