@@ -563,6 +563,7 @@ public:
 	}
 	int StreamCount() const { return fmt == nullptr ? 0 : static_cast<int>(fmt->nb_streams); }
 	int Enable(uint32_t id) {
+		std::lock_guard lock(mutex);
 		if (fmt == nullptr || id >= fmt->nb_streams) {
 			return AVPLAYER_ERROR_OPERATION_FAILED;
 		}
@@ -576,6 +577,7 @@ public:
 		}
 	}
 	int Disable(uint32_t id) {
+		std::lock_guard lock(mutex);
 		if (video_id == static_cast<int>(id)) {
 			video_id.reset();
 			return 0;
@@ -587,23 +589,35 @@ public:
 		return AVPLAYER_ERROR_OPERATION_FAILED;
 	}
 	int Change(uint32_t old_id, uint32_t new_id) {
-		if (fmt == nullptr || new_id >= fmt->nb_streams) {
-			return AVPLAYER_ERROR_OPERATION_FAILED;
+		// Decide + mutate video_id/audio_id under `mutex` (DecodeUntil and friends read them
+		// under the same lock), then release before calling Start(), which re-locks internally.
+		// `mutex` is a plain (non-recursive) std::mutex, so holding it across the Start() call
+		// would deadlock.
+		bool restart_audio = false;
+		bool restart_video = false;
+		{
+			std::lock_guard lock(mutex);
+			if (fmt == nullptr || new_id >= fmt->nb_streams) {
+				return AVPLAYER_ERROR_OPERATION_FAILED;
+			}
+			if (!StreamSupported(static_cast<int>(new_id))) {
+				return AVPLAYER_ERROR_NOT_SUPPORTED;
+			}
+			if (audio_id == static_cast<int>(old_id) &&
+			    fmt->streams[new_id]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+				audio_id       = static_cast<int>(new_id);
+				restart_audio = true;
+			} else if (video_id == static_cast<int>(old_id) &&
+			          fmt->streams[new_id]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+				video_id       = static_cast<int>(new_id);
+				restart_video = true;
+			} else {
+				return AVPLAYER_ERROR_OPERATION_FAILED;
+			}
 		}
-		if (!StreamSupported(static_cast<int>(new_id))) {
-			return AVPLAYER_ERROR_NOT_SUPPORTED;
-		}
-		if (audio_id == static_cast<int>(old_id) &&
-		    fmt->streams[new_id]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-			audio_id = static_cast<int>(new_id);
-			return Start(CurrentTime());
-		}
-		if (video_id == static_cast<int>(old_id) &&
-		    fmt->streams[new_id]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-			video_id = static_cast<int>(new_id);
-			return Start(CurrentTime());
-		}
-		return AVPLAYER_ERROR_OPERATION_FAILED;
+		(void)restart_audio;
+		(void)restart_video;
+		return Start(CurrentTime());
 	}
 	int Start(uint64_t ms = 0) {
 		std::lock_guard lock(mutex);
@@ -650,10 +664,12 @@ public:
 		return 0;
 	}
 	void Pause() {
+		std::lock_guard lock(mutex);
 		paused     = true;
 		pause_time = std::chrono::steady_clock::now();
 	}
 	void Resume() {
+		std::lock_guard lock(mutex);
 		if (paused) {
 			paused_extra += std::chrono::steady_clock::now() - pause_time;
 		}
@@ -665,6 +681,7 @@ public:
 	void     SetTrick(int32_t v) { trick_speed = v; }
 	bool     Active() const { return !stopped && !eof; }
 	uint64_t CurrentTime() const {
+		std::lock_guard lock(mutex);
 		if (stopped) {
 			return 0;
 		}
@@ -880,9 +897,16 @@ private:
 	}
 	bool DecodeUntil(int wanted) {
 		PacketQueue& own = wanted == video_id.value_or(-1) ? video_packets : audio_packets;
-		while (!eof) {
+		for (;;) {
+			// Always drain this stream's own queue first, even after the demuxer has hit EOF:
+			// packets pushed for `own` while decoding the *other* stream must not be dropped
+			// just because `eof` is now true, otherwise the tail of this stream gets truncated
+			// and playback/Active() can report finished early.
 			AVPacket* p = own.Pop();
 			if (p == nullptr) {
+				if (eof) {
+					return false;
+				}
 				p       = av_packet_alloc();
 				auto rc = av_read_frame(fmt, p);
 				if (rc < 0) {
@@ -895,7 +919,7 @@ private:
 						continue;
 					}
 					eof = true;
-					return false;
+					continue;
 				}
 				if (video_id && p->stream_index == video_id.value() && wanted != p->stream_index) {
 					video_packets.Push(p);
@@ -916,7 +940,6 @@ private:
 				return true;
 			}
 		}
-		return false;
 	}
 	bool DecodeVideo(AVPacket* p) {
 		if (video_ctx == nullptr || avcodec_send_packet(video_ctx, p) < 0) {
@@ -1077,12 +1100,23 @@ private:
 		}
 		auto* dst = current_video->Get();
 		std::memset(dst, 0, static_cast<size_t>(pitch) * h * 3 / 2);
-		for (int y = 0; y < src->height; y++) {
-			std::memcpy(dst + y * pitch, nv12->data[0] + y * nv12->linesize[0], src->width);
+		// `dst` is sized from Width(s)/Height(s), cached at Start() time from AVStream::codecpar.
+		// The actually decoded frame (src->width/height) can differ from that -- e.g. a stream
+		// that changes resolution mid-playback -- so clamp the copy to the smaller of the two in
+		// both dimensions. Copying the raw src dimensions here was a heap buffer overflow whenever
+		// src exceeded the cached size.
+		const auto copy_width  = static_cast<uint32_t>(std::max(src->width, 0));
+		const auto copy_height = static_cast<uint32_t>(std::max(src->height, 0));
+		const auto safe_width  = std::min(copy_width, pitch);
+		const auto safe_height = std::min(copy_height, h);
+		for (uint32_t y = 0; y < safe_height; y++) {
+			std::memcpy(dst + y * pitch, nv12->data[0] + static_cast<size_t>(y) * nv12->linesize[0],
+			           safe_width);
 		}
 		auto* c = dst + pitch * h;
-		for (int y = 0; y < src->height / 2; y++) {
-			std::memcpy(c + y * pitch, nv12->data[1] + y * nv12->linesize[1], src->width);
+		for (uint32_t y = 0; y < safe_height / 2; y++) {
+			std::memcpy(c + y * pitch, nv12->data[1] + static_cast<size_t>(y) * nv12->linesize[1],
+			           safe_width);
 		}
 		std::memset(&current_video_info, 0, sizeof(current_video_info));
 		current_video_info.data       = dst;
@@ -1092,10 +1126,10 @@ private:
 		FillVideoEx(s, &current_video_info.details.video);
 		current_video_info.details.video.crop_left_offset = static_cast<uint32_t>(src->crop_left);
 		current_video_info.details.video.crop_right_offset =
-		    static_cast<uint32_t>(src->crop_right + (pitch - src->width));
+		    static_cast<uint32_t>(src->crop_right) + (pitch > safe_width ? pitch - safe_width : 0u);
 		current_video_info.details.video.crop_top_offset = static_cast<uint32_t>(src->crop_top);
 		current_video_info.details.video.crop_bottom_offset =
-		    static_cast<uint32_t>(src->crop_bottom + (h - src->height));
+		    static_cast<uint32_t>(src->crop_bottom) + (h > safe_height ? h - safe_height : 0u);
 		current_video_info.details.video.pitch = pitch;
 		if (tmp) {
 			av_frame_free(&tmp);

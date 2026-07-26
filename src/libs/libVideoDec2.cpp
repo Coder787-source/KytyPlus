@@ -139,8 +139,10 @@ static bool IsOutputInfoSizeValid(size_t this_size) {
 	       (this_size | 8u) == sizeof(Videodec2OutputInfo);
 }
 
-static DecoderState* GetDecoder(Videodec2Decoder decoder) {
-	std::scoped_lock lock(g_decoder_mutex);
+// Callers must keep g_decoder_mutex held for as long as the returned pointer is used. Returning
+// the raw pointer after releasing the lock (as this used to do) let a concurrent DeleteDecoder
+// free the DecoderState while Decode/Flush/Reset were still dereferencing it.
+static DecoderState* GetDecoderLocked(Videodec2Decoder decoder) {
 	return g_decoders.contains(decoder) ? static_cast<DecoderState*>(decoder) : nullptr;
 }
 
@@ -353,7 +355,9 @@ static int32_t KYTY_SYSV_ABI Decode(Videodec2Decoder decoder, const Videodec2Inp
                                     Videodec2OutputInfo*  output_info) {
 	PRINT_NAME();
 
-	const auto* state = GetDecoder(decoder);
+	std::scoped_lock lock(g_decoder_mutex);
+
+	const auto* state = GetDecoderLocked(decoder);
 	if (state == nullptr || state->magic != DECODER_MAGIC) {
 		return VIDEODEC2_ERROR_DECODER_INSTANCE;
 	}
@@ -390,7 +394,9 @@ static int32_t KYTY_SYSV_ABI Flush(Videodec2Decoder decoder, Videodec2FrameBuffe
                                    Videodec2OutputInfo* output_info) {
 	PRINT_NAME();
 
-	const auto* state = GetDecoder(decoder);
+	std::scoped_lock lock(g_decoder_mutex);
+
+	const auto* state = GetDecoderLocked(decoder);
 	if (state == nullptr || state->magic != DECODER_MAGIC) {
 		return VIDEODEC2_ERROR_DECODER_INSTANCE;
 	}
@@ -413,7 +419,9 @@ static int32_t KYTY_SYSV_ABI Flush(Videodec2Decoder decoder, Videodec2FrameBuffe
 static int32_t KYTY_SYSV_ABI Reset(Videodec2Decoder decoder) {
 	PRINT_NAME();
 
-	const auto* state = GetDecoder(decoder);
+	std::scoped_lock lock(g_decoder_mutex);
+
+	const auto* state = GetDecoderLocked(decoder);
 	return state != nullptr && state->magic == DECODER_MAGIC ? OK
 	                                                         : VIDEODEC2_ERROR_DECODER_INSTANCE;
 }
