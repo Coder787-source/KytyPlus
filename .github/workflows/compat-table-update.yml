@@ -1,0 +1,43 @@
+name: Update compatibility table
+
+# A maintainer closing a "Compatibility report" issue as completed is treated as
+# the review step (see docs/COMPATIBILITY.md "How this list is maintained").
+# This job then does the mechanical part: parse the issue form and update the
+# table instead of a maintainer hand-editing markdown.
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  update-table:
+    if: >
+      github.event.issue.state_reason == 'completed' &&
+      contains(github.event.issue.labels.*.name, 'compatibility')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update docs/COMPATIBILITY.md
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        run: python3 .github/scripts/update_compat_table.py
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/COMPATIBILITY.md
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "docs: update compatibility table from #${{ github.event.issue.number }}"
+            git push origin HEAD:main
+          fi
