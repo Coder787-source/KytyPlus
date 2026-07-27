@@ -1832,6 +1832,20 @@ uint64_t KYTY_SYSV_ABI KernelGetGPI() {
 
 } // namespace LibKernel
 
+namespace LibKernelWriteThrottling {
+
+LIB_VERSION("libkernel_write_throttling", 1, "libkernel", 1, 1);
+
+static uint64_t KYTY_SYSV_ABI WriteThrottlingStub() {
+	return 0;
+}
+
+LIB_DEFINE(InitLibKernelWriteThrottling) {
+	LIB_FUNC("YFC3dBBipj8", WriteThrottlingStub);
+}
+
+} // namespace LibKernelWriteThrottling
+
 namespace Posix {
 
 LIB_VERSION("Posix", 1, "libkernel", 1, 1);
@@ -2007,6 +2021,12 @@ int64_t KYTY_SYSV_ABI recv(int s, void* buf, uint64_t len, int flags) {
 	return Network::Net::Recv(s, buf, len, flags);
 }
 
+int64_t KYTY_SYSV_ABI recvfrom(int s, void* buf, uint64_t len, int flags, void* addr,
+                               uint32_t* addrlen) {
+	PRINT_NAME();
+	return Network::Net::Recvfrom(s, buf, len, flags, addr, addrlen);
+}
+
 int KYTY_SYSV_ABI inet_pton(int af, const char* src, void* dst) {
 	PRINT_NAME();
 
@@ -2154,6 +2174,7 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("fZOeZIOEmLw", Posix::send);
 	LIB_FUNC("oBr313PppNE", Posix::sendto);
 	LIB_FUNC("Ez8xjo9UF4E", Posix::recv);
+	LIB_FUNC("lUk6wrGXyMw", Posix::recvfrom);
 	LIB_FUNC("4n51s0zEf0c", Posix::inet_pton);
 	LIB_FUNC("5jRCs2axtr4", Posix::inet_ntop);
 	LIB_FUNC("cfwBSQyr5Ys", cfwBSQyr5Ys);
@@ -3255,6 +3276,7 @@ LIB_DEFINE(InitLibKernel_1) {
 	InitLibKernel_1_Pthread(s);
 	LibKernelApr::InitLibKernel_1_Apr(s);
 	Posix::InitLibKernel_1_Posix(s);
+	LibKernelWriteThrottling::InitLibKernelWriteThrottling(s);
 
 	LIB_OBJECT("f7uOxY9mM1U", &LibKernel::g_stack_chk_guard);
 	LIB_OBJECT("djxxOmW6-aw", &LibKernel::g_progname);

@@ -1950,17 +1950,30 @@ int64_t KYTY_SYSV_ABI Sendto(int s, const void* buf, uint64_t len, int flags, co
 }
 
 int64_t KYTY_SYSV_ABI Recv(int s, void* buf, uint64_t len, int flags) {
+	return Recvfrom(s, buf, len, flags, nullptr, nullptr);
+}
+
+int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* addr,
+                               uint32_t* addrlen) {
 	PRINT_NAME();
 
 	LOGF("\t s     = %d\n"
 	     "\t buf   = 0x%016" PRIx64 "\n"
 	     "\t len   = %" PRIu64 "\n"
-	     "\t flags = 0x%08" PRIx32 "\n",
-	     s, reinterpret_cast<uint64_t>(buf), len, static_cast<uint32_t>(flags));
+	     "\t flags = 0x%08" PRIx32 "\n"
+	     "\t addr  = 0x%016" PRIx64 "\n"
+	     "\t addrlen = 0x%016" PRIx64 "\n",
+	     s, reinterpret_cast<uint64_t>(buf), len, static_cast<uint32_t>(flags),
+	     reinterpret_cast<uint64_t>(addr), reinterpret_cast<uint64_t>(addrlen));
+
+	if (buf == nullptr || (addr != nullptr && addrlen == nullptr)) {
+		*Posix::GetErrorAddr() = Posix::POSIX_EFAULT;
+		return -1;
+	}
 
 	NativeSocket socket = INVALID_NATIVE_SOCKET;
-	if (buf == nullptr || !GetSocketBackend(s, &socket)) {
-		*Posix::GetErrorAddr() = (buf == nullptr ? Posix::POSIX_EFAULT : Posix::POSIX_EBADF);
+	if (!GetSocketBackend(s, &socket)) {
+		*Posix::GetErrorAddr() = Posix::POSIX_EBADF;
 		return -1;
 	}
 
@@ -1971,7 +1984,19 @@ int64_t KYTY_SYSV_ABI Recv(int s, void* buf, uint64_t len, int flags) {
 	}
 
 	const int host_len = static_cast<int>(len > 0x7fffffffu ? 0x7fffffffu : len);
-	const int result   = ::recv(socket, static_cast<char*>(buf), host_len, host_flags);
+	int       result   = 0;
+	if (addr == nullptr) {
+		result = ::recv(socket, static_cast<char*>(buf), host_len, host_flags);
+	} else {
+		sockaddr_storage host_addr {};
+		int              host_addrlen = sizeof(host_addr);
+		result = ::recvfrom(socket, static_cast<char*>(buf), host_len, host_flags,
+		                    reinterpret_cast<sockaddr*>(&host_addr), &host_addrlen);
+		if (result != SOCKET_ERROR &&
+		    ConvertHostSockaddr(&host_addr, host_addrlen, addr, addrlen) != 0) {
+			return -1;
+		}
+	}
 	if (result == SOCKET_ERROR) {
 		return SetPosixSocketError();
 	}
