@@ -1,5 +1,5 @@
-#include "graphics/shader/recompiler/ScalarProvenance.h"
-#include "graphics/shader/recompiler/SrtWalker.h"
+#include "graphics/shader/recompiler/ir/ScalarProvenance.h"
+#include "graphics/shader/recompiler/ir/SrtWalker.h"
 
 #include <cstring>
 #include <iostream>

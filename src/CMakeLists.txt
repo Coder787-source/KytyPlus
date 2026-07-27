@@ -158,16 +158,24 @@ file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	graphics/host_gpu/*.h
 	graphics/host_gpu/renderer/*.cpp
 	graphics/host_gpu/renderer/*.h
+	graphics/host_gpu/renderer/cache/*.cpp
+	graphics/host_gpu/renderer/cache/*.h
+	graphics/host_gpu/renderer/image/*.cpp
+	graphics/host_gpu/renderer/image/*.h
+	graphics/host_gpu/renderer/pipeline/*.cpp
+	graphics/host_gpu/renderer/pipeline/*.h
 	graphics/shader/*.cpp
 	graphics/shader/*.h
 	graphics/shader/recompiler/*.cpp
 	graphics/shader/recompiler/*.h
-	graphics/shader/recompiler/shaderIR/*.cpp
-	graphics/shader/recompiler/shaderIR/*.h
-	graphics/shader/recompiler/spirvEmitter/*.cpp
-	graphics/shader/recompiler/spirvEmitter/*.h
-	graphics/host_gpu/objects/*.cpp
-	graphics/host_gpu/objects/*.h
+	graphics/shader/recompiler/cfg/*.cpp
+	graphics/shader/recompiler/cfg/*.h
+	graphics/shader/recompiler/decompiler/*.cpp
+	graphics/shader/recompiler/decompiler/*.h
+	graphics/shader/recompiler/emitter/*.cpp
+	graphics/shader/recompiler/emitter/*.h
+	graphics/shader/recompiler/ir/*.cpp
+	graphics/shader/recompiler/ir/*.h
 	graphics/presentation/*.cpp
 	graphics/presentation/*.h
 	graphics/presentation/window/*.cpp
@@ -311,8 +319,8 @@ add_kyty_full_emulator_test(shader_cfg_tests ../tests/shaderCfgTests.cpp)
 add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 	../tests/ScalarProvenanceTests.cpp
 	graphics/host_gpu/hostMemory.cpp
-	graphics/shader/recompiler/ScalarProvenance.cpp
-	graphics/shader/recompiler/SrtWalker.cpp
+	graphics/shader/recompiler/ir/ScalarProvenance.cpp
+	graphics/shader/recompiler/ir/SrtWalker.cpp
 )
 target_link_libraries(scalar_provenance_tests fmt::fmt)
 target_include_directories(scalar_provenance_tests PRIVATE ${inc_headers})
@@ -344,9 +352,9 @@ add_executable(shader_stage_runtime_tests EXCLUDE_FROM_ALL
 	graphics/guest_gpu/gpu_format.cpp
 	graphics/host_gpu/hostMemory.cpp
 	graphics/shader/shaderStageRuntime.cpp
-	graphics/shader/recompiler/ResourceMaterialization.cpp
-	graphics/shader/recompiler/ScalarProvenance.cpp
-	graphics/shader/recompiler/SrtWalker.cpp
+	graphics/shader/recompiler/ir/ResourceMaterialization.cpp
+	graphics/shader/recompiler/ir/ScalarProvenance.cpp
+	graphics/shader/recompiler/ir/SrtWalker.cpp
 )
 target_link_libraries(shader_stage_runtime_tests fmt::fmt)
 target_include_directories(shader_stage_runtime_tests PRIVATE ${inc_headers})
@@ -355,20 +363,20 @@ add_executable(resource_tracking_tests EXCLUDE_FROM_ALL
 	../tests/ResourceTrackingTests.cpp
 	graphics/guest_gpu/gpu_format.cpp
 	graphics/host_gpu/hostMemory.cpp
-	graphics/shader/recompiler/ScalarProvenance.cpp
-	graphics/shader/recompiler/SrtWalker.cpp
-	graphics/shader/recompiler/SrtPatcher.cpp
-	graphics/shader/recompiler/ResourceTracking.cpp
-	graphics/shader/recompiler/ResourceMaterialization.cpp
-	graphics/shader/recompiler/ShaderInfoCollection.cpp
-	graphics/shader/recompiler/BindingLayout.cpp
+	graphics/shader/recompiler/ir/ScalarProvenance.cpp
+	graphics/shader/recompiler/ir/SrtWalker.cpp
+	graphics/shader/recompiler/ir/SrtPatcher.cpp
+	graphics/shader/recompiler/ir/ResourceTracking.cpp
+	graphics/shader/recompiler/ir/ResourceMaterialization.cpp
+	graphics/shader/recompiler/ir/ShaderInfoCollection.cpp
+	graphics/shader/recompiler/ir/BindingLayout.cpp
 )
 target_link_libraries(resource_tracking_tests fmt::fmt)
 target_include_directories(resource_tracking_tests PRIVATE ${inc_headers})
 
 add_executable(resource_mutex_tests EXCLUDE_FROM_ALL
 	../tests/ResourceMutexTests.cpp
-	graphics/host_gpu/renderer/resourceMutex.cpp
+	graphics/host_gpu/renderer/cache/resourceMutex.cpp
 )
 target_link_libraries(resource_mutex_tests common)
 target_include_directories(resource_mutex_tests PRIVATE ${inc_headers})

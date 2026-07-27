@@ -3,7 +3,7 @@
 
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
-#include "graphics/host_gpu/renderer/textureCache.h"
+#include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <cstdint>

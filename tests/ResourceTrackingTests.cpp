@@ -1,11 +1,11 @@
 #include "graphics/guest_gpu/gpu_defs.h"
-#include "graphics/shader/recompiler/BindingLayout.h"
-#include "graphics/shader/recompiler/ResourceMaterialization.h"
-#include "graphics/shader/recompiler/ResourceTracking.h"
-#include "graphics/shader/recompiler/ScalarProvenance.h"
-#include "graphics/shader/recompiler/ShaderInfoCollection.h"
-#include "graphics/shader/recompiler/SrtPatcher.h"
-#include "graphics/shader/recompiler/SrtWalker.h"
+#include "graphics/shader/recompiler/ir/BindingLayout.h"
+#include "graphics/shader/recompiler/ir/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ir/ResourceTracking.h"
+#include "graphics/shader/recompiler/ir/ScalarProvenance.h"
+#include "graphics/shader/recompiler/ir/ShaderInfoCollection.h"
+#include "graphics/shader/recompiler/ir/SrtPatcher.h"
+#include "graphics/shader/recompiler/ir/SrtWalker.h"
 #include "graphics/shader/shaderBindings.h"
 
 #include <algorithm>
