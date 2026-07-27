@@ -31,7 +31,19 @@ bool NullImageDescriptor(const DescriptorValue& descriptor) {
 }
 
 bool ValidImageDescriptor(const DescriptorValue& descriptor) {
-	return ((descriptor.dwords[3] >> 28u) & 0x8u) != 0;
+	const auto type = static_cast<Prospero::ImageType>((descriptor.dwords[3] >> 28u) & 0xfu);
+	if (type < Prospero::ImageType::kColor1D) {
+		return false;
+	}
+	if (type == Prospero::ImageType::kColor2DMsaa ||
+	    type == Prospero::ImageType::kColor2DMsaaArray) {
+		const auto base_level = (descriptor.dwords[3] >> 12u) & 0xfu;
+		const auto fragments  = (descriptor.dwords[3] >> 16u) & 0xfu;
+		const auto max_mip    = (descriptor.dwords[5] >> 4u) & 0xfu;
+		return base_level == 0 && fragments >= 1 && fragments <= 3 &&
+		       max_mip == fragments;
+	}
+	return true;
 }
 
 uint32_t DescriptorImageSwizzle(const DescriptorValue& descriptor) {

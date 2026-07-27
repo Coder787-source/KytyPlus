@@ -989,6 +989,57 @@ void TestInvalidImagesMaterializeAsNull() {
           error.c_str());
   }
 
+  constexpr std::array<uint32_t, 8> packet = {
+      0xc0071058, 0xe80eeeb8, 0x00000000, 0xffffffff,
+      0xffffffff, 0x00000001, 0x00000000, 0x00000113};
+  ResourceSnapshot packet_snapshot;
+  Check(MaterializeResources(sampled, {packet}, packet_snapshot, &error) &&
+            std::all_of(packet_snapshot.images[0].dwords.begin(),
+                        packet_snapshot.images[0].dwords.end(),
+                        [](uint32_t word) { return word == 0; }),
+        "invalid MSAA image words were not normalized to null");
+
+  struct MsaaCase {
+    uint32_t base_level;
+    uint32_t fragments;
+    uint32_t max_mip;
+    bool valid;
+  };
+  constexpr std::array msaa_cases = {
+      MsaaCase{0, 1, 1, true},  MsaaCase{0, 2, 2, true},
+      MsaaCase{0, 3, 3, true},  MsaaCase{1, 1, 1, false},
+      MsaaCase{0, 2, 1, false}, MsaaCase{0, 0, 0, false},
+      MsaaCase{0, 4, 4, false},
+  };
+  constexpr std::array msaa_types = {
+      Prospero::ImageType::kColor2DMsaa,
+      Prospero::ImageType::kColor2DMsaaArray,
+  };
+  for (const auto type : msaa_types) {
+    for (const auto& test : msaa_cases) {
+      std::array<uint32_t, 8> msaa{};
+      msaa[0] = 1;
+      msaa[1] = 36u << 20u;
+      msaa[3] = (Prospero::GpuEnumValue(type) << 28u) |
+                (test.base_level << 12u) | (test.fragments << 16u);
+      msaa[5] = test.max_mip << 4u;
+      ResourceSnapshot msaa_snapshot;
+      const auto materialized =
+          MaterializeResources(sampled, {msaa}, msaa_snapshot, &error);
+      const auto preserved =
+          materialized &&
+          std::equal(msaa.begin(), msaa.end(),
+                     msaa_snapshot.images[0].dwords.begin());
+      const auto is_null =
+          materialized &&
+          std::all_of(msaa_snapshot.images[0].dwords.begin(),
+                      msaa_snapshot.images[0].dwords.end(),
+                      [](uint32_t word) { return word == 0; });
+      Check(materialized && (test.valid ? preserved : is_null),
+            "MSAA image descriptor validity mismatch");
+    }
+  }
+
   auto valid = stale;
   valid[3] = (valid[3] & 0x0fffffffu) |
              (Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) << 28u);
