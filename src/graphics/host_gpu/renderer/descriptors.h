@@ -35,7 +35,8 @@ ResolveTargetTextureView(const ShaderRecompiler::IR::ImageResource& resource,
 
 [[nodiscard]] bool IsSupportedDepthTargetDescriptor(const ShaderTextureResource& descriptor,
                                                     const Image&                 image);
-[[nodiscard]] bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor);
+[[nodiscard]] bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor,
+                                                    const Image&                 image);
 [[nodiscard]] bool
 IsSupportedSampledVideoOutView(const ShaderRecompiler::IR::ImageResource& resource,
                                const ShaderTextureResource& descriptor, const Image& image);

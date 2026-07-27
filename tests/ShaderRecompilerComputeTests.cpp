@@ -15596,10 +15596,45 @@ void CheckSampledDepthDescriptor(RenderContext &renderer) {
                                cube_image.info.resources.layers);
   Require("SampledDepthDescriptor", "normalized depth cube",
           IsSupportedDepthTargetDescriptor(cube_descriptor, cube_image) &&
-              IsSupportedDepthTextureEncoding(cube_descriptor) &&
+              IsSupportedDepthTextureEncoding(cube_descriptor, cube_image) &&
               cube_view.type == vk::ImageViewType::e2DArray &&
               cube_view.layer_count == 6,
           "normalized depth cube did not preserve its six-face view");
+
+  constexpr uint64_t captured_htile_address = 0x106d48000ull;
+  const ShaderTextureResource compressed_descriptor{{
+      0x0104d500u, 0xc1600000u, 0x021bc3bfu, 0x91800924u,
+      0x00000000u, 0x00700000u, 0x80280000u, 0x000106d4u,
+  }};
+  image.info.metadata.range = {captured_htile_address, 0x1000};
+  image.info.metadata.kind = ImageMetadataKind::Htile;
+  auto mismatched_metadata = compressed_descriptor;
+  mismatched_metadata.fields[7] ^= 1u;
+  auto mismatched_metadata_low = compressed_descriptor;
+  mismatched_metadata_low.fields[6] ^= 1u << 24u;
+  auto dcc_only_control = compressed_descriptor;
+  dcc_only_control.fields[6] |= 1u << 22u;
+  const bool accepts_compressed =
+      IsSupportedDepthTextureEncoding(compressed_descriptor, image);
+  image.info.metadata.kind = ImageMetadataKind::Dcc;
+  const bool rejects_dcc = !IsSupportedDepthTextureEncoding(compressed_descriptor, image);
+  image.info.metadata.kind = ImageMetadataKind::None;
+  const bool rejects_none = !IsSupportedDepthTextureEncoding(compressed_descriptor, image);
+  image.info.metadata.kind = ImageMetadataKind::Htile;
+  image.info.metadata.range.size = 0;
+  const bool rejects_empty = !IsSupportedDepthTextureEncoding(compressed_descriptor, image);
+  image.info.metadata.range.size = TRACKER_ADDRESS_SIZE - captured_htile_address + 1u;
+  const bool rejects_overflow = !IsSupportedDepthTextureEncoding(compressed_descriptor, image);
+  image.info.metadata.range.size = 0x1000;
+  Require("SampledDepthDescriptor", "compressed HTILE descriptor",
+          accepts_compressed &&
+              !IsSupportedDepthTextureEncoding(mismatched_metadata, image) &&
+              !IsSupportedDepthTextureEncoding(mismatched_metadata_low, image) &&
+              !IsSupportedDepthTextureEncoding(dcc_only_control, image),
+          "compressed sampled depth did not require its exact tracked HTILE");
+  Require("SampledDepthDescriptor", "tracked HTILE state",
+          rejects_dcc && rejects_none && rejects_empty && rejects_overflow,
+          "compressed sampled depth accepted invalid tracked metadata");
 
   auto partial_cube = cube_descriptor;
   partial_cube.fields[4] = 4;
@@ -15618,7 +15653,7 @@ void CheckSampledDepthDescriptor(RenderContext &renderer) {
           rejects_pitch &&
               !IsSupportedDepthTargetDescriptor(partial_cube, cube_image) &&
               !IsSupportedDepthTargetDescriptor(based_cube, cube_image) &&
-              !IsSupportedDepthTextureEncoding(reserved_cube) &&
+              !IsSupportedDepthTextureEncoding(reserved_cube, cube_image) &&
               !IsSupportedDepthTargetDescriptor(non_square_cube, cube_image),
           "normalized depth descriptor accepted an incompatible image view");
   std::printf("[host]    %-32s ok\n", "SampledDepthDescriptor");

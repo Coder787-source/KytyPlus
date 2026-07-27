@@ -229,7 +229,7 @@ bool IsSupportedDepthTargetDescriptor(const ShaderTextureResource& descriptor, c
 	       pitch == image.info.pitch;
 }
 
-bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor) {
+bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor, const Image& image) {
 	constexpr uint32_t field1_reserved_mask = 0x200fff00u;
 	constexpr uint32_t field2_reserved_mask = 0xf0003000u;
 	constexpr uint32_t field3_common        = 0x01800000u;
@@ -237,11 +237,24 @@ bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor) {
 	const uint32_t     field3_expected =
 	    (descriptor.Type() << 28u) | field3_common | descriptor.DstSelXYZW();
 	const uint32_t field4_expected = descriptor.Depth() | (descriptor.BaseArray5() << 16u);
-	return (descriptor.fields[1] & field1_reserved_mask) == 0 &&
-	       (descriptor.fields[2] & field2_reserved_mask) == 0 &&
-	       descriptor.fields[3] == field3_expected && descriptor.fields[4] == field4_expected &&
-	       descriptor.fields[5] == field5_expected && descriptor.fields[6] == 0 &&
-	       descriptor.fields[7] == 0;
+	const bool common = (descriptor.fields[1] & field1_reserved_mask) == 0 &&
+	                    (descriptor.fields[2] & field2_reserved_mask) == 0 &&
+	                    descriptor.fields[3] == field3_expected &&
+	                    descriptor.fields[4] == field4_expected &&
+	                    descriptor.fields[5] == field5_expected;
+	if (!common || (descriptor.fields[6] == 0 && descriptor.fields[7] != 0)) {
+		return false;
+	}
+	if (descriptor.fields[6] == 0) {
+		return true;
+	}
+	constexpr uint32_t htile_control = 0x00280000u;
+	const auto         metadata_addr = descriptor.MetaAddr() << 8u;
+	return (descriptor.fields[6] & 0x00ffffffu) == htile_control && metadata_addr != 0 &&
+	       descriptor.TileMode() == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
+	       image.info.tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
+	       image.info.metadata.kind == ImageMetadataKind::Htile &&
+	       image.info.metadata.range.Valid() && image.info.metadata.range.address == metadata_addr;
 }
 
 static void ValidateDepthTargetBinding(const ShaderRecompiler::IR::ImageResource& resource,
@@ -250,7 +263,8 @@ static void ValidateDepthTargetBinding(const ShaderRecompiler::IR::ImageResource
 	const bool resource_ok = IsSupportedSampledDepthResource(resource);
 	const bool descriptor_ok =
 	    image != nullptr && IsSupportedDepthTargetDescriptor(descriptor, *image);
-	const bool encoding_ok = IsSupportedDepthTextureEncoding(descriptor);
+	const bool encoding_ok =
+	    image != nullptr && IsSupportedDepthTextureEncoding(descriptor, *image);
 	const bool format_ok =
 	    image != nullptr &&
 	    IsSupportedSampledDepthFormat(image->info.pixel_format, descriptor.Format(), view_format);
