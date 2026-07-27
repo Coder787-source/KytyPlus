@@ -47,6 +47,22 @@ body:
       required: true
 
   - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Windows 11
+    validations:
+      required: true
+
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU
+      placeholder: Ryzen 7 7840HS
+    validations:
+      required: true
+
+  - type: input
     id: gpu
     attributes:
       label: GPU + driver
@@ -55,10 +71,10 @@ body:
       required: true
 
   - type: input
-    id: os
+    id: ram
     attributes:
-      label: OS
-      placeholder: Windows 11
+      label: RAM
+      placeholder: 32 GB
     validations:
       required: true
 
