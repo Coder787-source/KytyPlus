@@ -38,6 +38,7 @@
 #include "graphics/shader/recompiler/ShaderDecoder.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/SpirvBuilder.h"
+#include "graphics/shader/recompiler/SpirvEmitter.h"
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 
@@ -723,6 +724,8 @@ struct TestCase {
   u32 image_descriptor_swizzle = DstSel(4, 5, 6, 7);
   bool compile_only = false;
   size_t storage_buffer_range_dwords = 0;
+  std::vector<u32> storage_buffer_offsets;
+  bool force_shader_data_storage = false;
   std::optional<uint64_t> flat_memory_base;
   std::vector<u32> gds_initial;
   std::vector<u32> expected_gds;
@@ -849,6 +852,29 @@ CompiledShader CompileCase(const TestCase &test) {
   if (!ShaderRecompiler::TryRecompile(test.code, options, result, &error)) {
     Fail(test.name, "decode/IR", error.c_str());
   }
+  if (test.force_shader_data_storage) {
+    result.program.bindings = {};
+    result.program.binding_layout_complete = false;
+    if (!ShaderRecompiler::IR::AllocateBindings(
+            result.program, {.max_push_dwords = 0}, &error)) {
+      Fail(test.name, "binding layout", error.c_str());
+    }
+    const auto *shader_data = ShaderRecompiler::IR::FindBinding(
+        result.program.bindings,
+        ShaderRecompiler::IR::DescriptorBindingKind::UserData);
+    Require(test.name, "binding layout",
+            result.program.bindings.user_data_registers.empty() &&
+                result.program.bindings.push_constant_size == 0 &&
+                shader_data != nullptr,
+            "offset-only shader data did not use its storage fallback");
+    std::vector<u32> storage_spirv;
+    if (!ShaderRecompiler::Spirv::EmitProgram(
+            result.program, result.resources, nullptr, nullptr,
+            options.compute_input_info, storage_spirv, &error)) {
+      Fail(test.name, "SPIR-V emit", error.c_str());
+    }
+    result.spirv = std::move(storage_spirv);
+  }
   Require(test.name, "SPIR-V emit", !result.spirv.empty(),
           "recompiler returned empty SPIR-V");
   ValidateSpirv(test.name, result.spirv);
@@ -857,6 +883,16 @@ CompiledShader CompileCase(const TestCase &test) {
   for (const auto reg : result.program.bindings.user_data_registers) {
     packed_user_data.push_back(
         result.resources.user_data[reg - result.program.user_data_base]);
+  }
+  packed_user_data.resize(result.program.bindings.ShaderDataDwords());
+  for (u32 i = 0; i < result.program.bindings.buffer_offset_count; i++) {
+    const auto offset = i < test.storage_buffer_offsets.size()
+                            ? test.storage_buffer_offsets[i]
+                            : 0u;
+    Require(test.name, "shader data", offset % sizeof(u32) == 0 && offset < 256,
+            "storage buffer offset is not representable");
+    packed_user_data[result.program.bindings.buffer_offset_dword + i / 4u] |=
+        offset << ((i % 4u) * 8u);
   }
   return {std::move(result.spirv), std::move(result.program),
           std::move(result.resources.flattened_srt),
@@ -924,6 +960,7 @@ CompiledShader CompileFragmentCase(const GraphicsCase &test) {
     packed_user_data.push_back(
         result.resources.user_data[reg - result.program.user_data_base]);
   }
+  packed_user_data.resize(result.program.bindings.ShaderDataDwords());
   return {std::move(result.spirv), std::move(result.program),
           std::move(result.resources.flattened_srt),
           std::move(packed_user_data)};
@@ -1785,9 +1822,8 @@ public:
     const auto depth_attachment = depth.FindView(depth_attachment_info);
     Require(name, "depth views",
             depth_first != nullptr && depth_again == depth_first &&
-                depth_alias == depth_first &&
-                depth_array != nullptr && depth_array != depth_first &&
-                depth_attachment != nullptr &&
+                depth_alias == depth_first && depth_array != nullptr &&
+                depth_array != depth_first && depth_attachment != nullptr &&
                 depth_attachment != depth_array &&
                 depth.views.views.size() == 3,
             "unified depth view cache lost sampled/attachment identity");
@@ -2547,8 +2583,7 @@ public:
       auto uncompressed_block = MakeLinearDesc(
           base + block_alias_offset, sizeof(block_alias_data),
           vk::Format::eR32G32B32A32Uint,
-          Prospero::GpuEnumValue(
-              Prospero::BufferFormat::k32_32_32_32UInt),
+          Prospero::GpuEnumValue(Prospero::BufferFormat::k32_32_32_32UInt),
           Prospero::ImageType::kColor2D, {1, 1, 1}, 1, 16, 1);
       const auto uncompressed_block_image =
           texture_cache.FindImage(uncompressed_block);
@@ -2568,15 +2603,16 @@ public:
       std::array<uint32_t, block_alias_data.size()> block_alias_after{};
       std::memcpy(block_alias_after.data(), memory + block_alias_offset,
                   sizeof(block_alias_after));
-      Require(name, "compressed view expansion",
-              compressed_block_image &&
-                  compressed_block_image != uncompressed_block_image &&
-                  texture_cache.GetImage(compressed_block_image)
-                          .backing.format == vk::Format::eBc3UnormBlock &&
-                  compressed_block_download &&
-                  block_alias_after == block_alias_data,
-              "size-compatible compressed alias did not preserve its native "
-              "contents");
+      Require(
+          name, "compressed view expansion",
+          compressed_block_image &&
+              compressed_block_image != uncompressed_block_image &&
+              texture_cache.GetImage(compressed_block_image).backing.format ==
+                  vk::Format::eBc3UnormBlock &&
+              compressed_block_download &&
+              block_alias_after == block_alias_data,
+          "size-compatible compressed alias did not preserve its native "
+          "contents");
 
       ImageInfo resolve_source_info{};
       resolve_source_info.pixel_format = vk::Format::eR8G8B8A8Unorm;
@@ -3317,8 +3353,10 @@ public:
           name, "unformatted buffer/image alias",
           unformatted_alias_buffer.buffer != nullptr &&
               texture_cache.GetImage(unformatted_alias_image).IsGpuModified() &&
-              !texture_cache.GetImage(unformatted_alias_image).IsBufferModified(),
-          "read-only unformatted buffer alias did not follow ordinary BufferCache acquisition");
+              !texture_cache.GetImage(unformatted_alias_image)
+                   .IsBufferModified(),
+          "read-only unformatted buffer alias did not follow ordinary "
+          "BufferCache acquisition");
       if (unformatted_alias_buffer.owner != nullptr) {
         command.RetainResourceUntilFence(unformatted_alias_buffer.owner);
       }
@@ -5243,15 +5281,23 @@ public:
               "ownership became visible");
 
       constexpr uint64_t phased_depth_address = base + 0x90000;
+      constexpr uint64_t phased_stencil_address = base + 0xa0000;
       constexpr uint64_t phased_htile_address = base + 0xb0000;
       HW::DepthRenderTarget phased_depth_target{};
       phased_depth_target.z_info.format =
           Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F);
-      phased_depth_target.z_info.tile_surface_enable = true;
-      phased_depth_target.z_info.zrange_precision = 1;
-      phased_depth_target.stencil_info.tile_stencil_disable = true;
+      phased_depth_target.z_info.texture_compatibility =
+          Prospero::TextureCompatiblePlaneCompression::kEnable;
+      phased_depth_target.z_info.htile_acceleration = true;
+      phased_depth_target.z_info.z_compare_base = Prospero::ZCompareBase::kZMax;
+      phased_depth_target.stencil_info.format =
+          Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt);
+      phased_depth_target.stencil_info.texture_compatibility =
+          Prospero::TextureCompatibleStencil::kEnable;
       phased_depth_target.z_read_base_addr = phased_depth_address;
       phased_depth_target.z_write_base_addr = phased_depth_address;
+      phased_depth_target.stencil_read_base_addr = phased_stencil_address;
+      phased_depth_target.stencil_write_base_addr = phased_stencil_address;
       phased_depth_target.htile_data_base_addr = phased_htile_address;
       phased_depth_target.size.valid = true;
       registers.SetDepthRenderTarget(phased_depth_target);
@@ -5265,16 +5311,34 @@ public:
       RenderDepthInfo phased_depth{};
       RenderExecutorTestAccess::ResolveRenderDepthTarget(
           executor, 1, scheduler.Current(), phased_depth);
+      auto non_texture_compatible_target = phased_depth_target;
+      non_texture_compatible_target.z_info.texture_compatibility =
+          Prospero::TextureCompatiblePlaneCompression::kDisable;
+      non_texture_compatible_target.stencil_info.texture_compatibility =
+          Prospero::TextureCompatibleStencil::kDisable;
+      registers.SetDepthRenderTarget(non_texture_compatible_target);
+      RenderDepthInfo non_texture_compatible_depth{};
+      RenderExecutorTestAccess::ResolveRenderDepthTarget(
+          executor, 1, scheduler.Current(), non_texture_compatible_depth);
       Require(
-          name, "HTile discovery purity",
+          name, "depth texture compatibility identity",
           phased_depth.image_id && phased_depth.htile &&
+              non_texture_compatible_depth.image_id == phased_depth.image_id &&
+              non_texture_compatible_depth.desc.info.data ==
+                  phased_depth.desc.info.data &&
+              non_texture_compatible_depth.desc.info.stencil ==
+                  phased_depth.desc.info.stencil &&
+              non_texture_compatible_depth.desc.info.metadata.range ==
+                  phased_depth.desc.info.metadata.range &&
+              phased_depth.desc.info.metadata.stencil_compressed &&
               !phased_depth.depth_clear_enable &&
               !phased_depth.depth_meta_clear_enable &&
               !texture_cache.IsMeta(phased_depth.htile_buffer_vaddr) &&
               !texture_cache.GetImage(phased_depth.image_id).IsGpuModified() &&
               !texture_cache.GetImage(phased_depth.image_id).usage.depth_target,
-          "depth discovery registered, consumed, or GPU-owned HTile "
-          "state before final acquisition");
+          "valid PS5 texture-compatibility policy changed logical depth image "
+          "identity or discovery side effects");
+      registers.SetDepthRenderTarget(phased_depth_target);
       RenderColorInfo no_color{};
       auto phased_rendering = RenderExecutorTestAccess::AcquireRenderTargets(
           executor, scheduler.Current(), &no_color, 0, phased_depth);
@@ -5340,8 +5404,8 @@ public:
               "replacement");
 
       constexpr uint64_t array_target_address = base + 0xd0000;
-      auto array_target =
-          make_target_desc(array_target_address, target_mip_size, {128, 128, 1});
+      auto array_target = make_target_desc(array_target_address,
+                                           target_mip_size, {128, 128, 1});
       const auto array_target_id = texture_cache.FindImage(array_target);
       const auto array_target_owner =
           TextureCacheTestAccess::Owner(texture_cache, array_target_id);
@@ -5353,16 +5417,14 @@ public:
       const auto encoded_array_address = array_target_address >> 8u;
       constexpr auto array_format =
           Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt);
-      array_texture.fields[0] =
-          static_cast<uint32_t>(encoded_array_address);
+      array_texture.fields[0] = static_cast<uint32_t>(encoded_array_address);
       array_texture.fields[1] =
           static_cast<uint32_t>(encoded_array_address >> 32u) |
           (array_format << 20u) | (3u << 30u);
       array_texture.fields[2] = (127u >> 2u) | (127u << 14u);
       array_texture.fields[3] =
           DstSel(4, 5, 6, 7) | (linear << 20u) |
-          (Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray)
-           << 28u);
+          (Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) << 28u);
       array_texture.fields[4] = 1;
 
       ShaderRecompiler::IR::Program array_program{};
@@ -5388,13 +5450,11 @@ public:
               std::move(array_snapshot))};
 
       auto array_binding = executor.PrepareBindings(
-          scheduler.Current(), array_runtime,
-          vk::ShaderStageFlagBits::eCompute, DescriptorCache::Stage::Compute);
+          scheduler.Current(), array_runtime, vk::ShaderStageFlagBits::eCompute,
+          DescriptorCache::Stage::Compute);
       executor.RebindImages(scheduler.Current(), array_binding);
-      const auto expanded_array_id =
-          array_binding.resources.images[0].image_id;
-      const auto &expanded_array =
-          texture_cache.GetImage(expanded_array_id);
+      const auto expanded_array_id = array_binding.resources.images[0].image_id;
+      const auto &expanded_array = texture_cache.GetImage(expanded_array_id);
       Require(
           name, "2D target to array backing expansion",
           array_target_view != nullptr && array_target_owner != nullptr &&
@@ -5424,27 +5484,26 @@ public:
       auto array_rendering = RenderExecutorTestAccess::AcquireRenderTargets(
           executor, scheduler.Current(), &rebound_array_target, 1,
           no_array_depth);
-      Require(
-          name, "expanded array target rebind",
-          rebound_array_target.image_id == expanded_array_id &&
-              rebound_array_target.image_view != nullptr &&
-              array_rendering.num_color_attachments == 1 &&
-              array_rendering.color_attachments[0].image_view ==
-                  rebound_array_target.image_view &&
-              array_rendering.width == 128 && array_rendering.height == 128 &&
-              array_rendering.num_layers == 1 &&
-              texture_cache.GetImage(expanded_array_id).binding.is_bound &&
-              texture_cache.GetImage(expanded_array_id).binding.is_target,
-          "the retained single-layer target did not rebind to the expanded "
-          "backing");
+      Require(name, "expanded array target rebind",
+              rebound_array_target.image_id == expanded_array_id &&
+                  rebound_array_target.image_view != nullptr &&
+                  array_rendering.num_color_attachments == 1 &&
+                  array_rendering.color_attachments[0].image_view ==
+                      rebound_array_target.image_view &&
+                  array_rendering.width == 128 &&
+                  array_rendering.height == 128 &&
+                  array_rendering.num_layers == 1 &&
+                  texture_cache.GetImage(expanded_array_id).binding.is_bound &&
+                  texture_cache.GetImage(expanded_array_id).binding.is_target,
+              "the retained single-layer target did not rebind to the expanded "
+              "backing");
       RenderExecutorTestAccess::ResetBindings(executor);
 
       auto colliding_msaa_texture = array_texture;
       colliding_msaa_texture.fields[3] =
           DstSel(4, 5, 6, 7) | (1u << 16u) |
           (Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) << 20u) |
-          (Prospero::GpuEnumValue(Prospero::ImageType::kColor2DMsaa)
-           << 28u);
+          (Prospero::GpuEnumValue(Prospero::ImageType::kColor2DMsaa) << 28u);
       colliding_msaa_texture.fields[4] = 0;
       colliding_msaa_texture.fields[5] = (7u << 20u) | (1u << 4u);
       ShaderRecompiler::IR::DescriptorValue colliding_msaa_descriptor{};
@@ -5501,26 +5560,22 @@ public:
 
       auto msaa_texture = array_texture;
       const auto encoded_msaa_address = msaa_target_address >> 8u;
-      msaa_texture.fields[0] =
-          static_cast<uint32_t>(encoded_msaa_address);
+      msaa_texture.fields[0] = static_cast<uint32_t>(encoded_msaa_address);
       msaa_texture.fields[1] =
           static_cast<uint32_t>(encoded_msaa_address >> 32u) |
           (array_format << 20u) | (3u << 30u);
       msaa_texture.fields[3] =
           DstSel(4, 5, 6, 7) | (2u << 16u) |
           (Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) << 20u) |
-          (Prospero::GpuEnumValue(Prospero::ImageType::kColor2DMsaa)
-           << 28u);
+          (Prospero::GpuEnumValue(Prospero::ImageType::kColor2DMsaa) << 28u);
       msaa_texture.fields[4] = 0;
       msaa_texture.fields[5] = (7u << 20u) | (2u << 4u);
       ShaderRecompiler::IR::DescriptorValue msaa_descriptor{};
-      std::copy(std::begin(msaa_texture.fields),
-                std::end(msaa_texture.fields),
+      std::copy(std::begin(msaa_texture.fields), std::end(msaa_texture.fields),
                 msaa_descriptor.dwords.begin());
       msaa_descriptor.dword_count = 8;
-      auto msaa_program =
-          std::make_shared<ShaderRecompiler::IR::Program>(
-              *array_runtime.program);
+      auto msaa_program = std::make_shared<ShaderRecompiler::IR::Program>(
+          *array_runtime.program);
       msaa_program->info.images[0].dimension =
           ShaderRecompiler::Decoder::ImageDimension::Dim2D;
       auto msaa_snapshot =
@@ -5529,8 +5584,8 @@ public:
       ShaderStageRuntime msaa_runtime{std::move(msaa_program),
                                       std::move(msaa_snapshot)};
       auto msaa_binding = executor.PrepareBindings(
-          scheduler.Current(), msaa_runtime,
-          vk::ShaderStageFlagBits::eCompute, DescriptorCache::Stage::Compute);
+          scheduler.Current(), msaa_runtime, vk::ShaderStageFlagBits::eCompute,
+          DescriptorCache::Stage::Compute);
       executor.RebindImages(scheduler.Current(), msaa_binding);
       const auto &resolved_msaa = msaa_binding.resources.images[0];
       Require(
@@ -5538,10 +5593,8 @@ public:
           msaa_target_view != nullptr &&
               resolved_msaa.image_id == msaa_target_id &&
               resolved_msaa.image_view != nullptr &&
-              resolved_msaa.desc.info.type ==
-                  Prospero::ImageType::kColor2D &&
-              resolved_msaa.desc.info.resources ==
-                  ImageSubresources{1, 1} &&
+              resolved_msaa.desc.info.type == Prospero::ImageType::kColor2D &&
+              resolved_msaa.desc.info.resources == ImageSubresources{1, 1} &&
               resolved_msaa.desc.info.samples == msaa_samples &&
               resolved_msaa.desc.info.data.size == 0x40000 &&
               resolved_msaa.desc.view_info.level_count == 1 &&
@@ -5562,9 +5615,8 @@ public:
                 std::end(msaa_array_texture.fields),
                 msaa_array_descriptor.dwords.begin());
       msaa_array_descriptor.dword_count = 8;
-      auto msaa_array_program =
-          std::make_shared<ShaderRecompiler::IR::Program>(
-              *msaa_runtime.program);
+      auto msaa_array_program = std::make_shared<ShaderRecompiler::IR::Program>(
+          *msaa_runtime.program);
       msaa_array_program->info.images[0].dimension =
           ShaderRecompiler::Decoder::ImageDimension::Dim2DArray;
       auto msaa_array_snapshot =
@@ -5576,26 +5628,24 @@ public:
           scheduler.Current(), msaa_array_runtime,
           vk::ShaderStageFlagBits::eCompute, DescriptorCache::Stage::Compute);
       executor.RebindImages(scheduler.Current(), msaa_array_binding);
-      const auto &resolved_msaa_array =
-          msaa_array_binding.resources.images[0];
-      Require(
-          name, "MSAA array backing expansion",
-          resolved_msaa_array.image_id != msaa_target_id &&
-              resolved_msaa_array.image_view != nullptr &&
-              resolved_msaa_array.desc.info.type ==
-                  Prospero::ImageType::kColor2D &&
-              resolved_msaa_array.desc.info.resources ==
-                  ImageSubresources{1, 2} &&
-              resolved_msaa_array.desc.info.samples == msaa_samples &&
-              resolved_msaa_array.desc.info.data.size == 0x80000 &&
-              resolved_msaa_array.desc.view_info.type ==
-                  vk::ImageViewType::e2DArray &&
-              resolved_msaa_array.desc.view_info.layer_count == 2 &&
-              texture_cache.GetImage(resolved_msaa_array.image_id)
-                      .backing.layers == 2 &&
-              texture_cache.GetImage(resolved_msaa_array.image_id)
-                      .backing.samples == msaa_samples,
-          "MSAA array view did not expand the matching Color2D backing");
+      const auto &resolved_msaa_array = msaa_array_binding.resources.images[0];
+      Require(name, "MSAA array backing expansion",
+              resolved_msaa_array.image_id != msaa_target_id &&
+                  resolved_msaa_array.image_view != nullptr &&
+                  resolved_msaa_array.desc.info.type ==
+                      Prospero::ImageType::kColor2D &&
+                  resolved_msaa_array.desc.info.resources ==
+                      ImageSubresources{1, 2} &&
+                  resolved_msaa_array.desc.info.samples == msaa_samples &&
+                  resolved_msaa_array.desc.info.data.size == 0x80000 &&
+                  resolved_msaa_array.desc.view_info.type ==
+                      vk::ImageViewType::e2DArray &&
+                  resolved_msaa_array.desc.view_info.layer_count == 2 &&
+                  texture_cache.GetImage(resolved_msaa_array.image_id)
+                          .backing.layers == 2 &&
+                  texture_cache.GetImage(resolved_msaa_array.image_id)
+                          .backing.samples == msaa_samples,
+              "MSAA array view did not expand the matching Color2D backing");
       RenderExecutorTestAccess::ResetBindings(executor);
 
       ImageDesc depth{};
@@ -5902,14 +5952,14 @@ public:
               std::move(stencil_storage_snapshot))};
       auto storage_redirected = executor.PrepareBindings(
           scheduler.Current(), stencil_storage_runtime,
-          vk::ShaderStageFlagBits::eCompute,
-          DescriptorCache::Stage::Compute);
+          vk::ShaderStageFlagBits::eCompute, DescriptorCache::Stage::Compute);
       executor.RebindImages(scheduler.Current(), storage_redirected);
-      Require(name, "storage stencil acquisition",
-              storage_redirected.resources.images[0].image_id == depth_id &&
-                  storage_redirected.resources.images[0].image_view != nullptr &&
-                  texture_cache.GetImage(depth_id).usage.storage,
-              "storage stencil binding did not acquire the associated depth owner");
+      Require(
+          name, "storage stencil acquisition",
+          storage_redirected.resources.images[0].image_id == depth_id &&
+              storage_redirected.resources.images[0].image_view != nullptr &&
+              texture_cache.GetImage(depth_id).usage.storage,
+          "storage stencil binding did not acquire the associated depth owner");
       RenderExecutorTestAccess::ResetBindings(executor);
       resources.UnmapMemory(base, allocation_size, GpuAccess::ReadWrite);
       scheduler.Finish();
@@ -6399,13 +6449,17 @@ public:
     const auto *buffers = Binding(Kind::Buffers);
     if (buffers != nullptr) {
       buffer_infos.resize(buffers->resources.size());
-      for (auto &info : buffer_infos) {
+      for (u32 i = 0; i < buffer_infos.size(); i++) {
+        auto &info = buffer_infos[i];
         info.buffer = buffer.buffer;
         info.offset = 0;
         info.range = buffer.size;
         if (test.storage_buffer_range_dwords != 0) {
+          const auto offset = i < test.storage_buffer_offsets.size()
+                                  ? test.storage_buffer_offsets[i]
+                                  : 0u;
           info.range = static_cast<vk::DeviceSize>(
-              test.storage_buffer_range_dwords * sizeof(u32));
+              test.storage_buffer_range_dwords * sizeof(u32) + offset);
           Require(test.name, "dispatch", info.range <= buffer.size,
                   "storage buffer descriptor range exceeds backing buffer");
         }
@@ -11731,6 +11785,58 @@ TestCase BufferStoreDwordIdxenUsesDescriptorStride() {
   return test;
 }
 
+TestCase BufferStoreDwordAppliesHostOffset() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  AppendVMovLiteral(&code, 0, 0xabcdef01u);
+  code.push_back(EncodeMubuf0(0x1cu, 0, false, false));
+  code.push_back(EncodeMubuf1(0, 0, 20));
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "BufferStoreDwordAppliesHostOffset";
+  test.code = code;
+  test.initial = {0x11111111u, 0x22222222u, 0x33333333u, 0};
+  test.expected = {0x11111111u, 0x22222222u, 0x33333333u, 0xabcdef01u};
+  test.storage_buffer_range_dwords = 1;
+  test.storage_buffer_offsets = {12};
+  test.opcodes = {O::VMovB32, O::BufferStoreDword, O::SEndpgm};
+  test.user_data = MakeStructuredStorageBufferData(4, 1);
+  test.has_user_data = true;
+  return test;
+}
+
+TestCase BufferOffsetsUsePackedLaneAndStorageFallback() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  for (u32 base : {0u, 4u}) {
+    AppendSMovLiteral(&code, base, 0x1000u + base * 0x1000u);
+    AppendSMovLiteral(&code, base + 1u, 4u << 16u);
+    AppendSMovLiteral(&code, base + 2u, 1u);
+    AppendSMovLiteral(&code, base + 3u, 1u << 24u);
+  }
+  AppendVMovLiteral(&code, 0, 0x12345678u);
+  code.push_back(EncodeMubuf0(0x1cu, 0, false, false));
+  code.push_back(EncodeMubuf1(0, 0, 20));
+  AppendVMovLiteral(&code, 1, 0xabcdef01u);
+  code.push_back(EncodeMubuf0(0x1cu, 0, false, false));
+  code.push_back(EncodeMubuf1(1, 1, 20));
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "BufferOffsetsUsePackedLaneAndStorageFallback";
+  test.code = std::move(code);
+  test.initial = {0, 0, 0, 0};
+  test.expected = {0x12345678u, 0, 0, 0xabcdef01u};
+  test.storage_buffer_range_dwords = 1;
+  test.storage_buffer_offsets = {0, 12};
+  test.force_shader_data_storage = true;
+  test.opcodes = {O::SMovB32, O::VMovB32, O::BufferStoreDword, O::SEndpgm};
+  return test;
+}
+
 TestCase BufferLoadVariants() {
   using O = ShaderOpcode;
 
@@ -14359,6 +14465,8 @@ std::vector<TestCase> MakeCases() {
   AddCase(BufferLoadDwordNoAddressFlagsIgnoresVaddr);
   AddCase(BufferLoadDwordIdxenUsesDescriptorStride);
   AddCase(BufferStoreDwordIdxenUsesDescriptorStride);
+  AddCase(BufferStoreDwordAppliesHostOffset);
+  AddCase(BufferOffsetsUsePackedLaneAndStorageFallback);
   AddCase(BufferLoadVariants);
   AddCase(BufferStoreVariants);
   AddCase(BufferFormatVariants);
@@ -14730,8 +14838,7 @@ void CheckReverseRenderTargetFormatContract() {
                                  vk::Format::eR8G8B8A8Unorm,
                                  DstSel(4, 5, 6, 2));
   } else if (std::strcmp(kind, "sampled-incompatible-format") == 0) {
-    (void)SelectSampledColorView(vk::Format::eR8Unorm,
-                                 vk::Format::eR16Unorm,
+    (void)SelectSampledColorView(vk::Format::eR8Unorm, vk::Format::eR16Unorm,
                                  DstSel(4, 0, 0, 1));
   } else if (std::strcmp(kind, "sampled-invalid-high") == 0) {
     (void)SelectSampledColorView(vk::Format::eR8G8B8A8Unorm,
@@ -14831,8 +14938,7 @@ void CheckSampledColorViews() {
     valid_swizzles += valid;
   }
   Require("SampledColorViews", "all PS5 read swizzles",
-          valid_swizzles == 1296 &&
-              !IsValidImageSwizzle(DstSel(4, 5, 6, 2)) &&
+          valid_swizzles == 1296 && !IsValidImageSwizzle(DstSel(4, 5, 6, 2)) &&
               !IsValidImageSwizzle(DstSel(4, 5, 6, 3)) &&
               !IsValidImageSwizzle(0x1000),
           "valid PS5 sampled mappings were rejected or reserved selectors were "
@@ -14857,8 +14963,7 @@ void CheckSampledColorViews() {
                                  DstSel(0, 0, 0, 4)) == DstSel(0, 0, 0, 4),
           "R8 did not select its 000R component-mapped view");
   Require("SampledColorViews", "mutable R8 uint/unorm 000R",
-          SelectSampledColorView(vk::Format::eR8Uint,
-                                 vk::Format::eR8Unorm,
+          SelectSampledColorView(vk::Format::eR8Uint, vk::Format::eR8Unorm,
                                  DstSel(0, 0, 0, 4)) == DstSel(0, 0, 0, 4),
           "compatible R8 integer target sampled view was rejected");
   Require("SampledColorViews", "R16G16 RG01",
@@ -15486,9 +15591,9 @@ void CheckSampledDepthDescriptor(RenderContext &renderer) {
       ShaderRecompiler::Decoder::ImageDimension::Dim2DArray;
   cube_resource.read = true;
   cube_resource.depth_compare = true;
-  const auto cube_view = ResolveTargetTextureView(
-      cube_resource, Prospero::ImageType::kCube, 0,
-      cube_image.info.resources.layers);
+  const auto cube_view =
+      ResolveTargetTextureView(cube_resource, Prospero::ImageType::kCube, 0,
+                               cube_image.info.resources.layers);
   Require("SampledDepthDescriptor", "normalized depth cube",
           IsSupportedDepthTargetDescriptor(cube_descriptor, cube_image) &&
               IsSupportedDepthTextureEncoding(cube_descriptor) &&
@@ -15741,9 +15846,9 @@ void CheckBasicStorageTextureDescriptor() {
           "basic 3D storage descriptor fixture is malformed");
   ValidateStorageTexture(BasicStorageTextureResource(), descriptor, 0x10000);
 
-  const ShaderTextureResource extended{{
-      0x204aca00u, 0xc4700000u, 0x000fc00fu, 0xa1b00facu,
-      0x0000003fu, 0x00700000u, 0x006b0000u, 0x00204b0au}};
+  const ShaderTextureResource extended{{0x204aca00u, 0xc4700000u, 0x000fc00fu,
+                                        0xa1b00facu, 0x0000003fu, 0x00700000u,
+                                        0x006b0000u, 0x00204b0au}};
   auto extended_resource = BasicStorageTextureResource();
   extended_resource.read = false;
   Require("BasicStorageTexture", "extended descriptor",
@@ -15776,18 +15881,17 @@ void CheckBasicStorageTextureDescriptor() {
   ValidateStorageTexture(BasicBgraStorageTextureResource(), bgra, 0x870000);
 
   const auto r11g11b10 = Ppsa06228R11G11B10StorageTextureDescriptor();
-  Require("BasicStorageTexture", "PPSA06228 R11G11B10 descriptor",
-          r11g11b10.Base40() == 0x10c6b50000ull &&
-              r11g11b10.Width5() + 1u == 1920 &&
-              r11g11b10.Height5() + 1u == 1080 &&
-              r11g11b10.Depth() + 1u == 1 &&
-              r11g11b10.Format() ==
-                  Prospero::GpuEnumValue(
-                      Prospero::BufferFormat::k11_11_10Float) &&
-              r11g11b10.TileMode() ==
-                  Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) &&
-              r11g11b10.DstSelXYZW() == DstSel(4, 5, 6, 1),
-          "PPSA06228 R11G11B10 storage descriptor fixture is malformed");
+  Require(
+      "BasicStorageTexture", "PPSA06228 R11G11B10 descriptor",
+      r11g11b10.Base40() == 0x10c6b50000ull &&
+          r11g11b10.Width5() + 1u == 1920 && r11g11b10.Height5() + 1u == 1080 &&
+          r11g11b10.Depth() + 1u == 1 &&
+          r11g11b10.Format() ==
+              Prospero::GpuEnumValue(Prospero::BufferFormat::k11_11_10Float) &&
+          r11g11b10.TileMode() ==
+              Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) &&
+          r11g11b10.DstSelXYZW() == DstSel(4, 5, 6, 1),
+      "PPSA06228 R11G11B10 storage descriptor fixture is malformed");
   ValidateStorageTexture(BasicBgraStorageTextureResource(), r11g11b10,
                          0x870000);
   ValidateStorageColorView(vk::Format::eB10G11R11UfloatPack32,
@@ -15878,8 +15982,7 @@ void CheckBasicStorageTextureDescriptor() {
     if (!IsValidImageSwizzle(swizzle)) {
       continue;
     }
-    all_swizzles.fields[3] =
-        (all_swizzles.fields[3] & ~0xfffu) | swizzle;
+    all_swizzles.fields[3] = (all_swizzles.fields[3] & ~0xfffu) | swizzle;
     ValidateStorageTexture(BasicLinearStorageTextureResource(), all_swizzles,
                            0x800);
     ValidateStorageColorView(vk::Format::eR16G16B16A16Sfloat,
@@ -15921,15 +16024,13 @@ void CheckBasicStorageTextureDescriptor() {
   ValidateStorageTexture(BasicUintArrayStorageTextureResource(), uint_array,
                          0x10000);
 
-  const auto standard4kb_array =
-      Standard4KBUintArrayStorageTextureDescriptor();
+  const auto standard4kb_array = Standard4KBUintArrayStorageTextureDescriptor();
   const auto standard4kb_pitch = TileGetTexturePitch(
       standard4kb_array.Format(), 1, 1, standard4kb_array.TileMode());
   TileSizeAlign standard4kb_size{};
   TileGetTextureTotalSize(standard4kb_array.Format(), 1, 1, 1,
-                          standard4kb_pitch, 1,
-                          standard4kb_array.TileMode(), false,
-                          standard4kb_size);
+                          standard4kb_pitch, 1, standard4kb_array.TileMode(),
+                          false, standard4kb_size);
   Require("BasicStorageTexture", "Standard4KB uint 2D-array descriptor",
           standard4kb_array.Type() ==
                   Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
@@ -15947,9 +16048,9 @@ void CheckBasicStorageTextureDescriptor() {
   auto based_standard4kb_array = standard4kb_array;
   based_standard4kb_array.fields[0] = 0x006c6800u;
   based_standard4kb_array.fields[4] = 0x00010001u;
-  const auto based_standard4kb_pitch = TileGetTexturePitch(
-      based_standard4kb_array.Format(), 1, 1,
-      based_standard4kb_array.TileMode());
+  const auto based_standard4kb_pitch =
+      TileGetTexturePitch(based_standard4kb_array.Format(), 1, 1,
+                          based_standard4kb_array.TileMode());
   TileSizeAlign based_standard4kb_size{};
   TileGetTextureTotalSize(
       based_standard4kb_array.Format(), 1, 1,
@@ -15963,8 +16064,7 @@ void CheckBasicStorageTextureDescriptor() {
               based_standard4kb_size.align == 0x1000,
           "captured based Standard4KB array view is malformed");
   ValidateStorageTexture(BasicUintArrayStorageTextureResource(),
-                         based_standard4kb_array,
-                         based_standard4kb_size.size);
+                         based_standard4kb_array, based_standard4kb_size.size);
 
   const auto uint_volume = BasicUintVolumeStorageTextureDescriptor();
   Require("BasicStorageTexture", "uint 3D descriptor",
@@ -15983,9 +16083,9 @@ void CheckBasicStorageTextureDescriptor() {
   ValidateStorageTexture(BasicUintVolumeStorageTextureResource(), uint_volume,
                          0x10000);
 
-  const ShaderTextureResource tiled_uint_volume{{
-      0x1ac0e530u, 0xc0b00000u, 0x0003c003u, 0xa0500004u,
-      0x0000000fu, 0x00700000u, 0x00000000u, 0x00000000u}};
+  const ShaderTextureResource tiled_uint_volume{
+      {0x1ac0e530u, 0xc0b00000u, 0x0003c003u, 0xa0500004u, 0x0000000fu,
+       0x00700000u, 0x00000000u, 0x00000000u}};
   Require("BasicStorageTexture", "tiled uint 3D descriptor",
           tiled_uint_volume.Width5() + 1u == 16 &&
               tiled_uint_volume.Height5() + 1u == 16 &&
@@ -16028,14 +16128,14 @@ void CheckBasicStorageTextureDescriptor() {
                   Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
               d16_depth_tile.DstSelXYZW() == DstSel(4, 0, 0, 1),
           "PPSA10112 writable D16 depth-plane descriptor fixture is malformed");
-  const auto d16_pitch = TileGetTexturePitch(
-      d16_depth_tile.Format(), d16_depth_tile.Width5() + 1u, 1,
-      d16_depth_tile.TileMode());
+  const auto d16_pitch =
+      TileGetTexturePitch(d16_depth_tile.Format(), d16_depth_tile.Width5() + 1u,
+                          1, d16_depth_tile.TileMode());
   TileSizeAlign d16_size{};
-  TileGetTextureTotalSize(
-      d16_depth_tile.Format(), d16_depth_tile.Width5() + 1u,
-      d16_depth_tile.Height5() + 1u, d16_depth_tile.Depth() + 1u, d16_pitch, 1,
-      d16_depth_tile.TileMode(), false, d16_size);
+  TileGetTextureTotalSize(d16_depth_tile.Format(), d16_depth_tile.Width5() + 1u,
+                          d16_depth_tile.Height5() + 1u,
+                          d16_depth_tile.Depth() + 1u, d16_pitch, 1,
+                          d16_depth_tile.TileMode(), false, d16_size);
   Require("BasicStorageTexture", "PPSA10112 D16 depth-tile footprint",
           d16_pitch == 256 && d16_size.size == 0x20000 &&
               d16_size.align == 0x10000,
@@ -16064,8 +16164,8 @@ void CheckBasicStorageTextureDescriptor() {
   for (const char *kind :
        {"resource", "type", "tile", "mip", "swizzle", "linear-rgb1-read",
         "bgra-read", "r16-float-read", "r8-unorm-read", "yzwx-read",
-        "reserved-swizzle", "array-base-out-of-range", "array-mip-view", "reserved",
-        "uint-format", "uint-resource-float-format",
+        "reserved-swizzle", "array-base-out-of-range", "array-mip-view",
+        "reserved", "uint-format", "uint-resource-float-format",
         "depth-tile-read", "depth-tile-extent", "depth-tile-fmask"}) {
     std::string command = std::string("\"") + path +
                           "\" --storage-texture-descriptor-death " + kind;
@@ -16482,6 +16582,38 @@ void CheckDepthHtileStencilCompatibility() {
           !depth_htile_stencil_acceleration_compatible(true, false, false),
           "Hi-Stencil without HTile metadata was silently admitted");
   std::printf("[host]    %-32s ok\n", "DepthHtileStencilCompatibility");
+}
+
+void CheckPs5DepthRegisterDecoding() {
+  constexpr uint32_t captured_z = 0x22900803u;
+  constexpr uint32_t captured_stencil = 0x00100801u;
+  const auto z = HW::DepthZInfo::Decode(captured_z);
+  const auto stencil = HW::DepthStencilInfo::Decode(captured_stencil);
+  Require(
+      "Ps5DepthRegisterDecoding", "captured texture-compatible state",
+      z.format == Prospero::GpuEnumValue(Prospero::DepthFormat::kZ32F) &&
+          z.num_samples == 0 && z.htile_acceleration && !z.expclear_enabled &&
+          !z.partially_resident && z.max_mip_level == 0 &&
+          z.z_compare_base == Prospero::ZCompareBase::kZMin &&
+          z.texture_compatibility ==
+              Prospero::TextureCompatiblePlaneCompression::kEnable &&
+          z.HasValidTextureCompatibility() &&
+          stencil.format ==
+              Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt) &&
+          !stencil.htile_stencil_disabled && !stencil.expclear_enabled &&
+          !stencil.partially_resident &&
+          stencil.texture_compatibility ==
+              Prospero::TextureCompatibleStencil::kEnable &&
+          stencil.HasValidTextureCompatibility(),
+      "valid PS5 depth/stencil aggregate encodings were not decoded exactly");
+
+  const auto malformed_z = HW::DepthZInfo::Decode(0x00000803u);
+  const auto malformed_stencil = HW::DepthStencilInfo::Decode(0x00100001u);
+  Require("Ps5DepthRegisterDecoding", "malformed aggregate state",
+          !malformed_z.HasValidTextureCompatibility() &&
+              !malformed_stencil.HasValidTextureCompatibility(),
+          "partial texture-compatible aggregate encodings were accepted");
+  std::printf("[host]    %-32s ok\n", "Ps5DepthRegisterDecoding");
 }
 
 void CheckStencilAttachmentAccess() {
@@ -17023,6 +17155,24 @@ void CheckPm4AcquireMemNoOp(RenderContext &renderer) {
   std::printf("[host]    %-32s ok\n", "Pm4AcquireMemNoOp");
 }
 
+void CheckPm4StencilInfoValueLane(RenderContext &renderer) {
+  CommandProcessor processor(renderer);
+  constexpr std::array<uint32_t, 2> payload{0x00100801u, 0x28000000u};
+  const auto consumed =
+      HwCtxSetStencilInfo(processor, 0xC0016900u, Pm4::DB_STENCIL_INFO,
+                          payload.data(), 1);
+  const auto &stencil = processor.GetCtx().GetDepthStencilInfo();
+  Require(
+      "Pm4StencilInfoValueLane", "standalone register value", consumed == 1 &&
+          stencil.format ==
+              Prospero::GpuEnumValue(Prospero::StencilFormat::k8UInt) &&
+          stencil.texture_compatibility ==
+              Prospero::TextureCompatibleStencil::kEnable &&
+          !stencil.expclear_enabled && !stencil.htile_stencil_disabled,
+      "standalone DB_STENCIL_INFO did not decode its sole payload value");
+  std::printf("[host]    %-32s ok\n", "Pm4StencilInfoValueLane");
+}
+
 void CheckPm4WaitResume(RenderContext &renderer) {
   GraphicsInitJmpTables();
   CommandProcessor processor(renderer);
@@ -17272,6 +17422,7 @@ int main(int argc, char **argv) {
   CheckStorageTextureVolumeMipRegions();
   CheckStorageTextureGpuOwnedRebindState();
   CheckNativeMsaaState();
+  CheckPs5DepthRegisterDecoding();
   CheckDepthHtileStencilCompatibility();
   CheckStencilAttachmentAccess();
   CheckDepthAttachmentWrites();
@@ -17289,6 +17440,7 @@ int main(int argc, char **argv) {
   CheckReferenceClockScale();
   CheckVulkan13FeatureRequirements();
   CheckPm4AcquireMemNoOp(vulkan.RuntimeRenderer());
+  CheckPm4StencilInfoValueLane(vulkan.RuntimeRenderer());
   CheckPm4WaitResume(vulkan.RuntimeRenderer());
   CheckPm4CeCompletion(vulkan.RuntimeRenderer());
   CheckEmbeddedFetchVertexOffset();

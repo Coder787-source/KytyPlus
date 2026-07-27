@@ -597,30 +597,7 @@ KYTY_HW_CTX_PARSER(HwCtxSetDepthRenderTarget) {
 	uint32_t count = 1;
 
 	if (cmd_id == 0xC0016900) {
-		HW::DepthZInfo r;
-
-		//	r.expclear_enabled = (buffer[0] & 0x08000000u) != 0;
-		//	r.format              = (buffer[0] >> Pm4::DB_Z_INFO_FORMAT_SHIFT) &
-		// Pm4::DB_Z_INFO_FORMAT_MASK; 	r.num_samples         = (buffer[0] >>
-		// Pm4::DB_Z_INFO_NUM_SAMPLES_SHIFT) & Pm4::DB_Z_INFO_NUM_SAMPLES_MASK; r.tile_mode_index =
-		//(buffer[0] >> Pm4::DB_Z_INFO_TILE_MODE_INDEX_SHIFT) & Pm4::DB_Z_INFO_TILE_MODE_INDEX_MASK;
-		//	r.tile_surface_enable = ((buffer[0] >> Pm4::DB_Z_INFO_TILE_SURFACE_ENABLE_SHIFT) &
-		// Pm4::DB_Z_INFO_TILE_SURFACE_ENABLE_MASK) !=0
-		// 	r.zrange_precision    = (buffer[0] >> Pm4::DB_Z_INFO_ZRANGE_PRECISION_SHIFT) &
-		// Pm4::DB_Z_INFO_ZRANGE_PRECISION_MASK;
-
-		r.format                    = KYTY_PM4_GET(buffer[0], DB_Z_INFO, FORMAT);
-		r.num_samples               = KYTY_PM4_GET(buffer[0], DB_Z_INFO, NUM_SAMPLES);
-		r.embedded_sample_locations = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ITERATE_FLUSH) != 0;
-		r.partially_resident        = KYTY_PM4_GET(buffer[0], DB_Z_INFO, PARTIALLY_RESIDENT) != 0;
-		r.num_mip_levels            = KYTY_PM4_GET(buffer[0], DB_Z_INFO, MAXMIP);
-		r.tile_mode_index           = KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_MODE_INDEX);
-		r.plane_compression         = KYTY_PM4_GET(buffer[0], DB_Z_INFO, DECOMPRESS_ON_N_ZPLANES);
-		r.expclear_enabled          = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ALLOW_EXPCLEAR) != 0;
-		r.tile_surface_enable       = KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_SURFACE_ENABLE) != 0;
-		r.zrange_precision          = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ZRANGE_PRECISION);
-
-		cp.GetCtx().SetDepthZInfo(r);
+		cp.GetCtx().SetDepthZInfo(HW::DepthZInfo::Decode(buffer[0]));
 	} else if (cmd_id == 0xC0086900) {
 		if (dw >= 22 && buffer[8] == 0xC0016900 && buffer[9] == Pm4::DB_DEPTH_INFO &&
 		    buffer[11] == 0xC0016900 && buffer[12] == Pm4::DB_DEPTH_VIEW &&
@@ -631,51 +608,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetDepthRenderTarget) {
 
 			HW::DepthRenderTarget z;
 
-			//			z.z_info.expclear_enabled    = (buffer[0] & 0x08000000u) != 0;
-			//			z.z_info.format              = (buffer[0] >> Pm4::DB_Z_INFO_FORMAT_SHIFT) &
-			// Pm4::DB_Z_INFO_FORMAT_MASK; 			z.z_info.num_samples         = (buffer[0] >>
-			// Pm4::DB_Z_INFO_NUM_SAMPLES_SHIFT) & Pm4::DB_Z_INFO_NUM_SAMPLES_MASK;
-			//			z.z_info.tile_mode_index     = (buffer[0] >>
-			// Pm4::DB_Z_INFO_TILE_MODE_INDEX_SHIFT) &
-			// Pm4::DB_Z_INFO_TILE_MODE_INDEX_MASK; 			z.z_info.tile_surface_enable =
-			// KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_SURFACE_ENABLE) != 0;
-			// z.z_info.zrange_precision    = (buffer[0] >> Pm4::DB_Z_INFO_ZRANGE_PRECISION_SHIFT) &
-			// Pm4::DB_Z_INFO_ZRANGE_PRECISION_MASK;
-
-			z.z_info.format      = KYTY_PM4_GET(buffer[0], DB_Z_INFO, FORMAT);
-			z.z_info.num_samples = KYTY_PM4_GET(buffer[0], DB_Z_INFO, NUM_SAMPLES);
-			z.z_info.embedded_sample_locations =
-			    KYTY_PM4_GET(buffer[0], DB_Z_INFO, ITERATE_FLUSH) != 0;
-			z.z_info.partially_resident =
-			    KYTY_PM4_GET(buffer[0], DB_Z_INFO, PARTIALLY_RESIDENT) != 0;
-			z.z_info.num_mip_levels  = KYTY_PM4_GET(buffer[0], DB_Z_INFO, MAXMIP);
-			z.z_info.tile_mode_index = KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_MODE_INDEX);
-			z.z_info.plane_compression =
-			    KYTY_PM4_GET(buffer[0], DB_Z_INFO, DECOMPRESS_ON_N_ZPLANES);
-			z.z_info.expclear_enabled = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ALLOW_EXPCLEAR) != 0;
-			z.z_info.tile_surface_enable =
-			    KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_SURFACE_ENABLE) != 0;
-			z.z_info.zrange_precision = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ZRANGE_PRECISION);
-
-			//			z.stencil_info.expclear_enabled     = (buffer[1] & 0x08000000u) != 0;
-			//			z.stencil_info.tile_split           = (buffer[1] >> 13u) & 0x7u;
-			//			z.stencil_info.format               = KYTY_PM4_GET(buffer[1],
-			// DB_STENCIL_INFO, FORMAT); 			z.stencil_info.tile_mode_index      =
-			// KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_MODE_INDEX);
-			//			z.stencil_info.tile_stencil_disable = KYTY_PM4_GET(buffer[1],
-			// DB_STENCIL_INFO, TILE_STENCIL_DISABLE);
-			z.stencil_info.format = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, FORMAT);
-			z.stencil_info.texture_compatible_stencil =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, ITERATE_FLUSH) != 0;
-			z.stencil_info.partially_resident =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, PARTIALLY_RESIDENT) != 0;
-			z.stencil_info.tile_split = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, RESERVED_FIELD_1);
-			z.stencil_info.tile_mode_index =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_MODE_INDEX);
-			z.stencil_info.expclear_enabled =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, ALLOW_EXPCLEAR) != 0;
-			z.stencil_info.tile_stencil_disable =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_STENCIL_DISABLE) != 0;
+			z.z_info       = HW::DepthZInfo::Decode(buffer[0]);
+			z.stencil_info = HW::DepthStencilInfo::Decode(buffer[1]);
 
 			z.z_read_base_addr        = static_cast<uint64_t>(buffer[2]) << 8u;
 			z.stencil_read_base_addr  = static_cast<uint64_t>(buffer[3]) << 8u;
@@ -1252,26 +1186,7 @@ KYTY_HW_CTX_PARSER(HwCtxSetStencilInfo) {
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
 	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::DB_STENCIL_INFO);
 
-	HW::DepthStencilInfo r;
-
-	//	r.expclear_enabled = (buffer[0] & 0x08000000u) != 0;
-	//	r.tile_split       = (buffer[0] >> 13u) & 0x7u;
-	//	r.format          = (buffer[0] >> Pm4::DB_STENCIL_INFO_FORMAT_SHIFT) &
-	// Pm4::DB_STENCIL_INFO_FORMAT_MASK; 	r.tile_mode_index = (buffer[0] >>
-	// Pm4::DB_STENCIL_INFO_TILE_MODE_INDEX_SHIFT) & Pm4::DB_STENCIL_INFO_TILE_MODE_INDEX_MASK;
-	//	r.tile_stencil_disable =
-	//	    ((buffer[0] >> Pm4::DB_STENCIL_INFO_TILE_STENCIL_DISABLE_SHIFT) &
-	// Pm4::DB_STENCIL_INFO_TILE_STENCIL_DISABLE_MASK) != 0;
-
-	r.format                     = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, FORMAT);
-	r.texture_compatible_stencil = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, ITERATE_FLUSH) != 0;
-	r.partially_resident   = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, PARTIALLY_RESIDENT) != 0;
-	r.tile_split           = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, RESERVED_FIELD_1);
-	r.tile_mode_index      = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_MODE_INDEX);
-	r.expclear_enabled     = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, ALLOW_EXPCLEAR) != 0;
-	r.tile_stencil_disable = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_STENCIL_DISABLE) != 0;
-
-	cp.GetCtx().SetDepthStencilInfo(r);
+	cp.GetCtx().SetDepthStencilInfo(HW::DepthStencilInfo::Decode(buffer[0]));
 
 	return 1;
 }
@@ -3757,18 +3672,7 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_Z_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HW::DepthZInfo r;
-		r.format                    = KYTY_PM4_GET(value, DB_Z_INFO, FORMAT);
-		r.num_samples               = KYTY_PM4_GET(value, DB_Z_INFO, NUM_SAMPLES);
-		r.embedded_sample_locations = KYTY_PM4_GET(value, DB_Z_INFO, ITERATE_FLUSH) != 0;
-		r.partially_resident        = KYTY_PM4_GET(value, DB_Z_INFO, PARTIALLY_RESIDENT) != 0;
-		r.num_mip_levels            = KYTY_PM4_GET(value, DB_Z_INFO, MAXMIP);
-		r.tile_mode_index           = KYTY_PM4_GET(value, DB_Z_INFO, TILE_MODE_INDEX);
-		r.plane_compression         = KYTY_PM4_GET(value, DB_Z_INFO, DECOMPRESS_ON_N_ZPLANES);
-		r.expclear_enabled          = KYTY_PM4_GET(value, DB_Z_INFO, ALLOW_EXPCLEAR) != 0;
-		r.tile_surface_enable       = KYTY_PM4_GET(value, DB_Z_INFO, TILE_SURFACE_ENABLE) != 0;
-		r.zrange_precision          = KYTY_PM4_GET(value, DB_Z_INFO, ZRANGE_PRECISION);
-		cp.GetCtx().SetDepthZInfo(r);
+		cp.GetCtx().SetDepthZInfo(HW::DepthZInfo::Decode(value));
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_DEPTH_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
@@ -3796,15 +3700,7 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_STENCIL_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HW::DepthStencilInfo r;
-		r.format                     = KYTY_PM4_GET(value, DB_STENCIL_INFO, FORMAT);
-		r.texture_compatible_stencil = KYTY_PM4_GET(value, DB_STENCIL_INFO, ITERATE_FLUSH) != 0;
-		r.partially_resident   = KYTY_PM4_GET(value, DB_STENCIL_INFO, PARTIALLY_RESIDENT) != 0;
-		r.tile_split           = KYTY_PM4_GET(value, DB_STENCIL_INFO, RESERVED_FIELD_1);
-		r.tile_mode_index      = KYTY_PM4_GET(value, DB_STENCIL_INFO, TILE_MODE_INDEX);
-		r.expclear_enabled     = KYTY_PM4_GET(value, DB_STENCIL_INFO, ALLOW_EXPCLEAR) != 0;
-		r.tile_stencil_disable = KYTY_PM4_GET(value, DB_STENCIL_INFO, TILE_STENCIL_DISABLE) != 0;
-		cp.GetCtx().SetDepthStencilInfo(r);
+		cp.GetCtx().SetDepthStencilInfo(HW::DepthStencilInfo::Decode(value));
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_Z_READ_BASE] = [](KYTY_HW_CTX_INDIRECT_ARGS) {

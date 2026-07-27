@@ -14,12 +14,12 @@ namespace Libs::Graphics {
 class RenderCommandBuffer;
 
 inline constexpr bool depth_htile_stencil_acceleration_compatible(bool has_stencil, bool has_htile,
-                                                                  bool acceleration_disabled) {
-	return acceleration_disabled || (has_stencil && has_htile);
+                                                                  bool htile_stencil_disabled) {
+	return htile_stencil_disabled || (has_stencil && has_htile);
 }
 
 struct RenderDepthInfo {
-	TextureCache::ImageDesc       desc;
+	TextureCache::ImageDesc     desc;
 	vk::Format                  format                   = vk::Format::eUndefined;
 	uint32_t                    width                    = 0;
 	uint32_t                    height                   = 0;
@@ -65,11 +65,11 @@ inline bool depth_attachment_read_only(const RenderDepthInfo& depth) {
 }
 
 inline vk::ImageLayout depth_attachment_layout(const RenderDepthInfo& depth) {
-	const auto available = ImageViewOps::DepthAspectMask(depth.format);
-	const auto writes    = depth.AttachmentWriteAspects();
-	const bool has_depth = static_cast<bool>(available & vk::ImageAspectFlagBits::eDepth);
-	const bool has_stencil = static_cast<bool>(available & vk::ImageAspectFlagBits::eStencil);
-	const bool depth_write = static_cast<bool>(writes & vk::ImageAspectFlagBits::eDepth);
+	const auto available     = ImageViewOps::DepthAspectMask(depth.format);
+	const auto writes        = depth.AttachmentWriteAspects();
+	const bool has_depth     = static_cast<bool>(available & vk::ImageAspectFlagBits::eDepth);
+	const bool has_stencil   = static_cast<bool>(available & vk::ImageAspectFlagBits::eStencil);
+	const bool depth_write   = static_cast<bool>(writes & vk::ImageAspectFlagBits::eDepth);
 	const bool stencil_write = static_cast<bool>(writes & vk::ImageAspectFlagBits::eStencil);
 	if (!has_stencil) {
 		return depth_write ? vk::ImageLayout::eDepthAttachmentOptimal

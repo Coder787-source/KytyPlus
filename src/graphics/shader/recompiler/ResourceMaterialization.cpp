@@ -249,6 +249,12 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 	auto             cursor = values.begin();
 	next.buffers.assign(cursor, cursor + program.info.buffers.size());
 	cursor += program.info.buffers.size();
+	for (auto& descriptor: next.buffers) {
+		ShaderBufferResource buffer;
+		if (DecodeBufferDescriptor(descriptor, buffer) && buffer.Type() != 0) {
+			descriptor.dwords.fill(0);
+		}
+	}
 	next.images.assign(cursor, cursor + program.info.images.size());
 	cursor += program.info.images.size();
 	for (auto& descriptor: next.images) {

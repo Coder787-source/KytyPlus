@@ -238,7 +238,7 @@ bool ValidateNativeProgram(const IR::Program& program, std::string* error) {
 	if (!program.srt.reads.empty()) {
 		Expect(Kind::FlattenedSrt);
 	}
-	if (!program.bindings.user_data_registers.empty() && program.bindings.push_constant_size == 0) {
+	if (program.bindings.ShaderDataDwords() != 0 && program.bindings.push_constant_size == 0) {
 		Expect(Kind::UserData);
 	}
 
@@ -263,8 +263,10 @@ bool ValidateNativeProgram(const IR::Program& program, std::string* error) {
 		}
 	}
 	const auto has_user_storage = present[static_cast<size_t>(Kind::UserData)];
-	if ((!has_user_storage &&
-	     program.bindings.push_constant_size != program.bindings.user_data_registers.size() * 4u) ||
+	if (program.bindings.buffer_offset_dword != program.bindings.user_data_registers.size() ||
+	    program.bindings.buffer_offset_count != program.info.buffers.size() ||
+	    (!has_user_storage &&
+	     program.bindings.push_constant_size != program.bindings.ShaderDataDwords() * 4u) ||
 	    (has_user_storage && program.bindings.push_constant_size != 0) ||
 	    !std::is_sorted(program.bindings.user_data_registers.begin(),
 	                    program.bindings.user_data_registers.end()) ||
@@ -408,10 +410,10 @@ bool ProgramRequiresExactSubgroupSize(const IR::Program& program) {
 }
 
 bool EmitProgram(const IR::Program& program, const IR::ResourceSnapshot& resources,
-	             const ShaderVertexInputInfo*  vertex_input_info,
-	             const ShaderPixelInputInfo*   pixel_input_info,
-	             const ShaderComputeInputInfo* compute_input_info, std::vector<uint32_t>& spirv,
-	             std::string* error) {
+                 const ShaderVertexInputInfo*  vertex_input_info,
+                 const ShaderPixelInputInfo*   pixel_input_info,
+                 const ShaderComputeInputInfo* compute_input_info, std::vector<uint32_t>& spirv,
+                 std::string* error) {
 	using namespace Emitter;
 
 	if (program.stage != ShaderType::Compute && program.stage != ShaderType::Vertex &&

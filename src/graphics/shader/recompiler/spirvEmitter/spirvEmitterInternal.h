@@ -355,6 +355,7 @@ struct EmitterState {
 	uint32_t                               storage_buffer_array_type    = 0;
 	uint32_t                               ptr_storage_buffer_array     = 0;
 	uint32_t                               storage_buffer_variable      = 0;
+	std::array<uint32_t, IR::ShaderInfo::MaxBuffers> storage_buffer_offsets {};
 	uint32_t                               address_memory_array_type    = 0;
 	uint32_t                               ptr_address_memory_array     = 0;
 	uint32_t                               address_memory_variable      = 0;
@@ -837,6 +838,8 @@ uint32_t EmitNotEqualZeroBool(EmitterState& state, uint32_t value);
 uint32_t EmitSelectU32Value(EmitterState& state, uint32_t condition, uint32_t true_value,
                             uint32_t false_value);
 
+uint32_t EmitShaderDataDwordLoad(EmitterState& state, uint32_t dword_index);
+
 uint32_t EmitByteAddress(EmitterState& state, const IR::Instruction& inst, uint32_t first_src,
                          uint32_t src_count);
 
@@ -853,6 +856,8 @@ uint32_t EmitBufferIndexWithAddTid(EmitterState& state, const IR::Instruction& i
 uint32_t EmitOptionalLogicalAndBool(EmitterState& state, uint32_t lhs, uint32_t rhs);
 
 bool IsStorageBufferMemoryKind(IR::ResourceKind kind);
+
+void EmitStorageBufferOffsets(EmitterState& state);
 
 uint32_t EmitBufferAddressFromParts(EmitterState& state, const IR::Instruction& inst,
                                     uint32_t index, uint32_t offset, uint32_t soffset);

@@ -134,7 +134,7 @@ bool UserDataDwordIndex(const EmitterState& state, IR::Register reg, uint32_t& d
 	return false;
 }
 
-uint32_t EmitVsharpDwordLoad(EmitterState& state, uint32_t dword_index) {
+uint32_t EmitShaderDataDwordLoad(EmitterState& state, uint32_t dword_index) {
 	if (state.push_constant_variable != 0) {
 		const auto pointer = state.builder.AllocateId();
 		const auto value   = state.builder.AllocateId();
@@ -172,7 +172,7 @@ uint32_t InitialRegisterValue(const EmitterState& state, IR::Register reg) {
 uint32_t EmitInitialRegisterValue(EmitterState& state, IR::Register reg) {
 	uint32_t dword_index = 0;
 	if (UserDataDwordIndex(state, reg, dword_index)) {
-		return EmitVsharpDwordLoad(state, dword_index);
+		return EmitShaderDataDwordLoad(state, dword_index);
 	}
 	return ConstantU32(state, InitialRegisterValue(state, reg));
 }
@@ -1064,6 +1064,7 @@ void EmitFunction(EmitterState& state, const IR::Program& program) {
 	EmitComputeInputRegisters(state);
 	EmitPixelInputRegisters(state);
 	EmitVertexInputRegisters(state);
+	EmitStorageBufferOffsets(state);
 	if (state.dispatcher_fallback) {
 		EmitDispatcherFunction(state, program);
 		state.builder.AddFunction({OpFunctionEnd});

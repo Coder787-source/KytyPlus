@@ -1065,6 +1065,31 @@ void TestInvalidImagesMaterializeAsNull() {
         "invalid storage image descriptor was not normalized to null");
 }
 
+void TestInvalidBuffersMaterializeAsNull() {
+  Program program;
+  program.stage = ShaderType::Compute;
+  program.user_data_count = 4;
+  program.blocks.resize(1);
+  program.blocks[0].instructions = {BufferUse(0x40, 0)};
+  Prepare(program);
+
+  constexpr std::array<uint32_t, 4> valid = {
+      0x0000100c, 0x00100000, 0x00000001, 0x0004dfac};
+  auto invalid = valid;
+  invalid[3] |= 1u << 30u;
+  std::string error;
+  ResourceSnapshot snapshot;
+  Check(MaterializeResources(program, {invalid}, snapshot, &error) &&
+            std::all_of(snapshot.buffers[0].dwords.begin(),
+                        snapshot.buffers[0].dwords.begin() + 4,
+                        [](uint32_t word) { return word == 0; }),
+        "invalid buffer descriptor was not normalized to null");
+  Check(MaterializeResources(program, {valid}, snapshot, &error) &&
+            std::equal(valid.begin(), valid.end(),
+                       snapshot.buffers[0].dwords.begin()),
+        "valid buffer descriptor was normalized");
+}
+
 void TestMaterializationFailureIsTransactional() {
   Program program;
   program.blocks.resize(1);
@@ -1381,6 +1406,9 @@ void TestNativeBindingLayout() {
       FindBinding(program.bindings, DescriptorBindingKind::StorageUint2DArray);
   const auto *samplers =
       FindBinding(program.bindings, DescriptorBindingKind::Samplers);
+  const auto *shader_data =
+      FindBinding(program.bindings, DescriptorBindingKind::UserData);
+  const auto shader_data_dwords = program.bindings.ShaderDataDwords();
   Check(
       program.bindings.descriptor_set == 3 && buffers != nullptr &&
           sampled2d != nullptr && sampled_array != nullptr &&
@@ -1393,12 +1421,19 @@ void TestNativeBindingLayout() {
           sampled2d->resources == std::vector<uint32_t>{0} &&
           sampled_array->resources == std::vector<uint32_t>{1} &&
           storage3d->resources == std::vector<uint32_t>{2} &&
-          storage_uint_array->resources == std::vector<uint32_t>{3} &&
-          samplers->resources == std::vector<uint32_t>{0} &&
-          !program.bindings.user_data_registers.empty() &&
-          program.bindings.push_constant_size != 0 &&
-          FindBinding(program.bindings, DescriptorBindingKind::FlattenedSrt) ==
-              nullptr &&
+           storage_uint_array->resources == std::vector<uint32_t>{3} &&
+           samplers->resources == std::vector<uint32_t>{0} &&
+           !program.bindings.user_data_registers.empty() &&
+           program.bindings.buffer_offset_dword ==
+               program.bindings.user_data_registers.size() &&
+           program.bindings.buffer_offset_count == 1 &&
+           ((program.bindings.push_constant_size ==
+                 shader_data_dwords * sizeof(uint32_t) &&
+             shader_data == nullptr) ||
+            (program.bindings.push_constant_size == 0 &&
+             shader_data != nullptr && shader_data->binding == 6)) &&
+           FindBinding(program.bindings, DescriptorBindingKind::FlattenedSrt) ==
+               nullptr &&
           program.binding_layout_complete,
       "native binding allocator did not preserve dense typed resource groups");
 }
@@ -1907,6 +1942,7 @@ int main() {
     RUN(TestSrtPatchPlanValidation);
     RUN(TestMaterializationSharesReadConstEvaluation);
     RUN(TestInvalidImagesMaterializeAsNull);
+    RUN(TestInvalidBuffersMaterializeAsNull);
     RUN(TestMaterializationFailureIsTransactional);
     RUN(TestResourceSpecializationIsTypedAndTransactional);
     RUN(TestRuntimeSpecializationCoversBakedBufferAndAddressFields);

@@ -213,6 +213,8 @@ bool AllocateBindings(Program& program, const BindingLayoutOptions& options, std
 		}
 		return false;
 	}
+	next.buffer_offset_dword = static_cast<uint32_t>(next.user_data_registers.size());
+	next.buffer_offset_count = static_cast<uint32_t>(program.info.buffers.size());
 
 	if (!program.info.buffers.empty()) {
 		std::vector<uint32_t> resources(program.info.buffers.size());
@@ -269,8 +271,8 @@ bool AllocateBindings(Program& program, const BindingLayoutOptions& options, std
 
 	const auto available_push_dwords = (MaxPushConstantBytes - options.push_constant_offset) / 4u;
 	const auto push_limit            = std::min(options.max_push_dwords, available_push_dwords);
-	if (next.user_data_registers.size() <= push_limit) {
-		next.push_constant_size = static_cast<uint32_t>(next.user_data_registers.size() * 4u);
+	if (next.ShaderDataDwords() <= push_limit) {
+		next.push_constant_size = next.ShaderDataDwords() * sizeof(uint32_t);
 	} else {
 		AddBinding(next, DescriptorBindingKind::UserData);
 	}
