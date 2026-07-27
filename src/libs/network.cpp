@@ -1279,33 +1279,23 @@ int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr
 int KYTY_SYSV_ABI NetInetPton(int af, const char* src, void* dst) {
 	PRINT_NAME();
 
-	if (af != 2) {
-		return NET_ERROR_EAFNOSUPPORT;
-	}
 	if (src == nullptr || dst == nullptr) {
 		return NET_ERROR_EINVAL;
 	}
 
-	LOGF("\t src = %.16s\n", src);
-
-	uint32_t octets[4] = {};
-	char     extra     = '\0';
-	if (sscanf(src, "%u.%u.%u.%u%c", &octets[0], &octets[1], &octets[2], &octets[3], &extra) != 4) {
-		return 0;
-	}
-	for (auto octet: octets) {
-		if (octet > 255) {
-			return 0;
-		}
+	const int host_family = ConvertFamily(af);
+	if (host_family < 0) {
+		return NET_ERROR_EAFNOSUPPORT;
 	}
 
-	auto* out = static_cast<uint8_t*>(dst);
-	out[0]    = static_cast<uint8_t>(octets[0]);
-	out[1]    = static_cast<uint8_t>(octets[1]);
-	out[2]    = static_cast<uint8_t>(octets[2]);
-	out[3]    = static_cast<uint8_t>(octets[3]);
+	LOGF("\t src = %.46s\n", src);
 
-	return 1;
+#if defined(_WIN32)
+	const int result = ::InetPtonA(host_family, src, dst);
+#else
+	const int result = ::inet_pton(host_family, src, dst);
+#endif
+	return result < 0 ? NET_ERROR_EINVAL : result;
 }
 
 const char* KYTY_SYSV_ABI NetInetNtop(int af, const void* src, char* dst, uint32_t size) {

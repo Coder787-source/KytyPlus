@@ -2007,6 +2007,17 @@ int64_t KYTY_SYSV_ABI recv(int s, void* buf, uint64_t len, int flags) {
 	return Network::Net::Recv(s, buf, len, flags);
 }
 
+int KYTY_SYSV_ABI inet_pton(int af, const char* src, void* dst) {
+	PRINT_NAME();
+
+	const int result = Network::Net::NetInetPton(af, src, dst);
+	if (result < 0) {
+		*GetErrorAddr() = Network::NetToPosix(result);
+		return -1;
+	}
+	return result;
+}
+
 const char* KYTY_SYSV_ABI inet_ntop(int af, const void* src, char* dst, uint32_t size) {
 	PRINT_NAME();
 
@@ -2143,6 +2154,7 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("fZOeZIOEmLw", Posix::send);
 	LIB_FUNC("oBr313PppNE", Posix::sendto);
 	LIB_FUNC("Ez8xjo9UF4E", Posix::recv);
+	LIB_FUNC("4n51s0zEf0c", Posix::inet_pton);
 	LIB_FUNC("5jRCs2axtr4", Posix::inet_ntop);
 	LIB_FUNC("cfwBSQyr5Ys", cfwBSQyr5Ys);
 }
