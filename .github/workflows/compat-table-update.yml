@@ -6,7 +6,9 @@ name: Update compatibility table
 # table instead of a maintainer hand-editing markdown.
 on:
   issues:
-    types: [closed]
+    # 'labeled' covers issues that were closed before the 'compatibility' label
+    # was attached (e.g. filed without going through the template picker).
+    types: [closed, labeled]
 
 permissions:
   contents: write
@@ -14,6 +16,7 @@ permissions:
 jobs:
   update-table:
     if: >
+      github.event.issue.state == 'closed' &&
       github.event.issue.state_reason == 'completed' &&
       contains(github.event.issue.labels.*.name, 'compatibility')
     runs-on: ubuntu-latest
