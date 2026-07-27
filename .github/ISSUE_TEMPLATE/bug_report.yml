@@ -98,7 +98,7 @@ body:
       label: RAM
       placeholder: 32 GB
     validations:
-      required: false
+      required: true
 
   - type: textarea
     id: error
