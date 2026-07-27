@@ -1911,7 +1911,13 @@ int32_t KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t le
 
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
 
-	EXIT_NOT_IMPLEMENTED(addr_in_out == nullptr);
+	// A null in/out pointer is a bad-argument case on real hardware (EFAULT), not an unimplemented
+	// path. Seen from a real title (issue #100, EA "EAOSGlobal" allocator) retrying a map call
+	// with a null addr after an earlier reserve-fixed failure; hard-EXIT here killed the whole
+	// emulator instead of letting the game's own error handling see the failure.
+	if (addr_in_out == nullptr) {
+		return KERNEL_ERROR_EFAULT;
+	}
 
 	constexpr size_t   PAGE_SIZE         = 0x4000;
 	constexpr size_t   MAXIMUM_NAME_SIZE = 32;
@@ -2678,7 +2684,11 @@ int KYTY_SYSV_ABI KernelMapDirectMemory(void** addr, size_t len, int prot, int f
 
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
 
-	EXIT_NOT_IMPLEMENTED(addr == nullptr);
+	// See KernelMapNamedFlexibleMemory: a null in/out pointer is EFAULT on real hardware, not an
+	// unimplemented path. Hard-EXIT here previously killed the whole emulator (issue #100).
+	if (addr == nullptr) {
+		return KERNEL_ERROR_EFAULT;
+	}
 	constexpr int MAP_FIXED        = 0x10;
 	constexpr int MAP_NO_OVERWRITE = 0x80;
 
