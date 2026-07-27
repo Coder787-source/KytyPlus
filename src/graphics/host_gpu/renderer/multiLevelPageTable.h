@@ -1,13 +1,14 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_MULTILEVELPAGETABLE_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_MULTILEVELPAGETABLE_H_
 
+#include "common/assert.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <list>
 #include <memory>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -58,9 +59,10 @@ public:
 	}
 
 	[[nodiscard]] Entry& GetOrCreate(size_t page) {
-		if (!IsValidPage(page)) {
-			throw std::out_of_range("MultiLevelPageTable page is outside the guest address space");
-		}
+		// This project builds with exceptions disabled (-fno-exceptions), so an out-of-range
+		// page is a fatal EXIT_IF rather than a throw; IsValidPage() should have already been
+		// checked by the caller in all real usage.
+		EXIT_IF(!IsValidPage(page));
 		auto& bucket = m_first_level[FirstLevelIndex(page)];
 		if (bucket == nullptr) {
 			bucket = std::make_unique<Bucket>();

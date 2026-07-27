@@ -91,6 +91,26 @@
            </property>
           </widget>
          </item>
+         <item row="3" column="0">
+          <widget class="QCheckBox" name="checkBox_graphics_debug_dump">
+           <property name="toolTip">
+            <string>Dump intermediate GPU/graphics debug state (developer diagnostic)</string>
+           </property>
+           <property name="text">
+            <string>Graphics debug dump</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1">
+          <widget class="QCheckBox" name="checkBox_spirv_debug_printf">
+           <property name="toolTip">
+            <string>Enable SPIR-V debugPrintfEXT output from recompiled shaders (developer diagnostic)</string>
+           </property>
+           <property name="text">
+            <string>SPIR-V debug printf</string>
+           </property>
+          </widget>
+         </item>
         </layout>
        </widget>
       </item>
@@ -269,6 +289,29 @@
        </property>
        <property name="text">
         <string>Cancel</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="Line" name="line_input_mapping">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="input_mapping_button">
+       <property name="minimumSize">
+        <size>
+         <width>80</width>
+         <height>25</height>
+        </size>
+       </property>
+       <property name="toolTip">
+        <string>Configure keyboard and controller button mapping</string>
+       </property>
+       <property name="text">
+        <string>Input Mapping...</string>
        </property>
       </widget>
      </item>

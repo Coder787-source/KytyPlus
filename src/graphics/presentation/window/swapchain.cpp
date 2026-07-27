@@ -41,6 +41,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -212,10 +213,23 @@ static vk::PresentModeKHR ChooseSwapchainPresentMode(const SurfaceCapabilities& 
 	EXIT_NOT_IMPLEMENTED(r.formats.empty());
 
 	vk::Extent2D extent {};
-	extent.width =
-	    std::clamp(width, r.capabilities.minImageExtent.width, r.capabilities.maxImageExtent.width);
-	extent.height = std::clamp(height, r.capabilities.minImageExtent.height,
-	                           r.capabilities.maxImageExtent.height);
+	// A minimized Win32 surface can report maxImageExtent=0x0, which would clamp the requested
+	// size down to 0 regardless of `width`/`height` — vkCreateSwapchainKHR requires both > 0.
+	// Fall back to a 1x1 swapchain rather than passing an illegal extent through (Astro Bot hits
+	// this via a brief self-minimize during splash).
+	const uint32_t max_w = r.capabilities.maxImageExtent.width;
+	const uint32_t max_h = r.capabilities.maxImageExtent.height;
+	extent.width  = (max_w == 0) ? 1 : std::clamp(width, r.capabilities.minImageExtent.width, max_w);
+	extent.height = (max_h == 0) ? 1 : std::clamp(height, r.capabilities.minImageExtent.height, max_h);
+	if (max_w == 0 || max_h == 0) {
+		static std::atomic<uint32_t> degenerate_logs {0};
+		if (degenerate_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Swapchain: surface reports 0x0 max extent (window likely minimized), "
+			           "falling back to %ux%u\n",
+			           extent.width, extent.height);
+		}
+	}
 
 	const vk::PresentModeKHR present_mode = ChooseSwapchainPresentMode(r, integrated_gpu);
 	LOGF("Swapchain present mode selected: %u (integrated=%d)\n",
@@ -452,6 +466,12 @@ void WindowPresentFrame(PreparedFrame& frame) {
 		~ReleaseScope() { GetPreparedFramePool()->Release(frame); }
 	};
 	ReleaseScope release {&frame};
+
+	// Skip presenting while minimized instead of churning the swapchain against a 0x0 surface.
+	// The next SDL_WINDOWEVENT_RESTORED clears the flag and a normal present resumes.
+	if (g_window_ctx->window_minimized) {
+		return;
+	}
 
 	if (g_window_ctx->window_hidden) {
 		WindowUpdateIcon();

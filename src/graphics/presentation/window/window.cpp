@@ -40,6 +40,7 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -76,7 +77,33 @@ struct EventKeyboard {
 	double   timestamp_seconds;
 };
 
-static uint32_t KeyboardKeyToPadButton(int key_code) {
+// Converts SDL's Keymod bitmask into the standard USB HID boot-keyboard modifier byte layout
+// (bit0=LCtrl, bit1=LShift, bit2=LAlt, bit3=LGui, bit4=RCtrl, bit5=RShift, bit6=RAlt, bit7=RGui)
+// that ScePad's KeyboardData::modifier_key field is documented as using.
+static uint8_t SdlKeymodToHidModifierBitmask(uint16_t sdl_mod) {
+	uint8_t hid = 0;
+	hid |= (sdl_mod & KMOD_LCTRL) != 0 ? 0x01u : 0u;
+	hid |= (sdl_mod & KMOD_LSHIFT) != 0 ? 0x02u : 0u;
+	hid |= (sdl_mod & KMOD_LALT) != 0 ? 0x04u : 0u;
+	hid |= (sdl_mod & KMOD_LGUI) != 0 ? 0x08u : 0u;
+	hid |= (sdl_mod & KMOD_RCTRL) != 0 ? 0x10u : 0u;
+	hid |= (sdl_mod & KMOD_RSHIFT) != 0 ? 0x20u : 0u;
+	hid |= (sdl_mod & KMOD_RALT) != 0 ? 0x40u : 0u;
+	hid |= (sdl_mod & KMOD_RGUI) != 0 ? 0x80u : 0u;
+	return hid;
+}
+
+} // namespace Libs::Graphics
+
+namespace Libs::Controller {
+
+// This is the built-in fallback used whenever the user hasn't set a custom keyboard mapping in
+// the Qt launcher's Input Mapping dialog (SetKeyboardButtonMap was never called, or was called
+// with an empty list to explicitly reset to defaults). Defined here (rather than in
+// controller.cpp) because the binding codes are SDL_Keycode values, which only this windowing
+// backend file already depends on; declared in controller.h so callers elsewhere don't need to
+// know that.
+uint32_t DefaultKeyboardPadButton(int key_code) {
 	switch (key_code) {
 		case SDLK_w: return Controller::PAD_BUTTON_UP;
 		case SDLK_a: return Controller::PAD_BUTTON_LEFT;
@@ -96,7 +123,22 @@ static uint32_t KeyboardKeyToPadButton(int key_code) {
 	}
 }
 
-static uint32_t ControllerButtonToPadButton(int button) {
+const std::vector<InputBinding>& DefaultKeyboardBindings() {
+	static const std::vector<InputBinding> bindings = {
+	    {SDLK_w, PAD_BUTTON_UP},        {SDLK_a, PAD_BUTTON_LEFT},
+	    {SDLK_s, PAD_BUTTON_DOWN},      {SDLK_d, PAD_BUTTON_RIGHT},
+	    {SDLK_j, PAD_BUTTON_CROSS},     {SDLK_i, PAD_BUTTON_TRIANGLE},
+	    {SDLK_k, PAD_BUTTON_SQUARE},    {SDLK_l, PAD_BUTTON_CIRCLE},
+	    {SDLK_q, PAD_BUTTON_L1},        {SDLK_e, PAD_BUTTON_R1},
+	    {SDLK_RETURN, PAD_BUTTON_OPTIONS},
+	    {SDLK_RETURN2, PAD_BUTTON_OPTIONS},
+	    {SDLK_BACKSPACE, PAD_BUTTON_TOUCH_PAD},
+	    {SDLK_TAB, PAD_BUTTON_TOUCH_PAD},
+	};
+	return bindings;
+}
+
+uint32_t DefaultControllerPadButton(int button) {
 	switch (button) {
 		case SDL_CONTROLLER_BUTTON_A: return Controller::PAD_BUTTON_CROSS;
 		case SDL_CONTROLLER_BUTTON_B: return Controller::PAD_BUTTON_CIRCLE;
@@ -116,6 +158,31 @@ static uint32_t ControllerButtonToPadButton(int button) {
 		default: return 0;
 	}
 }
+
+const std::vector<InputBinding>& DefaultControllerBindings() {
+	static const std::vector<InputBinding> bindings = {
+	    {SDL_CONTROLLER_BUTTON_A, PAD_BUTTON_CROSS},
+	    {SDL_CONTROLLER_BUTTON_B, PAD_BUTTON_CIRCLE},
+	    {SDL_CONTROLLER_BUTTON_X, PAD_BUTTON_SQUARE},
+	    {SDL_CONTROLLER_BUTTON_Y, PAD_BUTTON_TRIANGLE},
+	    {SDL_CONTROLLER_BUTTON_BACK, PAD_BUTTON_TOUCH_PAD},
+	    {SDL_CONTROLLER_BUTTON_START, PAD_BUTTON_OPTIONS},
+	    {SDL_CONTROLLER_BUTTON_LEFTSTICK, PAD_BUTTON_L3},
+	    {SDL_CONTROLLER_BUTTON_RIGHTSTICK, PAD_BUTTON_R3},
+	    {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, PAD_BUTTON_L1},
+	    {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, PAD_BUTTON_R1},
+	    {SDL_CONTROLLER_BUTTON_DPAD_UP, PAD_BUTTON_UP},
+	    {SDL_CONTROLLER_BUTTON_DPAD_DOWN, PAD_BUTTON_DOWN},
+	    {SDL_CONTROLLER_BUTTON_DPAD_LEFT, PAD_BUTTON_LEFT},
+	    {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, PAD_BUTTON_RIGHT},
+	    {SDL_CONTROLLER_BUTTON_TOUCHPAD, PAD_BUTTON_TOUCH_PAD},
+	};
+	return bindings;
+}
+
+} // namespace Libs::Controller
+
+namespace Libs::Graphics {
 
 static Controller::Axis ControllerAxisFromSdl(int axis_id) {
 	switch (axis_id) {
@@ -392,7 +459,7 @@ void GameEventKeyboard(WindowGame& game, const EventKeyboard& key) {
 		}
 	}
 
-	const auto button = KeyboardKeyToPadButton(key.key_code);
+	const auto button = Controller::LookupKeyboardPadButton(key.key_code);
 	if (button != 0 && (key.down || key.up) && !key.repeat) {
 		static bool keyboard_connected = false;
 		if (!keyboard_connected) {
@@ -402,6 +469,14 @@ void GameEventKeyboard(WindowGame& game, const EventKeyboard& key) {
 		Controller::ControllerButton(KEYBOARD_CONTROLLER_ID, button, key.down);
 	}
 #endif
+
+	// Real libScePad LibKeyboard backing state -- independent of the synthetic gamepad mapping
+	// above. SDL_Scancode already matches the USB HID keyboard-page usage table 1:1, so the
+	// scancode is forwarded directly as the HID key_code games expect, with no translation.
+	if ((key.down || key.up) && !key.repeat) {
+		Controller::KeyboardRawKeyEvent(static_cast<uint16_t>(key.scan_code), key.down);
+	}
+	Controller::KeyboardRawModifierState(SdlKeymodToHidModifierBitmask(key.mod));
 }
 
 void GameEventMouse([[maybe_unused]] WindowGame& game, [[maybe_unused]] const EventMouse& mb) {
@@ -423,6 +498,47 @@ void GameEventMouse([[maybe_unused]] WindowGame& game, [[maybe_unused]] const Ev
 		     mb.x, mb.y);
 	}
 #endif
+
+	// Real libScePad LibMouse backing state. Touch-originated synthetic mouse events (SDL's
+	// touch-to-mouse emulation) are excluded so a title reading both real touch input and mouse
+	// input doesn't see the same physical touch reported twice.
+	if (mb.touch) {
+		return;
+	}
+
+	if (mb.motion) {
+		// SDL_MOUSEMOTION reports the complete current button state (event->motion.state), not
+		// just one button changing, so it's safe/correct to overwrite the whole mask here.
+		uint32_t button_mask = 0;
+		button_mask |= mb.left ? Controller::MOUSE_BUTTON_LEFT : 0;
+		button_mask |= mb.right ? Controller::MOUSE_BUTTON_RIGHT : 0;
+		button_mask |= mb.middle ? Controller::MOUSE_BUTTON_MIDDLE : 0;
+		button_mask |= mb.x1 ? Controller::MOUSE_BUTTON_X1 : 0;
+		button_mask |= mb.x2 ? Controller::MOUSE_BUTTON_X2 : 0;
+		Controller::MouseRawButtonState(button_mask);
+		Controller::MouseRawMotion(mb.motion_x, mb.motion_y);
+		return;
+	}
+
+	if (mb.wheel) {
+		Controller::MouseRawWheel(mb.y);
+		return;
+	}
+
+	// SDL_MOUSEBUTTONDOWN/UP only identifies which single button changed (mb.left/right/etc.
+	// indicate the button the event is *about*, not the full current state of every button),
+	// so only that one bit is updated -- unlike the motion case above.
+	if (mb.down || mb.up) {
+		uint32_t changed_bit = 0;
+		changed_bit |= mb.left ? Controller::MOUSE_BUTTON_LEFT : 0;
+		changed_bit |= mb.right ? Controller::MOUSE_BUTTON_RIGHT : 0;
+		changed_bit |= mb.middle ? Controller::MOUSE_BUTTON_MIDDLE : 0;
+		changed_bit |= mb.x1 ? Controller::MOUSE_BUTTON_X1 : 0;
+		changed_bit |= mb.x2 ? Controller::MOUSE_BUTTON_X2 : 0;
+		if (changed_bit != 0) {
+			Controller::MouseRawButtonEvent(changed_bit, mb.down);
+		}
+	}
 }
 
 void GameEventFinger([[maybe_unused]] WindowGame& game, [[maybe_unused]] const EventFinger& f) {
@@ -472,7 +588,7 @@ void GameEventController([[maybe_unused]] WindowGame&            game,
 	}
 
 	if (f.down || f.up) {
-		const auto button = ControllerButtonToPadButton(f.button);
+		const auto button = Controller::LookupControllerPadButton(f.button);
 		if (button != 0) {
 			Controller::ControllerButton(f.id, button, f.down);
 		} else if (f.button == SDL_CONTROLLER_BUTTON_MISC1) {
@@ -773,7 +889,19 @@ void GameEventDidEnterForeground(WindowGame& game) {
 }
 
 void GameEventResize(WindowGame& game, uint32_t new_width, uint32_t new_height) {
-	EXIT_IF(new_width == 0 || new_height == 0);
+	// Minimized Win32 windows fire SIZE_CHANGED/RESIZED with 0x0 (Astro Bot minimizes its own
+	// window briefly during splash). Ignore the degenerate size instead of hard-crashing; the
+	// last known-good screen_width/height stays in effect until a real resize/restore arrives.
+	if (new_width == 0 || new_height == 0) {
+		static std::atomic<uint32_t> zero_resize_logs {0};
+		if (zero_resize_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "GameEventResize: ignoring degenerate resize %" PRIu32 "x%" PRIu32
+			           " (window likely minimized)\n",
+			           new_width, new_height);
+		}
+		return;
+	}
 
 	auto* p = static_cast<WindowGamePrivate*>(game.private_data);
 	EXIT_IF(p == nullptr);
@@ -823,12 +951,15 @@ static void ProcessWindowEvent(WindowGame& game, SDL_WindowEvent window) {
 
 		case SDL_WINDOWEVENT_MINIMIZED:
 			LOGF("Window %" PRIu32 " minimized\n", window.windowID);
+			g_window_ctx->window_minimized = true;
 			break;
 		case SDL_WINDOWEVENT_MAXIMIZED:
 			LOGF("Window %" PRIu32 " maximized\n", window.windowID);
+			g_window_ctx->window_minimized = false;
 			break;
 		case SDL_WINDOWEVENT_RESTORED:
 			LOGF("Window %" PRIu32 " restored\n", window.windowID);
+			g_window_ctx->window_minimized = false;
 			break;
 		case SDL_WINDOWEVENT_ENTER:
 			LOGF("Mouse entered window %" PRIu32 "\n", window.windowID);

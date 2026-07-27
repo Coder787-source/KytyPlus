@@ -1,6 +1,7 @@
 #include "configurationEditDialog.h"
 
 #include "configuration.h"
+#include "inputMappingDialog.h"
 #include "mandatoryLineEdit.h"
 
 #include <QAbstractItemView>
@@ -66,6 +67,8 @@ ConfigurationEditDialog::ConfigurationEditDialog(Configuration& info, QWidget* p
 
 	connect(m_ui->ok_button, &QPushButton::clicked, this, &ConfigurationEditDialog::save);
 	connect(m_ui->clear_button, &QPushButton::clicked, this, &ConfigurationEditDialog::clear);
+	connect(m_ui->input_mapping_button, &QPushButton::clicked, this,
+	        &ConfigurationEditDialog::open_input_mapping);
 	connect(m_ui->comboBox_shader_log_direction, &QComboBox::currentTextChanged, this,
 	        [this](const QString& text) {
 		        auto log = TextToEnum<Configuration::ShaderLogDirection>(text);
@@ -133,11 +136,13 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	m_ui->checkBox_cmd_dump->setChecked(info.command_buffer_dump_enabled);
 	m_ui->lineEdit_cmd_dump_folder->setText(info.command_buffer_dump_folder);
 	m_ui->lineEdit_cmd_dump_folder->setEnabled(info.command_buffer_dump_enabled);
+	m_ui->checkBox_graphics_debug_dump->setChecked(info.graphics_debug_dump_enabled);
 	ListInit(m_ui->comboBox_printf_direction, info.printf_direction);
 	m_ui->lineEdit_printf_file->setText(info.printf_output_file);
 	m_ui->lineEdit_printf_file->setEnabled(info.printf_direction ==
 	                                       Configuration::LogDirection::File);
 	ListInit(m_ui->comboBox_profiler_direction, info.profiler_direction);
+	m_ui->checkBox_spirv_debug_printf->setChecked(info.spirv_debug_printf_enabled);
 }
 
 void ConfigurationEditDialog::InitGameDirectories() {
@@ -253,11 +258,13 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui) {
 	info.shader_log_folder           = ui.lineEdit_shader_log_folder->text();
 	info.command_buffer_dump_enabled = ui.checkBox_cmd_dump->isChecked();
 	info.command_buffer_dump_folder  = ui.lineEdit_cmd_dump_folder->text();
+	info.graphics_debug_dump_enabled = ui.checkBox_graphics_debug_dump->isChecked();
 	info.printf_direction =
 	    TextToEnum<Configuration::LogDirection>(ui.comboBox_printf_direction->currentText());
 	info.printf_output_file = ui.lineEdit_printf_file->text();
 	info.profiler_direction =
 	    TextToEnum<Configuration::ProfilerDirection>(ui.comboBox_profiler_direction->currentText());
+	info.spirv_debug_printf_enabled = ui.checkBox_spirv_debug_printf->isChecked();
 }
 
 void ConfigurationEditDialog::update_info() {
@@ -287,6 +294,13 @@ void ConfigurationEditDialog::clear() {
 		m_game_dirs_list->clear();
 		update_game_directory_buttons();
 	}
+}
+
+void ConfigurationEditDialog::open_input_mapping() {
+	// Edits m_info directly (rather than a temp copy) so Cancel on this dialog also discards
+	// any input mapping changes, matching every other field's Save/Cancel semantics here.
+	InputMappingDialog dlg(m_info, this);
+	dlg.exec();
 }
 
 void ConfigurationEditDialog::add_game_directory() {

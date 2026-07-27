@@ -5,6 +5,7 @@
 #include "common/subsystems.h"
 
 #include <filesystem>
+#include <string>
 
 namespace Config {
 
@@ -38,6 +39,11 @@ struct ConfigOptions {
 	bool                   spirv_debug_printf_enabled  = false;
 	bool                   renderdoc_enabled           = false;
 	bool                   ngg_rectlist_draw_enabled   = true;
+	// Serialized as "host_code:pad_button,host_code:pad_button,..." (see
+	// Libs::Controller::ParseInputBindingList/SerializeInputBindingList). Empty means "use the
+	// emulator's built-in default bindings" -- set by the Qt launcher's Input Mapping dialog.
+	std::string             keyboard_button_map;
+	std::string             controller_button_map;
 };
 
 void Load(const ConfigOptions& cfg);

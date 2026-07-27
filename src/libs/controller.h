@@ -5,6 +5,9 @@
 #include "common/common.h"
 #include "common/subsystems.h"
 
+#include <string>
+#include <vector>
+
 namespace Libs::Controller {
 
 KYTY_SUBSYSTEM_DEFINE(Controller);
@@ -162,6 +165,99 @@ enum class BatteryLevel { Unknown = -1, Empty, Low, Medium, Full, Wired };
 // via a separate service. This is exposed here as a standalone query (e.g. for a future
 // emulator-side HUD/overlay) rather than forced into a fabricated PadData field.
 BatteryLevel ControllerGetBatteryLevel(int id);
+
+// Real host keyboard/mouse state, decoupled from the synthetic keyboard-as-gamepad mapping
+// above (KeyboardKeyToPadButton in window.cpp forwards a handful of keys as PAD_BUTTON_* bits;
+// this is the separate, independent path backing libScePad's actual LibKeyboard/LibMouse HLE
+// exports, matching how Sony splits those into distinct APIs from ScePad itself).
+// Populated by the windowing backend (SDL2, see window.cpp's GameEventKeyboard/GameEventMouse).
+
+// SDL2's scancode enum is explicitly documented as matching the USB HID usage table (page 0x07,
+// keyboard/keypad) 1:1 for the keys it defines, so no separate SDL->HID lookup table is needed --
+// the scancode value itself is already the HID usage id games expect in ScePad's key_code field.
+void KeyboardRawKeyEvent(uint16_t hid_usage_id, bool down);
+// hid_modifier_bitmask uses the standard USB HID boot-keyboard modifier byte layout (bit0=LCtrl,
+// bit1=LShift, bit2=LAlt, bit3=LGui, bit4=RCtrl, bit5=RShift, bit6=RAlt, bit7=RGui).
+void KeyboardRawModifierState(uint8_t hid_modifier_bitmask);
+
+struct RawKeyboardState {
+	uint8_t  modifier_key           = 0;
+	uint16_t key_code[16]           = {};
+	int32_t  length                 = 0;
+};
+// Snapshots the currently-held keys (up to 16, matching ScePad's KEYBOARD_MAX_KEYCODES) and
+// modifier bitmask. Does not consume/reset anything -- unlike mouse motion, "which keys are
+// down right now" is level state, not a per-read delta.
+RawKeyboardState KeyboardGetRawState();
+
+// Mouse button bits use the standard USB HID boot-mouse report layout (bit0=Button1/Left,
+// bit1=Button2/Right, bit2=Button3/Middle, bit3=Button4/X1, bit4=Button5/X2).
+constexpr uint32_t MOUSE_BUTTON_LEFT   = 0x01;
+constexpr uint32_t MOUSE_BUTTON_RIGHT  = 0x02;
+constexpr uint32_t MOUSE_BUTTON_MIDDLE = 0x04;
+constexpr uint32_t MOUSE_BUTTON_X1     = 0x08;
+constexpr uint32_t MOUSE_BUTTON_X2     = 0x10;
+
+// Sets or clears a single button bit (for a specific button press/release event).
+void MouseRawButtonEvent(uint32_t button_bit, bool down);
+// Overwrites the full button mask at once (for events -- like SDL mouse motion -- that report
+// the complete current state of all buttons together, rather than a single button changing).
+void MouseRawButtonState(uint32_t button_mask);
+void MouseRawMotion(int32_t dx, int32_t dy);
+void MouseRawWheel(int32_t delta);
+
+struct RawMouseState {
+	uint32_t buttons = 0;
+	int32_t  x_axis  = 0;
+	int32_t  y_axis  = 0;
+	int32_t  wheel   = 0;
+};
+// Returns the current button state plus motion/wheel accumulated since the last call, then
+// resets the accumulators to zero -- matching a real mouse's per-poll relative-delta report
+// semantics (each read gets the real movement that happened since the previous read, not a
+// stale duplicate of the same sample repeated across calls).
+RawMouseState MouseConsumeRawState();
+
+// --- User-configurable input mapping (Qt launcher's Input Mapping dialog writes this) ---
+//
+// window.cpp's SDL event handling calls LookupKeyboardPadButton/LookupControllerPadButton
+// instead of hardcoding the host-key/button -> PAD_BUTTON_* switch directly, so a remap applies
+// immediately without touching window.cpp. An empty/unset map falls back to the built-in
+// defaults (same bindings as before this remapping feature existed), so existing users who never
+// open the mapping dialog see no behavior change.
+
+struct InputBinding {
+	int      host_code;  // SDL_Keycode (keyboard map) or SDL_GameControllerButton (controller map)
+	uint32_t pad_button; // One of the PAD_BUTTON_* constants above, or 0 to explicitly unbind.
+};
+
+// Replaces the full keyboard/controller remap table. An empty vector reverts to built-in
+// defaults. Safe to call at any time (e.g. when the user saves the mapping dialog) -- takes
+// effect on the very next input event, no restart required.
+void SetKeyboardButtonMap(const std::vector<InputBinding>& bindings);
+void SetControllerButtonMap(const std::vector<InputBinding>& bindings);
+
+// Parses/serializes a mapping as "host_code:pad_button,host_code:pad_button,...". Used to pass
+// the mapping between the Qt launcher (which owns the user-facing settings) and the emulator
+// process (which applies it) via a single CLI argument, and to persist it in QSettings.
+std::vector<InputBinding> ParseInputBindingList(const std::string& serialized);
+std::string                SerializeInputBindingList(const std::vector<InputBinding>& bindings);
+
+// Looks up the configured pad button for a host key/controller-button code, falling back to the
+// built-in default bindings if no custom map has been set (or the code isn't in it and the
+// custom map doesn't include an explicit override for it). Returns 0 if the code has no mapping
+// at all, custom or default.
+uint32_t LookupKeyboardPadButton(int key_code);
+uint32_t LookupControllerPadButton(int button);
+
+// Implemented by the windowing/input backend (SDL2, window.cpp) since the default bindings are
+// expressed in terms of SDL_Keycode/SDL_GameControllerButton values. This is also what the Qt
+// launcher's Input Mapping dialog reads to pre-populate/reset its list of bindings, so the
+// dialog's "defaults" always exactly match what an unmapped key/button actually does.
+uint32_t                        DefaultKeyboardPadButton(int key_code);
+uint32_t                        DefaultControllerPadButton(int button);
+const std::vector<InputBinding>& DefaultKeyboardBindings();
+const std::vector<InputBinding>& DefaultControllerBindings();
 
 int KYTY_SYSV_ABI PadInit();
 int KYTY_SYSV_ABI PadOpen(int user_id, int type, int index, const void* param);

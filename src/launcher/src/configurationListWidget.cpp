@@ -5,6 +5,7 @@
 #include "configuration.h"
 #include "configurationEditDialog.h"
 #include "configurationItem.h"
+#include "inputMappingDialog.h"
 #include "gameListTreeWidget.h"
 #include "mainDialog.h"
 #include "trophyViewerDialog.h"
@@ -295,6 +296,7 @@ void ConfigurationListWidget::WriteSettings() {
 
 	MainDialog::WriteSettings(*s);
 	ConfigurationEditDialog::WriteSettings(*s);
+	InputMappingDialog::WriteSettings(*s);
 
 	s->beginGroup(CONF_LAUNCHER);
 	m_game_dirs = NormalizeGameDirectories(m_game_dirs);
@@ -336,6 +338,7 @@ void ConfigurationListWidget::ReadSettings() {
 
 	MainDialog::ReadSettings(*s);
 	ConfigurationEditDialog::ReadSettings(*s);
+	InputMappingDialog::ReadSettings(*s);
 
 	s->beginGroup(CONF_LAUNCHER);
 	m_game_dirs = NormalizeGameDirectories(SettingsStringList(s->value(CONF_GAME_DIRS)));

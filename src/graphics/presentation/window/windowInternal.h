@@ -24,6 +24,11 @@ struct WindowContext {
 	VulkanSwapchain*     swapchain            = nullptr;
 	SDL_Window*          window               = nullptr;
 	bool                 window_hidden        = true;
+	// Set on SDL_WINDOWEVENT_MINIMIZED, cleared on RESTORED/MAXIMIZED. Minimized Win32 surfaces
+	// report a 0x0 drawable size and 0x0 surface capabilities, which used to hard-crash the
+	// resize/swapchain path (e.g. Astro Bot's splash-time minimize). Presenting is skipped while
+	// this is set instead of fighting a degenerate swapchain.
+	bool                 window_minimized     = false;
 	vk::SurfaceKHR       surface              = nullptr;
 	SurfaceCapabilities* surface_capabilities = nullptr;
 
