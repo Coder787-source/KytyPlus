@@ -2539,6 +2539,45 @@ public:
                    vk::AccessFlagBits2::eTransferRead),
           "Image::CopyImage did not retain pinned source/destination states");
 
+      constexpr uint64_t block_alias_offset = 0x23000;
+      constexpr std::array<uint32_t, 4> block_alias_data{
+          0x01234567u, 0x89abcdefu, 0xfedcba98u, 0x76543210u};
+      std::memcpy(memory + block_alias_offset, block_alias_data.data(),
+                  sizeof(block_alias_data));
+      auto uncompressed_block = MakeLinearDesc(
+          base + block_alias_offset, sizeof(block_alias_data),
+          vk::Format::eR32G32B32A32Uint,
+          Prospero::GpuEnumValue(
+              Prospero::BufferFormat::k32_32_32_32UInt),
+          Prospero::ImageType::kColor2D, {1, 1, 1}, 1, 16, 1);
+      const auto uncompressed_block_image =
+          texture_cache.FindImage(uncompressed_block);
+      texture_cache.MarkGpuWritten(uncompressed_block_image);
+      auto compressed_block = MakeLinearDesc(
+          base + block_alias_offset, sizeof(block_alias_data),
+          vk::Format::eBc3UnormBlock,
+          Prospero::GpuEnumValue(Prospero::BufferFormat::kBc3UNorm),
+          Prospero::ImageType::kColor2D, {4, 4, 1}, 1, 16, 1);
+      const auto compressed_block_image =
+          texture_cache.FindImage(compressed_block);
+      const bool compressed_block_download =
+          TextureCacheTestAccess::TryDownload(texture_cache,
+                                              compressed_block_image);
+      scheduler.FinishCurrent();
+      scheduler.DrainPriorityOperations();
+      std::array<uint32_t, block_alias_data.size()> block_alias_after{};
+      std::memcpy(block_alias_after.data(), memory + block_alias_offset,
+                  sizeof(block_alias_after));
+      Require(name, "compressed view expansion",
+              compressed_block_image &&
+                  compressed_block_image != uncompressed_block_image &&
+                  texture_cache.GetImage(compressed_block_image)
+                          .backing.format == vk::Format::eBc3UnormBlock &&
+                  compressed_block_download &&
+                  block_alias_after == block_alias_data,
+              "size-compatible compressed alias did not preserve its native "
+              "contents");
+
       ImageInfo resolve_source_info{};
       resolve_source_info.pixel_format = vk::Format::eR8G8B8A8Unorm;
       resolve_source_info.guest_format =
@@ -14686,38 +14725,14 @@ void CheckReverseRenderTargetFormatContract() {
 }
 
 [[noreturn]] void RunImageViewDeathCase(const char *kind) {
-  if (std::strcmp(kind, "sampled") == 0) {
+  if (std::strcmp(kind, "sampled-invalid-selector") == 0) {
     (void)SelectSampledColorView(vk::Format::eR8G8B8A8Unorm,
                                  vk::Format::eR8G8B8A8Unorm,
                                  DstSel(4, 5, 6, 2));
-  } else if (std::strcmp(kind, "sampled-compatible-swizzle") == 0) {
-    (void)SelectSampledColorView(vk::Format::eB8G8R8A8Unorm,
-                                 vk::Format::eR8G8B8A8Unorm,
-                                 DstSel(4, 5, 6, 7));
-  } else if (std::strcmp(kind, "sampled-compatible-reverse") == 0) {
-    (void)SelectSampledColorView(vk::Format::eR8G8B8A8Unorm,
-                                 vk::Format::eB8G8R8A8Unorm,
-                                 DstSel(6, 5, 4, 7));
-  } else if (std::strcmp(kind, "sampled-compatible-class") == 0) {
-    (void)SelectSampledColorView(vk::Format::eR8G8B8A8Uint,
-                                 vk::Format::eR8G8B8A8Unorm,
-                                 DstSel(4, 5, 6, 7));
-  } else if (std::strcmp(kind, "sampled-compatible-colorspace") == 0) {
-    (void)SelectSampledColorView(vk::Format::eB8G8R8A8Srgb,
-                                 vk::Format::eR8G8B8A8Unorm,
-                                 DstSel(4, 5, 6, 7));
-  } else if (std::strcmp(kind, "sampled-compatible-snorm") == 0) {
-    (void)SelectSampledColorView(vk::Format::eR8G8B8A8Snorm,
-                                 vk::Format::eR8G8B8A8Unorm,
-                                 DstSel(4, 5, 6, 7));
-  } else if (std::strcmp(kind, "sampled-rgb10-swizzle") == 0) {
-    (void)SelectSampledColorView(vk::Format::eA2R10G10B10UnormPack32,
-                                 vk::Format::eA2B10G10R10UnormPack32,
-                                 DstSel(4, 5, 6, 7));
-  } else if (std::strcmp(kind, "sampled-rgb10-reverse") == 0) {
-    (void)SelectSampledColorView(vk::Format::eA2B10G10R10UnormPack32,
-                                 vk::Format::eA2R10G10B10UnormPack32,
-                                 DstSel(6, 5, 4, 7));
+  } else if (std::strcmp(kind, "sampled-incompatible-format") == 0) {
+    (void)SelectSampledColorView(vk::Format::eR8Unorm,
+                                 vk::Format::eR16Unorm,
+                                 DstSel(4, 0, 0, 1));
   } else if (std::strcmp(kind, "sampled-invalid-high") == 0) {
     (void)SelectSampledColorView(vk::Format::eR8G8B8A8Unorm,
                                  vk::Format::eR8G8B8A8Unorm,
@@ -14841,6 +14856,11 @@ void CheckSampledColorViews() {
           SelectSampledColorView(vk::Format::eR8Unorm, vk::Format::eR8Unorm,
                                  DstSel(0, 0, 0, 4)) == DstSel(0, 0, 0, 4),
           "R8 did not select its 000R component-mapped view");
+  Require("SampledColorViews", "mutable R8 uint/unorm 000R",
+          SelectSampledColorView(vk::Format::eR8Uint,
+                                 vk::Format::eR8Unorm,
+                                 DstSel(0, 0, 0, 4)) == DstSel(0, 0, 0, 4),
+          "compatible R8 integer target sampled view was rejected");
   Require("SampledColorViews", "R16G16 RG01",
           SelectSampledColorView(vk::Format::eR16G16Sfloat,
                                  vk::Format::eR16G16Sfloat,
@@ -14863,11 +14883,9 @@ void CheckSampledColorViews() {
                              DstSel(6, 5, 4, 7)) == DstSel(6, 5, 4, 7),
       "UNORM BGRA target did not select its compatible sRGB RGBA sampled view");
   Require("SampledColorViews", "mutable sRGB BGRA target",
-          BgraToRgbaSampledViewFormat(vk::Format::eB8G8R8A8Srgb) ==
-                  vk::Format::eR8G8B8A8Srgb &&
-              SelectSampledColorView(vk::Format::eB8G8R8A8Srgb,
-                                     vk::Format::eR8G8B8A8Srgb,
-                                     DstSel(6, 5, 4, 7)) == DstSel(6, 5, 4, 7),
+          SelectSampledColorView(vk::Format::eB8G8R8A8Srgb,
+                                 vk::Format::eR8G8B8A8Srgb,
+                                 DstSel(6, 5, 4, 7)) == DstSel(6, 5, 4, 7),
           "sRGB BGRA target did not select its matching mutable RGBA view");
   constexpr auto colorspace_swizzle = DstSel(5, 1, 7, 0);
   Require("SampledColorViews", "mutable sRGB/UNORM views",
@@ -14879,11 +14897,9 @@ void CheckSampledColorViews() {
                                      colorspace_swizzle) == colorspace_swizzle,
           "same-order mutable sRGB/UNORM sampled views were rejected");
   Require("SampledColorViews", "mutable packed RGB10 view",
-          BgraToRgbaSampledViewFormat(vk::Format::eA2R10G10B10UnormPack32) ==
-                  vk::Format::eA2B10G10R10UnormPack32 &&
-              SelectSampledColorView(vk::Format::eA2R10G10B10UnormPack32,
-                                     vk::Format::eA2B10G10R10UnormPack32,
-                                     DstSel(6, 5, 4, 7)) == DstSel(6, 5, 4, 7),
+          SelectSampledColorView(vk::Format::eA2R10G10B10UnormPack32,
+                                 vk::Format::eA2B10G10R10UnormPack32,
+                                 DstSel(6, 5, 4, 7)) == DstSel(6, 5, 4, 7),
           "packed RGB10 target did not select its matching mutable "
           "channel-order view");
   Require(
@@ -14960,9 +14976,7 @@ void CheckSampledColorViews() {
           GetModuleFileNameA(nullptr, path, MAX_PATH) != 0,
           "GetModuleFileName failed");
   for (const char *kind :
-       {"sampled", "sampled-compatible-swizzle", "sampled-compatible-reverse",
-        "sampled-compatible-colorspace", "sampled-compatible-snorm",
-        "sampled-rgb10-swizzle", "sampled-rgb10-reverse",
+       {"sampled-invalid-selector", "sampled-incompatible-format",
         "sampled-invalid-high", "sampled-depth-format", "sampled-depth-swizzle",
         "storage-kind", "storage-no-write", "storage-atomic", "storage-compare",
         "storage-mip", "storage-dimension"}) {
@@ -15601,6 +15615,11 @@ ShaderTextureResource BasicUintArrayStorageTextureDescriptor() {
            0x00700000u, 0x00000000u, 0x00000000u}};
 }
 
+ShaderTextureResource Standard4KBUintArrayStorageTextureDescriptor() {
+  return {{0x006c6600u, 0x01400000u, 0x00000000u, 0xd0500204u, 0x00000000u,
+           0x00700000u, 0x00000000u, 0x00000000u}};
+}
+
 ShaderRecompiler::IR::ImageResource Ppsa14053DepthTileStorageTextureResource() {
   return BasicUintArrayStorageTextureResource();
 }
@@ -15670,7 +15689,7 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
   } else if (std::strcmp(kind, "swizzle") == 0) {
     descriptor.fields[3] =
         (descriptor.fields[3] & ~0xfffu) | DstSel(4, 5, 6, 1);
-  } else if (std::strcmp(kind, "array-base-view") == 0) {
+  } else if (std::strcmp(kind, "array-base-out-of-range") == 0) {
     resource = BasicArrayStorageTextureResource();
     descriptor = BasicArrayStorageTextureDescriptor();
     descriptor.fields[4] |= 1u << 16u;
@@ -15902,6 +15921,51 @@ void CheckBasicStorageTextureDescriptor() {
   ValidateStorageTexture(BasicUintArrayStorageTextureResource(), uint_array,
                          0x10000);
 
+  const auto standard4kb_array =
+      Standard4KBUintArrayStorageTextureDescriptor();
+  const auto standard4kb_pitch = TileGetTexturePitch(
+      standard4kb_array.Format(), 1, 1, standard4kb_array.TileMode());
+  TileSizeAlign standard4kb_size{};
+  TileGetTextureTotalSize(standard4kb_array.Format(), 1, 1, 1,
+                          standard4kb_pitch, 1,
+                          standard4kb_array.TileMode(), false,
+                          standard4kb_size);
+  Require("BasicStorageTexture", "Standard4KB uint 2D-array descriptor",
+          standard4kb_array.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
+              standard4kb_array.Format() ==
+                  Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) &&
+              standard4kb_array.TileMode() ==
+                  Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
+              standard4kb_array.DstSelXYZW() == DstSel(4, 0, 0, 1) &&
+              standard4kb_size.size == 0x1000 &&
+              standard4kb_size.align == 0x1000,
+          "captured Standard4KB uint 2D-array descriptor is malformed");
+  ValidateStorageTexture(BasicUintArrayStorageTextureResource(),
+                         standard4kb_array, standard4kb_size.size);
+
+  auto based_standard4kb_array = standard4kb_array;
+  based_standard4kb_array.fields[0] = 0x006c6800u;
+  based_standard4kb_array.fields[4] = 0x00010001u;
+  const auto based_standard4kb_pitch = TileGetTexturePitch(
+      based_standard4kb_array.Format(), 1, 1,
+      based_standard4kb_array.TileMode());
+  TileSizeAlign based_standard4kb_size{};
+  TileGetTextureTotalSize(
+      based_standard4kb_array.Format(), 1, 1,
+      based_standard4kb_array.Depth() + 1u, based_standard4kb_pitch, 1,
+      based_standard4kb_array.TileMode(), false, based_standard4kb_size);
+  Require("BasicStorageTexture", "based Standard4KB array view",
+          based_standard4kb_array.Base40() == 0x6c680000ull &&
+              based_standard4kb_array.BaseArray5() == 1 &&
+              based_standard4kb_array.Depth() == 1 &&
+              based_standard4kb_size.size == 0x2000 &&
+              based_standard4kb_size.align == 0x1000,
+          "captured based Standard4KB array view is malformed");
+  ValidateStorageTexture(BasicUintArrayStorageTextureResource(),
+                         based_standard4kb_array,
+                         based_standard4kb_size.size);
+
   const auto uint_volume = BasicUintVolumeStorageTextureDescriptor();
   Require("BasicStorageTexture", "uint 3D descriptor",
           uint_volume.Base40() == 0x2018060000ull &&
@@ -16000,7 +16064,7 @@ void CheckBasicStorageTextureDescriptor() {
   for (const char *kind :
        {"resource", "type", "tile", "mip", "swizzle", "linear-rgb1-read",
         "bgra-read", "r16-float-read", "r8-unorm-read", "yzwx-read",
-        "reserved-swizzle", "array-base-view", "array-mip-view", "reserved",
+        "reserved-swizzle", "array-base-out-of-range", "array-mip-view", "reserved",
         "uint-format", "uint-resource-float-format",
         "depth-tile-read", "depth-tile-extent", "depth-tile-fmask"}) {
     std::string command = std::string("\"") + path +

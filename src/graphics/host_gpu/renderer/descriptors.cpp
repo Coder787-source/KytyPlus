@@ -281,24 +281,26 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	const auto tile  = descriptor.TileMode();
 	const bool is_2d = resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D &&
 	                   descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
-	                   descriptor.Depth() == 0;
+	                   descriptor.Depth() == 0 && descriptor.BaseArray5() == 0;
 	const bool is_2d_array =
 	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DArray &&
 	    descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
 	    descriptor.BaseArray5() <= descriptor.Depth();
 	const bool is_3d = resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim3D &&
-	                   descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor3D);
+	                   descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor3D) &&
+	                   descriptor.BaseArray5() == 0;
 	TileBlockLayout depth_block {};
 	const auto      depth_bpe = Prospero::RenderTargetBytesPerElement(descriptor.Format());
 	const bool supported_depth_tile =
 	    tile == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) && !resource.read &&
 	    !Prospero::IsFmaskTextureFormat(descriptor.Format()) && (is_2d || is_2d_array) &&
 	    TileGetBlockLayout(TileBlockFamily::Depth64KB, depth_bpe, depth_block);
-	const bool supported_volume_tile =
-	    is_3d && tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB);
+	const bool supported_standard_tile =
+	    tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
+	    TileIsStandard4KBTextureSupported(descriptor.Format());
 	const bool supported_tile = tile == Prospero::GpuEnumValue(Prospero::TileMode::kLinear) ||
 	                            tile == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) ||
-	                            supported_depth_tile || supported_volume_tile;
+	                            supported_depth_tile || supported_standard_tile;
 	const bool supported_swizzle = IsValidImageSwizzle(descriptor.DstSelXYZW()) &&
 	                               (descriptor.DstSelXYZW() == DstSel(4, 5, 6, 7) ||
 	                                !resource.read);
@@ -306,8 +308,7 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	return (is_2d || is_2d_array || is_3d) && supported_tile && supported_mip_view &&
 	       descriptor.BaseLevel() == descriptor.LastLevel() &&
 	       descriptor.LastLevel() <= descriptor.MaxMip() && descriptor.MinLod() == 0 &&
-	       descriptor.BaseArray5() == 0 && supported_swizzle && descriptor.BCSwizzle() == 0 &&
-	       !descriptor.MsaaDepth();
+	       supported_swizzle && descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth();
 }
 
 static bool IsSupportedStorageTextureEncoding(const ShaderTextureResource& descriptor) {
@@ -320,9 +321,11 @@ static bool IsSupportedStorageTextureEncoding(const ShaderTextureResource& descr
 	                                     (static_cast<uint32_t>(descriptor.LastLevel()) << 16u) |
 	                                     (static_cast<uint32_t>(descriptor.TileMode()) << 20u) |
 	                                     (static_cast<uint32_t>(descriptor.Type()) << 28u);
+	const uint32_t expected_field4 =
+	    descriptor.Depth() | (static_cast<uint32_t>(descriptor.BaseArray5()) << 16u);
 	return (descriptor.fields[1] & field1_reserved_mask) == 0 &&
 	       (descriptor.fields[2] & field2_reserved_mask) == 0 &&
-	       descriptor.fields[3] == expected_field3 && descriptor.fields[4] == descriptor.Depth() &&
+	       descriptor.fields[3] == expected_field3 && descriptor.fields[4] == expected_field4 &&
 	       (descriptor.fields[5] & ~field5_max_mip_mask) == field5_expected;
 }
 

@@ -25,6 +25,7 @@
 #include <mutex>
 #include <set>
 #include <tuple>
+#include <vulkan/vulkan_format_traits.hpp>
 
 namespace Libs::Graphics {
 
@@ -486,7 +487,7 @@ void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 	const bool direct_copy =
 	    source.backing.format == destination.backing.format ||
 	    (!source_depth && !dest_depth &&
-	     ImageViewOps::FormatsCompatible(source.backing.format, destination.backing.format));
+	     vk::blockSize(source.backing.format) == vk::blockSize(destination.backing.format));
 	if (direct_copy) {
 		destination.CopyImage(source);
 	} else if (!CopyD16(destination, source)) {

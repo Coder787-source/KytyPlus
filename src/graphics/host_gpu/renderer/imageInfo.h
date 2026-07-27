@@ -466,35 +466,6 @@ IsSupportedDisplayRenderTargetTileMode(uint32_t tile_mode) noexcept {
 	       IsSupportedStandard64RenderTarget(info);
 }
 
-[[nodiscard]] inline bool IsRgba8SrgbReinterpretation(vk::Format cached,
-                                                      vk::Format requested) noexcept {
-	switch (cached) {
-		case vk::Format::eR8G8B8A8Unorm: return requested == vk::Format::eR8G8B8A8Srgb;
-		case vk::Format::eR8G8B8A8Srgb: return requested == vk::Format::eR8G8B8A8Unorm;
-		case vk::Format::eB8G8R8A8Unorm: return requested == vk::Format::eB8G8R8A8Srgb;
-		case vk::Format::eB8G8R8A8Srgb: return requested == vk::Format::eB8G8R8A8Unorm;
-		default: return false;
-	}
-}
-
-[[nodiscard]] inline bool IsRgba16UintFloatReinterpretation(vk::Format cached,
-                                                            vk::Format requested) noexcept {
-	switch (cached) {
-		case vk::Format::eR16G16B16A16Sfloat: return requested == vk::Format::eR16G16B16A16Uint;
-		case vk::Format::eR16G16B16A16Uint: return requested == vk::Format::eR16G16B16A16Sfloat;
-		default: return false;
-	}
-}
-
-[[nodiscard]] inline bool IsRgba8UnormUintReinterpretation(vk::Format cached,
-                                                           vk::Format requested) noexcept {
-	switch (cached) {
-		case vk::Format::eR8G8B8A8Unorm: return requested == vk::Format::eR8G8B8A8Uint;
-		case vk::Format::eR8G8B8A8Uint: return requested == vk::Format::eR8G8B8A8Unorm;
-		default: return false;
-	}
-}
-
 [[nodiscard]] inline bool DecodePackedColorClear(vk::Format format, uint32_t packed,
                                                  vk::ClearColorValue& clear) {
 	vk::ClearColorValue next {};

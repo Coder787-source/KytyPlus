@@ -8,6 +8,12 @@
 
 namespace Libs::Graphics {
 
+namespace ImageViewOps {
+
+[[nodiscard]] vk::ImageAspectFlags DepthAspectMask(vk::Format format);
+[[nodiscard]] bool                 FormatsCompatible(vk::Format base, vk::Format view) noexcept;
+} // namespace ImageViewOps
+
 [[nodiscard]] inline bool IsValidImageSwizzle(uint32_t swizzle) noexcept {
 	if ((swizzle & ~0xfffu) != 0) {
 		return false;
@@ -32,28 +38,6 @@ namespace Libs::Graphics {
 	     static_cast<int>(image_format), static_cast<int>(view_format), swizzle);
 }
 
-[[nodiscard]] inline vk::Format BgraToRgbaSampledViewFormat(vk::Format image_format) noexcept {
-	switch (image_format) {
-		case vk::Format::eB8G8R8A8Unorm: return vk::Format::eR8G8B8A8Unorm;
-		case vk::Format::eB8G8R8A8Srgb: return vk::Format::eR8G8B8A8Srgb;
-		case vk::Format::eA2R10G10B10UnormPack32: return vk::Format::eA2B10G10R10UnormPack32;
-		default: return vk::Format::eUndefined;
-	}
-}
-
-[[nodiscard]] inline bool IsBgraToRgbaSampledView(vk::Format image_format,
-                                                  vk::Format view_format) noexcept {
-	switch (image_format) {
-		case vk::Format::eB8G8R8A8Unorm:
-		case vk::Format::eB8G8R8A8Srgb:
-			return view_format == vk::Format::eR8G8B8A8Unorm ||
-			       view_format == vk::Format::eR8G8B8A8Srgb;
-		case vk::Format::eA2R10G10B10UnormPack32:
-			return view_format == vk::Format::eA2B10G10R10UnormPack32;
-		default: return false;
-	}
-}
-
 [[nodiscard]] inline vk::Format BgraSrgbStorageViewFormat(vk::Format image_format) noexcept {
 	return image_format == vk::Format::eB8G8R8A8Srgb ? vk::Format::eR8G8B8A8Unorm
 	                                                 : vk::Format::eUndefined;
@@ -72,18 +56,8 @@ namespace Libs::Graphics {
 [[nodiscard]] inline bool IsSupportedSampledColorView(vk::Format image_format,
                                                       vk::Format view_format,
                                                       uint32_t   swizzle) noexcept {
-	if (!IsValidImageSwizzle(swizzle)) {
-		return false;
-	}
-	if (image_format == view_format || IsRgba8SrgbReinterpretation(image_format, view_format)) {
-		return true;
-	}
-	if ((IsRgba16UintFloatReinterpretation(image_format, view_format) ||
-	     IsRgba8UnormUintReinterpretation(image_format, view_format)) &&
-	    swizzle == DstSel(4, 5, 6, 7)) {
-		return true;
-	}
-	return IsBgraToRgbaSampledView(image_format, view_format) && swizzle == DstSel(6, 5, 4, 7);
+	return IsValidImageSwizzle(swizzle) &&
+	       ImageViewOps::FormatsCompatible(image_format, view_format);
 }
 
 [[nodiscard]] inline uint32_t
@@ -164,12 +138,6 @@ ValidateStorageImageResource(const ShaderRecompiler::IR::ImageResource& resource
 		     resource.atomic, resource.depth_compare);
 	}
 }
-
-namespace ImageViewOps {
-
-[[nodiscard]] vk::ImageAspectFlags DepthAspectMask(vk::Format format);
-[[nodiscard]] bool                 FormatsCompatible(vk::Format base, vk::Format view) noexcept;
-} // namespace ImageViewOps
 
 } // namespace Libs::Graphics
 
