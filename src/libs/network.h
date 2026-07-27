@@ -60,6 +60,8 @@ int KYTY_SYSV_ABI Setsockopt(int s, int level, int optname, const void* optval, 
 int KYTY_SYSV_ABI Select(int nfds, void* readfds, void* writefds, void* exceptfds,
                          const void* timeout);
 int64_t KYTY_SYSV_ABI Send(int s, const void* buf, uint64_t len, int flags);
+int64_t KYTY_SYSV_ABI Sendto(int s, const void* buf, uint64_t len, int flags, const void* addr,
+                             uint32_t addrlen);
 int64_t KYTY_SYSV_ABI Recv(int s, void* buf, uint64_t len, int flags);
 
 } // namespace Net

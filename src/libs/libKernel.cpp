@@ -1996,6 +1996,12 @@ int64_t KYTY_SYSV_ABI send(int s, const void* buf, uint64_t len, int flags) {
 	return Network::Net::Send(s, buf, len, flags);
 }
 
+int64_t KYTY_SYSV_ABI sendto(int s, const void* buf, uint64_t len, int flags, const void* addr,
+                             uint32_t addrlen) {
+	PRINT_NAME();
+	return Network::Net::Sendto(s, buf, len, flags, addr, addrlen);
+}
+
 int64_t KYTY_SYSV_ABI recv(int s, void* buf, uint64_t len, int flags) {
 	PRINT_NAME();
 	return Network::Net::Recv(s, buf, len, flags);
@@ -2135,6 +2141,7 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("fFxGkxF2bVo", Posix::setsockopt);
 	LIB_FUNC("T8fER+tIGgk", Posix::select);
 	LIB_FUNC("fZOeZIOEmLw", Posix::send);
+	LIB_FUNC("oBr313PppNE", Posix::sendto);
 	LIB_FUNC("Ez8xjo9UF4E", Posix::recv);
 	LIB_FUNC("5jRCs2axtr4", Posix::inet_ntop);
 	LIB_FUNC("cfwBSQyr5Ys", cfwBSQyr5Ys);

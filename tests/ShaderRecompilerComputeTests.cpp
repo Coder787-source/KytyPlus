@@ -15088,7 +15088,14 @@ bool CacheFault(void *opaque, PageFaultAccess access, uint64_t vaddr,
 }
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-void CheckReverseRenderTargetFormatContract() {
+void CheckRenderTargetFormatContract() {
+  const auto uint_format = TextureGetRenderTargetFormat(12u, 4u, 0u);
+  Require("RenderTargetFormat", "RGBA16 uint",
+          uint_format.format == vk::Format::eR16G16B16A16Uint &&
+              uint_format.bytes_per_element == 8u &&
+              uint_format.export_mapping.IsIdentity(),
+          "RGBA16 uint render-target tuple was rejected");
+
   const auto format = TextureGetRenderTargetFormat(12u, 7u, 2u);
   Require("ReverseRenderTarget", "exact format",
           format.format == vk::Format::eR16G16B16A16Sfloat &&
@@ -15127,7 +15134,7 @@ void CheckReverseRenderTargetFormatContract() {
   Require(
       "ReverseRenderTarget", "hard failure", exited && exit_code == 321,
       "adjacent unproven render-target tuple did not retain the fatal guard");
-  std::printf("[host]    %-32s ok\n", "ReverseRenderTargetFormat");
+  std::printf("[host]    %-32s ok\n", "RenderTargetFormat");
 }
 #endif
 
@@ -16100,6 +16107,11 @@ ShaderTextureResource Standard4KBUintArrayStorageTextureDescriptor() {
            0x00700000u, 0x00000000u, 0x00000000u}};
 }
 
+ShaderTextureResource Standard64KBStorageTextureDescriptor() {
+  return {{0x011fab00u, 0xc3800000u, 0x0003c003u, 0xd0900facu, 0x00000000u,
+           0x00700000u, 0x00000000u, 0x00000000u}};
+}
+
 ShaderRecompiler::IR::ImageResource Ppsa14053DepthTileStorageTextureResource() {
   return BasicUintArrayStorageTextureResource();
 }
@@ -16445,6 +16457,30 @@ void CheckBasicStorageTextureDescriptor() {
           "captured based Standard4KB array view is malformed");
   ValidateStorageTexture(BasicUintArrayStorageTextureResource(),
                          based_standard4kb_array, based_standard4kb_size.size);
+
+  const auto standard64kb = Standard64KBStorageTextureDescriptor();
+  const auto standard64kb_pitch = TileGetTexturePitch(
+      standard64kb.Format(), standard64kb.Width5() + 1u, 1,
+      standard64kb.TileMode());
+  TileSizeAlign standard64kb_size{};
+  TileGetTextureTotalSize(
+      standard64kb.Format(), standard64kb.Width5() + 1u,
+      standard64kb.Height5() + 1u, standard64kb.Depth() + 1u,
+      standard64kb_pitch, 1, standard64kb.TileMode(), false,
+      standard64kb_size);
+  Require("BasicStorageTexture", "Standard64KB 2D descriptor",
+          standard64kb.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
+              standard64kb.Format() == Prospero::GpuEnumValue(
+                                           Prospero::BufferFormat::k8_8_8_8UNorm) &&
+              standard64kb.TileMode() ==
+                  Prospero::GpuEnumValue(Prospero::TileMode::kStandard64KB) &&
+              standard64kb.DstSelXYZW() == DstSel(4, 5, 6, 7) &&
+              standard64kb_size.size == 0x10000 &&
+              standard64kb_size.align == 0x10000,
+          "captured Standard64KB storage descriptor is malformed");
+  ValidateStorageTexture(BasicBgraStorageTextureResource(), standard64kb,
+                         standard64kb_size.size);
 
   const auto uint_volume = BasicUintVolumeStorageTextureDescriptor();
   Require("BasicStorageTexture", "uint 3D descriptor",
@@ -17738,7 +17774,7 @@ int main(int argc, char **argv) {
     RunReverseRenderTargetDeathCase();
   }
   if (argc == 2 && std::strcmp(argv[1], "--reverse-rt-only") == 0) {
-    CheckReverseRenderTargetFormatContract();
+    CheckRenderTargetFormatContract();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--standard64-rt-only") == 0) {
@@ -17790,7 +17826,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   VulkanHarness vulkan;
-  CheckReverseRenderTargetFormatContract();
+  CheckRenderTargetFormatContract();
   CheckSampledColorViews();
   CheckSampledVideoOutView(vulkan.RuntimeRenderer());
   CheckImageTransitionState(vulkan.RuntimeRenderer());

@@ -1907,13 +1907,21 @@ int KYTY_SYSV_ABI Setsockopt(int s, int level, int optname, const void* optval, 
 }
 
 int64_t KYTY_SYSV_ABI Send(int s, const void* buf, uint64_t len, int flags) {
+	return Sendto(s, buf, len, flags, nullptr, 0);
+}
+
+int64_t KYTY_SYSV_ABI Sendto(int s, const void* buf, uint64_t len, int flags, const void* addr,
+                             uint32_t addrlen) {
 	PRINT_NAME();
 
 	LOGF("\t s     = %d\n"
 	     "\t buf   = 0x%016" PRIx64 "\n"
 	     "\t len   = %" PRIu64 "\n"
-	     "\t flags = 0x%08" PRIx32 "\n",
-	     s, reinterpret_cast<uint64_t>(buf), len, static_cast<uint32_t>(flags));
+	     "\t flags = 0x%08" PRIx32 "\n"
+	     "\t addr  = 0x%016" PRIx64 "\n"
+	     "\t addrlen = %" PRIu32 "\n",
+	     s, reinterpret_cast<uint64_t>(buf), len, static_cast<uint32_t>(flags),
+	     reinterpret_cast<uint64_t>(addr), addrlen);
 
 	NativeSocket socket = INVALID_NATIVE_SOCKET;
 	if (buf == nullptr || !GetSocketBackend(s, &socket)) {
@@ -1928,7 +1936,18 @@ int64_t KYTY_SYSV_ABI Send(int s, const void* buf, uint64_t len, int flags) {
 	}
 
 	const int host_len = static_cast<int>(len > 0x7fffffffu ? 0x7fffffffu : len);
-	const int result   = ::send(socket, static_cast<const char*>(buf), host_len, host_flags);
+	int       result   = 0;
+	if (addr == nullptr) {
+		result = ::send(socket, static_cast<const char*>(buf), host_len, host_flags);
+	} else {
+		sockaddr_storage host_addr {};
+		int              host_addrlen = 0;
+		if (ConvertGuestSockaddr(addr, addrlen, &host_addr, &host_addrlen) != 0) {
+			return -1;
+		}
+		result = ::sendto(socket, static_cast<const char*>(buf), host_len, host_flags,
+		                  reinterpret_cast<const sockaddr*>(&host_addr), host_addrlen);
+	}
 	if (result == SOCKET_ERROR) {
 		return SetPosixSocketError();
 	}

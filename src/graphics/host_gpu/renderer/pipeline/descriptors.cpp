@@ -333,8 +333,10 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	    !Prospero::IsFmaskTextureFormat(descriptor.Format()) && (is_2d || is_2d_array) &&
 	    TileGetBlockLayout(TileBlockFamily::Depth64KB, depth_bpe, depth_block);
 	const bool supported_standard_tile =
-	    tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
-	    TileIsStandard4KBTextureSupported(descriptor.Format());
+	    (tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
+	     TileIsStandard4KBTextureSupported(descriptor.Format())) ||
+	    (tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard64KB) &&
+	     TileIsStandard64KBTextureSupported(descriptor.Format()));
 	const bool supported_tile = tile == Prospero::GpuEnumValue(Prospero::TileMode::kLinear) ||
 	                            tile == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) ||
 	                            supported_depth_tile || supported_standard_tile;
