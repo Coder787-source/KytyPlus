@@ -47,7 +47,7 @@ single most useful contribution you can make here — see
 
 | Title | Title ID | Status | Last tested (version) | Reports |
 |---|---|---|---|---|
-| _No reports yet — be the first to [file one](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)._ | | | | |
+| Dreaming Sarah | PPSA02929 | Ingame (playable-ish) | v1.2 | [#1](https://github.com/Coder787-source/KytyPlus/issues/1) |
 
 <!--
 Row template (copy/paste and fill in from the issue). Use a full issue URL, not a relative link:
