@@ -1382,8 +1382,8 @@ private:
 		}
 	}
 
-	uint64_t                     m_granularity = 0x10000;
 	std::mutex                   m_mutex;
 	std::map<uint64_t, uint64_t> m_free;
 #endif
+	uint64_t m_granularity = 0x10000;
 };

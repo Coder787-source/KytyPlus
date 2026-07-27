@@ -30,6 +30,16 @@ constexpr uint64_t ADDRESS_SIZE = TRACKER_ADDRESS_SIZE;
 constexpr uint64_t REGION_COUNT = ADDRESS_SIZE / REGION_SIZE;
 constexpr uint64_t REGION_PAGES = REGION_SIZE / PAGE_SIZE;
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+constexpr uint32_t NO_ACCESS_PROTECTION = PAGE_NOACCESS;
+constexpr uint32_t READ_ONLY_PROTECTION = PAGE_READONLY;
+constexpr uint32_t READ_WRITE_PROTECTION = PAGE_READWRITE;
+#else
+constexpr uint32_t NO_ACCESS_PROTECTION = 0;
+constexpr uint32_t READ_ONLY_PROTECTION = 1;
+constexpr uint32_t READ_WRITE_PROTECTION = 2;
+#endif
+
 thread_local bool g_in_fault_resolution = false;
 
 [[noreturn]] void FailFast(const char* reason = nullptr) noexcept {
@@ -184,21 +194,22 @@ struct PageManager::Impl {
 
 	static uint32_t WatcherProtection(const PageState& page) {
 		if (page.access_watchers != 0) {
-			return PAGE_NOACCESS;
+			return NO_ACCESS_PROTECTION;
 		}
 		if (page.write_watchers != 0) {
-			return PAGE_READONLY;
+			return READ_ONLY_PROTECTION;
 		}
 		return page.original_protection;
 	}
 
 	static void PublishDelayedFaults(PageState& page, uint32_t old_protection,
 	                                 uint32_t new_protection) {
-		if (old_protection == PAGE_NOACCESS && new_protection != PAGE_NOACCESS) {
+		if (old_protection == NO_ACCESS_PROTECTION && new_protection != NO_ACCESS_PROTECTION) {
 			page.late_read_pending = true;
 		}
-		if ((old_protection == PAGE_NOACCESS || old_protection == PAGE_READONLY) &&
-		    new_protection == PAGE_READWRITE) {
+		if ((old_protection == NO_ACCESS_PROTECTION ||
+		     old_protection == READ_ONLY_PROTECTION) &&
+		    new_protection == READ_WRITE_PROTECTION) {
 			page.late_write_pending = true;
 		}
 	}
@@ -397,11 +408,11 @@ void PageManager::UpdatePageWatchers(bool track, uint64_t vaddr, uint64_t size,
 				Impl::Protect(page_vaddr, new_protection, old_protection, false);
 			}
 			switch (new_protection) {
-				case PAGE_NOACCESS:
+				case NO_ACCESS_PROTECTION:
 					page.late_read_pending  = false;
 					page.late_write_pending = false;
 					break;
-				case PAGE_READONLY: page.late_write_pending = false; break;
+				case READ_ONLY_PROTECTION: page.late_write_pending = false; break;
 				default: break;
 			}
 		} else {
@@ -566,7 +577,7 @@ void PageManager::EndBackingWrite(uint64_t vaddr, uint64_t size) noexcept {
 		if (!page.resolving || page.backing_writer != writer) {
 			FailFast("backing write ended without matching owner and resolving state");
 		}
-		const auto old_protection = PAGE_NOACCESS;
+		const auto old_protection = NO_ACCESS_PROTECTION;
 		const auto new_protection = Impl::WatcherProtection(page);
 		if (new_protection != old_protection) {
 			Impl::Protect(address, new_protection, old_protection, false);

@@ -17,6 +17,7 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 include(utils.cmake)
 include(CTest)
@@ -114,6 +115,7 @@ add_custom_target( KytyGitVersion
 	-D INPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/kytyGitVersion.h.in
     -D OUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/kytyGitVersion.h
 	-D GIT_EXECUTABLE=${GIT_EXECUTABLE}
+	-D GIT_WORKING_DIRECTORY=${CMAKE_CURRENT_SOURCE_DIR}
 	-P ${CMAKE_CURRENT_SOURCE_DIR}/generate_version.cmake
 	COMMENT "Generate kytyGitVersion.h"
 )
@@ -357,6 +359,7 @@ target_include_directories(event_queue_lifetime_tests PRIVATE ${inc_headers})
 add_executable(image_page_table_tests EXCLUDE_FROM_ALL
 	../tests/ImagePageTableTests.cpp
 )
+target_link_libraries(image_page_table_tests common fmt::fmt)
 target_include_directories(image_page_table_tests PRIVATE ${inc_headers})
 
 add_kyty_full_emulator_test(shader_recompiler_compute_tests ../tests/ShaderRecompilerComputeTests.cpp)
