@@ -13,12 +13,10 @@
 #include "graphics/host_gpu/objects/textureCommon.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/descriptorCache.h"
-#include "graphics/host_gpu/renderer/framebufferCache.h"
+#include "graphics/host_gpu/renderer/imageView.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
-#include "graphics/host_gpu/transfer.h"
 #include "graphics/host_gpu/vulkanCommon.h"
-#include "graphics/presentation/displayBuffer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -88,7 +86,8 @@ static bool UsesStencilOpValue(uint8_t fail, uint8_t pass, uint8_t depth_fail) {
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void ResolveRenderDepthTarget(uint64_t submit_id, RenderCommandBuffer& buffer, RenderDepthInfo& r) {
+void RenderExecutor::ResolveRenderDepthTarget(uint64_t submit_id, RenderCommandBuffer& buffer,
+                                          RenderDepthInfo& r) {
 	KYTY_PROFILER_FUNCTION();
 	(void)submit_id;
 	const auto& hw = buffer.GetRegisters();
@@ -282,18 +281,9 @@ void ResolveRenderDepthTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 	r.stencil_buffer_vaddr = has_stencil ? z.stencil_read_base_addr : 0;
 	r.htile_buffer_size    = has_htile ? htile_backing_size : 0;
 	r.htile_buffer_vaddr   = has_htile ? z.htile_data_base_addr : 0;
-	auto& cache            = GetRenderContext().GetTextureCache();
-	if (has_htile) {
-		cache.RegisterMeta(r.htile_buffer_vaddr, r.htile_buffer_size, view.image_layers);
-	}
-	if (has_htile && rc.depth_clear_enable && !cache.ClearMeta(z.htile_data_base_addr)) {
-		DepthFatal("failed to acquire HTile metadata for a depth clear");
-	}
-	const bool meta_clear =
-	    has_htile && cache.IsMetaCleared(z.htile_data_base_addr, z.depth_view.slice_start);
 	r.depth_clear_enable      = rc.depth_clear_enable;
-	r.depth_meta_clear_enable = meta_clear;
-	r.depth_load_clear_enable = r.depth_clear_enable || r.depth_meta_clear_enable;
+	r.depth_meta_clear_enable = false;
+	r.depth_load_clear_enable = r.depth_clear_enable;
 	r.depth_clear_value       = hw.GetDepthClearValue();
 	r.depth_test_enable       = dc.z_enable;
 	r.depth_write_enable      = dc.z_write_enable && !z.depth_view.depth_write_disable;
@@ -343,55 +333,94 @@ void ResolveRenderDepthTarget(uint64_t submit_id, RenderCommandBuffer& buffer, R
 		r.vaddr[1] = r.stencil_buffer_vaddr;
 		r.size[1]  = r.stencil_buffer_size;
 	}
-	DepthTargetInfo info {};
-	info.address            = r.depth_buffer_vaddr;
-	info.size               = r.depth_buffer_size;
-	info.stencil_address    = r.stencil_buffer_vaddr;
-	info.stencil_size       = r.stencil_buffer_size;
-	info.htile_address      = r.htile_buffer_vaddr;
-	info.htile_size         = r.htile_buffer_size;
-	info.format             = r.format;
-	info.guest_format       = guest_format;
-	info.width              = width;
-	info.height             = height;
-	info.pitch              = pitch;
-	info.bytes_per_element  = bytes;
-	info.tile_mode          = Prospero::GpuEnumValue(Prospero::TileMode::kDepth);
-	info.layers             = view.image_layers;
-	info.samples            = samples;
-	info.depth_load_clear   = r.depth_load_clear_enable;
-	info.depth_access       = depth_active;
-	info.stencil_load_clear = rc.stencil_clear_enable;
-	info.stencil_access =
-	    r.stencil_clear_enable ||
-	    (r.stencil_test_enable &&
-	     (stencil_face_accesses_attachment(r.stencil_static_front, r.stencil_dynamic_front) ||
-	      stencil_face_accesses_attachment(r.stencil_static_back, r.stencil_dynamic_back)));
-	info.stencil_htile_compressed =
+	TextureCache::ImageDesc desc {};
+	desc.type              = TextureCache::BindingType::DepthTarget;
+	desc.info.data         = {r.depth_buffer_vaddr, r.depth_buffer_size};
+	desc.info.stencil      = {r.stencil_buffer_vaddr, r.stencil_buffer_size};
+	desc.info.pixel_format = r.format;
+	desc.info.guest_format = guest_format;
+	desc.info.type   = Prospero::ImageType::kColor2D;
+	desc.info.extent = {width, height, 1};
+	desc.info.resources       = {1, view.image_layers};
+	desc.info.pitch           = pitch;
+	desc.info.bytes_per_block = bytes;
+	desc.info.samples         = samples;
+	desc.info.tile_mode       = Prospero::GpuEnumValue(Prospero::TileMode::kDepth);
+	desc.info.mip_layout[0]   = {0, r.depth_buffer_size, pitch, height};
+	desc.info.metadata.range  = {r.htile_buffer_vaddr, r.htile_buffer_size};
+	desc.info.metadata.kind   = has_htile ? ImageMetadataKind::Htile : ImageMetadataKind::None;
+	desc.info.metadata.stencil_compressed =
 	    has_stencil && has_htile && !z.stencil_info.tile_stencil_disable;
-	r.vulkan_buffer = &cache.FindDepthTarget(buffer, info);
-	r.vulkan_view =
-	    cache.GetDepthTargetAttachmentView(*r.vulkan_buffer, view.base_layer, view.layer_count);
-	if (r.vulkan_buffer->initial_depth_clear_pending) {
-		r.depth_load_clear_enable = true;
-		r.depth_clear_value       = 0.0f;
-	}
-	if (r.vulkan_buffer->initial_stencil_clear_pending) {
-		r.stencil_clear_enable = true;
-		r.stencil_clear_value  = 0;
-	}
-	if (meta_clear && !cache.TouchMeta(z.htile_data_base_addr, z.depth_view.slice_start, false)) {
-		DepthFatal("failed to consume HTile clear state");
-	}
+	desc.view_info.format = r.format;
+	desc.view_info.type =
+	    view.layer_count == 1 ? vk::ImageViewType::e2D : vk::ImageViewType::e2DArray;
+	desc.view_info.aspect              = ImageViewOps::DepthAspectMask(r.format);
+	desc.view_info.base_level          = 0;
+	desc.view_info.level_count         = 1;
+	desc.view_info.base_layer          = view.base_layer;
+	desc.view_info.layer_count         = view.layer_count;
+	desc.view_info.usage               = vk::ImageUsageFlagBits::eDepthStencilAttachment;
+	r.desc       = std::move(desc);
+	auto& cache  = m_context.GetTextureCache();
+	r.image_id   = cache.FindImage(r.desc);
+	r.image_view = nullptr;
+	BindRenderTarget(r.image_id);
 }
 
-void MarkRenderTargetGpuWritten(const RenderDepthInfo& target) {
-	const bool with_depth =
-	    target.format != vk::Format::eUndefined && target.vulkan_buffer != nullptr;
-
-	if (with_depth && !depth_attachment_read_only(target)) {
-		GetRenderContext().GetTextureCache().MarkGpuWritten(*target.vulkan_buffer);
+vk::ImageAspectFlags RenderDepthInfo::AttachmentWriteAspects() const {
+	if (format == vk::Format::eUndefined) {
+		return {};
 	}
+
+	const auto available = ImageViewOps::DepthAspectMask(format);
+	vk::ImageAspectFlags writes {};
+	if ((available & vk::ImageAspectFlagBits::eDepth) &&
+	    (depth_load_clear_enable || (depth_test_enable && depth_write_enable))) {
+		writes |= vk::ImageAspectFlagBits::eDepth;
+	}
+	if (!(available & vk::ImageAspectFlagBits::eStencil)) {
+		return writes;
+	}
+
+	const auto face_writes = [&](const PipelineStencilStaticState&  state,
+	                             const PipelineStencilDynamicState& dynamic) {
+		if (dynamic.writeMask == 0) {
+			return false;
+		}
+		bool can_pass = state.compareOp != vk::CompareOp::eNever;
+		bool can_fail = state.compareOp != vk::CompareOp::eAlways;
+		if (dynamic.compareMask == 0) {
+			switch (state.compareOp) {
+				case vk::CompareOp::eEqual:
+				case vk::CompareOp::eLessOrEqual:
+				case vk::CompareOp::eGreaterOrEqual:
+				case vk::CompareOp::eAlways:
+					can_pass = true;
+					can_fail = false;
+					break;
+				case vk::CompareOp::eNever:
+				case vk::CompareOp::eLess:
+				case vk::CompareOp::eGreater:
+				case vk::CompareOp::eNotEqual:
+					can_pass = false;
+					can_fail = true;
+					break;
+				default: break;
+			}
+		}
+		const bool depth_pass = !depth_test_enable || depth_compare_op != vk::CompareOp::eNever;
+		const bool depth_fail = depth_test_enable && depth_compare_op != vk::CompareOp::eAlways;
+		return (can_fail && state.failOp != vk::StencilOp::eKeep) ||
+		       (can_pass && depth_pass && state.passOp != vk::StencilOp::eKeep) ||
+		       (can_pass && depth_fail && state.depthFailOp != vk::StencilOp::eKeep);
+	};
+	if (stencil_clear_enable ||
+	    (stencil_test_enable &&
+	     (face_writes(stencil_static_front, stencil_dynamic_front) ||
+	      face_writes(stencil_static_back, stencil_dynamic_back)))) {
+		writes |= vk::ImageAspectFlagBits::eStencil;
+	}
+	return writes;
 }
 
 } // namespace Libs::Graphics

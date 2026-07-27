@@ -5,6 +5,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/objects/textureCommon.h"
+#include "graphics/host_gpu/renderer/imageView.h"
 #include "graphics/host_gpu/renderer/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/shaderSubgroup.h"
 #include "graphics/shader/recompiler/ExecMask.h"
@@ -446,23 +447,9 @@ void TestNativeShaderResourceDependencies() {
 	Check(writes == std::vector<ShaderBufferWriteRange>({{0x1000, 48}, {0x2000, 64}}),
 	      "graphics/compute write collector lost or invented a storage-buffer range");
 
-	VulkanImage image {VulkanImageType::StorageTexture};
-	image.image              = reinterpret_cast<vk::Image::CType>(uintptr_t {1});
-	image.layout             = vk::ImageLayout::eGeneral;
-	image.layers             = 3;
-	const auto image_barrier = MakeStorageImageDependency(image, true, true);
-	Check(image_barrier.oldLayout == vk::ImageLayout::eGeneral &&
-	          image_barrier.newLayout == vk::ImageLayout::eGeneral &&
-	          (image_barrier.srcAccessMask & vk::AccessFlagBits::eMemoryWrite) &&
-	          (image_barrier.dstAccessMask & vk::AccessFlagBits::eShaderRead) &&
-	          (image_barrier.dstAccessMask & vk::AccessFlagBits::eShaderWrite) &&
-	          image_barrier.subresourceRange.levelCount == VK_REMAINING_MIP_LEVELS &&
-	          image_barrier.subresourceRange.layerCount == image.layers,
-	      "GENERAL storage-image dependency lacks a complete memory barrier");
-
 	VulkanBuffer buffer;
 	buffer.buffer          = reinterpret_cast<vk::Buffer::CType>(uintptr_t {1});
-	const auto gds_barrier = MakeGdsDependency(buffer);
+	const auto gds_barrier = MakeGdsDependency(buffer.buffer);
 	Check((gds_barrier.srcAccessMask & vk::AccessFlagBits::eHostWrite) &&
 	          (gds_barrier.srcAccessMask & vk::AccessFlagBits::eTransferWrite) &&
 	          (gds_barrier.srcAccessMask & vk::AccessFlagBits::eShaderWrite) &&
@@ -470,6 +457,60 @@ void TestNativeShaderResourceDependencies() {
 	              (vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite) &&
 	          gds_barrier.size == VK_WHOLE_SIZE,
 	      "GDS dependency does not order host/transfer/shader writes");
+}
+
+void TestNormalizedImageContracts() {
+	ImageInfo container {};
+	container.data            = {0x10000, 0x15000};
+	container.pixel_format    = vk::Format::eR8G8B8A8Unorm;
+	container.guest_format =
+	    Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UNorm);
+	container.type            = Prospero::ImageType::kColor2D;
+	container.extent          = {64, 64, 1};
+	container.resources       = {3, 4};
+	container.pitch           = 64;
+	container.bytes_per_block = 4;
+	container.samples         = 1;
+	container.tile_mode       = Prospero::GpuEnumValue(Prospero::TileMode::kStandard64KB);
+	container.mip_layout[0]   = {0, 0x10000, 64, 64};
+	container.mip_layout[1]   = {0x10000, 0x4000, 32, 32};
+	container.mip_layout[2]   = {0x14000, 0x1000, 16, 16};
+
+	ImageInfo subresource = container;
+	subresource.data      = {0x22000, 0x1000};
+	subresource.extent    = {32, 32, 1};
+	subresource.resources = {1, 1};
+	subresource.pitch     = 32;
+	subresource.mip_layout = {};
+	subresource.mip_layout[0] = {0, 0x1000, 32, 32};
+
+	Check(container.BlockExtent() == vk::Extent2D {64, 64},
+	      "normalized image block extent changed");
+	Check(subresource.IsCompatible(container), "normalized compatible image was rejected");
+	Check(subresource.MipOf(container) == 1, "normalized mip lookup missed a subresource");
+	Check(subresource.SliceOf(container, 1) == 2,
+	      "normalized slice lookup missed a subresource");
+
+	auto incompatible = subresource;
+	incompatible.samples = 2;
+	Check(!incompatible.IsCompatible(container) && incompatible.MipOf(container) == -1,
+	      "sample-count mismatch was accepted as a compatible image");
+
+	auto compressed             = container;
+	compressed.guest_format =
+	    Prospero::GpuEnumValue(Prospero::BufferFormat::kBc3UNorm);
+	compressed.pitch            = 128;
+	compressed.extent.height    = 64;
+	Check(compressed.BlockExtent() == vk::Extent2D {32, 16},
+	      "block-compressed extent was not expressed in blocks");
+
+	Check(ImageViewOps::FormatsCompatible(vk::Format::eR8G8B8A8Unorm,
+	                                      vk::Format::eR8G8B8A8Uint) &&
+	          !ImageViewOps::FormatsCompatible(vk::Format::eD32Sfloat,
+	                                           vk::Format::eR32Sfloat) &&
+	          ImageViewOps::FormatsCompatible(vk::Format::eBc3UnormBlock,
+	                                          vk::Format::eR32G32B32A32Uint),
+	      "Vulkan image-view compatibility classes diverged from production");
 }
 
 void TestNativeSubgroupPolicy() {
@@ -6743,6 +6784,7 @@ int main() {
 
 	TestResourceDescriptorClassification();
 	TestNativeShaderResourceDependencies();
+	TestNormalizedImageContracts();
 	TestNativeSubgroupPolicy();
 	TestNewShaderRecompilerSMovB32();
 	TestNewShaderRecompilerSoppMarkers();

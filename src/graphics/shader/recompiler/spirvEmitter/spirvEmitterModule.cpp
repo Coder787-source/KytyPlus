@@ -237,9 +237,9 @@ uint32_t BuiltInForInput(IR::StageInputKind kind) {
 void AddInputAnnotationsAndNames(EmitterState& state) {
 	if (state.subgroup_local_invocation_id_variable != 0) {
 		state.builder.AddName(state.subgroup_local_invocation_id_variable,
-		                       "gl_SubgroupInvocationID");
+		                      "gl_SubgroupInvocationID");
 		state.builder.AddAnnotation({OpDecorate, state.subgroup_local_invocation_id_variable,
-		                              DecorationBuiltIn, BuiltInSubgroupLocalInvocationId});
+		                             DecorationBuiltIn, BuiltInSubgroupLocalInvocationId});
 		if (state.stage == ShaderType::Pixel) {
 			state.builder.AddAnnotation(
 			    {OpDecorate, state.subgroup_local_invocation_id_variable, DecorationFlat});
@@ -373,13 +373,10 @@ void AddVsharpAnnotationsAndNames(EmitterState& state) {
 		state.builder.AddName(state.push_constant_block_type, "BufferResource");
 		state.builder.AddName(state.push_constant_variable, "vsharp");
 		state.builder.AddAnnotation(
-		    {OpDecorate, state.push_constant_u32x4_array_type, DecorationArrayStride, 4});
-		state.builder.AddAnnotation(
-		    {OpDecorate, state.push_constant_rows_array_type, DecorationArrayStride, 16});
+		    {OpDecorate, state.push_constant_array_type, DecorationArrayStride, 4});
 		state.builder.AddAnnotation({OpMemberDecorate, state.push_constant_block_type, 0,
-		                              DecorationOffset, bind.push_constant_offset});
-		state.builder.AddAnnotation(
-		    {OpDecorate, state.push_constant_block_type, DecorationBlock});
+		                             DecorationOffset, bind.push_constant_offset});
+		state.builder.AddAnnotation({OpDecorate, state.push_constant_block_type, DecorationBlock});
 	}
 	if (state.vsharp_storage_variable != 0) {
 		const auto* storage = DescriptorBinding(state, IR::DescriptorBindingKind::UserData);
@@ -439,11 +436,10 @@ void EmitHeaderAndTypes(EmitterState& state) {
 		state.ptr_address_memory_array  = state.builder.AllocateId();
 	}
 	if (state.push_constant_variable != 0) {
-		state.push_constant_u32x4_array_type = state.builder.AllocateId();
-		state.push_constant_rows_array_type  = state.builder.AllocateId();
-		state.push_constant_block_type       = state.builder.AllocateId();
-		state.ptr_push_constant_block        = state.builder.AllocateId();
-		state.ptr_push_constant_uint         = state.builder.AllocateId();
+		state.push_constant_array_type = state.builder.AllocateId();
+		state.push_constant_block_type = state.builder.AllocateId();
+		state.ptr_push_constant_block  = state.builder.AllocateId();
+		state.ptr_push_constant_uint   = state.builder.AllocateId();
 	}
 	state.lds_array_type      = state.builder.AllocateId();
 	state.ptr_workgroup_array = state.builder.AllocateId();
@@ -517,7 +513,7 @@ void EmitHeaderAndTypes(EmitterState& state) {
 	state.builder.AddExtInstImport(state.glsl_std450, "GLSL.std.450");
 	state.builder.AddMemoryModel({AddressingModelLogical, MemoryModelGLSL450});
 	state.builder.AddEntryPoint(ExecutionModelForStage(state.stage), state.main_func, "main",
-	                             state.interface_variables);
+	                            state.interface_variables);
 	if (state.stage == ShaderType::Compute) {
 		uint32_t local_x = state.needs_compute_derivatives ? 2u : 1u;
 		uint32_t local_y = state.needs_compute_derivatives ? 2u : 1u;
@@ -563,8 +559,7 @@ void EmitHeaderAndTypes(EmitterState& state) {
 	state.builder.AddType({OpTypeVoid, state.void_type});
 	state.builder.AddType({OpTypeBool, state.bool_type});
 	state.builder.AddType({OpTypeInt, state.uint_type, 32, 0});
-	state.builder.AddType(
-	    {OpTypeStruct, state.uint_pair_type, state.uint_type, state.uint_type});
+	state.builder.AddType({OpTypeStruct, state.uint_pair_type, state.uint_type, state.uint_type});
 	state.builder.AddType({OpTypeInt, state.int_type, 32, 1});
 	state.builder.AddType({OpTypeStruct, state.int_pair_type, state.int_type, state.int_type});
 	state.builder.AddType({OpTypeFloat, state.float_type, 32});
@@ -583,8 +578,7 @@ void EmitHeaderAndTypes(EmitterState& state) {
 	    {OpTypePointer, state.ptr_input_float, StorageClassInput, state.float_type});
 	state.builder.AddType(
 	    {OpTypePointer, state.ptr_input_bool, StorageClassInput, state.bool_type});
-	state.builder.AddType(
-	    {OpTypePointer, state.ptr_input_int, StorageClassInput, state.int_type});
+	state.builder.AddType({OpTypePointer, state.ptr_input_int, StorageClassInput, state.int_type});
 	state.builder.AddType(
 	    {OpTypePointer, state.ptr_input_uint, StorageClassInput, state.uint_type});
 	state.builder.AddType(
@@ -607,7 +601,7 @@ void EmitHeaderAndTypes(EmitterState& state) {
 	    {OpTypePointer, state.ptr_input_vec4_float, StorageClassInput, state.vec4_float_type});
 	if (state.subgroup_local_invocation_id_variable != 0) {
 		state.builder.AddType({OpVariable, state.ptr_input_uint,
-		                        state.subgroup_local_invocation_id_variable, StorageClassInput});
+		                       state.subgroup_local_invocation_id_variable, StorageClassInput});
 	}
 	for (const auto& input: state.inputs) {
 		uint32_t ptr_type = state.ptr_input_uint;
@@ -643,15 +637,15 @@ void EmitHeaderAndTypes(EmitterState& state) {
 	if (state.per_vertex_variable != 0) {
 		state.builder.AddType({OpTypeStruct, state.per_vertex_type, state.vec4_float_type});
 		state.builder.AddType({OpTypePointer, state.ptr_output_per_vertex, StorageClassOutput,
-		                        state.per_vertex_type});
-		state.builder.AddType({OpVariable, state.ptr_output_per_vertex,
-		                        state.per_vertex_variable, StorageClassOutput});
+		                       state.per_vertex_type});
+		state.builder.AddType({OpVariable, state.ptr_output_per_vertex, state.per_vertex_variable,
+		                       StorageClassOutput});
 	}
 	for (const auto& binding: state.outputs) {
 		if (binding.kind == IR::StageOutputKind::Parameter ||
 		    binding.kind == IR::StageOutputKind::Mrt) {
-			state.builder.AddType({OpVariable, state.ptr_output_vec4_float, binding.variable_id,
-			                        StorageClassOutput});
+			state.builder.AddType(
+			    {OpVariable, state.ptr_output_vec4_float, binding.variable_id, StorageClassOutput});
 		}
 	}
 	if (state.depth_variable != 0) {
@@ -662,52 +656,48 @@ void EmitHeaderAndTypes(EmitterState& state) {
 		state.builder.AddType(
 		    {OpTypeArray, state.sample_mask_array_type, state.int_type, ConstantU32(state, 1)});
 		state.builder.AddType({OpTypePointer, state.ptr_output_sample_mask_array,
-		                        StorageClassOutput, state.sample_mask_array_type});
+		                       StorageClassOutput, state.sample_mask_array_type});
 		state.builder.AddType({OpVariable, state.ptr_output_sample_mask_array,
-		                        state.sample_mask_variable, StorageClassOutput});
+		                       state.sample_mask_variable, StorageClassOutput});
 	}
-	state.builder.AddType(
-	    {OpTypeRuntimeArray, state.storage_runtime_array_type, state.uint_type});
+	state.builder.AddType({OpTypeRuntimeArray, state.storage_runtime_array_type, state.uint_type});
 	state.builder.AddType(
 	    {OpTypeStruct, state.storage_buffer_type, state.storage_runtime_array_type});
 	state.builder.AddType({OpTypePointer, state.ptr_storage_buffer, StorageClassStorageBuffer,
-	                        state.storage_buffer_type});
-	state.builder.AddType({OpTypePointer, state.ptr_storage_buffer_uint,
-	                        StorageClassStorageBuffer, state.uint_type});
+	                       state.storage_buffer_type});
+	state.builder.AddType(
+	    {OpTypePointer, state.ptr_storage_buffer_uint, StorageClassStorageBuffer, state.uint_type});
 	if (state.storage_buffer_variable != 0) {
 		const auto count =
 		    ConstantU32(state, DescriptorCount(state, IR::DescriptorBindingKind::Buffers));
 		state.builder.AddType(
 		    {OpTypeArray, state.storage_buffer_array_type, state.storage_buffer_type, count});
 		state.builder.AddType({OpTypePointer, state.ptr_storage_buffer_array,
-		                        StorageClassStorageBuffer, state.storage_buffer_array_type});
+		                       StorageClassStorageBuffer, state.storage_buffer_array_type});
 		state.builder.AddType({OpVariable, state.ptr_storage_buffer_array,
-		                        state.storage_buffer_variable, StorageClassStorageBuffer});
+		                       state.storage_buffer_variable, StorageClassStorageBuffer});
 	}
 	if (state.gds_variable != 0) {
-		state.builder.AddType({OpVariable, state.ptr_storage_buffer, state.gds_variable,
-		                        StorageClassStorageBuffer});
+		state.builder.AddType(
+		    {OpVariable, state.ptr_storage_buffer, state.gds_variable, StorageClassStorageBuffer});
 	}
 	if (state.push_constant_variable != 0) {
-		const auto row_width = ConstantU32(state, 4);
-		const auto row_count = ConstantU32(
-		    state, std::max((state.program.bindings.push_constant_size + 15u) / 16u, 1u));
+		const auto dword_count =
+		    ConstantU32(state, state.program.bindings.push_constant_size / sizeof(uint32_t));
 		state.builder.AddType(
-		    {OpTypeArray, state.push_constant_u32x4_array_type, state.uint_type, row_width});
-		state.builder.AddType({OpTypeArray, state.push_constant_rows_array_type,
-		                        state.push_constant_u32x4_array_type, row_count});
+		    {OpTypeArray, state.push_constant_array_type, state.uint_type, dword_count});
 		state.builder.AddType(
-		    {OpTypeStruct, state.push_constant_block_type, state.push_constant_rows_array_type});
+		    {OpTypeStruct, state.push_constant_block_type, state.push_constant_array_type});
 		state.builder.AddType({OpTypePointer, state.ptr_push_constant_block,
-		                        StorageClassPushConstant, state.push_constant_block_type});
+		                       StorageClassPushConstant, state.push_constant_block_type});
 		state.builder.AddType({OpTypePointer, state.ptr_push_constant_uint,
-		                        StorageClassPushConstant, state.uint_type});
+		                       StorageClassPushConstant, state.uint_type});
 		state.builder.AddType({OpVariable, state.ptr_push_constant_block,
-		                        state.push_constant_variable, StorageClassPushConstant});
+		                       state.push_constant_variable, StorageClassPushConstant});
 	}
 	if (state.vsharp_storage_variable != 0) {
-		state.builder.AddType({OpVariable, state.ptr_storage_buffer,
-		                        state.vsharp_storage_variable, StorageClassStorageBuffer});
+		state.builder.AddType({OpVariable, state.ptr_storage_buffer, state.vsharp_storage_variable,
+		                       StorageClassStorageBuffer});
 	}
 	if (state.address_memory_variable != 0) {
 		const auto count =
@@ -715,13 +705,13 @@ void EmitHeaderAndTypes(EmitterState& state) {
 		state.builder.AddType(
 		    {OpTypeArray, state.address_memory_array_type, state.storage_buffer_type, count});
 		state.builder.AddType({OpTypePointer, state.ptr_address_memory_array,
-		                        StorageClassStorageBuffer, state.address_memory_array_type});
+		                       StorageClassStorageBuffer, state.address_memory_array_type});
 		state.builder.AddType({OpVariable, state.ptr_address_memory_array,
-		                        state.address_memory_variable, StorageClassStorageBuffer});
+		                       state.address_memory_variable, StorageClassStorageBuffer});
 	}
 	if (state.flattened_srt_variable != 0) {
-		state.builder.AddType({OpVariable, state.ptr_storage_buffer,
-		                        state.flattened_srt_variable, StorageClassStorageBuffer});
+		state.builder.AddType({OpVariable, state.ptr_storage_buffer, state.flattened_srt_variable,
+		                       StorageClassStorageBuffer});
 	}
 	if (state.stage == ShaderType::Compute || state.needs_function_lds) {
 		const auto storage_class =
@@ -733,8 +723,8 @@ void EmitHeaderAndTypes(EmitterState& state) {
 		state.builder.AddType(
 		    {OpTypePointer, state.ptr_workgroup_uint, storage_class, state.uint_type});
 		if (state.stage == ShaderType::Compute) {
-			state.builder.AddType({OpVariable, state.ptr_workgroup_array, state.lds_variable,
-			                        StorageClassWorkgroup});
+			state.builder.AddType(
+			    {OpVariable, state.ptr_workgroup_array, state.lds_variable, StorageClassWorkgroup});
 		}
 	}
 	for (uint32_t i = 0; i < state.sampled_images.size(); i++) {
@@ -744,7 +734,7 @@ void EmitHeaderAndTypes(EmitterState& state) {
 		const auto dimension = view == ImageViewKind::Dim3D ? Dim3D : Dim2D;
 		const auto arrayed   = view == ImageViewKind::Dim2DArray ? 1u : 0u;
 		state.builder.AddType({OpTypeImage, image.image_type, component, dimension, 0, arrayed, 0,
-		                        1, ImageFormatUnknown});
+		                       1, ImageFormatUnknown});
 		state.builder.AddType({OpTypeSampledImage, image.sampled_image_type, image.image_type});
 		state.builder.AddType(
 		    {OpTypePointer, image.pointer_type, StorageClassUniformConstant, image.image_type});
@@ -753,113 +743,110 @@ void EmitHeaderAndTypes(EmitterState& state) {
 			const auto count = ConstantU32(state, DescriptorCount(state, kind));
 			state.builder.AddType({OpTypeArray, image.array_type, image.image_type, count});
 			state.builder.AddType({OpTypePointer, image.array_pointer_type,
-			                        StorageClassUniformConstant, image.array_type});
+			                       StorageClassUniformConstant, image.array_type});
 			state.builder.AddType({OpVariable, image.array_pointer_type, image.variable,
-			                        StorageClassUniformConstant});
+			                       StorageClassUniformConstant});
 		}
 	}
 	state.builder.AddType({OpTypeSampler, state.sampler_type});
 	state.builder.AddType({OpTypePointer, state.ptr_uniform_sampler, StorageClassUniformConstant,
-	                        state.sampler_type});
+	                       state.sampler_type});
 	if (state.sampler_variable != 0) {
 		const auto count =
 		    ConstantU32(state, DescriptorCount(state, IR::DescriptorBindingKind::Samplers));
-		state.builder.AddType(
-		    {OpTypeArray, state.sampler_array_type, state.sampler_type, count});
+		state.builder.AddType({OpTypeArray, state.sampler_array_type, state.sampler_type, count});
 		state.builder.AddType({OpTypePointer, state.ptr_uniform_sampler_array,
-		                        StorageClassUniformConstant, state.sampler_array_type});
-		state.builder.AddType({OpVariable, state.ptr_uniform_sampler_array,
-		                        state.sampler_variable, StorageClassUniformConstant});
+		                       StorageClassUniformConstant, state.sampler_array_type});
+		state.builder.AddType({OpVariable, state.ptr_uniform_sampler_array, state.sampler_variable,
+		                       StorageClassUniformConstant});
 	}
-	state.builder.AddType({OpTypeImage, state.storage_image_type, state.float_type, Dim2D, 0, 0,
-	                        0, 2, ImageFormatUnknown});
+	state.builder.AddType({OpTypeImage, state.storage_image_type, state.float_type, Dim2D, 0, 0, 0,
+	                       2, ImageFormatUnknown});
 	state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image,
-	                        StorageClassUniformConstant, state.storage_image_type});
+	                       StorageClassUniformConstant, state.storage_image_type});
 	if (state.storage_image_variable != 0) {
 		const auto count =
 		    ConstantU32(state, DescriptorCount(state, IR::DescriptorBindingKind::Storage2D));
 		state.builder.AddType(
 		    {OpTypeArray, state.storage_image_array_type, state.storage_image_type, count});
 		state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_array,
-		                        StorageClassUniformConstant, state.storage_image_array_type});
+		                       StorageClassUniformConstant, state.storage_image_array_type});
 		state.builder.AddType({OpVariable, state.ptr_uniform_storage_image_array,
-		                        state.storage_image_variable, StorageClassUniformConstant});
+		                       state.storage_image_variable, StorageClassUniformConstant});
 	}
-	state.builder.AddType({OpTypeImage, state.storage_image_2d_array_type, state.float_type,
-	                        Dim2D, 0, 1, 0, 2, ImageFormatUnknown});
+	state.builder.AddType({OpTypeImage, state.storage_image_2d_array_type, state.float_type, Dim2D,
+	                       0, 1, 0, 2, ImageFormatUnknown});
 	state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_2d_array,
-	                        StorageClassUniformConstant, state.storage_image_2d_array_type});
+	                       StorageClassUniformConstant, state.storage_image_2d_array_type});
 	if (state.storage_image_2d_array_variable != 0) {
 		const auto count =
 		    ConstantU32(state, DescriptorCount(state, IR::DescriptorBindingKind::Storage2DArray));
 		state.builder.AddType({OpTypeArray, state.storage_image_2d_array_array_type,
-		                        state.storage_image_2d_array_type, count});
+		                       state.storage_image_2d_array_type, count});
 		state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_2d_array_array,
-		                        StorageClassUniformConstant,
-		                        state.storage_image_2d_array_array_type});
+		                       StorageClassUniformConstant,
+		                       state.storage_image_2d_array_array_type});
 		state.builder.AddType({OpVariable, state.ptr_uniform_storage_image_2d_array_array,
-		                        state.storage_image_2d_array_variable,
-		                        StorageClassUniformConstant});
+		                       state.storage_image_2d_array_variable, StorageClassUniformConstant});
 	}
-	state.builder.AddType({OpTypeImage, state.storage_image_3d_type, state.float_type, Dim3D, 0,
-	                        0, 0, 2, ImageFormatUnknown});
+	state.builder.AddType({OpTypeImage, state.storage_image_3d_type, state.float_type, Dim3D, 0, 0,
+	                       0, 2, ImageFormatUnknown});
 	state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_3d,
-	                        StorageClassUniformConstant, state.storage_image_3d_type});
+	                       StorageClassUniformConstant, state.storage_image_3d_type});
 	if (state.storage_image_3d_variable != 0) {
 		const auto count =
 		    ConstantU32(state, DescriptorCount(state, IR::DescriptorBindingKind::Storage3D));
 		state.builder.AddType(
 		    {OpTypeArray, state.storage_image_3d_array_type, state.storage_image_3d_type, count});
 		state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_3d_array,
-		                        StorageClassUniformConstant, state.storage_image_3d_array_type});
+		                       StorageClassUniformConstant, state.storage_image_3d_array_type});
 		state.builder.AddType({OpVariable, state.ptr_uniform_storage_image_3d_array,
-		                        state.storage_image_3d_variable, StorageClassUniformConstant});
+		                       state.storage_image_3d_variable, StorageClassUniformConstant});
 	}
-	state.builder.AddType({OpTypeImage, state.storage_image_uint_type, state.uint_type, Dim2D, 0,
-	                        0, 0, 2, ImageFormatR32ui});
+	state.builder.AddType({OpTypeImage, state.storage_image_uint_type, state.uint_type, Dim2D, 0, 0,
+	                       0, 2, ImageFormatR32ui});
 	state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_uint,
-	                        StorageClassUniformConstant, state.storage_image_uint_type});
+	                       StorageClassUniformConstant, state.storage_image_uint_type});
 	if (state.storage_image_uint_variable != 0) {
 		const auto count =
 		    ConstantU32(state, DescriptorCount(state, IR::DescriptorBindingKind::StorageUint2D));
 		state.builder.AddType({OpTypeArray, state.storage_image_uint_array_type,
-		                        state.storage_image_uint_type, count});
+		                       state.storage_image_uint_type, count});
 		state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_uint_array,
-		                        StorageClassUniformConstant, state.storage_image_uint_array_type});
+		                       StorageClassUniformConstant, state.storage_image_uint_array_type});
 		state.builder.AddType({OpVariable, state.ptr_uniform_storage_image_uint_array,
-		                        state.storage_image_uint_variable, StorageClassUniformConstant});
+		                       state.storage_image_uint_variable, StorageClassUniformConstant});
 	}
 	state.builder.AddType({OpTypeImage, state.storage_image_uint_2d_array_type, state.uint_type,
-	                        Dim2D, 0, 1, 0, 2, ImageFormatR32ui});
+	                       Dim2D, 0, 1, 0, 2, ImageFormatR32ui});
 	state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_uint_2d_array,
-	                        StorageClassUniformConstant, state.storage_image_uint_2d_array_type});
+	                       StorageClassUniformConstant, state.storage_image_uint_2d_array_type});
 	if (state.storage_image_uint_2d_array_variable != 0) {
 		const auto count = ConstantU32(
 		    state, DescriptorCount(state, IR::DescriptorBindingKind::StorageUint2DArray));
 		state.builder.AddType({OpTypeArray, state.storage_image_uint_2d_array_array_type,
-		                        state.storage_image_uint_2d_array_type, count});
+		                       state.storage_image_uint_2d_array_type, count});
 		state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_uint_2d_array_array,
-		                        StorageClassUniformConstant,
-		                        state.storage_image_uint_2d_array_array_type});
+		                       StorageClassUniformConstant,
+		                       state.storage_image_uint_2d_array_array_type});
 		state.builder.AddType({OpVariable, state.ptr_uniform_storage_image_uint_2d_array_array,
-		                        state.storage_image_uint_2d_array_variable,
-		                        StorageClassUniformConstant});
+		                       state.storage_image_uint_2d_array_variable,
+		                       StorageClassUniformConstant});
 	}
-	state.builder.AddType({OpTypeImage, state.storage_image_uint_3d_type, state.uint_type, Dim3D,
-	                        0, 0, 0, 2, ImageFormatR32ui});
+	state.builder.AddType({OpTypeImage, state.storage_image_uint_3d_type, state.uint_type, Dim3D, 0,
+	                       0, 0, 2, ImageFormatR32ui});
 	state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_uint_3d,
-	                        StorageClassUniformConstant, state.storage_image_uint_3d_type});
+	                       StorageClassUniformConstant, state.storage_image_uint_3d_type});
 	if (state.storage_image_uint_3d_variable != 0) {
 		const auto count =
 		    ConstantU32(state, DescriptorCount(state, IR::DescriptorBindingKind::StorageUint3D));
 		state.builder.AddType({OpTypeArray, state.storage_image_uint_3d_array_type,
-		                        state.storage_image_uint_3d_type, count});
+		                       state.storage_image_uint_3d_type, count});
 		state.builder.AddType({OpTypePointer, state.ptr_uniform_storage_image_uint_3d_array,
-		                        StorageClassUniformConstant,
-		                        state.storage_image_uint_3d_array_type});
+		                       StorageClassUniformConstant,
+		                       state.storage_image_uint_3d_array_type});
 		state.builder.AddType({OpVariable, state.ptr_uniform_storage_image_uint_3d_array,
-		                        state.storage_image_uint_3d_variable,
-		                        StorageClassUniformConstant});
+		                       state.storage_image_uint_3d_variable, StorageClassUniformConstant});
 	}
 	state.builder.AddType(
 	    {OpTypePointer, state.ptr_image_uint, StorageClassImage, state.uint_type});

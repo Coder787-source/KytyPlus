@@ -6,6 +6,7 @@
 #include "common/common.h"
 #include "common/threads.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/textureCache.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/shaderBindings.h"
 
@@ -18,11 +19,14 @@
 namespace Libs::Graphics {
 
 namespace ShaderRecompiler::IR {
+struct DescriptorValue;
+struct ImageResource;
 struct Program;
 struct ResourceSnapshot;
-}
+} // namespace ShaderRecompiler::IR
 
 class CommandBuffer;
+struct DescriptorCacheTestAccess;
 struct ShaderStageRuntime;
 
 struct VulkanDescriptorSet {
@@ -32,11 +36,10 @@ struct VulkanDescriptorSet {
 };
 
 struct BufferView {
-	std::shared_ptr<VulkanBuffer> owner;
-	VulkanBuffer*                 buffer = nullptr;
-	vk::DeviceSize                offset = 0;
-	vk::DeviceSize                range  = VK_WHOLE_SIZE;
-	std::vector<uint8_t>          host_data;
+	std::shared_ptr<void> owner;
+	vk::Buffer            buffer = nullptr;
+	vk::DeviceSize        offset = 0;
+	vk::DeviceSize        range  = VK_WHOLE_SIZE;
 };
 
 class DescriptorCache {
@@ -44,19 +47,10 @@ public:
 	enum class Stage { Unknown, Vertex, Pixel, Compute };
 
 	struct TextureBinding {
-		VulkanImage*  image      = nullptr;
-		int           view       = VulkanImage::VIEW_DEFAULT;
-		vk::ImageView image_view = nullptr;
-		std::shared_ptr<void> owner;
-	};
-
-	enum class TextureVariant : int {
-		Float2D = 0,
-		Uint2D,
-		FloatArray,
-		UintArray,
-		Float3D,
-		Uint3D,
+		ImageId                 image_id;
+		vk::ImageView           image_view = nullptr;
+		TextureCache::ImageDesc desc;
+		vk::ImageLayout         layout = vk::ImageLayout::eUndefined;
 	};
 
 	struct NativeDescriptors {
@@ -70,20 +64,20 @@ public:
 	};
 
 	struct PreparedBindings {
-		std::shared_ptr<const ShaderRecompiler::IR::Program> program;
+		std::shared_ptr<const ShaderRecompiler::IR::Program>          program;
 		std::shared_ptr<const ShaderRecompiler::IR::ResourceSnapshot> snapshot;
-		NativeDescriptors                                         resources;
-		std::vector<uint32_t>                                     flattened_srt;
-		std::vector<uint32_t>                                     user_data;
-		vk::ShaderStageFlags                                      shader_stage;
-		Stage                                                     stage = Stage::Unknown;
-		bool                                                      committed = false;
+		NativeDescriptors                                             resources;
+		std::vector<uint32_t>                                         flattened_srt;
+		std::vector<uint32_t>                                         user_data;
+		vk::ShaderStageFlags                                          shader_stage;
+		Stage                                                         stage     = Stage::Unknown;
+		bool                                                          committed = false;
 	};
 
 	explicit DescriptorCache(GraphicContext& graphics): m_graphics(graphics) {
 		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	}
-	~DescriptorCache() { KYTY_NOT_IMPLEMENTED; }
+	~DescriptorCache();
 	KYTY_CLASS_NO_COPY(DescriptorCache);
 
 	vk::DescriptorSetLayout GetDescriptorSetLayout(Stage                                stage,
@@ -93,11 +87,14 @@ public:
 	                                      const NativeDescriptors& descriptors);
 
 private:
+	friend struct DescriptorCacheTestAccess;
+
 	struct Pool {
 		vk::DescriptorPool pool           = nullptr;
 		int                next_free_pool = -1;
 	};
 
+	static vk::DescriptorImageInfo MakeImageInfo(const TextureBinding& texture);
 	void                 CreatePool();
 	VulkanDescriptorSet* Allocate(Stage stage, const ShaderRecompiler::IR::Program& program);
 	vk::DescriptorSetLayout
@@ -111,15 +108,6 @@ private:
 	                                                         m_free_sets_by_layout;
 	std::map<std::vector<uint32_t>, vk::DescriptorSetLayout> m_descriptor_set_layouts;
 };
-
-[[nodiscard]] DescriptorCache::PreparedBindings
-PrepareBindings(CommandBuffer& buffer, const ShaderStageRuntime& runtime,
-                vk::ShaderStageFlags shader_stage, DescriptorCache::Stage stage);
-void RebindBuffers(CommandBuffer& buffer, DescriptorCache::PreparedBindings& bindings);
-void RebindImages(CommandBuffer& buffer, DescriptorCache::PreparedBindings& bindings);
-void ActivateImageWrites(std::span<DescriptorCache::PreparedBindings*> bindings);
-void CommitBindings(CommandBuffer& buffer, vk::PipelineBindPoint pipeline_bind_point,
-                    vk::PipelineLayout layout, DescriptorCache::PreparedBindings& bindings);
 
 } // namespace Libs::Graphics
 

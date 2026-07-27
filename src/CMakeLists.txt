@@ -19,6 +19,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(utils.cmake)
+include(CTest)
 
 set(KYTY_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty")
 
@@ -183,6 +184,9 @@ set(gpu_tiler_shader_names
 	prt_3d
 	render_target
 	depth
+	promote_d16
+	demote_d16
+	swap_bgra16
 )
 file(GLOB gpu_tiler_shader_includes CONFIGURE_DEPENDS "${gpu_tiler_shader_dir}/gpu_tiler_*.inc")
 foreach(shader_name IN LISTS gpu_tiler_shader_names)
@@ -203,6 +207,30 @@ foreach(shader_name IN LISTS gpu_tiler_shader_names)
 	list(APPEND gpu_tiler_shader_headers "${shader_header}")
 endforeach()
 list(APPEND kyty_emulator_src ${gpu_tiler_shader_headers})
+
+set(gpu_blit_generated_dir "${PROJECT_BINARY_DIR}/gpu_blit_shaders")
+set(gpu_blit_shader_sources
+	"${gpu_tiler_shader_dir}/gpu_blit_fs_triangle.vert"
+	"${gpu_tiler_shader_dir}/gpu_blit_color_to_ms_depth.frag"
+)
+foreach(shader_source IN LISTS gpu_blit_shader_sources)
+	get_filename_component(shader_name "${shader_source}" NAME_WE)
+	set(shader_spv "${gpu_blit_generated_dir}/${shader_name}.spv")
+	set(shader_header "${gpu_blit_generated_dir}/${shader_name}_spv.h")
+	string(TOUPPER "${shader_name}_SPV" shader_symbol)
+	add_custom_command(
+		OUTPUT "${shader_header}"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_blit_generated_dir}"
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
+		        "-I${gpu_tiler_shader_dir}" -o "${shader_spv}" "${shader_source}"
+		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
+		        -DSYMBOL=${shader_symbol} -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
+		DEPENDS "${shader_source}"
+		VERBATIM
+	)
+	list(APPEND gpu_blit_shader_headers "${shader_header}")
+endforeach()
+list(APPEND kyty_emulator_src ${gpu_blit_shader_headers})
 
 list(APPEND kyty_emulator_src
 	emulator.h
@@ -318,6 +346,14 @@ add_executable(resource_mutex_tests EXCLUDE_FROM_ALL
 target_link_libraries(resource_mutex_tests common)
 target_include_directories(resource_mutex_tests PRIVATE ${inc_headers})
 
+add_executable(event_queue_lifetime_tests EXCLUDE_FROM_ALL
+	../tests/EventQueueLifetimeTests.cpp
+	kernel/eventQueue.cpp
+	loader/timer.cpp
+)
+target_link_libraries(event_queue_lifetime_tests common fmt::fmt)
+target_include_directories(event_queue_lifetime_tests PRIVATE ${inc_headers})
+
 add_executable(image_page_table_tests EXCLUDE_FROM_ALL
 	../tests/ImagePageTableTests.cpp
 )
@@ -325,9 +361,66 @@ target_include_directories(image_page_table_tests PRIVATE ${inc_headers})
 
 add_kyty_full_emulator_test(shader_recompiler_compute_tests ../tests/ShaderRecompilerComputeTests.cpp)
 
+set(gpu_test_generated_dir "${PROJECT_BINARY_DIR}/gpu_test_shaders")
+set(gpu_test_ms_depth_source
+	"${gpu_tiler_shader_dir}/gpu_test_ms_depth.comp")
+set(gpu_test_ms_depth_spv
+	"${gpu_test_generated_dir}/gpu_test_ms_depth.spv")
+set(gpu_test_ms_depth_header
+	"${gpu_test_generated_dir}/gpu_test_ms_depth_spv.h")
+add_custom_command(
+	OUTPUT "${gpu_test_ms_depth_header}"
+	COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_test_generated_dir}"
+	COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
+	        -o "${gpu_test_ms_depth_spv}" "${gpu_test_ms_depth_source}"
+	COMMAND ${CMAKE_COMMAND} -DINPUT=${gpu_test_ms_depth_spv}
+	        -DOUTPUT=${gpu_test_ms_depth_header} -DSYMBOL=GPU_TEST_MS_DEPTH_SPV
+	        -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
+	DEPENDS "${gpu_test_ms_depth_source}"
+	VERBATIM
+)
+target_sources(shader_recompiler_compute_tests PRIVATE
+	"${gpu_test_ms_depth_header}")
+
 add_kyty_full_emulator_test(virtual_memory_allocation_tests ../tests/VirtualMemoryAllocationTests.cpp)
 target_compile_definitions(virtual_memory_allocation_tests PRIVATE
 	KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS=1)
+
+if(BUILD_TESTING)
+	add_test(NAME image_page_table COMMAND $<TARGET_FILE:image_page_table_tests>)
+	add_test(NAME memory_tracker COMMAND $<TARGET_FILE:memory_tracker_tests>)
+	add_test(NAME page_manager COMMAND $<TARGET_FILE:page_manager_tests>)
+	add_test(NAME resource_mutex COMMAND $<TARGET_FILE:resource_mutex_tests>)
+	add_test(NAME event_queue_lifetime COMMAND $<TARGET_FILE:event_queue_lifetime_tests>)
+	add_test(NAME shader_recompiler_compute COMMAND $<TARGET_FILE:shader_recompiler_compute_tests>)
+	add_test(NAME command_scheduler_timeline
+		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --scheduler-only)
+	add_test(NAME stream_buffer_ring
+		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --stream-buffer-only)
+	add_test(NAME gpu_command_lane
+		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --gpu-command-lane-only)
+	add_test(NAME gpu_tiler
+		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --gpu-tiler-only)
+
+	if(WIN32)
+		add_test(NAME texture_cache_image_overlap
+			COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --image-overlap-only)
+		add_test(NAME texture_cache_htile_clear
+			COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --htile-clear-only)
+		add_test(NAME texture_cache_layered_image
+			COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --layered-image-only)
+		add_test(NAME texture_cache_image_views
+			COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --image-view-cache-only)
+		add_test(NAME texture_cache_storage_sampled
+			COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --storage-sampled-only)
+		add_test(NAME texture_cache_depth_readback
+			COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --depth-readback-only)
+		add_test(NAME buffer_cache_ranges
+			COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --buffer-cache-range-only)
+		add_test(NAME buffer_cache_dirty_gc
+			COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --buffer-cache-gc-only)
+	endif()
+endif()
 
 
 add_executable(kyty_emulator main.cpp ${kyty_emulator_src})

@@ -297,8 +297,7 @@ bool PageManager::IsTracked(uint64_t vaddr) const noexcept {
 }
 
 bool PageManager::IsMapped(uint64_t vaddr, uint64_t size) const noexcept {
-	if (g_in_fault_resolution || vaddr == 0 || size == 0 || vaddr >= ADDRESS_SIZE ||
-	    size > ADDRESS_SIZE - vaddr) {
+	if (vaddr == 0 || size == 0 || vaddr >= ADDRESS_SIZE || size > ADDRESS_SIZE - vaddr) {
 		return false;
 	}
 	const auto end = PageStart(vaddr + size - 1) + PAGE_SIZE;
@@ -363,9 +362,6 @@ bool PageManager::HasGpuAccess(uint64_t vaddr, uint64_t size, GpuAccess access) 
 
 void PageManager::UpdatePageWatchers(bool track, uint64_t vaddr, uint64_t size,
                                      PageWatchMode mode) {
-	if (g_in_fault_resolution) {
-		FailFast("page watchers changed during fault resolution");
-	}
 	if (mode != PageWatchMode::Write && mode != PageWatchMode::ReadWrite) {
 		Fatal("invalid watcher mode");
 	}
@@ -498,6 +494,37 @@ PageManager::BackingWrite::BackingWrite(PageManager& manager, uint64_t vaddr,
 
 PageManager::BackingWrite::~BackingWrite() {
 	m_manager.EndBackingWrite(m_vaddr, m_size);
+}
+
+std::vector<std::unique_ptr<PageManager::BackingWrite>>
+PageManager::ReserveBackingWrites(std::span<const RangeSet::Range> ranges) {
+	if (ranges.empty()) {
+		Fatal("cannot reserve empty backing-write ranges");
+	}
+	std::vector<std::unique_ptr<BackingWrite>> writes;
+	writes.reserve(ranges.size());
+	uint64_t begin = 0;
+	uint64_t end   = 0;
+	for (const auto& range: ranges) {
+		if (range.address == 0 || range.size == 0 || range.size > UINT64_MAX - range.address ||
+		    range.address + range.size > UINT64_MAX - (PAGE_SIZE - 1)) {
+			Fatal("invalid backing-write range");
+		}
+		const auto page_begin = PageStart(range.address);
+		const auto page_end   = PageStart(range.address + range.size + PAGE_SIZE - 1);
+		if (begin != 0 && page_begin > end) {
+			writes.push_back(std::make_unique<BackingWrite>(*this, begin, end - begin));
+			begin = 0;
+		}
+		if (begin == 0) {
+			begin = page_begin;
+			end   = page_end;
+		} else {
+			end = std::max(end, page_end);
+		}
+	}
+	writes.push_back(std::make_unique<BackingWrite>(*this, begin, end - begin));
+	return writes;
 }
 
 void PageManager::BeginBackingWrite(uint64_t vaddr, uint64_t size) noexcept {

@@ -6,7 +6,6 @@
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/graphicContext.h"
-#include "graphics/host_gpu/objects/label.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/presentation/videoOut.h"
@@ -1764,230 +1763,11 @@ static bool HwUcTrySetFakeRegisterRange(uint32_t cmd_offset, const uint32_t* buf
 	return true;
 }
 
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 KYTY_CP_OP_PARSER(CpOpAcquireMem) {
 	KYTY_PROFILER_FUNCTION();
 
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0055800 && cmd_id != 0xc0061050);
-
-	bool custom = (cmd_id == 0xc0061050);
-
-	uint32_t                  engine       = buffer[0] >> 31u;
-	uint32_t                  stall_mode   = (custom ? 1u : engine);
-	uint32_t                  cache_action = buffer[0] & 0x7fffffffu;
-	uint64_t                  size_lo      = buffer[1];
-	uint32_t                  size_hi      = buffer[2];
-	uint64_t                  base_lo      = buffer[3];
-	uint32_t                  base_hi      = buffer[4];
-	uint32_t                  poll         = buffer[5];
-	[[maybe_unused]] uint32_t gcr_cntl     = (custom ? buffer[6] : 0);
-
-	uint32_t target_mask     = cache_action & 0x00007FC0u;
-	uint32_t extended_action = cache_action & 0x2E000000u;
-	uint32_t action =
-	    ((cache_action & 0x00C00000u) >> 0x12u) | ((cache_action & 0x00058000u) >> 0xfu);
-
-	if (custom && engine > 1) {
-		LOGF("\t warning: custom acquire_mem unsupported engine: %" PRIu32 "\n", engine);
-	}
-
-	// EXIT_NOT_IMPLEMENTED(stall_mode != 1);
-	EXIT_NOT_IMPLEMENTED(size_hi != 0);
-	EXIT_NOT_IMPLEMENTED(base_hi != 0);
-	if (poll != 10) {
-		LOGF("\t warning: acquire_mem unexpected poll interval: %" PRIu32 "\n", poll);
-	}
-
-	switch (cache_action) {
-		case 0x00000000: {
-			if (custom && gcr_cntl != 0) {
-				LOGF("\t custom acquire_mem GCR-only barrier, gcr_cntl = 0x%08" PRIx32
-				     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-				     gcr_cntl, base_lo << 8u, size_lo << 8u);
-
-				cp.MemoryBarrier();
-				if ((gcr_cntl & AcquireGcrGl2Writeback) != 0) {
-					cp.SynchronizeGpu();
-				}
-			}
-		} break;
-		case 0x00000040:
-		case 0x00003fc0:
-		case 0x00004000:
-		case 0x00007fc0: {
-			// target_mask set, no CB/DB action bits. Treat as an ordering barrier.
-			EXIT_IF(target_mask != cache_action);
-			EXIT_IF(extended_action != 0x00000000);
-			EXIT_IF(action != 0x00);
-
-			LOGF("\t temporary: acquire_mem target-mask-only barrier, target_mask = 0x%08" PRIx32
-			     ", gcr_cntl = 0x%08" PRIx32 ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-			     target_mask, gcr_cntl, base_lo << 8u, size_lo << 8u);
-
-			cp.MemoryBarrier();
-		} break;
-		case 0x02000000: {
-			// target_mask:     0x00000000 (none)
-			// extended_action: 0x02000000 (FlushAndInvalidateCbCache)
-			// action:          0x00 (none)
-			EXIT_IF(target_mask != 0x00000000);
-			EXIT_IF(extended_action != 0x02000000);
-			EXIT_IF(action != 0x00);
-
-			LOGF("\t temporary: acquire_mem CB-cache-only barrier, gcr_cntl = 0x%08" PRIx32
-			     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-			     gcr_cntl, base_lo << 8u, size_lo << 8u);
-
-			cp.MemoryBarrier();
-		} break;
-		case 0x04000000: {
-			// target_mask:     0x00000000 (none)
-			// extended_action: 0x04000000 (FlushAndInvalidateDbCache)
-			// action:          0x00 (none)
-			EXIT_IF(target_mask != 0x00000000);
-			EXIT_IF(extended_action != 0x04000000);
-			EXIT_IF(action != 0x00);
-
-			LOGF("\t temporary: acquire_mem DB-cache-only barrier, gcr_cntl = 0x%08" PRIx32
-			     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-			     gcr_cntl, base_lo << 8u, size_lo << 8u);
-
-			cp.MemoryBarrier();
-		} break;
-		case 0x04004000:
-		case 0x04007fc0: {
-			// target_mask:     0x00004000 (Depth Target), 0x00007fc0 (all rt and depth)
-			// extended_action: 0x04000000 (FlushAndInvalidateDbCache)
-			// action:          0x00 (none)
-			EXIT_IF(target_mask != 0x00004000 && target_mask != 0x00007FC0);
-			EXIT_IF(extended_action != 0x04000000);
-			EXIT_IF(action != 0x00);
-
-			LOGF("\t temporary: acquire_mem DB target barrier, target_mask = 0x%08" PRIx32
-			     ", gcr_cntl = 0x%08" PRIx32 ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-			     target_mask, gcr_cntl, base_lo << 8u, size_lo << 8u);
-
-			if (size_lo != 0) {
-				cp.DepthStencilBarrier(base_lo << 8u, size_lo << 8u);
-			} else {
-				cp.MemoryBarrier();
-			}
-		} break;
-		case 0x02c40040:
-		case 0x02c43fc0:
-		case 0x02c47fc0: {
-			// target_mask:     0x00000040 (rt0), 0x00003fc0 (all rt), 0x00007fc0 (all rt and depth)
-			// extended_action: 0x02000000 (FlushAndInvalidateCbCache)
-			// action:          0x38 (WriteBackAndInvalidateL1andL2)
-			EXIT_IF(target_mask != 0x00000040 && target_mask != 0x00003FC0 &&
-			        target_mask != 0x00007FC0);
-			EXIT_IF(extended_action != 0x02000000);
-			EXIT_IF(action != 0x38);
-			EXIT_NOT_IMPLEMENTED(size_lo == 0);
-			EXIT_NOT_IMPLEMENTED(base_lo == 0);
-
-			cp.RenderTextureBarrier(base_lo << 8u, size_lo << 8u);
-			cp.SynchronizeGpu();
-		} break;
-		case 0x02003fc0:
-		case 0x02007fc0: {
-			// target_mask:     0x00003FC0 (all rt), 0x00007fc0 (all rt and depth)
-			// extended_action: 0x02000000 (FlushAndInvalidateCbCache)
-			// action:          0x00 (none)
-			EXIT_IF(target_mask != 0x00003FC0 && target_mask != 0x00007fc0);
-			EXIT_IF(extended_action != 0x02000000);
-			EXIT_IF(action != 0x00);
-
-			if (size_lo == 0) {
-				if (base_lo != 0) {
-					LOGF("\t warning: acquire_mem CB-cache barrier with non-zero base");
-				}
-
-				cp.MemoryBarrier();
-			} else {
-				EXIT_NOT_IMPLEMENTED(base_lo == 0);
-
-				cp.RenderTextureBarrier(base_lo << 8u, size_lo << 8u);
-			}
-		} break;
-		case 0x00C40000: {
-			// target_mask:     0x00000000 (none)
-			// extended_action: 0x00000000 (none)
-			// action:          0x38 (WriteBackAndInvalidateL1andL2)
-			EXIT_IF(target_mask != 0x00000000);
-			EXIT_IF(extended_action != 0x00000000);
-			EXIT_IF(action != 0x38);
-			EXIT_NOT_IMPLEMENTED(size_lo != 1);
-			EXIT_NOT_IMPLEMENTED(base_lo != 0);
-
-			cp.MemoryBarrier();
-			cp.SynchronizeGpu();
-		} break;
-		case 0x00400000: {
-			// target_mask:     0x00000000 (none)
-			// extended_action: 0x00000000 (none)
-			// action:          0x10 (InvalidateL1)
-			EXIT_IF(target_mask != 0x00000000);
-			EXIT_IF(extended_action != 0x00000000);
-			EXIT_IF(action != 0x10);
-			EXIT_NOT_IMPLEMENTED(size_lo != 1);
-			EXIT_NOT_IMPLEMENTED(base_lo != 0);
-
-			cp.MemoryBarrier();
-		} break;
-		case 0x04c44000: {
-			// target_mask:     0x00004000 (Depth Target)
-			// extended_action: 0x04000000 (FlushAndInvalidateDbCache)
-			// action:          0x38 (WriteBackAndInvalidateL1andL2)
-			EXIT_IF(target_mask != 0x00004000);
-			EXIT_IF(extended_action != 0x04000000);
-			EXIT_IF(action != 0x38);
-
-			cp.DepthStencilBarrier(base_lo << 8u, size_lo << 8u);
-			cp.SynchronizeGpu();
-		} break;
-
-		case 0x06000040:
-		case 0x06000080:
-		case 0x06003fc0:
-		case 0x06007fc0: {
-			// target_mask:     0x00000040 (rt0), 0x00000080 (rt1), 0x00003fc0 (all rt), 0x00007fc0
-			// (all rt and depth) extended_action: 0x06000000 (Flush Cb & Db) action:          0x00
-			// (none)
-			if (gcr_cntl != 0 && gcr_cntl != 0x280 && gcr_cntl != 0x300) {
-				LOGF("\t temporary: acquire_mem CB+DB barrier with unhandled GCR control "
-				     "0x%08" PRIx32 "\n",
-				     gcr_cntl);
-			}
-
-			EXIT_IF(target_mask != 0x00000040 && target_mask != 0x00000080 &&
-			        target_mask != 0x00003fc0 && target_mask != 0x00007fc0);
-			EXIT_IF(extended_action != 0x06000000);
-			EXIT_IF(action != 0x00);
-
-			if (size_lo != 0) {
-				if ((target_mask & 0x00003fc0) != 0) {
-					cp.RenderTextureBarrier(base_lo << 8u, size_lo << 8u);
-				}
-				if ((target_mask & 0x00004000) != 0) {
-					cp.DepthStencilBarrier(base_lo << 8u, size_lo << 8u);
-				}
-			} else {
-				cp.MemoryBarrier();
-			}
-		} break;
-
-		default:
-			EXIT("unknown barrier: 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32
-			     "\n",
-			     cache_action, target_mask, extended_action, action);
-	}
-
-	if (stall_mode == 0) {
-		cp.BufferWait();
-	}
-
-	return (custom ? 7 : 6);
+	return (cmd_id == 0xc0061050 ? 7 : 6);
 }
 
 KYTY_CP_OP_PARSER(CpOpDispatchDirect) {
@@ -2930,7 +2710,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 
 	if (data_sel == 0 || interrupt_selector == 4) {
 		if (eop_event_type != 0x28 || gcr_cntl != 0) {
-			cp.MemoryBarrier();
+			cp.EmitGlobalBarrier();
 		}
 
 		if (gl2_writeback) {
@@ -2944,7 +2724,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 
 	if (release_dst == ReleaseMemDstMemory && dst_gpu_addr == nullptr) {
 		if (eop_event_type != 0x28 || gcr_cntl != 0) {
-			cp.MemoryBarrier();
+			cp.EmitGlobalBarrier();
 		}
 
 		if (gl2_writeback) {
@@ -2957,7 +2737,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	}
 
 	if (ReleaseMemGcrNeedsBarrier(eop_event_type, gcr_cntl)) {
-		cp.MemoryBarrier();
+		cp.EmitGlobalBarrier();
 	}
 
 	auto cache_action = ReleaseMemCacheActionFromGcr(gcr_cntl);

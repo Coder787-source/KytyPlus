@@ -2,6 +2,7 @@
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_DESCRIPTORS_H_
 
 #include "common/assert.h"
+#include "graphics/host_gpu/renderer/image.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ShaderIR.h"
 #include "graphics/shader/shaderBindings.h"
@@ -11,14 +12,6 @@
 #include <type_traits>
 
 namespace Libs::Graphics {
-
-struct VulkanImage;
-enum class VulkanImageType;
-
-enum class ImageWriteActivation { Unsupported, Implicit, Explicit };
-
-[[nodiscard]] ImageWriteActivation
-ClassifyImageWriteActivation(VulkanImageType type) noexcept;
 
 template <typename T>
 [[nodiscard]] T DecodeNativeDescriptor(const ShaderRecompiler::IR::DescriptorValue& value) {
@@ -41,13 +34,11 @@ ResolveTargetTextureView(const ShaderRecompiler::IR::ImageResource& resource,
                          Prospero::ImageType type, uint32_t base_layer, uint32_t image_layers);
 
 [[nodiscard]] bool IsSupportedDepthTargetDescriptor(const ShaderTextureResource& descriptor,
-                                                    const VulkanImage&           image);
+                                                    const Image&                 image);
 [[nodiscard]] bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor);
 [[nodiscard]] bool
 IsSupportedSampledVideoOutView(const ShaderRecompiler::IR::ImageResource& resource,
-                               const ShaderTextureResource& descriptor, const VulkanImage& image);
-void ValidateMetadataReuseTexture(const ShaderRecompiler::IR::ImageResource& resource,
-                                  const ShaderTextureResource& descriptor, uint64_t size);
+                               const ShaderTextureResource& descriptor, const Image& image);
 void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
                             const ShaderTextureResource& descriptor, uint64_t size);
 

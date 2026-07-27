@@ -726,6 +726,7 @@ struct ShaderInfo {
 	std::vector<StageInput>          inputs;
 	std::vector<StageOutput>         outputs;
 	int32_t                          vertex_offset_sgpr = -1;
+	bool                             has_bitwise_xor    = false;
 
 	bool operator==(const ShaderInfo& other) const = default;
 };

@@ -7,7 +7,7 @@
 #include "common/threads.h"
 #include "common/virtualMemory.h"
 #include "graphics/guest_gpu/graphicsRun.h"
-#include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/gpuResourceManager.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 
@@ -66,9 +66,11 @@ constexpr int      PAGE_TABLE_POOL_ENTRIES =
 constexpr uint64_t DEFAULT_FLEXIBLE_MEMORY_SIZE = 4ull * 1024ull * 1024ull * 1024ull;
 
 static uint64_t g_flexible_memory_size = DEFAULT_FLEXIBLE_MEMORY_SIZE;
+static Graphics::GpuResourceManager* g_gpu_resources = nullptr;
 
 static Graphics::GpuResourceManager& GetGpuResources() {
-	return Graphics::GetRenderContext().GetGpuResources();
+	EXIT_IF(g_gpu_resources == nullptr);
+	return *g_gpu_resources;
 }
 
 static bool IsGpuAddressRange(uint64_t vaddr, uint64_t size) {
@@ -97,12 +99,10 @@ static void UnmapGpuRange(uint64_t vaddr, uint64_t size, GpuAccessMode mode) {
 	if (!IsGpuAddressRange(vaddr, size)) {
 		EXIT("invalid GPU unmap range: addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n", vaddr, size);
 	}
-	auto&                               resources = GetGpuResources();
-	Graphics::GraphicsRunSubmissionLock submission_lock;
 	const auto access = mode == GpuAccessMode::Read    ? Graphics::GpuAccess::Read
 	                    : mode == GpuAccessMode::Write ? Graphics::GpuAccess::Write
 	                                                   : Graphics::GpuAccess::ReadWrite;
-	resources.UnmapMemory(vaddr, size, access);
+	GetGpuResources().UnmapMemory(vaddr, size, access);
 }
 
 static bool DecodeMemoryProtection(int prot, VirtualMemory::Mode* mode, GpuAccessMode* gpu_mode) {
@@ -867,11 +867,13 @@ static void                     MemoryPoolSubtractCommitted(uint64_t len);
 static std::recursive_mutex g_memory_operation_mutex;
 
 bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
-	return g_direct_memory_backing->TryWriteBacking(vaddr, data, size);
+	return g_direct_memory_backing != nullptr &&
+	       g_direct_memory_backing->TryWriteBacking(vaddr, data, size);
 }
 
 bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
-	return g_direct_memory_backing->TryReadBacking(vaddr, data, size);
+	return g_direct_memory_backing != nullptr &&
+	       g_direct_memory_backing->TryReadBacking(vaddr, data, size);
 }
 
 void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
@@ -886,7 +888,16 @@ void PrepareHostWrite(uint64_t vaddr, uint64_t size) {
 	if (size == 0) {
 		return;
 	}
-	Graphics::GetRenderContext().GetGpuResources().PrepareHostWrite(vaddr, size);
+	GetGpuResources().PrepareHostWrite(vaddr, size);
+}
+
+void InstallGpuResources(Graphics::GpuResourceManager* resources) noexcept {
+	EXIT_IF(resources != nullptr && g_gpu_resources != nullptr);
+	g_gpu_resources = resources;
+}
+
+bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept {
+	return g_gpu_resources != nullptr && g_gpu_resources->HandleFault(access, fault_vaddr);
 }
 
 struct PrtAperture {
