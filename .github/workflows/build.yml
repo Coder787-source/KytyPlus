@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
 
 jobs:
@@ -97,8 +98,10 @@ jobs:
           path: _Build/windows/install/**
           if-no-files-found: error
 
+  # Only publish a GitHub Release when a version tag is pushed (e.g. v1.5).
+  # Ordinary pushes to main still build + upload artifacts; they no longer spam releases.
   release:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -114,11 +117,12 @@ jobs:
       - name: Set release name
         shell: bash
         run: |
-          echo "RELEASE_NAME=KytyPS5-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          echo "ASSET_NAME=KytyPlus-${GITHUB_REF_NAME}-windows-x64.zip" >> "$GITHUB_ENV"
 
       - name: Package build
         shell: bash
-        run: zip -r "$RELEASE_NAME.zip" KytyPS5
+        run: zip -r "$ASSET_NAME" KytyPS5
 
       - name: Create release
         shell: bash
@@ -126,9 +130,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$RELEASE_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$RELEASE_NAME" "$RELEASE_NAME.zip" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "$RELEASE_NAME" "$ASSET_NAME" --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$RELEASE_NAME" "$RELEASE_NAME.zip" \
+            gh release create "$RELEASE_NAME" "$ASSET_NAME" \
               --generate-notes \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
