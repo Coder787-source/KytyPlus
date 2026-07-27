@@ -22,9 +22,13 @@ vk::ShaderStageFlags StageFlags(DescriptorCache::Stage stage) {
 
 bool IsSampledImage(BindingKind kind) {
 	switch (kind) {
+		case BindingKind::Sampled1D:
+		case BindingKind::Sampled1DArray:
 		case BindingKind::Sampled2D:
 		case BindingKind::Sampled2DArray:
 		case BindingKind::Sampled3D:
+		case BindingKind::SampledUint1D:
+		case BindingKind::SampledUint1DArray:
 		case BindingKind::SampledUint2D:
 		case BindingKind::SampledUint2DArray:
 		case BindingKind::SampledUint3D: return true;
@@ -34,9 +38,13 @@ bool IsSampledImage(BindingKind kind) {
 
 bool IsStorageImage(BindingKind kind) {
 	switch (kind) {
+		case BindingKind::Storage1D:
+		case BindingKind::Storage1DArray:
 		case BindingKind::Storage2D:
 		case BindingKind::Storage2DArray:
 		case BindingKind::Storage3D:
+		case BindingKind::StorageUint1D:
+		case BindingKind::StorageUint1DArray:
 		case BindingKind::StorageUint2D:
 		case BindingKind::StorageUint2DArray:
 		case BindingKind::StorageUint3D: return true;

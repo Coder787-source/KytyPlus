@@ -25,6 +25,10 @@ bool ImageBinding(const IR::ImageResource& image, IR::DescriptorBindingKind& kin
 	if (image.kind == IR::ResourceKind::Image || image.kind == IR::ResourceKind::ImageUint) {
 		const bool integer = image.kind == IR::ResourceKind::ImageUint;
 		switch (image.dimension) {
+			case Dim::Dim1D: kind = integer ? Kind::SampledUint1D : Kind::Sampled1D; return true;
+			case Dim::Dim1DArray:
+				kind = integer ? Kind::SampledUint1DArray : Kind::Sampled1DArray;
+				return true;
 			case Dim::Dim2D: kind = integer ? Kind::SampledUint2D : Kind::Sampled2D; return true;
 			case Dim::Dim3D: kind = integer ? Kind::SampledUint3D : Kind::Sampled3D; return true;
 			case Dim::Dim2DArray:
@@ -38,6 +42,10 @@ bool ImageBinding(const IR::ImageResource& image, IR::DescriptorBindingKind& kin
 		return false;
 	}
 	switch (image.dimension) {
+		case Dim::Dim1D: kind = uint_image ? Kind::StorageUint1D : Kind::Storage1D; return true;
+		case Dim::Dim1DArray:
+			kind = uint_image ? Kind::StorageUint1DArray : Kind::Storage1DArray;
+			return true;
 		case Dim::Dim2D: kind = uint_image ? Kind::StorageUint2D : Kind::Storage2D; return true;
 		case Dim::Dim3D: kind = uint_image ? Kind::StorageUint3D : Kind::Storage3D; return true;
 		case Dim::Dim2DArray:
@@ -174,6 +182,11 @@ bool ValidateInstructionContract(const IR::Instruction& inst, std::string* error
 	    ((kind != IR::ResourceKind::Image && kind != IR::ResourceKind::ImageUint) ||
 	     inst.src_count != 1)) {
 		return Fail(error, "sampled image instruction has an invalid resource class");
+	}
+	if (inst.op == IR::Opcode::ImageGather4 &&
+	    (inst.memory.image_dimension == Decoder::ImageDimension::Dim1D ||
+	     inst.memory.image_dimension == Decoder::ImageDimension::Dim1DArray)) {
+		return Fail(error, "1D image gather is not supported by SPIR-V");
 	}
 	if (inst.op == IR::Opcode::ImageStore &&
 	    ((kind != IR::ResourceKind::StorageImage && kind != IR::ResourceKind::StorageImageUint) ||

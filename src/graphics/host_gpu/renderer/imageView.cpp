@@ -69,8 +69,19 @@ namespace {
 				default: return false;
 			}
 		case vk::ImageType::e3D:
-			return info.type == vk::ImageViewType::e3D && info.base_layer == 0 &&
-			       info.layer_count == 1;
+			switch (info.type) {
+				case vk::ImageViewType::e3D:
+					return info.base_layer == 0 && info.layer_count == 1;
+				case vk::ImageViewType::e2D:
+					return static_cast<bool>(
+					           image.flags & vk::ImageCreateFlagBits::e2DArrayCompatible) &&
+					       info.level_count == 1 && info.layer_count == 1;
+				case vk::ImageViewType::e2DArray:
+					return static_cast<bool>(
+					           image.flags & vk::ImageCreateFlagBits::e2DArrayCompatible) &&
+					       info.level_count == 1;
+				default: return false;
+			}
 		default: return false;
 	}
 }
@@ -333,11 +344,18 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	    is_storage ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlags {};
 	const bool format_compatible = normalized.format != vk::Format::eUndefined &&
 	                               IsCompatibleViewFormat(image.format, normalized.format);
-	const bool ranges_valid = normalized.level_count != 0 &&
+	const bool slice_view = image.image_type == vk::ImageType::e3D &&
+	                        (normalized.type == vk::ImageViewType::e2D ||
+	                         normalized.type == vk::ImageViewType::e2DArray);
+	const bool levels_valid = normalized.level_count != 0 &&
 	                          normalized.base_level < image.mip_levels &&
-	                          normalized.level_count <= image.mip_levels - normalized.base_level &&
-	                          normalized.layer_count != 0 && normalized.base_layer < image.layers &&
-	                          normalized.layer_count <= image.layers - normalized.base_layer;
+	                          normalized.level_count <= image.mip_levels - normalized.base_level;
+	const auto view_layers = slice_view && levels_valid
+	                             ? std::max(image.extent.depth >> normalized.base_level, 1u)
+	                             : image.layers;
+	const bool ranges_valid = levels_valid &&
+	                          normalized.layer_count != 0 && normalized.base_layer < view_layers &&
+	                          normalized.layer_count <= view_layers - normalized.base_layer;
 	const bool mapping_valid =
 	    IsComponentSwizzle(normalized.mapping.r) && IsComponentSwizzle(normalized.mapping.g) &&
 	    IsComponentSwizzle(normalized.mapping.b) && IsComponentSwizzle(normalized.mapping.a);

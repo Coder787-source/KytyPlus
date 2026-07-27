@@ -30,9 +30,11 @@ struct MimgAtomicInfo {
 
 constexpr ImageDimension DecodeImageDimension(uint32_t dim) {
 	switch (dim) {
+		case 0u: return ImageDimension::Dim1D;
 		case 1u: return ImageDimension::Dim2D;
 		case 2u: return ImageDimension::Dim3D;
 		case 3u: return ImageDimension::Dim2DArray;
+		case 4u: return ImageDimension::Dim1DArray;
 		case 5u:
 		case 7u: return ImageDimension::Dim2DArray;
 		case 6u: return ImageDimension::Dim2D;
@@ -42,8 +44,19 @@ constexpr ImageDimension DecodeImageDimension(uint32_t dim) {
 
 constexpr uint32_t ImageCoordComponents(ImageDimension dimension) {
 	switch (dimension) {
+		case ImageDimension::Dim1D: return 1u;
+		case ImageDimension::Dim1DArray: return 2u;
 		case ImageDimension::Dim3D:
 		case ImageDimension::Dim2DArray: return 3u;
+		default: return 2u;
+	}
+}
+
+constexpr uint32_t ImageGradientComponents(ImageDimension dimension) {
+	switch (dimension) {
+		case ImageDimension::Dim1D:
+		case ImageDimension::Dim1DArray: return 1u;
+		case ImageDimension::Dim3D: return 3u;
 		default: return 2u;
 	}
 }
@@ -64,7 +77,7 @@ constexpr uint32_t ImageSampleAddressComponents(uint32_t flags, ImageDimension d
 		components++;
 	}
 	if ((flags & ImageSampleFlagDerivative) != 0) {
-		components += 4u;
+		components += ImageGradientComponents(dimension) * 2u;
 	}
 	return components;
 }
@@ -255,7 +268,7 @@ uint32_t DecodeMimgAddressComponents(uint32_t opcode, ImageDimension dimension,
 		return ImageSampleAddressComponents(gather->flags, dimension);
 	}
 	if (atomic != nullptr) {
-		return 3u;
+		return ImageCoordComponents(dimension);
 	}
 
 	switch (opcode) {

@@ -11,7 +11,16 @@ uint32_t ConstantVec2I32(EmitterState& state, int32_t x, int32_t y) {
 	return value;
 }
 
-uint32_t ConstantImageGatherHorizontalOffsets(EmitterState& state) {
+uint32_t ConstantImageGatherHorizontalOffsets(EmitterState& state, ImageViewKind view) {
+	if (ImageViewSpatialComponents(view) == 1u) {
+		const auto type = state.builder.AllocateId();
+		state.builder.AddType({OpTypeArray, type, state.int_type, ConstantU32(state, 4)});
+		const auto value = state.builder.AllocateId();
+		state.builder.AddType({OpConstantComposite, type, value, ConstantI32(state, -1),
+		                       ConstantI32(state, 0), ConstantI32(state, 1),
+		                       ConstantI32(state, 2)});
+		return value;
+	}
 	const auto offset0 = ConstantVec2I32(state, -1, 0);
 	const auto offset1 = ConstantVec2I32(state, 0, 0);
 	const auto offset2 = ConstantVec2I32(state, 1, 0);
@@ -23,56 +32,16 @@ uint32_t ConstantImageGatherHorizontalOffsets(EmitterState& state) {
 	return value;
 }
 
-IR::DescriptorBindingKind StorageImageBindingKind(ImageViewKind view, bool uint_image) {
-	switch (view) {
-		case ImageViewKind::Dim2D:
-			return uint_image ? IR::DescriptorBindingKind::StorageUint2D
-			                  : IR::DescriptorBindingKind::Storage2D;
-		case ImageViewKind::Dim2DArray:
-			return uint_image ? IR::DescriptorBindingKind::StorageUint2DArray
-			                  : IR::DescriptorBindingKind::Storage2DArray;
-		case ImageViewKind::Dim3D:
-			return uint_image ? IR::DescriptorBindingKind::StorageUint3D
-			                  : IR::DescriptorBindingKind::Storage3D;
-		default:
-			return uint_image ? IR::DescriptorBindingKind::StorageUint2D
-			                  : IR::DescriptorBindingKind::Storage2D;
-	}
-}
-
 uint32_t LoadStorageImageDescriptorAtIndex(EmitterState& state, uint32_t resource,
                                            uint32_t array_index, bool uint_image,
                                            ImageViewKind view) {
-	uint32_t pointer_type =
-	    uint_image ? state.ptr_uniform_storage_image_uint : state.ptr_uniform_storage_image;
-	uint32_t variable =
-	    uint_image ? state.storage_image_uint_variable : state.storage_image_variable;
-	uint32_t   image_type = uint_image ? state.storage_image_uint_type : state.storage_image_type;
-	const auto kind       = StorageImageBindingKind(view, uint_image);
-	switch (view) {
-		case ImageViewKind::Dim2D: break;
-		case ImageViewKind::Dim2DArray:
-			pointer_type = uint_image ? state.ptr_uniform_storage_image_uint_2d_array
-			                          : state.ptr_uniform_storage_image_2d_array;
-			variable     = uint_image ? state.storage_image_uint_2d_array_variable
-			                          : state.storage_image_2d_array_variable;
-			image_type   = uint_image ? state.storage_image_uint_2d_array_type
-			                          : state.storage_image_2d_array_type;
-			break;
-		case ImageViewKind::Dim3D:
-			pointer_type = uint_image ? state.ptr_uniform_storage_image_uint_3d
-			                          : state.ptr_uniform_storage_image_3d;
-			variable =
-			    uint_image ? state.storage_image_uint_3d_variable : state.storage_image_3d_variable;
-			image_type =
-			    uint_image ? state.storage_image_uint_3d_type : state.storage_image_3d_type;
-			break;
-	}
+	const auto kind = StorageBindingKind(uint_image, view);
+	const auto& descriptors = state.storage_images[StorageImageIndex(uint_image, view)];
 	const auto pointer =
-	    DescriptorElementPointer(state, pointer_type, variable, array_index, kind, resource,
-	                             "storage image descriptor array was not emitted");
+	    DescriptorElementPointer(state, descriptors.pointer_type, descriptors.variable, array_index,
+	                             kind, resource, "storage image descriptor array was not emitted");
 	const auto image = state.builder.AllocateId();
-	state.builder.AddFunction({OpLoad, image_type, image, pointer});
+	state.builder.AddFunction({OpLoad, descriptors.image_type, image, pointer});
 	return image;
 }
 
@@ -80,24 +49,31 @@ uint32_t LoadStorageImageDescriptorAtIndex(EmitterState& state, uint32_t resourc
 
 uint32_t EmitImageGetResinfoComponent(EmitterState& state, uint32_t image, uint32_t size,
                                       uint32_t component_index, ImageViewKind view) {
+	const auto components = ImageViewCoordinateComponents(view);
 	switch (component_index) {
 		case 0: {
+			if (components == 1u) {
+				return size;
+			}
 			const auto width = state.builder.AllocateId();
 			state.builder.AddFunction({OpCompositeExtract, state.uint_type, width, size, 0});
 			return width;
 		}
 		case 1: {
+			if (components < 2u) {
+				return ConstantU32(state, 0);
+			}
 			const auto height = state.builder.AllocateId();
 			state.builder.AddFunction({OpCompositeExtract, state.uint_type, height, size, 1});
 			return height;
 		}
 		case 2:
-			if (ImageViewCoordinateComponents(view) == 3u) {
+			if (components == 3u) {
 				const auto depth = state.builder.AllocateId();
 				state.builder.AddFunction({OpCompositeExtract, state.uint_type, depth, size, 2});
 				return depth;
 			}
-			return ConstantU32(state, 1);
+			return ConstantU32(state, 0);
 		case 3: {
 			const auto levels = state.builder.AllocateId();
 			state.builder.AddFunction({OpImageQueryLevels, state.uint_type, levels, image});
@@ -182,7 +158,7 @@ void EmitImageLoad(EmitterState& state, const IR::Instruction& inst) {
 void EmitImageStore(EmitterState& state, const IR::Instruction& inst) {
 	const auto uint_image = inst.memory.kind == IR::ResourceKind::StorageImageUint;
 	const auto view       = StorageImageViewKind(state, inst.memory, uint_image, inst.pc);
-	const auto binding    = ResourceForDescriptor(state, StorageImageBindingKind(view, uint_image),
+	const auto binding    = ResourceForDescriptor(state, StorageBindingKind(uint_image, view),
 	                                              inst.memory.resource);
 	const auto image = LoadStorageImageDescriptorAtIndex(state, inst.memory.resource,
 	                                                     binding.array_index, uint_image, view);
@@ -244,8 +220,9 @@ void AddImageSampleOperands(EmitterState& state, const IR::Instruction& inst,
 	// sampling because it modifies the hardware-computed LOD.
 	if (HasImageSampleFlag(inst, Decoder::ImageSampleFlagDerivative)) {
 		mask |= ImageOperandsGradMask;
-		operands.push_back(EmitImageGradientF32(state, inst, layout.grad_x));
-		operands.push_back(EmitImageGradientF32(state, inst, layout.grad_y));
+		const auto view = SampledImageViewKind(state, inst.memory, inst.pc);
+		operands.push_back(EmitImageGradientF32(state, inst, layout.grad_x, view));
+		operands.push_back(EmitImageGradientF32(state, inst, layout.grad_y, view));
 	} else if (explicit_lod) {
 		mask |= ImageOperandsLodMask;
 		operands.push_back(EmitImageLodF32(state, inst, layout));
@@ -286,10 +263,7 @@ void EmitImageSample(EmitterState& state, const IR::Instruction& inst) {
 	}
 	const auto explicit_lod = ImageSampleNeedsExplicitLod(state, inst);
 	const auto opcode       = ImageSampleOpcode(state, inst);
-	const auto coord =
-	    EmitImageOffsetCoordF32(state, inst, layout, sampled_image, base_coord, view);
-
-	std::vector<uint32_t> words = {opcode, result_type, sample, sampled_image, coord};
+	std::vector<uint32_t> words = {opcode, result_type, sample, sampled_image, base_coord};
 	if (dref) {
 		words.push_back(EmitImageDrefF32(state, inst, layout));
 	}
@@ -308,15 +282,16 @@ uint32_t ImageGatherComponent(uint32_t dmask) {
 }
 
 void AddImageGatherOperands(EmitterState& state, const IR::Instruction& inst,
-                            const ImageSampleLayout& layout, std::vector<uint32_t>& words) {
+                            const ImageSampleLayout& layout, ImageViewKind view,
+                            std::vector<uint32_t>& words) {
 	if (HasImageSampleFlag(inst, Decoder::ImageSampleFlagGatherHorizontal)) {
 		words.push_back(ImageOperandsConstOffsetsMask);
-		words.push_back(ConstantImageGatherHorizontalOffsets(state));
+		words.push_back(ConstantImageGatherHorizontalOffsets(state, view));
 		return;
 	}
 	if (HasImageSampleFlag(inst, Decoder::ImageSampleFlagOffset)) {
 		words.push_back(ImageOperandsOffsetMask);
-		words.push_back(EmitImagePackedOffset2I32(state, inst, layout));
+		words.push_back(EmitImagePackedOffsetI32(state, inst, layout, view));
 	}
 }
 
@@ -341,7 +316,7 @@ void EmitImageGather4(EmitterState& state, const IR::Instruction& inst) {
 	               OpImageGather, result_type,
 	               texels,        sampled_image,
 	               coord,         ConstantU32(state, ImageGatherComponent(inst.memory.dmask))};
-	AddImageGatherOperands(state, inst, layout, words);
+	AddImageGatherOperands(state, inst, layout, view, words);
 	state.builder.AddFunction(words);
 
 	for (uint32_t i = 0; i < inst.memory.data_dwords; i++) {

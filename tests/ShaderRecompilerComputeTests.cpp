@@ -218,6 +218,13 @@ struct TextureCacheTestAccess {
 };
 
 struct RenderExecutorTestAccess {
+  static DescriptorCache::TextureBinding
+  ResolveTexture(RenderExecutor &executor,
+                 const ShaderRecompiler::IR::ImageResource &resource,
+                 const ShaderRecompiler::IR::DescriptorValue &value) {
+    return executor.ResolveTexture(resource, value);
+  }
+
   static auto PrepareGraphicsBindings(RenderExecutor &executor,
                                       CommandBuffer &buffer,
                                       const ShaderStageRuntime &vertex,
@@ -706,6 +713,11 @@ struct TestCase {
   std::vector<std::vector<u32>> sampled_image_rgba_mips;
   vk::Format sampled_image_format = vk::Format::eR32G32B32A32Sfloat;
   u32 sampled_image_dwords_per_pixel = 4;
+  vk::ImageType sampled_image_type = vk::ImageType::e2D;
+  vk::ImageViewType sampled_image_view_type = vk::ImageViewType::e2D;
+  u32 sampled_image_layers = 1;
+  u32 sampled_image_view_base_layer = 0;
+  u32 sampled_image_view_layers = 0;
   std::vector<u32> storage_image_rgba;
   std::vector<u32> expected_storage_image_rgba;
   vk::Format storage_image_format = vk::Format::eR32G32B32A32Sfloat;
@@ -1111,6 +1123,7 @@ public:
     vk::ImageLayout layout = vk::ImageLayout::eUndefined;
     u32 width = 0;
     u32 height = 0;
+    u32 layers = 1;
     u32 mip_levels = 1;
     u32 dwords_per_pixel = 0;
   };
@@ -1836,6 +1849,50 @@ public:
                 !ImageViewOps::FormatsCompatible(vk::Format::eD32Sfloat,
                                                  vk::Format::eR32Sfloat),
             "role-free image backing or host format compatibility diverged");
+
+    auto line_info = color_info;
+    line_info.type = Prospero::ImageType::kColor1D;
+    line_info.extent = {8, 1, 1};
+    line_info.resources = {2, 2};
+    line_info.mip_layout[0] = {0, 64, 8, 1};
+    line_info.mip_layout[1] = {64, 16, 4, 1};
+    Libs::Graphics::Image line(m_runtime_context, scheduler, line_info);
+    auto line_view_info = sampled;
+    line_view_info.type = vk::ImageViewType::e1D;
+    const auto line_view = line.FindView(line_view_info);
+    auto line_array_info = line_view_info;
+    line_array_info.type = vk::ImageViewType::e1DArray;
+    line_array_info.layer_count = 2;
+    const auto line_array = line.FindView(line_array_info);
+    Require(name, "1D views",
+            line_view != nullptr && line_array != nullptr &&
+                line_array != line_view &&
+                line.backing.image_type == vk::ImageType::e1D &&
+                line.backing.layers == 2,
+            "1D and 1D-array views did not use a first-class 1D backing");
+
+    auto volume_info = color_info;
+    volume_info.type = Prospero::ImageType::kColor3D;
+    volume_info.extent = {8, 8, 4};
+    volume_info.resources = {2, 1};
+    Libs::Graphics::Image volume(m_runtime_context, scheduler, volume_info);
+    auto slice_info = sampled;
+    slice_info.type = vk::ImageViewType::e2D;
+    slice_info.base_level = 1;
+    slice_info.base_layer = 1;
+    const auto slice = volume.FindView(slice_info);
+    auto slice_array_info = slice_info;
+    slice_array_info.type = vk::ImageViewType::e2DArray;
+    slice_array_info.base_layer = 0;
+    slice_array_info.layer_count = 2;
+    const auto slice_array = volume.FindView(slice_array_info);
+    Require(name, "3D slice views",
+            slice != nullptr && slice_array != nullptr &&
+                slice_array != slice &&
+                static_cast<bool>(
+                    volume.backing.flags &
+                    vk::ImageCreateFlagBits::e2DArrayCompatible),
+            "2D slice views of a compatible 3D backing were rejected");
     std::printf("[host]    %-32s ok\n", name);
   }
 
@@ -2506,10 +2563,13 @@ public:
             Prospero::GpuEnumValue(Prospero::TileMode::kLinear);
         desc.info.mip_layout[0] = {0, size, extent.width, extent.height};
         desc.view_info.format = format;
-        desc.view_info.type = type == Prospero::ImageType::kColor3D
-                                  ? vk::ImageViewType::e3D
-                              : layers > 1 ? vk::ImageViewType::e2DArray
-                                           : vk::ImageViewType::e2D;
+        if (type == Prospero::ImageType::kColor3D) {
+          desc.view_info.type = vk::ImageViewType::e3D;
+        } else if (layers > 1) {
+          desc.view_info.type = vk::ImageViewType::e2DArray;
+        } else {
+          desc.view_info.type = vk::ImageViewType::e2D;
+        }
         desc.view_info.aspect = vk::ImageAspectFlagBits::eColor;
         desc.view_info.layer_count = layers;
         desc.view_info.usage = vk::ImageUsageFlagBits::eSampled;
@@ -4939,6 +4999,11 @@ public:
       ShaderRecompiler::IR::DescriptorValue null_descriptor{};
       null_descriptor.dword_count = 8;
       null_snapshot.images.assign(3, null_descriptor);
+      std::string null_error;
+      Require(name, "null specialization",
+              ShaderRecompiler::IR::SpecializeResources(
+                  null_program, null_snapshot, &null_error),
+              null_error.c_str());
       ShaderStageRuntime null_runtime{
           std::make_shared<const ShaderRecompiler::IR::Program>(
               std::move(null_program)),
@@ -5038,6 +5103,84 @@ public:
       std::copy(std::begin(storage.fields), std::end(storage.fields),
                 storage_descriptor.dwords.begin());
       storage_descriptor.dword_count = 8;
+      auto srgb_storage = storage;
+      constexpr auto srgb_format =
+          Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8Srgb);
+      constexpr uint64_t srgb_storage_address = base + 0xc0000;
+      const auto encoded_srgb_storage_address = srgb_storage_address >> 8u;
+      srgb_storage.fields[0] =
+          static_cast<uint32_t>(encoded_srgb_storage_address);
+      srgb_storage.fields[1] =
+          static_cast<uint32_t>(encoded_srgb_storage_address >> 32u) |
+          (srgb_format << 20u);
+      ShaderRecompiler::IR::DescriptorValue srgb_storage_descriptor{};
+      std::copy(std::begin(srgb_storage.fields), std::end(srgb_storage.fields),
+                srgb_storage_descriptor.dwords.begin());
+      srgb_storage_descriptor.dword_count = 8;
+      auto srgb_storage_resource = storage_resource;
+      srgb_storage_resource.kind =
+          ShaderRecompiler::IR::ResourceKind::StorageImage;
+      const auto srgb_storage_binding =
+          RenderExecutorTestAccess::ResolveTexture(
+              executor, srgb_storage_resource, srgb_storage_descriptor);
+      const auto srgb_storage_view =
+          texture_cache.FindTexture(srgb_storage_binding.image_id,
+                                    srgb_storage_binding.desc);
+      Require(name, "sRGB storage view",
+              srgb_storage_view != nullptr &&
+                  srgb_storage_binding.desc.info.pixel_format ==
+                      vk::Format::eR8G8B8A8Srgb &&
+                  srgb_storage_binding.desc.view_info.format ==
+                      vk::Format::eR8G8B8A8Unorm &&
+                  texture_cache.GetImage(srgb_storage_binding.image_id)
+                          .backing.format ==
+                      vk::Format::eR8G8B8A8Srgb,
+              "storage descriptor did not preserve its sRGB backing and "
+              "select an UNORM Vulkan view");
+
+      auto narrowed_storage = storage;
+      constexpr uint64_t narrowed_storage_address = base + 0xd0000;
+      const auto encoded_narrowed_address = narrowed_storage_address >> 8u;
+      narrowed_storage.fields[0] =
+          static_cast<uint32_t>(encoded_narrowed_address);
+      narrowed_storage.fields[1] =
+          static_cast<uint32_t>(encoded_narrowed_address >> 32u) |
+          (stencil_format << 20u);
+      narrowed_storage.fields[3] =
+          DstSel(4, 5, 6, 7) | (linear << 20u) |
+          (Prospero::GpuEnumValue(Prospero::ImageType::kColor1DArray) << 28u);
+      narrowed_storage.fields[4] = 1u | (1u << 16u);
+      ShaderRecompiler::IR::DescriptorValue narrowed_storage_descriptor{};
+      std::copy(std::begin(narrowed_storage.fields),
+                std::end(narrowed_storage.fields),
+                narrowed_storage_descriptor.dwords.begin());
+      narrowed_storage_descriptor.dword_count = 8;
+      auto narrowed_storage_resource = storage_resource;
+      narrowed_storage_resource.dimension =
+          ShaderRecompiler::Decoder::ImageDimension::Dim1D;
+      const auto narrowed_storage_binding =
+          RenderExecutorTestAccess::ResolveTexture(
+              executor, narrowed_storage_resource,
+              narrowed_storage_descriptor);
+      const auto narrowed_storage_view =
+          texture_cache.FindTexture(narrowed_storage_binding.image_id,
+                                    narrowed_storage_binding.desc);
+      const auto &narrowed_storage_image =
+          texture_cache.GetImage(narrowed_storage_binding.image_id);
+      Require(name, "narrowed 1D array storage view",
+              narrowed_storage_view != nullptr &&
+                  narrowed_storage_binding.desc.info.type ==
+                      Prospero::ImageType::kColor1D &&
+                  narrowed_storage_binding.desc.info.resources.layers == 2 &&
+                  narrowed_storage_binding.desc.view_info.type ==
+                      vk::ImageViewType::e1D &&
+                  narrowed_storage_binding.desc.view_info.base_layer == 1 &&
+                  narrowed_storage_binding.desc.view_info.layer_count == 1 &&
+                  narrowed_storage_image.backing.image_type ==
+                      vk::ImageType::e1D,
+              "non-array 1D specialization did not select the descriptor "
+              "base layer from its 1D-array backing");
+
       ShaderRecompiler::IR::ResourceSnapshot storage_snapshot{};
       storage_snapshot.images.push_back(storage_descriptor);
       ShaderStageRuntime storage_runtime{
@@ -6048,8 +6191,9 @@ public:
     if (!initial.empty()) {
       mips.push_back(initial);
     }
-    return CreateImage2DMips(shader_name, width, height, format, usage, mips,
-                             dwords_per_pixel, final_layout);
+    return CreateImageMips(shader_name, width, height, format, usage, mips,
+                           dwords_per_pixel, final_layout,
+                           vk::ImageType::e2D, vk::ImageViewType::e2D, 1);
   }
 
   static u32 MipExtent(u32 value, u32 level) {
@@ -6060,31 +6204,36 @@ public:
   }
 
   static size_t ImageMipDwordCount(u32 width, u32 height, u32 dwords_per_pixel,
-                                   u32 level) {
+                                   u32 level, u32 layers = 1) {
     return static_cast<size_t>(MipExtent(width, level)) *
-           static_cast<size_t>(MipExtent(height, level)) * dwords_per_pixel;
+           static_cast<size_t>(MipExtent(height, level)) * layers *
+           dwords_per_pixel;
   }
 
-  Image CreateImage2DMips(const char *shader_name, u32 width, u32 height,
-                          vk::Format format, vk::ImageUsageFlags usage,
-                          const std::vector<std::vector<u32>> &initial_mips,
-                          u32 dwords_per_pixel, vk::ImageLayout final_layout) {
+  Image CreateImageMips(const char *shader_name, u32 width, u32 height,
+                        vk::Format format, vk::ImageUsageFlags usage,
+                        const std::vector<std::vector<u32>> &initial_mips,
+                        u32 dwords_per_pixel, vk::ImageLayout final_layout,
+                        vk::ImageType image_type, vk::ImageViewType view_type,
+                        u32 layers, u32 view_base_layer = 0,
+                        u32 view_layers = 0) {
     Image ret;
     ret.format = format;
     ret.width = width;
     ret.height = height;
+    ret.layers = layers;
     ret.mip_levels = std::max<u32>(static_cast<u32>(initial_mips.size()), 1u);
     ret.dwords_per_pixel = dwords_per_pixel;
 
     vk::ImageCreateInfo image_info{};
     image_info.sType = vk::StructureType::eImageCreateInfo;
-    image_info.imageType = vk::ImageType::e2D;
+    image_info.imageType = image_type;
     image_info.format = format;
     image_info.extent.width = width;
     image_info.extent.height = height;
     image_info.extent.depth = 1;
     image_info.mipLevels = ret.mip_levels;
-    image_info.arrayLayers = 1;
+    image_info.arrayLayers = layers;
     image_info.samples = vk::SampleCountFlagBits::e1;
     image_info.tiling = vk::ImageTiling::eOptimal;
     image_info.usage = usage | vk::ImageUsageFlagBits::eTransferDst |
@@ -6120,13 +6269,20 @@ public:
     vk::ImageViewCreateInfo view_info{};
     view_info.sType = vk::StructureType::eImageViewCreateInfo;
     view_info.image = ret.image;
-    view_info.viewType = vk::ImageViewType::e2D;
+    view_info.viewType = view_type;
     view_info.format = format;
     view_info.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
     view_info.subresourceRange.baseMipLevel = 0;
     view_info.subresourceRange.levelCount = ret.mip_levels;
-    view_info.subresourceRange.baseArrayLayer = 0;
-    view_info.subresourceRange.layerCount = 1;
+    Require(shader_name, "dispatch", view_base_layer < layers,
+            "image view base layer is out of bounds");
+    if (view_layers == 0) {
+      view_layers = layers - view_base_layer;
+    }
+    Require(shader_name, "dispatch", view_layers <= layers - view_base_layer,
+            "image view layer count is out of bounds");
+    view_info.subresourceRange.baseArrayLayer = view_base_layer;
+    view_info.subresourceRange.layerCount = view_layers;
     RequireVk(shader_name, "dispatch",
               m_device.createImageView(&view_info, nullptr, &ret.view),
               "vkCreateImageView");
@@ -6135,13 +6291,13 @@ public:
       size_t total_dwords = 0;
       for (u32 level = 0; level < ret.mip_levels; level++) {
         total_dwords +=
-            ImageMipDwordCount(width, height, dwords_per_pixel, level);
+            ImageMipDwordCount(width, height, dwords_per_pixel, level, layers);
       }
       std::vector<u32> contents(total_dwords, 0);
       size_t offset = 0;
       for (u32 level = 0; level < ret.mip_levels; level++) {
         const auto level_dwords =
-            ImageMipDwordCount(width, height, dwords_per_pixel, level);
+            ImageMipDwordCount(width, height, dwords_per_pixel, level, layers);
         const auto &src = initial_mips[level];
         for (size_t i = 0; i < src.size() && i < level_dwords; i++) {
           contents[offset + i] = src[i];
@@ -6183,6 +6339,7 @@ public:
   std::vector<u32> ReadImage(const char *shader_name, Image *image) {
     const auto dword_count = static_cast<size_t>(image->width) *
                              static_cast<size_t>(image->height) *
+                             image->layers *
                              image->dwords_per_pixel;
     auto staging = CreateHostBuffer(shader_name, dword_count * sizeof(u32),
                                     vk::BufferUsageFlagBits::eTransferDst, {});
@@ -6193,13 +6350,13 @@ public:
         vk::PipelineStageFlagBits::eAllCommands,
         vk::PipelineStageFlagBits::eTransfer,
         vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-        vk::AccessFlagBits::eTransferRead);
+        vk::AccessFlagBits::eTransferRead, image->mip_levels, image->layers);
     vk::BufferImageCopy copy{};
     copy.bufferOffset = 0;
     copy.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
     copy.imageSubresource.mipLevel = 0;
     copy.imageSubresource.baseArrayLayer = 0;
-    copy.imageSubresource.layerCount = 1;
+    copy.imageSubresource.layerCount = image->layers;
     copy.imageExtent.width = image->width;
     copy.imageExtent.height = image->height;
     copy.imageExtent.depth = 1;
@@ -6267,19 +6424,28 @@ public:
     };
     auto Count = [&](Kind kind) {
       const auto *binding = Binding(kind);
-      return binding == nullptr  ? 0u
-             : kind == Kind::Gds ? 1u
-                                 : static_cast<u32>(binding->resources.size());
+      if (binding == nullptr) {
+        return 0u;
+      }
+      if (kind == Kind::Gds) {
+        return 1u;
+      }
+      return static_cast<u32>(binding->resources.size());
     };
     Require(test.name, "dispatch",
-            Count(Kind::Sampled2DArray) == 0 && Count(Kind::Sampled3D) == 0 &&
+            Count(Kind::Sampled2DArray) == 0 &&
+                Count(Kind::Sampled3D) == 0 &&
                 Count(Kind::SampledUint2DArray) == 0 &&
                 Count(Kind::SampledUint3D) == 0 &&
+                Count(Kind::Storage1D) == 0 &&
+                Count(Kind::Storage1DArray) == 0 &&
                 Count(Kind::Storage2DArray) == 0 &&
                 Count(Kind::Storage3D) == 0 &&
+                Count(Kind::StorageUint1D) == 0 &&
+                Count(Kind::StorageUint1DArray) == 0 &&
                 Count(Kind::StorageUint2DArray) == 0 &&
                 Count(Kind::StorageUint3D) == 0,
-            "array/3D image cases must provide matching Vulkan test views "
+            "unsupported array/3D image cases must provide matching Vulkan test views "
             "before dispatch");
 
     vk::ShaderModuleCreateInfo module_info{};
@@ -6308,17 +6474,25 @@ public:
       vk::DescriptorType type = vk::DescriptorType::eStorageBuffer;
       u32 count = static_cast<u32>(binding.resources.size());
       switch (binding.kind) {
+      case Kind::Sampled1D:
+      case Kind::Sampled1DArray:
       case Kind::Sampled2D:
       case Kind::Sampled2DArray:
       case Kind::Sampled3D:
+      case Kind::SampledUint1D:
+      case Kind::SampledUint1DArray:
       case Kind::SampledUint2D:
       case Kind::SampledUint2DArray:
       case Kind::SampledUint3D:
         type = vk::DescriptorType::eSampledImage;
         break;
+      case Kind::Storage1D:
+      case Kind::Storage1DArray:
       case Kind::Storage2D:
       case Kind::Storage2DArray:
       case Kind::Storage3D:
+      case Kind::StorageUint1D:
+      case Kind::StorageUint1DArray:
       case Kind::StorageUint2D:
       case Kind::StorageUint2DArray:
       case Kind::StorageUint3D:
@@ -6402,13 +6576,19 @@ public:
                       (Binding(Kind::FlattenedSrt) != nullptr ? 1u : 0u) +
                       (Binding(Kind::UserData) != nullptr ? 1u : 0u));
     add_pool_size(vk::DescriptorType::eSampledImage,
-                  Count(Kind::Sampled2D) + Count(Kind::Sampled2DArray) +
-                      Count(Kind::Sampled3D) + Count(Kind::SampledUint2D) +
+                  Count(Kind::Sampled1D) + Count(Kind::Sampled1DArray) +
+                      Count(Kind::Sampled2D) + Count(Kind::Sampled2DArray) +
+                      Count(Kind::Sampled3D) + Count(Kind::SampledUint1D) +
+                      Count(Kind::SampledUint1DArray) +
+                      Count(Kind::SampledUint2D) +
                       Count(Kind::SampledUint2DArray) +
                       Count(Kind::SampledUint3D));
     add_pool_size(vk::DescriptorType::eStorageImage,
-                  Count(Kind::Storage2D) + Count(Kind::Storage2DArray) +
-                      Count(Kind::Storage3D) + Count(Kind::StorageUint2D) +
+                  Count(Kind::Storage1D) + Count(Kind::Storage1DArray) +
+                      Count(Kind::Storage2D) + Count(Kind::Storage2DArray) +
+                      Count(Kind::Storage3D) + Count(Kind::StorageUint1D) +
+                      Count(Kind::StorageUint1DArray) +
+                      Count(Kind::StorageUint2D) +
                       Count(Kind::StorageUint2DArray) +
                       Count(Kind::StorageUint3D));
     add_pool_size(vk::DescriptorType::eSampler, Count(Kind::Samplers));
@@ -6529,13 +6709,18 @@ public:
       write.pBufferInfo = &gds_info;
       writes.push_back(write);
     }
-    const auto *sampled = Binding(Kind::Sampled2D);
-    const auto *sampled_uint = Binding(Kind::SampledUint2D);
-    Require(test.name, "dispatch",
-            sampled == nullptr || sampled_uint == nullptr,
-            "Vulkan test harness needs separate float and uint sampled images");
-    if (sampled == nullptr) {
-      sampled = sampled_uint;
+    const ShaderRecompiler::IR::DescriptorBinding *sampled = nullptr;
+    constexpr std::array sampled_kinds {
+        Kind::Sampled1D, Kind::Sampled1DArray, Kind::Sampled2D,
+        Kind::SampledUint1D, Kind::SampledUint1DArray, Kind::SampledUint2D,
+    };
+    for (const auto kind : sampled_kinds) {
+      if (const auto *candidate = Binding(kind); candidate != nullptr) {
+        Require(test.name, "dispatch", sampled == nullptr,
+                "Vulkan test harness needs separate sampled images for mixed "
+                "descriptor classes");
+        sampled = candidate;
+      }
     }
     if (sampled != nullptr) {
       Require(test.name, "dispatch", sampled_image != nullptr,
@@ -8138,7 +8323,7 @@ private:
                        vk::PipelineStageFlags src_stage,
                        vk::PipelineStageFlags dst_stage,
                        vk::AccessFlags src_access, vk::AccessFlags dst_access,
-                       u32 mip_levels = 1) {
+                       u32 mip_levels = 1, u32 layers = 1) {
     vk::ImageMemoryBarrier barrier{};
     barrier.sType = vk::StructureType::eImageMemoryBarrier;
     barrier.srcAccessMask = src_access;
@@ -8152,7 +8337,7 @@ private:
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = mip_levels;
     barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange.layerCount = layers;
     cmd.pipelineBarrier(src_stage, dst_stage, {}, 0, nullptr, 0, nullptr, 1,
                         &barrier);
   }
@@ -8164,7 +8349,8 @@ private:
                        vk::AccessFlags src_access, vk::AccessFlags dst_access) {
     vk::CommandBuffer cmd = BeginCommands(shader_name, "dispatch");
     AddImageBarrier(cmd, image->image, image->layout, new_layout, src_stage,
-                    dst_stage, src_access, dst_access, image->mip_levels);
+                    dst_stage, src_access, dst_access, image->mip_levels,
+                    image->layers);
     EndSubmitAndFree(shader_name, "dispatch", cmd);
     image->layout = new_layout;
   }
@@ -8181,7 +8367,8 @@ private:
                     vk::ImageLayout::eTransferDstOptimal,
                     vk::PipelineStageFlagBits::eTopOfPipe,
                     vk::PipelineStageFlagBits::eTransfer, {},
-                    vk::AccessFlagBits::eTransferWrite, image->mip_levels);
+                    vk::AccessFlagBits::eTransferWrite, image->mip_levels,
+                    image->layers);
     std::vector<vk::BufferImageCopy> copies;
     copies.reserve(image->mip_levels);
     vk::DeviceSize offset = 0;
@@ -8191,14 +8378,14 @@ private:
       copy.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
       copy.imageSubresource.mipLevel = level;
       copy.imageSubresource.baseArrayLayer = 0;
-      copy.imageSubresource.layerCount = 1;
+      copy.imageSubresource.layerCount = image->layers;
       copy.imageExtent.width = MipExtent(image->width, level);
       copy.imageExtent.height = MipExtent(image->height, level);
       copy.imageExtent.depth = 1;
       copies.push_back(copy);
       offset += static_cast<vk::DeviceSize>(
           ImageMipDwordCount(image->width, image->height,
-                             image->dwords_per_pixel, level) *
+                             image->dwords_per_pixel, level, image->layers) *
           sizeof(u32));
     }
     cmd.copyBufferToImage(staging, image->image,
@@ -8208,7 +8395,8 @@ private:
                     final_layout, vk::PipelineStageFlagBits::eTransfer,
                     vk::PipelineStageFlagBits::eComputeShader,
                     vk::AccessFlagBits::eTransferWrite,
-                    AccessForLayout(final_layout), image->mip_levels);
+                    AccessForLayout(final_layout), image->mip_levels,
+                    image->layers);
     EndSubmitAndFree(shader_name, "dispatch", cmd);
     image->layout = final_layout;
   }
@@ -8356,12 +8544,16 @@ void RunCase(VulkanHarness *vulkan, const TestCase &test) {
   VulkanHarness::Buffer gds_buffer;
   vk::Sampler sampler = nullptr;
   const bool needs_sampled_image =
+      Has(Kind::Sampled1D) || Has(Kind::Sampled1DArray) ||
       Has(Kind::Sampled2D) || Has(Kind::Sampled2DArray) ||
       Has(Kind::Sampled3D) || Has(Kind::SampledUint2D) ||
+      Has(Kind::SampledUint1D) || Has(Kind::SampledUint1DArray) ||
       Has(Kind::SampledUint2DArray) || Has(Kind::SampledUint3D);
   const bool needs_storage_image =
+      Has(Kind::Storage1D) || Has(Kind::Storage1DArray) ||
       Has(Kind::Storage2D) || Has(Kind::Storage2DArray) ||
       Has(Kind::Storage3D) || Has(Kind::StorageUint2D) ||
+      Has(Kind::StorageUint1D) || Has(Kind::StorageUint1DArray) ||
       Has(Kind::StorageUint2DArray) || Has(Kind::StorageUint3D);
   const bool needs_sampler = Has(Kind::Samplers);
   const bool needs_gds = Has(Kind::Gds);
@@ -8372,19 +8564,22 @@ void RunCase(VulkanHarness *vulkan, const TestCase &test) {
         vulkan->CreateStorageBuffer(test.name, test.gds_initial, gds_dwords);
   }
   if (needs_sampled_image) {
+    auto sampled_mips = test.sampled_image_rgba_mips;
+    auto sampled_format = test.sampled_image_format;
+    auto sampled_dwords_per_pixel = test.sampled_image_dwords_per_pixel;
     if (!test.sampled_image_rgba_mips.empty()) {
-      sampled_image = vulkan->CreateImage2DMips(
-          test.name, test.image_width, test.image_height,
-          vk::Format::eR32G32B32A32Sfloat, vk::ImageUsageFlagBits::eSampled,
-          test.sampled_image_rgba_mips, 4,
-          vk::ImageLayout::eShaderReadOnlyOptimal);
-    } else {
-      sampled_image = vulkan->CreateImage2D(
-          test.name, test.image_width, test.image_height,
-          test.sampled_image_format, vk::ImageUsageFlagBits::eSampled,
-          test.sampled_image_rgba, test.sampled_image_dwords_per_pixel,
-          vk::ImageLayout::eShaderReadOnlyOptimal);
+      sampled_format = vk::Format::eR32G32B32A32Sfloat;
+      sampled_dwords_per_pixel = 4;
+    } else if (!test.sampled_image_rgba.empty()) {
+      sampled_mips.push_back(test.sampled_image_rgba);
     }
+    sampled_image = vulkan->CreateImageMips(
+        test.name, test.image_width, test.image_height, sampled_format,
+        vk::ImageUsageFlagBits::eSampled, sampled_mips,
+        sampled_dwords_per_pixel, vk::ImageLayout::eShaderReadOnlyOptimal,
+        test.sampled_image_type, test.sampled_image_view_type,
+        test.sampled_image_layers, test.sampled_image_view_base_layer,
+        test.sampled_image_view_layers);
   }
   if (needs_storage_image) {
     storage_image = vulkan->CreateImage2D(
@@ -13465,6 +13660,105 @@ TestCase ImageLoadR32UintUsesIntegerSampledImage() {
   return test;
 }
 
+TestCase ImageLoad1DUsesScalarCoordinate() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 20, 2);
+  code.push_back(EncodeMimg0(0x00, 0x1, 0, false, 0));
+  code.push_back(EncodeMimg1(0, 20));
+  AppendStoreVgpr(&code, 0, 0);
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "ImageLoad1DUsesScalarCoordinate";
+  test.code = code;
+  test.expected = {0xdeadbeefu};
+  test.opcodes = {O::VMovB32, O::ImageLoad, O::BufferStoreDword, O::SEndpgm};
+  test.image_width = 4;
+  test.image_height = 1;
+  test.sampled_image_rgba = {0, 0, 0xdeadbeefu, 0};
+  test.sampled_image_format = vk::Format::eR32Uint;
+  test.sampled_image_dwords_per_pixel = 1;
+  test.sampled_image_type = vk::ImageType::e1D;
+  test.sampled_image_view_type = vk::ImageViewType::e1D;
+  test.user_data = MakeSampledTextureData(Prospero::BufferFormat::k32UInt);
+  test.user_data[3] =
+      Prospero::GpuEnumValue(Prospero::ImageType::kColor1D) << 28u;
+  test.has_user_data = true;
+  test.required_spirv = {"sampled_uint_1d"};
+  return test;
+}
+
+TestCase ImageLoad1DArrayUsesLayerCoordinate() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 20, 2);
+  AppendVMovU32(&code, 21, 1);
+  code.push_back(EncodeMimg0(0x00, 0x1, 0, false, 4));
+  code.push_back(EncodeMimg1(0, 20));
+  AppendStoreVgpr(&code, 0, 0);
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "ImageLoad1DArrayUsesLayerCoordinate";
+  test.code = code;
+  test.expected = {0xcafebabeu};
+  test.opcodes = {O::VMovB32, O::ImageLoad, O::BufferStoreDword, O::SEndpgm};
+  test.image_width = 4;
+  test.image_height = 1;
+  test.sampled_image_rgba = {0, 0, 0, 0, 0, 0, 0xcafebabeu, 0};
+  test.sampled_image_format = vk::Format::eR32Uint;
+  test.sampled_image_dwords_per_pixel = 1;
+  test.sampled_image_type = vk::ImageType::e1D;
+  test.sampled_image_view_type = vk::ImageViewType::e1DArray;
+  test.sampled_image_layers = 2;
+  test.user_data = MakeSampledTextureData(Prospero::BufferFormat::k32UInt);
+  test.user_data[3] =
+      Prospero::GpuEnumValue(Prospero::ImageType::kColor1DArray) << 28u;
+  test.has_user_data = true;
+  test.required_spirv = {"sampled_uint_1d_array"};
+  return test;
+}
+
+TestCase ImageLoad1DArrayDescriptorUsesSelectedLayer() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  AppendVMovU32(&code, 20, 2);
+  code.push_back(EncodeMimg0(0x00, 0x1, 0, false, 0));
+  code.push_back(EncodeMimg1(0, 20));
+  AppendStoreVgpr(&code, 0, 0);
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "ImageLoad1DArrayDescriptorUsesSelectedLayer";
+  test.code = code;
+  test.expected = {0xcafebabeu};
+  test.opcodes = {O::VMovB32, O::ImageLoad, O::BufferStoreDword, O::SEndpgm};
+  test.image_width = 4;
+  test.image_height = 1;
+  test.sampled_image_rgba = {
+      0, 0, 0xdeadbeefu, 0,
+      0, 0, 0xcafebabeu, 0,
+  };
+  test.sampled_image_format = vk::Format::eR32Uint;
+  test.sampled_image_dwords_per_pixel = 1;
+  test.sampled_image_type = vk::ImageType::e1D;
+  test.sampled_image_view_type = vk::ImageViewType::e1D;
+  test.sampled_image_layers = 2;
+  test.sampled_image_view_base_layer = 1;
+  test.sampled_image_view_layers = 1;
+  test.user_data = MakeSampledTextureData(Prospero::BufferFormat::k32UInt);
+  test.user_data[3] =
+      Prospero::GpuEnumValue(Prospero::ImageType::kColor1DArray) << 28u;
+  test.user_data[4] = 1u | (1u << 16u);
+  test.has_user_data = true;
+  test.required_spirv = {"sampled_uint_1d"};
+  return test;
+}
+
 TestCase ImageLoadMipUsesVaddr2Lod2D() {
   using O = ShaderOpcode;
 
@@ -13707,7 +14001,7 @@ TestCase ImageSampleA16OffsetKeepsTexelOffset32BitOnGpu() {
   using O = ShaderOpcode;
 
   std::vector<u32> code;
-  AppendVMovU32(&code, 20, 0); // Texel offset stays one packed 32-bit VGPR.
+  AppendVMovU32(&code, 20, 1); // Non-constant +1 X offset is not a SPIR-V ConstOffset.
   AppendVMovLiteral(&code, 21, 0x36003900u); // x=0.625, y=0.375 packed as f16.
   AppendVMovU32(&code, 22, 0);
   code.push_back(EncodeMimg0(0x30, 0xf));
@@ -13727,7 +14021,8 @@ TestCase ImageSampleA16OffsetKeepsTexelOffset32BitOnGpu() {
   test.expected = {0x3f800000u, 0x40000000u, 0x40400000u, 0x40800000u};
   test.opcodes = {O::VMovB32, O::ImageSample, O::BufferStoreDword, O::SEndpgm};
   test.sampled_image_rgba = image;
-  test.required_spirv = {"UnpackHalf2x16", "OpBitFieldSExtract"};
+  test.required_spirv = {"UnpackHalf2x16"};
+  test.forbidden_spirv = {"OpBitFieldSExtract"};
   return test;
 }
 
@@ -13989,7 +14284,7 @@ TestCase ImageStoreR32UintUsesUintStorageImage() {
   test.storage_image_rgba = MakeRgbaImage(4, 4);
   test.storage_image_r32ui = std::vector<u32>(16, 0);
   test.expected_storage_image_r32ui = expected_image;
-  test.required_spirv = {"R32ui", "textures2D_L_U"};
+  test.required_spirv = {"R32ui", "storage_uint_2d"};
   return test;
 }
 
@@ -14524,6 +14819,9 @@ std::vector<TestCase> MakeCases() {
   AddCase(BufferAtomicGlc0DoesNotReturnOldValue);
   AddCase(ImageLoadVariants);
   AddCase(ImageLoadR32UintUsesIntegerSampledImage);
+  AddCase(ImageLoad1DUsesScalarCoordinate);
+  AddCase(ImageLoad1DArrayUsesLayerCoordinate);
+  AddCase(ImageLoad1DArrayDescriptorUsesSelectedLayer);
   AddCase(ImageLoadMipUsesVaddr2Lod2D);
   AddCase(ImageLoadMipNsaUsesSelectedAddressVgprs);
   AddCase(ImageLoadA16UintCoordsOnGpu);
@@ -14850,6 +15148,44 @@ void CheckReverseRenderTargetFormatContract() {
   } else if (std::strcmp(kind, "sampled-depth-swizzle") == 0) {
     (void)SelectSampledDepthView(vk::Format::eD32SfloatS8Uint,
                                  vk::Format::eR32Sfloat, DstSel(4, 5, 6, 7));
+  } else if (std::strcmp(kind, "storage-incompatible-format") == 0) {
+    ValidateStorageColorView(vk::Format::eR8G8B8A8Srgb,
+                             vk::Format::eR16G16B16A16Unorm,
+                             DstSel(4, 5, 6, 7));
+  } else if (std::strcmp(kind, "volume-mip-count") == 0 ||
+             std::strcmp(kind, "volume-slice-range") == 0) {
+    VulkanHarness vulkan;
+    auto &graphics = vulkan.RuntimeContext();
+    CommandScheduler scheduler(vulkan.RuntimeRenderer(), graphics);
+    ImageInfo volume_info{};
+    volume_info.pixel_format = vk::Format::eR8G8B8A8Unorm;
+    volume_info.guest_format =
+        Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UNorm);
+    volume_info.type = Prospero::ImageType::kColor3D;
+    volume_info.extent = {8, 8, 4};
+    volume_info.resources = {2, 1};
+    volume_info.pitch = 8;
+    volume_info.bytes_per_block = 4;
+    volume_info.samples = 1;
+    volume_info.tile_mode =
+        Prospero::GpuEnumValue(Prospero::TileMode::kLinear);
+    Libs::Graphics::Image volume(graphics, scheduler, volume_info);
+    ImageViewInfo view{};
+    view.format = volume_info.pixel_format;
+    view.type = vk::ImageViewType::e2DArray;
+    view.aspect = vk::ImageAspectFlagBits::eColor;
+    view.base_level = 1;
+    view.level_count = 1;
+    view.layer_count = 1;
+    view.usage = vk::ImageUsageFlagBits::eSampled;
+    if (std::strcmp(kind, "volume-mip-count") == 0) {
+      view.base_level = 0;
+      view.level_count = 2;
+    } else {
+      view.base_layer = 1;
+      view.layer_count = 2;
+    }
+    (void)volume.FindView(view);
   } else {
     ShaderRecompiler::IR::ImageResource resource{};
     resource.kind = ShaderRecompiler::IR::ResourceKind::StorageImage;
@@ -15083,8 +15419,9 @@ void CheckSampledColorViews() {
   for (const char *kind :
        {"sampled-invalid-selector", "sampled-incompatible-format",
         "sampled-invalid-high", "sampled-depth-format", "sampled-depth-swizzle",
-        "storage-kind", "storage-no-write", "storage-atomic", "storage-compare",
-        "storage-mip", "storage-dimension"}) {
+        "storage-incompatible-format", "storage-kind", "storage-no-write",
+        "storage-atomic", "storage-compare", "storage-mip", "storage-dimension",
+        "volume-mip-count", "volume-slice-range"}) {
     std::string command =
         std::string("\"") + path + "\" --image-view-death " + kind;
     std::vector<char> mutable_command(command.begin(), command.end());
@@ -16022,6 +16359,10 @@ void CheckBasicStorageTextureDescriptor() {
                            0x800);
     ValidateStorageColorView(vk::Format::eR16G16B16A16Sfloat,
                              vk::Format::eR16G16B16A16Sfloat, swizzle);
+    ValidateStorageColorView(vk::Format::eR8G8B8A8Srgb,
+                             vk::Format::eR8G8B8A8Unorm, swizzle);
+    ValidateStorageColorView(vk::Format::eB8G8R8A8Srgb,
+                             vk::Format::eR8G8B8A8Unorm, swizzle);
     valid_storage_swizzles++;
   }
   Require("BasicStorageTexture", "all write swizzles",

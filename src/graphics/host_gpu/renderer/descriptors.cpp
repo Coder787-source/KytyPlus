@@ -155,6 +155,8 @@ NativeAddressBuffer(RenderContext& context, CommandBuffer& command_buffer,
 static bool IsSupportedSampledColorResource(const ShaderRecompiler::IR::ImageResource& resource) {
 	bool supported_dimension = false;
 	switch (resource.dimension) {
+		case ShaderRecompiler::Decoder::ImageDimension::Dim1D:
+		case ShaderRecompiler::Decoder::ImageDimension::Dim1DArray:
 		case ShaderRecompiler::Decoder::ImageDimension::Dim2D:
 		case ShaderRecompiler::Decoder::ImageDimension::Dim2DArray:
 			supported_dimension = true;
@@ -295,14 +297,32 @@ static void ValidateDepthTargetBinding(const ShaderRecompiler::IR::ImageResource
 
 static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::ImageResource& resource,
                                                 const ShaderTextureResource& descriptor) {
-	const auto tile  = descriptor.TileMode();
+	const auto tile = descriptor.TileMode();
+	const bool is_color_1d =
+	    descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor1D);
+	const bool is_color_1d_array =
+	    descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor1DArray);
+	const bool valid_1d_slice =
+	    (is_color_1d && descriptor.Depth() == 0 && descriptor.BaseArray5() == 0) ||
+	    (is_color_1d_array && descriptor.BaseArray5() <= descriptor.Depth());
+	const bool is_1d = resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1D &&
+	                   descriptor.Height5() == 0 && valid_1d_slice;
+	const bool is_1d_array =
+	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1DArray &&
+	    is_color_1d_array && descriptor.Height5() == 0 &&
+	    descriptor.BaseArray5() <= descriptor.Depth();
+	const bool is_color_2d =
+	    descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D);
+	const bool is_color_2d_array =
+	    descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray);
+	const bool valid_2d_slice =
+	    (is_color_2d && descriptor.Depth() == 0 && descriptor.BaseArray5() == 0) ||
+	    (is_color_2d_array && descriptor.BaseArray5() <= descriptor.Depth());
 	const bool is_2d = resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D &&
-	                   descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
-	                   descriptor.Depth() == 0 && descriptor.BaseArray5() == 0;
+	                   valid_2d_slice;
 	const bool is_2d_array =
 	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DArray &&
-	    descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
-	    descriptor.BaseArray5() <= descriptor.Depth();
+	    is_color_2d_array && descriptor.BaseArray5() <= descriptor.Depth();
 	const bool is_3d = resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim3D &&
 	                   descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor3D) &&
 	                   descriptor.BaseArray5() == 0;
@@ -321,8 +341,9 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	const bool supported_swizzle =
 	    IsValidImageSwizzle(descriptor.DstSelXYZW()) &&
 	    (descriptor.DstSelXYZW() == DstSel(4, 5, 6, 7) || !resource.read);
-	const bool supported_mip_view = descriptor.BaseLevel() == 0 || is_2d;
-	return (is_2d || is_2d_array || is_3d) && supported_tile && supported_mip_view &&
+	const bool supported_mip_view = descriptor.BaseLevel() == 0 || is_1d || is_2d;
+	return (is_1d || is_1d_array || is_2d || is_2d_array || is_3d) && supported_tile &&
+	       supported_mip_view &&
 	       descriptor.BaseLevel() == descriptor.LastLevel() &&
 	       descriptor.LastLevel() <= descriptor.MaxMip() && descriptor.MinLod() == 0 &&
 	       supported_swizzle && descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth();
@@ -471,6 +492,22 @@ static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& 
 	view.mapping =
 	    storage ? vk::ComponentMapping {} : TextureGetComponentMapping(descriptor.DstSelXYZW());
 	switch (resource.dimension) {
+		case ShaderRecompiler::Decoder::ImageDimension::Dim1D:
+			view.type       = vk::ImageViewType::e1D;
+			view.base_layer = descriptor.BaseArray5();
+			if (view.base_layer >= image_layers) {
+				EXIT("texture base layer is out of bounds\n");
+			}
+			view.layer_count = 1;
+			break;
+		case ShaderRecompiler::Decoder::ImageDimension::Dim1DArray:
+			view.type       = vk::ImageViewType::e1DArray;
+			view.base_layer = descriptor.BaseArray5();
+			if (view.base_layer >= image_layers) {
+				EXIT("texture array base layer is out of bounds\n");
+			}
+			view.layer_count = image_layers - view.base_layer;
+			break;
 		case ShaderRecompiler::Decoder::ImageDimension::Dim3D:
 			view.type        = vk::ImageViewType::e3D;
 			view.base_layer  = 0;
@@ -484,11 +521,15 @@ static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& 
 			}
 			view.layer_count = image_layers - view.base_layer;
 			break;
-		default:
-			view.type        = vk::ImageViewType::e2D;
-			view.base_layer  = 0;
+		case ShaderRecompiler::Decoder::ImageDimension::Dim2D:
+			view.type       = vk::ImageViewType::e2D;
+			view.base_layer = descriptor.BaseArray5();
+			if (view.base_layer >= image_layers) {
+				EXIT("texture base layer is out of bounds\n");
+			}
 			view.layer_count = 1;
 			break;
+		default: EXIT("unsupported texture view dimension\n");
 	}
 	return view;
 }
@@ -576,6 +617,10 @@ RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   reso
 	}
 
 	const auto              pixel_format = TextureGetFormat(format);
+	const auto              storage_view_format = SrgbStorageViewFormat(pixel_format);
+	const auto              view_format =
+	    storage && storage_view_format != vk::Format::eUndefined ? storage_view_format
+	                                                            : pixel_format;
 	const auto              block_bytes  = Prospero::BlockCompressedBytesPerBlock(format);
 	TextureCache::ImageDesc desc {};
 	desc.info.data         = {address, size.size};
@@ -594,7 +639,7 @@ RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   reso
 	} else {
 		PopulateTextureMipLayout(desc.info);
 	}
-	desc.view_info = TextureViewInfo(resource, descriptor, pixel_format, storage, view_levels,
+	desc.view_info = TextureViewInfo(resource, descriptor, view_format, storage, view_levels,
 	                                 desc.info.resources.layers);
 	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
 
@@ -612,7 +657,7 @@ RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   reso
 		(void)SelectSampledDepthView(image->info.pixel_format, pixel_format,
 		                             descriptor.DstSelXYZW());
 	} else if (storage) {
-		ValidateStorageColorView(image->info.pixel_format, pixel_format, descriptor.DstSelXYZW());
+		ValidateStorageColorView(image->info.pixel_format, view_format, descriptor.DstSelXYZW());
 	} else {
 		(void)SelectSampledColorView(image->info.pixel_format, pixel_format,
 		                             descriptor.DstSelXYZW());

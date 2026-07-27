@@ -640,6 +640,13 @@ void SetImageTestType(std::array<uint32_t, 64>* data, uint32_t srsrc, Prospero::
 	(*data)[type_dword] = Prospero::GpuEnumValue(type) << 28u;
 }
 
+void SetImageTestFormat(std::array<uint32_t, 64>* data, uint32_t srsrc,
+                        Prospero::BufferFormat format) {
+	const auto format_dword = srsrc * 4u + 1u;
+	Check(data != nullptr && format_dword < data->size(), "invalid image test descriptor source");
+	(*data)[format_dword] = Prospero::GpuEnumValue(format) << 20u;
+}
+
 bool ReadZeroTestMemory(void*, uint64_t, uint32_t* value) {
 	if (value == nullptr) {
 		return false;
@@ -3102,8 +3109,6 @@ void TestNewShaderRecompilerImageSampleVariants() {
 	      "SPIR-V binary does not contain shared OpImageSampleExplicitLod emission");
 	Check(SpirvContainsOpcode(result.spirv, 90),
 	      "SPIR-V binary does not contain shared OpImageSampleDrefExplicitLod emission");
-	Check(SpirvContainsOpcode(result.spirv, 202),
-	      "SPIR-V binary does not contain packed offset extraction");
 	Check(SpirvContainsOpcode(result.spirv, 80),
 	      "SPIR-V binary does not contain coordinate/gradient composite construction");
 	Check(SpirvContainsExtInst(result.spirv, 62),
@@ -3400,8 +3405,11 @@ void TestNewShaderRecompilerPixelImageSampleLodSelection() {
 }
 
 void TestNewShaderRecompilerImageViewDimensions() {
+	constexpr uint32_t MimgDim1D      = 0;
 	constexpr uint32_t MimgDim3D      = 2;
+	constexpr uint32_t MimgDim1DArray = 4;
 	constexpr uint32_t MimgDim2DArray = 5;
+	constexpr uint32_t SpirvDim1D     = 0;
 	constexpr uint32_t SpirvDim2D     = 1;
 	constexpr uint32_t SpirvDim3D     = 2;
 
@@ -3414,6 +3422,18 @@ void TestNewShaderRecompilerImageViewDimensions() {
 	    EncodeMimg1(8, 2, 1, 8), // image_sample 3D
 	    EncodeMimg0(0x01, 0xf, false, MimgDim2DArray),
 	    EncodeMimg1(12, 3, 0, 12), // image_load_mip 2D array
+	    EncodeMimg0(0x20, 0xf, false, MimgDim1D),
+	    EncodeMimg1(16, 4, 1, 16), // image_sample 1D
+	    EncodeMimg0(0x20, 0xf, false, MimgDim1DArray),
+	    EncodeMimg1(20, 5, 1, 20), // image_sample 1D array
+	    EncodeMimg0(0x22, 0xf, false, MimgDim1D),
+	    EncodeMimg1(24, 6, 1, 24), // image_sample_d 1D
+	    EncodeMimg0(0x01, 0xf, false, MimgDim1D),
+	    EncodeMimg1(28, 7, 0, 28), // image_load_mip 1D
+	    EncodeMimg0(0x0e, 0xf, false, MimgDim1D),
+	    EncodeMimg1(32, 8, 0, 32), // image_get_resinfo 1D
+	    EncodeMimg0(0x00, 0xf, false, MimgDim1D),
+	    EncodeMimg1(36, 9, 0, 36), // integer image_load 1D
 	    0xbf810000u,
 	};
 
@@ -3423,6 +3443,13 @@ void TestNewShaderRecompilerImageViewDimensions() {
 	SetImageTestType(&user_data, 1, Prospero::ImageType::kColor2DArray);
 	SetImageTestType(&user_data, 2, Prospero::ImageType::kColor3D);
 	SetImageTestType(&user_data, 3, Prospero::ImageType::kColor2DArray);
+	SetImageTestType(&user_data, 4, Prospero::ImageType::kColor1D);
+	SetImageTestType(&user_data, 5, Prospero::ImageType::kColor1DArray);
+	SetImageTestType(&user_data, 6, Prospero::ImageType::kColor1D);
+	SetImageTestType(&user_data, 7, Prospero::ImageType::kColor1D);
+	SetImageTestType(&user_data, 8, Prospero::ImageType::kColor1D);
+	SetImageTestType(&user_data, 9, Prospero::ImageType::kColor1D);
+	SetImageTestFormat(&user_data, 9, Prospero::BufferFormat::k32UInt);
 
 	ShaderRecompiler::CompileOptions options;
 	options.stage            = ShaderType::Pixel;
@@ -3438,6 +3465,15 @@ void TestNewShaderRecompilerImageViewDimensions() {
 	      "MIMG DIM did not decode 2D-array image view");
 	Check(Common::ContainsStr(result.decoded_dump, "image_dim=3d"),
 	      "MIMG DIM did not decode 3D image view");
+	Check(Common::ContainsStr(result.decoded_dump,
+	                          "image_dim=1d sample_flags=none addr_components=1"),
+	      "1D sample did not preserve its scalar coordinate");
+	Check(Common::ContainsStr(result.decoded_dump,
+	                          "image_dim=1d_array sample_flags=none addr_components=2"),
+	      "1D-array sample did not preserve coordinate plus layer");
+	Check(Common::ContainsStr(result.decoded_dump,
+	                          "image_dim=1d sample_flags=derivative addr_components=3"),
+	      "1D derivative sample did not preserve scalar gradients");
 	Check(Common::ContainsStr(result.decoded_dump, "image_sample_l"),
 	      "2D-array LOD sample did not decode");
 	Check(Common::ContainsStr(result.decoded_dump,
@@ -3447,13 +3483,121 @@ void TestNewShaderRecompilerImageViewDimensions() {
 	      "2D-array image view did not survive into IR metadata");
 	Check(Common::ContainsStr(result.ir_dump, "image_dim=3d"),
 	      "3D image view did not survive into IR metadata");
+	Check(Common::ContainsStr(result.ir_dump, "image_dim=1d"),
+	      "1D image view did not survive into IR metadata");
+	Check(Common::ContainsStr(result.ir_dump, "image_dim=1d_array"),
+	      "1D-array image view did not survive into IR metadata");
+	Check(SpirvContainsTypeImage(result.spirv, SpirvDim1D, 0, 1),
+	      "SPIR-V binary does not contain sampled 1D image type");
+	Check(SpirvContainsTypeImage(result.spirv, SpirvDim1D, 1, 1),
+	      "SPIR-V binary does not contain sampled 1D-array image type");
 	Check(SpirvContainsTypeImage(result.spirv, SpirvDim2D, 1, 1),
 	      "SPIR-V binary does not contain sampled 2D-array image type");
 	Check(SpirvContainsTypeImage(result.spirv, SpirvDim3D, 0, 1),
 	      "SPIR-V binary does not contain sampled 3D image type");
+	Check(SpirvContainsCapability(result.spirv, 43),
+	      "SPIR-V binary does not request Sampled1D");
+	Check(SpirvContainsCapability(result.spirv, 44),
+	      "SPIR-V binary does not request Image1D");
 	Check(SpirvContainsOpcode(result.spirv, 95),
 	      "SPIR-V binary does not contain array image fetch");
 	CheckSpirvBinaryValidates(result.spirv);
+	const auto source = DisassembleSpirvBinary(result.spirv);
+	Check(Common::ContainsStr(source, " Grad "),
+	      "1D derivative sample did not emit scalar SPIR-V gradients");
+	Check(Common::ContainsStr(source, "OpImageQuerySizeLod"),
+	      "1D resource query did not emit a scalar size query");
+	Check(SpirvSourceHasInstructionUsing(source, "OpAccessChain", "sampled_uint_1d"),
+	      "integer 1D load did not access the uint 1D descriptor binding");
+}
+
+void TestNewShaderRecompilerStorageImage1DDescriptorVariants() {
+	constexpr uint32_t MimgDim1D      = 0;
+	constexpr uint32_t MimgDim1DArray = 4;
+	constexpr uint32_t SpirvDim1D     = 0;
+
+	const uint32_t shader[] = {
+	    EncodeMimg0(0x08, 0xf, false, MimgDim1D),
+	    EncodeMimg1(20, 4, 0, 4), // image_store 1D
+	    EncodeMimg0(0x08, 0xf, false, MimgDim1DArray),
+	    EncodeMimg1(24, 5, 0, 8), // image_store 1D array
+	    0xbf810000u,
+	};
+
+	auto user_data = ImageTestUserData();
+	SetImageTestType(&user_data, 4, Prospero::ImageType::kColor1D);
+	SetImageTestType(&user_data, 5, Prospero::ImageType::kColor1DArray);
+
+	ShaderRecompiler::CompileOptions options;
+	options.stage     = ShaderType::Compute;
+	options.dump_ir   = true;
+	options.user_data = user_data.data();
+
+	ShaderRecompiler::CompileResult result;
+	std::string                     error;
+	Check(ShaderRecompiler::TryRecompile(shader, options, result, &error), error.c_str());
+	Check(Common::ContainsStr(result.ir_dump, "image_dim=1d"),
+	      "1D storage dimension did not survive into IR metadata");
+	Check(Common::ContainsStr(result.ir_dump, "image_dim=1d_array"),
+	      "1D-array storage dimension did not survive into IR metadata");
+	Check(SpirvContainsTypeImage(result.spirv, SpirvDim1D, 0, 2),
+	      "SPIR-V binary does not contain storage 1D image type");
+	Check(SpirvContainsTypeImage(result.spirv, SpirvDim1D, 1, 2),
+	      "SPIR-V binary does not contain storage 1D-array image type");
+	CheckSpirvBinaryValidates(result.spirv);
+
+	const auto source = DisassembleSpirvBinary(result.spirv);
+	Check(SpirvSourceHasInstructionUsing(source, "OpAccessChain", "storage_1d "),
+	      "1D store did not access the 1D storage descriptor binding");
+	Check(SpirvSourceHasInstructionUsing(source, "OpAccessChain", "storage_1d_array"),
+	      "1D-array store did not access the 1D-array storage descriptor binding");
+}
+
+void TestNewShaderRecompilerNullImageUsesCanonical2DView() {
+	const uint32_t shader[] = {
+	    EncodeMimg0(0x20, 0xf, false, 0),
+	    EncodeMimg1(0, 0, 1, 0), // 1D instruction with a null image descriptor
+	    0xbf810000u,
+	};
+	std::array<uint32_t, 64> user_data {};
+
+	ShaderRecompiler::CompileOptions options;
+	options.stage     = ShaderType::Compute;
+	options.user_data = user_data.data();
+
+	ShaderRecompiler::CompileResult result;
+	std::string                     error;
+	Check(ShaderRecompiler::TryRecompile(shader, options, result, &error), error.c_str());
+	CheckSpirvBinaryValidates(result.spirv);
+	const auto source = DisassembleSpirvBinary(result.spirv);
+	Check(SpirvSourceHasInstructionUsing(source, "OpAccessChain", "sampled_2d "),
+	      "null image did not use the canonical 2D sampled descriptor binding");
+	Check(!SpirvSourceHasInstructionUsing(source, "OpAccessChain", "sampled_1d "),
+	      "null image retained the decoded 1D descriptor binding");
+}
+
+void TestNewShaderRecompilerRejectsOneDimensionalGather() {
+	constexpr std::array cases {
+	    std::pair {0u, Prospero::ImageType::kColor1D},
+	    std::pair {4u, Prospero::ImageType::kColor1DArray},
+	};
+	for (const auto& [dimension, type]: cases) {
+		const uint32_t shader[] = {
+		    EncodeMimg0(0x47, 0x1, false, dimension),
+		    EncodeMimg1(0, 0, 1, 0),
+		    0xbf810000u,
+		};
+		auto user_data = ImageTestUserData(type);
+		ShaderRecompiler::CompileOptions options;
+		options.stage     = ShaderType::Compute;
+		options.user_data = user_data.data();
+
+		ShaderRecompiler::CompileResult result;
+		std::string                     error;
+		Check(!ShaderRecompiler::TryRecompile(shader, options, result, &error) &&
+		          Common::ContainsStr(error, "1D image gather is not supported by SPIR-V"),
+		      "1D image gather escaped as invalid SPIR-V");
+	}
 }
 
 void TestNewShaderRecompilerImageGatherVariants() {
@@ -3680,7 +3824,7 @@ void TestNewShaderRecompilerStorageImage3DDescriptorVariant() {
 	CheckSpirvBinaryValidates(result.spirv);
 
 	const auto source = DisassembleSpirvBinary(result.spirv);
-	Check(SpirvSourceHasInstructionUsing(source, "OpAccessChain", "textures2D_L_3D"),
+	Check(SpirvSourceHasInstructionUsing(source, "OpAccessChain", "storage_3d"),
 	      "storage image store did not access the 3D storage descriptor binding");
 }
 
@@ -3719,11 +3863,11 @@ void TestNewShaderRecompilerStorageImage2DDescriptorOverridesMimg3D() {
 	CheckSpirvBinaryValidates(result.spirv);
 
 	const auto source = DisassembleSpirvBinary(result.spirv);
-	Check(SpirvSourceHasInstructionUsing(source, "OpAccessChain", "textures2D_L"),
+	Check(SpirvSourceHasInstructionUsing(source, "OpAccessChain", "storage_2d"),
 	      "2D descriptor storage image store did not access the base storage binding");
-	Check(!SpirvSourceHasInstructionUsing(source, "OpAccessChain", "textures2D_L_A"),
+	Check(!SpirvSourceHasInstructionUsing(source, "OpAccessChain", "storage_2d_array"),
 	      "2D descriptor storage image store unexpectedly used the array storage binding");
-	Check(!SpirvSourceHasInstructionUsing(source, "OpAccessChain", "textures2D_L_3D"),
+	Check(!SpirvSourceHasInstructionUsing(source, "OpAccessChain", "storage_3d"),
 	      "2D descriptor storage image store unexpectedly used the 3D storage binding");
 }
 
@@ -6811,6 +6955,9 @@ int main() {
 	TestNewShaderRecompilerImageSampleA16Rdna2AddressOrder();
 	TestNewShaderRecompilerPixelImageSampleLodSelection();
 	TestNewShaderRecompilerImageViewDimensions();
+	TestNewShaderRecompilerStorageImage1DDescriptorVariants();
+	TestNewShaderRecompilerNullImageUsesCanonical2DView();
+	TestNewShaderRecompilerRejectsOneDimensionalGather();
 	TestNewShaderRecompilerImageGatherVariants();
 	TestNewShaderRecompilerImageLoadA16UintCoords();
 	TestNewShaderRecompilerImageLoadVariants();

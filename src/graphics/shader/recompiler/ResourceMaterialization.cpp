@@ -12,14 +12,25 @@ namespace {
 
 constexpr uint64_t AddressMask = 0x0000ffffffffffffull;
 
-Decoder::ImageDimension DescriptorDimension(const DescriptorValue& descriptor) {
+Decoder::ImageDimension DescriptorDimension(const DescriptorValue&       descriptor,
+                                            Decoder::ImageDimension requested) {
+	const bool is_array = requested == Decoder::ImageDimension::Dim1DArray ||
+	                      requested == Decoder::ImageDimension::Dim2DArray;
 	switch (static_cast<Prospero::ImageType>((descriptor.dwords[3] >> 28u) & 0xfu)) {
-		case Prospero::ImageType::kColor3D: return Decoder::ImageDimension::Dim3D;
-		case Prospero::ImageType::kCube:
+		case Prospero::ImageType::kColor1D: return Decoder::ImageDimension::Dim1D;
 		case Prospero::ImageType::kColor1DArray:
+			if (is_array) {
+				return Decoder::ImageDimension::Dim1DArray;
+			}
+			return Decoder::ImageDimension::Dim1D;
+		case Prospero::ImageType::kColor3D: return Decoder::ImageDimension::Dim3D;
+		case Prospero::ImageType::kCube: return Decoder::ImageDimension::Dim2DArray;
 		case Prospero::ImageType::kColor2DArray:
-		case Prospero::ImageType::kColor2DMsaaArray: return Decoder::ImageDimension::Dim2DArray;
-		case Prospero::ImageType::kColor1D:
+		case Prospero::ImageType::kColor2DMsaaArray:
+			if (is_array) {
+				return Decoder::ImageDimension::Dim2DArray;
+			}
+			return Decoder::ImageDimension::Dim2D;
 		case Prospero::ImageType::kColor2D:
 		case Prospero::ImageType::kColor2DMsaa: return Decoder::ImageDimension::Dim2D;
 		default: return Decoder::ImageDimension::Unknown;
@@ -160,9 +171,21 @@ bool ValidateResourceSpecialization(const Program& program, const ResourceSnapsh
 		const auto& image      = program.info.images[i];
 		const auto& descriptor = snapshot.images[i];
 		if (NullImageDescriptor(descriptor)) {
+			bool canonical_kind = image.kind == ResourceKind::Image ||
+			                      image.kind == ResourceKind::StorageImage;
+			if (image.atomic) {
+				canonical_kind = image.kind == ResourceKind::StorageImageUint;
+			}
+			if (image.dimension != Decoder::ImageDimension::Dim2D || !canonical_kind) {
+				if (error != nullptr) {
+					*error = fmt::format(
+					    "image descriptor {} no longer matches canonical null specialization", i);
+				}
+				return false;
+			}
 			continue;
 		}
-		const auto dimension = DescriptorDimension(descriptor);
+		const auto dimension = DescriptorDimension(descriptor, image.dimension);
 		if (dimension == Decoder::ImageDimension::Unknown || dimension != image.dimension) {
 			if (error != nullptr) {
 				*error =
@@ -337,9 +360,19 @@ bool SpecializeResources(Program& program, const ResourceSnapshot& snapshot, std
 		const auto& descriptor = snapshot.images[i];
 		auto&       image      = next.images[i];
 		if (NullImageDescriptor(descriptor)) {
+			image.dimension = Decoder::ImageDimension::Dim2D;
+			switch (image.kind) {
+				case ResourceKind::ImageUint: image.kind = ResourceKind::Image; break;
+				case ResourceKind::StorageImageUint:
+					if (!image.atomic) {
+						image.kind = ResourceKind::StorageImage;
+					}
+					break;
+				default: break;
+			}
 			continue;
 		}
-		const auto descriptor_dimension = DescriptorDimension(descriptor);
+		const auto descriptor_dimension = DescriptorDimension(descriptor, image.dimension);
 		if (descriptor_dimension == Decoder::ImageDimension::Unknown) {
 			if (error != nullptr) {
 				*error = fmt::format(

@@ -1126,7 +1126,7 @@ void TestResourceSpecializationIsTypedAndTransactional() {
   null_program.stage = ShaderType::Compute;
   null_program.blocks.resize(1);
   null_program.blocks[0].instructions = {
-      ImageUse(0x10, Opcode::ImageLoad, ResourceKind::Image,
+      ImageUse(0x10, Opcode::ImageLoad, ResourceKind::ImageUint,
                Decoder::ImageDimension::Dim3D)};
   Prepare(null_program);
   ResourceSnapshot null_snapshot;
@@ -1141,8 +1141,81 @@ void TestResourceSpecializationIsTypedAndTransactional() {
           ValidateResourceSpecialization(null_program, null_snapshot, &error) &&
           null_program.info.images[0].kind == ResourceKind::Image &&
           null_program.info.images[0].dimension ==
-              Decoder::ImageDimension::Dim3D,
-      "zero-base image descriptor did not preserve tracked null-image shape");
+              Decoder::ImageDimension::Dim2D &&
+          null_program.blocks[0].instructions[0].memory.image_dimension ==
+              Decoder::ImageDimension::Dim2D,
+      "zero-base image descriptor did not use the canonical null-image shape");
+
+  Program null_atomic;
+  null_atomic.stage = ShaderType::Compute;
+  null_atomic.blocks.resize(1);
+  null_atomic.blocks[0].instructions = {
+      ImageUse(0x14, Opcode::AtomicAddU32, ResourceKind::StorageImageUint,
+               Decoder::ImageDimension::Dim1D)};
+  Prepare(null_atomic);
+  Check(SpecializeResources(null_atomic, null_snapshot, &error) &&
+            ValidateResourceSpecialization(null_atomic, null_snapshot, &error) &&
+            null_atomic.info.images[0].kind ==
+                ResourceKind::StorageImageUint &&
+            null_atomic.info.images[0].dimension ==
+                Decoder::ImageDimension::Dim2D,
+        "null image atomic did not preserve its required integer storage type");
+
+  Program array_view;
+  array_view.stage = ShaderType::Compute;
+  array_view.blocks.resize(1);
+  array_view.blocks[0].instructions = {
+      ImageUse(0x18, Opcode::ImageLoad, ResourceKind::Image,
+               Decoder::ImageDimension::Dim1D)};
+  Prepare(array_view);
+  ResourceSnapshot array_snapshot;
+  array_snapshot.images.resize(1);
+  array_snapshot.images[0].dword_count = 8;
+  array_snapshot.images[0].dwords[0] = 0x1000;
+  array_snapshot.images[0].dwords[3] =
+      Prospero::GpuEnumValue(Prospero::ImageType::kColor1DArray) << 28u;
+  Check(SpecializeResources(array_view, array_snapshot, &error) &&
+            array_view.info.images[0].dimension ==
+                Decoder::ImageDimension::Dim1D &&
+            array_view.blocks[0].instructions[0].memory.image_dimension ==
+                Decoder::ImageDimension::Dim1D,
+        "non-array MIMG view did not narrow a 1D-array descriptor");
+  auto null_after_1d = array_snapshot;
+  null_after_1d.images[0].dwords.fill(0);
+  Check(!ValidateResourceSpecialization(array_view, null_after_1d, &error) &&
+            error.find("canonical null specialization") != std::string::npos,
+        "non-null 1D specialization accepted a canonical 2D null descriptor");
+
+  Program cross_family_array;
+  cross_family_array.stage = ShaderType::Compute;
+  cross_family_array.blocks.resize(1);
+  cross_family_array.blocks[0].instructions = {
+      ImageUse(0x1c, Opcode::ImageLoad, ResourceKind::Image,
+               Decoder::ImageDimension::Dim2DArray)};
+  Prepare(cross_family_array);
+  Check(SpecializeResources(cross_family_array, array_snapshot, &error) &&
+            cross_family_array.info.images[0].dimension ==
+                Decoder::ImageDimension::Dim1DArray &&
+            cross_family_array.blocks[0]
+                    .instructions[0]
+                    .memory.image_dimension ==
+                Decoder::ImageDimension::Dim1DArray,
+        "array MIMG intent did not produce a 1D-array view");
+
+  Program cross_family_2d_array;
+  cross_family_2d_array.stage = ShaderType::Compute;
+  cross_family_2d_array.blocks.resize(1);
+  cross_family_2d_array.blocks[0].instructions = {
+      ImageUse(0x20, Opcode::ImageLoad, ResourceKind::Image,
+               Decoder::ImageDimension::Dim1DArray)};
+  Prepare(cross_family_2d_array);
+  auto array_2d_snapshot = array_snapshot;
+  array_2d_snapshot.images[0].dwords[3] =
+      Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) << 28u;
+  Check(SpecializeResources(cross_family_2d_array, array_2d_snapshot, &error) &&
+            cross_family_2d_array.info.images[0].dimension ==
+                Decoder::ImageDimension::Dim2DArray,
+        "array MIMG intent did not produce a 2D-array view");
 
   Program program;
   program.stage = ShaderType::Compute;
@@ -1182,6 +1255,11 @@ void TestResourceSpecializationIsTypedAndTransactional() {
             inst.memory.image_dimension == Decoder::ImageDimension::Dim2D,
         "runtime descriptor shape and integer format did not specialize dense "
         "IR");
+  auto null_after_uint = snapshot;
+  null_after_uint.images[0].dwords.fill(0);
+  Check(!ValidateResourceSpecialization(program, null_after_uint, &error) &&
+            error.find("canonical null specialization") != std::string::npos,
+        "non-null integer specialization accepted a non-integer null descriptor");
 
   auto stale_swizzle = snapshot;
   stale_swizzle.images[0].dwords[3] =
@@ -1436,6 +1514,45 @@ void TestNativeBindingLayout() {
                nullptr &&
           program.binding_layout_complete,
       "native binding allocator did not preserve dense typed resource groups");
+}
+
+void TestNativeBindingLayoutOneDimensionalImages() {
+  Program program;
+  program.stage = ShaderType::Compute;
+  program.blocks.resize(1);
+  auto &insts = program.blocks[0].instructions;
+  insts.push_back(ImageUse(8, Opcode::ImageSample, ResourceKind::Image,
+                           Decoder::ImageDimension::Dim1D, 0, 2));
+  insts.push_back(ImageUse(12, Opcode::ImageSample, ResourceKind::Image,
+                           Decoder::ImageDimension::Dim1DArray, 0, 2));
+  insts.push_back(ImageUse(16, Opcode::ImageStore, ResourceKind::StorageImage,
+                           Decoder::ImageDimension::Dim1D, 4));
+  insts.push_back(ImageUse(20, Opcode::ImageStore,
+                           ResourceKind::StorageImageUint,
+                           Decoder::ImageDimension::Dim1DArray, 6));
+  Prepare(program);
+
+  ShaderComputeInputInfo compute;
+  compute.thread_ids_num = 1;
+  std::string error;
+  Check(CollectShaderInfo(program, {.compute = &compute}, &error) &&
+            AllocateBindings(program, {}, &error),
+        error.c_str());
+  const auto *sampled =
+      FindBinding(program.bindings, DescriptorBindingKind::Sampled1D);
+  const auto *sampled_array =
+      FindBinding(program.bindings, DescriptorBindingKind::Sampled1DArray);
+  const auto *storage =
+      FindBinding(program.bindings, DescriptorBindingKind::Storage1D);
+  const auto *storage_uint_array =
+      FindBinding(program.bindings, DescriptorBindingKind::StorageUint1DArray);
+  Check(sampled != nullptr && sampled_array != nullptr && storage != nullptr &&
+            storage_uint_array != nullptr &&
+            sampled->resources == std::vector<uint32_t>{0} &&
+            sampled_array->resources == std::vector<uint32_t>{1} &&
+            storage->resources == std::vector<uint32_t>{2} &&
+            storage_uint_array->resources == std::vector<uint32_t>{3},
+        "binding allocator did not preserve first-class 1D image groups");
 }
 
 void TestNativeBindingLayoutSrtAndUserDataOverflow() {
@@ -1948,6 +2065,7 @@ int main() {
     RUN(TestRuntimeSpecializationCoversBakedBufferAndAddressFields);
     RUN(TestTrackedProgramIsImmutable);
     RUN(TestNativeBindingLayout);
+    RUN(TestNativeBindingLayoutOneDimensionalImages);
     RUN(TestNativeBindingLayoutSrtAndUserDataOverflow);
     RUN(TestNativeBindingLayoutGds);
     RUN(TestNativeBindingLayoutIsTransactional);

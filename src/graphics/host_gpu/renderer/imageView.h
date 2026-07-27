@@ -38,19 +38,12 @@ namespace ImageViewOps {
 	     static_cast<int>(image_format), static_cast<int>(view_format), swizzle);
 }
 
-[[nodiscard]] inline vk::Format BgraSrgbStorageViewFormat(vk::Format image_format) noexcept {
-	return image_format == vk::Format::eB8G8R8A8Srgb ? vk::Format::eR8G8B8A8Unorm
-	                                                 : vk::Format::eUndefined;
-}
-
 [[nodiscard]] inline vk::Format SrgbStorageViewFormat(vk::Format image_format) noexcept {
-	return image_format == vk::Format::eR8G8B8A8Srgb ? vk::Format::eR8G8B8A8Unorm
-	                                                 : BgraSrgbStorageViewFormat(image_format);
-}
-
-[[nodiscard]] inline bool IsBgraSrgbStorageView(vk::Format image_format, vk::Format view_format,
-                                                uint32_t swizzle) noexcept {
-	return view_format == BgraSrgbStorageViewFormat(image_format) && swizzle == DstSel(6, 5, 4, 7);
+	switch (image_format) {
+		case vk::Format::eR8G8B8A8Srgb:
+		case vk::Format::eB8G8R8A8Srgb: return vk::Format::eR8G8B8A8Unorm;
+		default: return vk::Format::eUndefined;
+	}
 }
 
 [[nodiscard]] inline bool IsSupportedSampledColorView(vk::Format image_format,
@@ -110,8 +103,10 @@ IsSupportedSampledDepthUintResource(const ShaderRecompiler::IR::ImageResource& r
 
 inline void ValidateStorageColorView(vk::Format image_format, vk::Format view_format,
                                      uint32_t swizzle) noexcept {
-	if ((image_format != view_format &&
-	     !IsBgraSrgbStorageView(image_format, view_format, swizzle)) ||
+	const auto srgb_view = SrgbStorageViewFormat(image_format);
+	const bool srgb_storage_view =
+	    srgb_view != vk::Format::eUndefined && view_format == srgb_view;
+	if ((image_format != view_format && !srgb_storage_view) ||
 	    !IsValidImageSwizzle(swizzle)) {
 		UnsupportedColorView("storage", image_format, view_format, swizzle);
 	}
@@ -121,7 +116,9 @@ inline void ValidateStorageColorView(vk::Format image_format, vk::Format view_fo
 IsSupportedStorageImageResource(const ShaderRecompiler::IR::ImageResource& resource) noexcept {
 	return (resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
 	        resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint) &&
-	       (resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D ||
+	       (resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1D ||
+	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1DArray ||
+	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D ||
 	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim3D ||
 	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DArray) &&
 	       resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::None && resource.written &&
