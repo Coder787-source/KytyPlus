@@ -22,13 +22,16 @@ jobs:
       - name: Setup Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
-      - name: Install glslang
-        shell: pwsh
-        run: |
-          $vcpkgRoot = Split-Path (Get-Command vcpkg).Source
-          vcpkg install glslang[tools,opt]:x64-windows
-          "$vcpkgRoot\installed\x64-windows\tools\glslang" |
-            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      # vcpkg glslang[tools,opt] compiles from source and routinely hangs/times out
+      # on windows-2022 (10+ minutes on a good day, multi-hour stalls observed).
+      # Pull a prebuilt glslangValidator from the Vulkan SDK instead (cached).
+      - name: Install glslangValidator (Vulkan SDK)
+        uses: jakoch/install-vulkan-sdk-action@v1.6.0
+        with:
+          vulkan_version: 1.4.350.0
+          cache: true
+          stripdown: true
+          install_runtime: false
 
       - name: Install Qt 6.10.3
         uses: jurplel/install-qt-action@v4
