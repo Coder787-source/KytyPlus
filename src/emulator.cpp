@@ -128,6 +128,13 @@ static void Init(const Config::ConfigOptions& cfg) {
 
 	Config::Load(cfg);
 
+	// Applies the Qt launcher's Input Mapping dialog settings (if any) before the window/input
+	// backend starts processing events. An empty string leaves the emulator's built-in default
+	// bindings in place.
+	Libs::Controller::SetKeyboardButtonMap(Libs::Controller::ParseInputBindingList(cfg.keyboard_button_map));
+	Libs::Controller::SetControllerButtonMap(
+	    Libs::Controller::ParseInputBindingList(cfg.controller_button_map));
+
 	slist->Add(audio, {core, log, pthread, memory});
 	slist->Add(controller, {core, log, config});
 	slist->Add(file_system, {core, log, pthread});

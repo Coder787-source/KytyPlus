@@ -11,7 +11,11 @@
 #include "libs/padData.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cstring>
+#include <iterator>
+#include <limits>
+#include <unordered_map>
 #include <vector>
 
 namespace Libs::Controller {
@@ -709,6 +713,211 @@ int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
 	}
 
 	return OK;
+}
+
+// --- Real keyboard/mouse state (backing libScePad's LibKeyboard/LibMouse HLE exports) ---
+//
+// This is intentionally separate from GameController: the synthetic keyboard-as-gamepad path
+// above treats the keyboard as PAD_BUTTON_* bits under KEYBOARD_CONTROLLER_ID, whereas real
+// PS5 titles that call sceKeyboardRead/sceMouseRead expect actual HID-shaped keyboard/mouse
+// reports, independent of and unrelated to any gamepad state.
+
+namespace {
+
+Common::Mutex g_keyboard_mutex;
+uint8_t       g_keyboard_modifier                                    = 0;
+bool          g_keyboard_key_down[std::numeric_limits<uint8_t>::max() + 1] = {};
+
+Common::Mutex g_mouse_mutex;
+uint32_t      g_mouse_buttons     = 0;
+int64_t       g_mouse_accum_x     = 0;
+int64_t       g_mouse_accum_y     = 0;
+int64_t       g_mouse_accum_wheel = 0;
+
+// Clamp an accumulated relative delta into an int32_t range without UB on overflow. In practice
+// no single poll interval will accumulate anywhere near this much real mouse motion; this only
+// guards against a pathological host input storm (e.g. a stuck/looping synthetic event source).
+int32_t ClampToI32(int64_t value) {
+	constexpr int64_t kMin = std::numeric_limits<int32_t>::min();
+	constexpr int64_t kMax = std::numeric_limits<int32_t>::max();
+	return static_cast<int32_t>(value < kMin ? kMin : (value > kMax ? kMax : value));
+}
+
+} // namespace
+
+void KeyboardRawKeyEvent(uint16_t hid_usage_id, bool down) {
+	if (hid_usage_id > std::numeric_limits<uint8_t>::max()) {
+		// SDL_Scancode has values above 0xFF for keys outside the standard USB HID keyboard
+		// page (e.g. media keys); ScePad's key_code field is documented as a HID keyboard-page
+		// usage id, so those simply aren't representable and are dropped rather than aliased
+		// onto an unrelated key.
+		return;
+	}
+
+	Common::LockGuard lock(g_keyboard_mutex);
+	g_keyboard_key_down[hid_usage_id] = down;
+}
+
+void KeyboardRawModifierState(uint8_t hid_modifier_bitmask) {
+	Common::LockGuard lock(g_keyboard_mutex);
+	g_keyboard_modifier = hid_modifier_bitmask;
+}
+
+RawKeyboardState KeyboardGetRawState() {
+	Common::LockGuard lock(g_keyboard_mutex);
+
+	RawKeyboardState state {};
+	state.modifier_key = g_keyboard_modifier;
+
+	for (int code = 0; code <= std::numeric_limits<uint8_t>::max() &&
+	                   state.length < static_cast<int32_t>(std::size(state.key_code));
+	     code++) {
+		if (g_keyboard_key_down[code]) {
+			state.key_code[state.length] = static_cast<uint16_t>(code);
+			state.length++;
+		}
+	}
+
+	return state;
+}
+
+void MouseRawButtonEvent(uint32_t button_bit, bool down) {
+	Common::LockGuard lock(g_mouse_mutex);
+	if (down) {
+		g_mouse_buttons |= button_bit;
+	} else {
+		g_mouse_buttons &= ~button_bit;
+	}
+}
+
+void MouseRawButtonState(uint32_t button_mask) {
+	Common::LockGuard lock(g_mouse_mutex);
+	g_mouse_buttons = button_mask;
+}
+
+void MouseRawMotion(int32_t dx, int32_t dy) {
+	Common::LockGuard lock(g_mouse_mutex);
+	g_mouse_accum_x += dx;
+	g_mouse_accum_y += dy;
+}
+
+void MouseRawWheel(int32_t delta) {
+	Common::LockGuard lock(g_mouse_mutex);
+	g_mouse_accum_wheel += delta;
+}
+
+RawMouseState MouseConsumeRawState() {
+	Common::LockGuard lock(g_mouse_mutex);
+
+	RawMouseState state {};
+	state.buttons = g_mouse_buttons;
+	state.x_axis  = ClampToI32(g_mouse_accum_x);
+	state.y_axis  = ClampToI32(g_mouse_accum_y);
+	state.wheel   = ClampToI32(g_mouse_accum_wheel);
+
+	g_mouse_accum_x     = 0;
+	g_mouse_accum_y     = 0;
+	g_mouse_accum_wheel = 0;
+
+	return state;
+}
+
+// --- User-configurable input mapping ---
+
+namespace {
+
+Common::Mutex                                  g_input_map_mutex;
+std::unordered_map<int, uint32_t>              g_keyboard_map; // empty = use built-in defaults
+std::unordered_map<int, uint32_t>              g_controller_map;
+
+} // namespace
+
+void SetKeyboardButtonMap(const std::vector<InputBinding>& bindings) {
+	Common::LockGuard                 lock(g_input_map_mutex);
+	std::unordered_map<int, uint32_t> map;
+	for (const auto& binding: bindings) {
+		map[binding.host_code] = binding.pad_button;
+	}
+	g_keyboard_map = std::move(map);
+}
+
+void SetControllerButtonMap(const std::vector<InputBinding>& bindings) {
+	Common::LockGuard                 lock(g_input_map_mutex);
+	std::unordered_map<int, uint32_t> map;
+	for (const auto& binding: bindings) {
+		map[binding.host_code] = binding.pad_button;
+	}
+	g_controller_map = std::move(map);
+}
+
+std::vector<InputBinding> ParseInputBindingList(const std::string& serialized) {
+	std::vector<InputBinding> bindings;
+
+	size_t pos = 0;
+	while (pos < serialized.size()) {
+		const auto comma      = serialized.find(',', pos);
+		const auto entry_end  = (comma == std::string::npos ? serialized.size() : comma);
+		const auto entry      = serialized.substr(pos, entry_end - pos);
+		const auto colon      = entry.find(':');
+
+		// This project builds with exceptions disabled (-fno-exceptions), so std::stoi/std::stoul
+		// (which throw on malformed input) can't be used here; std::from_chars reports errors via
+		// its return value instead, letting a malformed entry (e.g. a corrupted/hand-edited
+		// settings file) be skipped without aborting the whole map.
+		if (colon != std::string::npos && colon > 0 && colon + 1 < entry.size()) {
+			InputBinding binding {};
+			const char*  host_begin = entry.data();
+			const char*  host_end   = entry.data() + colon;
+			const char*  pad_begin  = entry.data() + colon + 1;
+			const char*  pad_end    = entry.data() + entry.size();
+
+			const auto host_result = std::from_chars(host_begin, host_end, binding.host_code);
+			const auto pad_result  = std::from_chars(pad_begin, pad_end, binding.pad_button);
+
+			if (host_result.ec == std::errc() && host_result.ptr == host_end &&
+			    pad_result.ec == std::errc() && pad_result.ptr == pad_end) {
+				bindings.push_back(binding);
+			}
+		}
+
+		if (comma == std::string::npos) {
+			break;
+		}
+		pos = comma + 1;
+	}
+
+	return bindings;
+}
+
+std::string SerializeInputBindingList(const std::vector<InputBinding>& bindings) {
+	std::string result;
+	for (const auto& binding: bindings) {
+		if (!result.empty()) {
+			result += ',';
+		}
+		result += std::to_string(binding.host_code);
+		result += ':';
+		result += std::to_string(binding.pad_button);
+	}
+	return result;
+}
+
+uint32_t LookupKeyboardPadButton(int key_code) {
+	Common::LockGuard lock(g_input_map_mutex);
+	if (!g_keyboard_map.empty()) {
+		const auto it = g_keyboard_map.find(key_code);
+		return it != g_keyboard_map.end() ? it->second : 0;
+	}
+	return DefaultKeyboardPadButton(key_code);
+}
+
+uint32_t LookupControllerPadButton(int button) {
+	Common::LockGuard lock(g_input_map_mutex);
+	if (!g_controller_map.empty()) {
+		const auto it = g_controller_map.find(button);
+		return it != g_controller_map.end() ? it->second : 0;
+	}
+	return DefaultControllerPadButton(button);
 }
 
 } // namespace Libs::Controller

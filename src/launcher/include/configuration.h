@@ -92,11 +92,19 @@ public:
 	QString                shader_log_folder           = "_Shaders";
 	bool                   command_buffer_dump_enabled = false;
 	QString                command_buffer_dump_folder  = "_Buffers";
+	bool                   graphics_debug_dump_enabled = false;
 	LogDirection           printf_direction            = LogDirection::Silent;
 	QString                printf_output_file          = "_kyty.txt";
 	ProfilerDirection      profiler_direction          = ProfilerDirection::None;
+	bool                   spirv_debug_printf_enabled  = false;
 	bool                   renderdoc_enabled           = false;
 	bool                   ngg_rectlist_draw_enabled   = true;
+	// Serialized as "host_code:pad_button,host_code:pad_button,...". Empty means "use the
+	// emulator's built-in default bindings". Edited via the Input Mapping dialog (opened from
+	// this settings dialog), stored per-Configuration the same as every other emulator setting
+	// here, and passed to kyty_emulator.exe as --keyboard-map/--controller-map.
+	QString                keyboard_button_map;
+	QString                controller_button_map;
 
 	QString elf = QStringLiteral("eboot.bin");
 
@@ -110,11 +118,15 @@ public:
 		shader_log_folder           = other.shader_log_folder;
 		command_buffer_dump_enabled = other.command_buffer_dump_enabled;
 		command_buffer_dump_folder  = other.command_buffer_dump_folder;
+		graphics_debug_dump_enabled = other.graphics_debug_dump_enabled;
 		printf_direction            = other.printf_direction;
 		printf_output_file          = other.printf_output_file;
 		profiler_direction          = other.profiler_direction;
+		spirv_debug_printf_enabled  = other.spirv_debug_printf_enabled;
 		renderdoc_enabled           = other.renderdoc_enabled;
 		ngg_rectlist_draw_enabled   = other.ngg_rectlist_draw_enabled;
+		keyboard_button_map         = other.keyboard_button_map;
+		controller_button_map      = other.controller_button_map;
 	}
 
 	void CopyFrom(const Configuration& other) {
@@ -144,11 +156,15 @@ public:
 		KYTY_CFG_SET(shader_log_folder);
 		KYTY_CFG_SET(command_buffer_dump_enabled);
 		KYTY_CFG_SET(command_buffer_dump_folder);
+		KYTY_CFG_SET(graphics_debug_dump_enabled);
 		KYTY_CFG_SET(printf_direction);
 		KYTY_CFG_SET(printf_output_file);
 		KYTY_CFG_SET(profiler_direction);
+		KYTY_CFG_SET(spirv_debug_printf_enabled);
 		KYTY_CFG_SET(renderdoc_enabled);
 		KYTY_CFG_SET(ngg_rectlist_draw_enabled);
+		KYTY_CFG_SET(keyboard_button_map);
+		KYTY_CFG_SET(controller_button_map);
 		KYTY_CFG_SET(elf);
 	}
 
@@ -166,12 +182,20 @@ public:
 		KYTY_CFG_GET(shader_log_folder);
 		KYTY_CFG_GET(command_buffer_dump_enabled);
 		KYTY_CFG_GET(command_buffer_dump_folder);
+		graphics_debug_dump_enabled =
+		    s->value("graphics_debug_dump_enabled", graphics_debug_dump_enabled).toBool();
 		KYTY_CFG_GET(printf_direction);
 		KYTY_CFG_GET(printf_output_file);
 		KYTY_CFG_GET(profiler_direction);
+		spirv_debug_printf_enabled =
+		    s->value("spirv_debug_printf_enabled", spirv_debug_printf_enabled).toBool();
 		KYTY_CFG_GET(renderdoc_enabled);
 		ngg_rectlist_draw_enabled =
 		    s->value("ngg_rectlist_draw_enabled", ngg_rectlist_draw_enabled).toBool();
+		keyboard_button_map =
+		    s->value("keyboard_button_map", keyboard_button_map).toString();
+		controller_button_map =
+		    s->value("controller_button_map", controller_button_map).toString();
 		elf = s->value("elf", elf).toString();
 	}
 };

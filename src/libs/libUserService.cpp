@@ -274,6 +274,8 @@ LIB_DEFINE(InitUserService_1) {
 	LIB_FUNC("yH17Q6NWtVg", UserService::UserServiceGetEvent);
 	LIB_FUNC("fPhymKNvK-A", UserService::UserServiceGetLoginUserIdList);
 	LIB_FUNC("1xxcMiGu2fo", UserService::UserServiceGetUserName);
+	// Alias NID for the same call, captured from titles (Astro Bot).
+	LIB_FUNC("znaWI0gpuo8", UserService::UserServiceGetUserName);
 	LIB_FUNC("bwFjS+bX9mA", UserService::UserServiceGetUserNumber);
 	LIB_FUNC("qbwy0Ub8b3M", UserService::UserServiceGetUserNumber);
 	LIB_FUNC("-sD02mFDBh4", UserService::UserServiceGetGamePresets);

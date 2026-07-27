@@ -213,13 +213,20 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 	args << "--shader-log-folder" << info.shader_log_folder;
 	args << "--command-buffer-dump" << BoolArg(info.command_buffer_dump_enabled);
 	args << "--command-buffer-dump-folder" << info.command_buffer_dump_folder;
+	args << "--graphics-debug-dump" << BoolArg(info.graphics_debug_dump_enabled);
 	args << "--printf-direction" << EnumToText(info.printf_direction);
 	args << "--printf-output-file" << info.printf_output_file;
 	args << "--profiler-direction" << EnumToText(info.profiler_direction);
-	args << "--spirv-debug-printf" << "false";
+	args << "--spirv-debug-printf" << BoolArg(info.spirv_debug_printf_enabled);
 	args << "--ngg-rectlist-draw" << BoolArg(info.ngg_rectlist_draw_enabled);
 	if (info.renderdoc_enabled) {
 		args << "--rd";
+	}
+	if (!info.keyboard_button_map.isEmpty()) {
+		args << "--keyboard-map" << info.keyboard_button_map;
+	}
+	if (!info.controller_button_map.isEmpty()) {
+		args << "--controller-map" << info.controller_button_map;
 	}
 
 	QString game = info.basedir;

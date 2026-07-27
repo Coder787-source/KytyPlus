@@ -4,6 +4,7 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
+#include "kernel/fileSystem.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
@@ -184,7 +185,20 @@ int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         servic
 
 	std::memset(mount_point->data, 0, sizeof(mount_point->data));
 
-	return OK;
+	// There is currently no addon-content (DLC/PKG) extraction or install pipeline in this
+	// emulator -- no directory of installed addcont packages exists to look up, for any
+	// entitlement label. Previously this unconditionally returned OK with an empty mount path,
+	// which told the guest the mount succeeded while leaving it with a phantom mount point that
+	// resolves to nothing; any title that only checks the return code (rather than also
+	// verifying the mount path) would proceed as if DLC-gated content were available and then
+	// fail unpredictably reading through it. Report "not entitled" honestly instead until real
+	// addcont package support exists.
+	LOGF_COLOR(Log::Color::Yellow,
+	           "AppContentAddcontMount: no addon-content packages are supported yet; reporting "
+	           "no entitlement for label=%.17s\n",
+	           entitlement_label->data);
+
+	return APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
 }
 
 int KYTY_SYSV_ABI AppContentAddcontUnmount(const AppContentMountPoint* mount_point) {
@@ -211,6 +225,9 @@ namespace AppContentTemporary {
 
 using AppContentMountPoint = AppContent::AppContentMountPoint;
 
+static constexpr char TEMP_DATA_DIR[]   = "_TemporaryData";
+static constexpr char TEMP_DATA_POINT[] = "/temp0";
+
 static int KYTY_SYSV_ABI AppContentTemporaryDataMount2(uint32_t              option,
                                                        AppContentMountPoint* mount_point) {
 	PRINT_NAME();
@@ -224,7 +241,24 @@ static int KYTY_SYSV_ABI AppContentTemporaryDataMount2(uint32_t              opt
 	}
 
 	std::memset(mount_point->data, 0, sizeof(mount_point->data));
-	std::memcpy(mount_point->data, "/temp0", sizeof("/temp0") - 1);
+
+	// Previously this claimed a mount at "/temp0" without ever calling FileSystem::Mount or
+	// creating a backing directory, so any title that actually read/wrote through the reported
+	// mount point was touching an unmounted path that silently resolved to nothing. Temporary
+	// data storage is just scratch space (no entitlement/DRM check applies, unlike addcont), so
+	// it can be backed by a real host directory.
+	std::error_code ec;
+	std::filesystem::create_directories(TEMP_DATA_DIR, ec);
+	if (ec) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "AppContentTemporaryDataMount2: failed to create backing directory: %s\n",
+		           ec.message().c_str());
+		return AppContent::APP_CONTENT_ERROR_PARAMETER;
+	}
+
+	Libs::LibKernel::FileSystem::Mount(TEMP_DATA_DIR, TEMP_DATA_POINT);
+
+	std::memcpy(mount_point->data, TEMP_DATA_POINT, sizeof(TEMP_DATA_POINT) - 1);
 
 	LOGF("\t mount      = %s\n", mount_point->data);
 
@@ -237,6 +271,19 @@ static int KYTY_SYSV_ABI AppContentTemporaryDataFormat(const AppContentMountPoin
 	LOGF("\t mount_point = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(mount_point));
 
 	if (mount_point == nullptr) {
+		return AppContent::APP_CONTENT_ERROR_PARAMETER;
+	}
+
+	// Format means "clear the temporary data area". Actually remove and recreate the backing
+	// directory instead of just reporting success with stale (or nonexistent) contents left in
+	// place.
+	std::error_code ec;
+	std::filesystem::remove_all(TEMP_DATA_DIR, ec);
+	std::filesystem::create_directories(TEMP_DATA_DIR, ec);
+	if (ec) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "AppContentTemporaryDataFormat: failed to recreate backing directory: %s\n",
+		           ec.message().c_str());
 		return AppContent::APP_CONTENT_ERROR_PARAMETER;
 	}
 
