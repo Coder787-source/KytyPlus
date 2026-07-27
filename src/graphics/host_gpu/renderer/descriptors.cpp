@@ -276,15 +276,6 @@ static void ValidateDepthTargetBinding(const ShaderRecompiler::IR::ImageResource
 	     descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
 }
 
-static bool IsSupportedStorageDepthTile(const ShaderTextureResource& descriptor) {
-	const auto type = static_cast<Prospero::ImageType>(descriptor.Type());
-	return descriptor.Depth() == 0 &&
-	       ((descriptor.Format() == Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt) &&
-	         type == Prospero::ImageType::kColor2DArray) ||
-	        (descriptor.Format() == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) &&
-	         type == Prospero::ImageType::kColor2D));
-}
-
 static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::ImageResource& resource,
                                                 const ShaderTextureResource& descriptor) {
 	const auto tile  = descriptor.TileMode();
@@ -297,10 +288,12 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	    descriptor.BaseArray5() <= descriptor.Depth();
 	const bool is_3d = resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim3D &&
 	                   descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor3D);
+	TileBlockLayout depth_block {};
+	const auto      depth_bpe = Prospero::RenderTargetBytesPerElement(descriptor.Format());
 	const bool supported_depth_tile =
 	    tile == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) && !resource.read &&
-	    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint &&
-	    IsSupportedStorageDepthTile(descriptor);
+	    !Prospero::IsFmaskTextureFormat(descriptor.Format()) && (is_2d || is_2d_array) &&
+	    TileGetBlockLayout(TileBlockFamily::Depth64KB, depth_bpe, depth_block);
 	const bool supported_volume_tile =
 	    is_3d && tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB);
 	const bool supported_tile = tile == Prospero::GpuEnumValue(Prospero::TileMode::kLinear) ||
@@ -349,7 +342,7 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
 	     "kind=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
 	     "base_level=%u last_level=%u max_mip=%u min_lod=%u base_array=%u bc=%u msaa=%d "
-	     "depth_tile_shape=%d swizzle_ok=%d "
+	     "depth_tile_bpe=%u swizzle_ok=%d "
 	     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
 	     " extent=%ux%ux%u type=%u format=%u tile=%u swizzle=0x%03x read=%d written=%d "
 	     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
@@ -357,7 +350,7 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	     static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
 	     resource.atomic, resource.depth_compare, descriptor.BaseLevel(), descriptor.LastLevel(),
 	     descriptor.MaxMip(), descriptor.MinLod(), descriptor.BaseArray5(), descriptor.BCSwizzle(),
-	     descriptor.MsaaDepth(), IsSupportedStorageDepthTile(descriptor),
+	     descriptor.MsaaDepth(), Prospero::RenderTargetBytesPerElement(format),
 	     IsValidImageSwizzle(descriptor.DstSelXYZW()),
 	     descriptor.Base40(), size, static_cast<uint32_t>(descriptor.Width5()) + 1u,
 	     static_cast<uint32_t>(descriptor.Height5()) + 1u,

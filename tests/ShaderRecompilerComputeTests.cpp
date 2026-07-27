@@ -15610,6 +15610,11 @@ ShaderTextureResource Ppsa14053DepthTileStorageTextureDescriptor() {
            0x00700000u, 0x00000000u, 0x00000000u}};
 }
 
+ShaderTextureResource Ppsa10112D16StorageTextureDescriptor() {
+  return {{0x205b9000u, 0xc0700000u, 0x0021803bu, 0xd1800204u, 0x00000000u,
+           0x00700000u, 0x00000000u, 0x00000000u}};
+}
+
 ShaderRecompiler::IR::ImageResource BasicUintVolumeStorageTextureResource() {
   auto resource = BasicStorageTextureResource();
   resource.kind = ShaderRecompiler::IR::ResourceKind::StorageImageUint;
@@ -15690,7 +15695,17 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
   } else if (std::strcmp(kind, "depth-tile-extent") == 0) {
     resource = Ppsa14053DepthTileStorageTextureResource();
     descriptor = Ppsa14053DepthTileStorageTextureDescriptor();
+    resource.dimension = ShaderRecompiler::Decoder::ImageDimension::Dim2D;
+    descriptor.fields[3] =
+        (descriptor.fields[3] & 0x0fffffffu) |
+        (Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) << 28u);
     descriptor.fields[4] |= 1u;
+  } else if (std::strcmp(kind, "depth-tile-fmask") == 0) {
+    resource = BasicArrayStorageTextureResource();
+    descriptor = Ppsa10112D16StorageTextureDescriptor();
+    descriptor.fields[1] =
+        (descriptor.fields[1] & ~(0x1ffu << 20u)) |
+        (Prospero::GpuEnumValue(Prospero::BufferFormat::kFmask8_S4_F4) << 20u);
   } else {
     std::_Exit(0x7e);
   }
@@ -15935,6 +15950,34 @@ void CheckBasicStorageTextureDescriptor() {
           "malformed");
   ValidateStorageTexture(Ppsa14053DepthTileStorageTextureResource(), depth_tile,
                          0x10000);
+  const auto d16_depth_tile = Ppsa10112D16StorageTextureDescriptor();
+  Require("BasicStorageTexture", "PPSA10112 D16 depth-tile descriptor",
+          d16_depth_tile.Base40() == 0x205b900000ull &&
+              d16_depth_tile.Width5() + 1u == 240 &&
+              d16_depth_tile.Height5() + 1u == 135 &&
+              d16_depth_tile.Depth() + 1u == 1 &&
+              d16_depth_tile.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
+              d16_depth_tile.Format() ==
+                  Prospero::GpuEnumValue(Prospero::BufferFormat::k16UNorm) &&
+              d16_depth_tile.TileMode() ==
+                  Prospero::GpuEnumValue(Prospero::TileMode::kDepth) &&
+              d16_depth_tile.DstSelXYZW() == DstSel(4, 0, 0, 1),
+          "PPSA10112 writable D16 depth-plane descriptor fixture is malformed");
+  const auto d16_pitch = TileGetTexturePitch(
+      d16_depth_tile.Format(), d16_depth_tile.Width5() + 1u, 1,
+      d16_depth_tile.TileMode());
+  TileSizeAlign d16_size{};
+  TileGetTextureTotalSize(
+      d16_depth_tile.Format(), d16_depth_tile.Width5() + 1u,
+      d16_depth_tile.Height5() + 1u, d16_depth_tile.Depth() + 1u, d16_pitch, 1,
+      d16_depth_tile.TileMode(), false, d16_size);
+  Require("BasicStorageTexture", "PPSA10112 D16 depth-tile footprint",
+          d16_pitch == 256 && d16_size.size == 0x20000 &&
+              d16_size.align == 0x10000,
+          "PPSA10112 writable D16 depth-plane footprint is incorrect");
+  ValidateStorageTexture(BasicArrayStorageTextureResource(), d16_depth_tile,
+                         d16_size.size);
   auto depth_tile_r32 = depth_tile;
   depth_tile_r32.fields[1] =
       (depth_tile_r32.fields[1] & ~(0x1ffu << 20u)) |
@@ -15959,7 +16002,7 @@ void CheckBasicStorageTextureDescriptor() {
         "bgra-read", "r16-float-read", "r8-unorm-read", "yzwx-read",
         "reserved-swizzle", "array-base-view", "array-mip-view", "reserved",
         "uint-format", "uint-resource-float-format",
-        "depth-tile-read", "depth-tile-extent"}) {
+        "depth-tile-read", "depth-tile-extent", "depth-tile-fmask"}) {
     std::string command = std::string("\"") + path +
                           "\" --storage-texture-descriptor-death " + kind;
     std::vector<char> mutable_command(command.begin(), command.end());
