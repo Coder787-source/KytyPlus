@@ -22,6 +22,7 @@ namespace SystemService {
 [[maybe_unused]] constexpr int PARAM_ID_SUMMERTIME          = 5;
 [[maybe_unused]] constexpr int PARAM_ID_SYSTEM_NAME         = 6;
 [[maybe_unused]] constexpr int PARAM_ID_GAME_PARENTAL_LEVEL = 7;
+[[maybe_unused]] constexpr int PARAM_ID_SCREEN_READER       = 208;
 [[maybe_unused]] constexpr int PARAM_ID_ENTER_BUTTON_ASSIGN = 1000;
 
 [[maybe_unused]] constexpr int PARAM_LANG_JAPANESE      = 0;
@@ -126,6 +127,7 @@ static int KYTY_SYSV_ABI SystemServiceParamGetInt(int param_id, int* value) {
 		case PARAM_ID_TIME_ZONE: v = +180; break;
 		case PARAM_ID_SUMMERTIME: v = 0; break;
 		case PARAM_ID_GAME_PARENTAL_LEVEL: v = PARAM_GAME_PARENTAL_OFF; break;
+		case PARAM_ID_SCREEN_READER: v = 0; break;
 		case PARAM_ID_ENTER_BUTTON_ASSIGN: v = PARAM_ENTER_BUTTON_ASSIGN_CROSS; break;
 		default: EXIT("unknown param_id: %d\n", param_id);
 	}

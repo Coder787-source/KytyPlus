@@ -35,6 +35,7 @@ namespace LibNet {
 LIB_VERSION("Net", 1, "Net", 1, 1);
 
 static thread_local int g_net_errno = 0;
+static constexpr uint32_t g_in6addr_any[4] {};
 
 namespace Net = Network::Net;
 
@@ -180,6 +181,8 @@ uint16_t KYTY_SYSV_ABI NetNtohs(uint16_t net16) {
 }
 
 LIB_DEFINE(InitNet_1_Net) {
+	LIB_OBJECT("ZRAJo-A-ukc", &LibNet::g_in6addr_any);
+
 	LIB_FUNC("Nlev7Lg8k3A", LibNet::NetInit);
 	LIB_FUNC("HQOwnfMGipQ", LibNet::GetNetErrorAddr);
 	LIB_FUNC("PIWqhn9oSxc", LibNet::NetAccept);
