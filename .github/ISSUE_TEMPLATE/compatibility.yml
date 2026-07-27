@@ -34,6 +34,7 @@ body:
         - Reaches menu
         - Ingame (broken)
         - Ingame (playable-ish)
+        - Playable
         - Other
     validations:
       required: true
