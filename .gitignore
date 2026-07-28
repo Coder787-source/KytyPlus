@@ -4,4 +4,20 @@
 build/
 _Build/
 _Build/vscode-clang/
+_Buildwindows/
+_BuildLauncher/
 .aider*
+
+# Local-only build scripts and logs (not part of the repo)
+_build_kyty.bat
+_build_launcher.bat
+_build_tests.bat
+_configure_kyty.bat
+_configure_launcher.bat
+_configure_release.bat
+_install_release.bat
+_issue_logs/
+_issues.json
+*.zip
+*.log
+issue*_crash.png
