@@ -39,6 +39,8 @@
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#include <sched.h>
+#include <unistd.h>
 #endif
 
 #include <pthread.h>
@@ -168,6 +170,102 @@ static void KernelUsToTimespec(uint64_t us, KernelTimespec* tp) {
 	tp->tv_sec  = static_cast<int64_t>(us / 1000000);
 	tp->tv_nsec = static_cast<int64_t>((us % 1000000) * 1000);
 }
+
+// PS4/PS5 games set a per-thread CPU affinity mask (KernelCpumask, one bit per usable core --
+// typically 0x7f for 7 usable cores, core 0 being reserved for the system on real hardware) via
+// scePthreadSetaffinity/scePthreadAttrSetaffinity expecting it to actually pin the thread to
+// specific cores. Previously this mask was only stored in PthreadAttrPrivate and never applied
+// to any real OS scheduling call, so every guest thread ran wherever the host OS felt like
+// scheduling it regardless of what the game asked for. This maps the guest mask onto the host's
+// actual available logical processors and applies it for real.
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+static uint64_t TranslateGuestAffinityToHostMask(KernelCpumask guest_mask) {
+	DWORD_PTR process_mask = 0;
+	DWORD_PTR system_mask  = 0;
+	if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) == 0 ||
+	    process_mask == 0) {
+		return 0;
+	}
+
+	// Enumerate the host logical processors this process is actually allowed to run on, in bit
+	// order, so guest core index N maps to the Nth host-available processor rather than to a
+	// literal bit position that might not exist/be usable on the host.
+	std::vector<int> host_processors;
+	for (int i = 0; i < 64; i++) {
+		if ((static_cast<uint64_t>(process_mask) & (uint64_t {1} << i)) != 0) {
+			host_processors.push_back(i);
+		}
+	}
+	if (host_processors.empty()) {
+		return 0;
+	}
+
+	uint64_t host_mask = 0;
+	bool     any_bit   = false;
+	for (int guest_core = 0; guest_core < 64; guest_core++) {
+		if ((guest_mask & (uint64_t {1} << guest_core)) == 0) {
+			continue;
+		}
+		const int host_core =
+		    host_processors[static_cast<size_t>(guest_core) % host_processors.size()];
+		host_mask |= (uint64_t {1} << host_core);
+		any_bit = true;
+	}
+
+	// An all-zero guest mask (or one with no bits we could translate) means "no restriction" --
+	// leave the thread on the full process affinity rather than pinning it to nothing.
+	return any_bit ? host_mask : static_cast<uint64_t>(process_mask);
+}
+
+static void ApplyHostThreadAffinity(uint64_t os_thread_id, KernelCpumask guest_mask) {
+	if (os_thread_id == 0) {
+		return;
+	}
+
+	const uint64_t host_mask = TranslateGuestAffinityToHostMask(guest_mask);
+	if (host_mask == 0) {
+		return;
+	}
+
+	HANDLE handle = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE,
+	                           static_cast<DWORD>(os_thread_id));
+	if (handle == nullptr) {
+		return;
+	}
+
+	if (SetThreadAffinityMask(handle, static_cast<DWORD_PTR>(host_mask)) == 0) {
+		LOGF_COLOR(Log::Color::Yellow,
+		           "SetThreadAffinityMask failed for os_thread_id=%" PRIu64
+		           ", guest_mask=0x%016" PRIx64 ", host_mask=0x%016" PRIx64 "\n",
+		           os_thread_id, guest_mask, host_mask);
+	}
+
+	CloseHandle(handle);
+}
+#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+static void ApplyHostThreadAffinity(pthread_t handle, KernelCpumask guest_mask) {
+	const long ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpus <= 0) {
+		return;
+	}
+
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	bool any_bit = false;
+	for (int guest_core = 0; guest_core < 64; guest_core++) {
+		if ((guest_mask & (uint64_t {1} << guest_core)) == 0) {
+			continue;
+		}
+		CPU_SET(static_cast<int>(guest_core % ncpus), &cpuset);
+		any_bit = true;
+	}
+	if (!any_bit) {
+		return;
+	}
+
+	pthread_setaffinity_np(handle, sizeof(cpu_set_t), &cpuset);
+}
+#endif
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 static uint64_t KernelFiletimeTo100ns(FILETIME ft) {
@@ -3192,6 +3290,14 @@ static void* RunThread(void* arg) {
 #endif
 	thread->host_thread_id = os_thread_id;
 
+	// Apply the CPU affinity mask the game requested at PthreadCreate/PthreadAttrSetaffinity
+	// time now that the thread actually exists at the OS level (see ApplyHostThreadAffinity).
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	ApplyHostThreadAffinity(os_thread_id, thread->attr->affinity);
+#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+	ApplyHostThreadAffinity(thread->p, thread->attr->affinity);
+#endif
+
 	LOGF("\tPthread run begin: %s, id = %d, os_thread_id = %" PRIu64 ", entry = 0x%016" PRIx64
 	     ", arg = 0x%016" PRIx64 ", stack_addr = 0x%016" PRIx64 ", stack_size = %" PRIu64 "\n",
 	     thread->name.c_str(), thread->unique_id, os_thread_id,
@@ -3364,6 +3470,17 @@ int KYTY_SYSV_ABI PthreadSetaffinity(Pthread thread, KernelCpumask mask) {
 	}
 
 	auto result = PthreadAttrSetaffinity(&thread->attr, mask);
+
+	if (result == OK) {
+		// The thread may already be running (this can be called on a live thread, not just at
+		// creation time), so re-apply the affinity to the real OS thread immediately rather than
+		// only storing it for a future PthreadCreate.
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+		ApplyHostThreadAffinity(thread->host_thread_id, mask);
+#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+		ApplyHostThreadAffinity(thread->p, mask);
+#endif
+	}
 
 	return result;
 }
