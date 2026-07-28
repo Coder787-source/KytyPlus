@@ -431,6 +431,12 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	bool dir_exist  = Common::File::IsDirectoryExisting(file->real_name);
 	bool file_exist = Common::File::IsFileExisting(file->real_name);
 
+	// A missing path opened without O_CREAT is ENOENT
+	if (!creat && !dir_exist && !file_exist) {
+		g_files->DeleteDescriptor(descriptor);
+		return KERNEL_ERROR_ENOENT;
+	}
+
 	if (directory || dir_exist) {
 		if (!dir_exist) {
 			g_files->DeleteDescriptor(descriptor);
