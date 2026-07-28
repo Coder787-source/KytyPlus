@@ -50,6 +50,9 @@ struct WindowContext {
 	GraphicContext      graphic_ctx;
 	SDL_Window*         window        = nullptr;
 	bool                window_hidden = true;
+	// Set on SDL_WINDOWEVENT_MINIMIZED, cleared on RESTORED/MAXIMIZED. Minimized Win32 surfaces
+	// report a 0x0 drawable size and 0x0 surface capabilities; presenting is skipped while set.
+	bool                window_minimized = false;
 	vk::SurfaceKHR      surface       = nullptr;
 	SurfaceCapabilities surface_capabilities;
 	std::unique_ptr<RenderContext> render_context;

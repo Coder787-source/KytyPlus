@@ -40,8 +40,8 @@ ResolveTargetTextureView(const ShaderRecompiler::IR::ImageResource& resource,
 [[nodiscard]] bool
 IsSupportedSampledVideoOutView(const ShaderRecompiler::IR::ImageResource& resource,
                                const ShaderTextureResource& descriptor, const Image& image);
-void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
-                            const ShaderTextureResource& descriptor, uint64_t size);
+[[nodiscard]] bool ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
+                                          const ShaderTextureResource& descriptor, uint64_t size);
 
 } // namespace Libs::Graphics
 

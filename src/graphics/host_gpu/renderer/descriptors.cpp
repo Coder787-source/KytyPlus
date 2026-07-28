@@ -84,7 +84,13 @@ static BufferView NativeStorageBuffer(RenderContext& context, CommandBuffer& com
 	const auto stride  = descriptor.Stride();
 	const auto records = descriptor.NumRecords();
 	if (stride != 0 && records > UINT64_MAX / stride) {
-		EXIT("storage buffer descriptor footprint overflow\n");
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-null storage buffer descriptor footprint overflow\n");
+		}
+		BindNullStorageBuffer(context, result);
+		return result;
 	}
 	const auto size = stride != 0 ? static_cast<uint64_t>(stride) * records : records;
 	if (address == 0 || size == 0) {
@@ -95,7 +101,15 @@ static BufferView NativeStorageBuffer(RenderContext& context, CommandBuffer& com
 	const auto  alignment = graphics.StorageMinAlignment();
 	if (alignment == 0 ||
 	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange) {
-		EXIT("storage buffer range or device alignment is unsupported\n");
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-null storage buffer range or device alignment unsupported, "
+			           "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " align=%u\n",
+			           address, size, alignment);
+		}
+		BindNullStorageBuffer(context, result);
+		return result;
 	}
 	auto binding = context.GetBufferCache().ObtainBuffer(
 	    command_buffer, address, size, resource.written, resource.read, resource.formatted);
@@ -103,7 +117,15 @@ static BufferView NativeStorageBuffer(RenderContext& context, CommandBuffer& com
 	const auto adjustment     = binding.offset - aligned_offset;
 	const auto max_range      = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;
 	if (adjustment % sizeof(uint32_t) != 0 || adjustment >= 256 || size > max_range - adjustment) {
-		EXIT("storage buffer offset adjustment is unsupported\n");
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-null storage buffer offset adjustment unsupported, "
+			           "addr=0x%016" PRIx64 " size=0x%016" PRIx64 " offset=0x%016" PRIx64 "\n",
+			           address, size, binding.offset);
+		}
+		BindNullStorageBuffer(context, result);
+		return result;
 	}
 	buffer_offset = static_cast<uint32_t>(adjustment);
 	result.owner  = std::move(binding.owner);
@@ -123,7 +145,15 @@ NativeAddressBuffer(RenderContext& context, CommandBuffer& command_buffer,
 		return result;
 	}
 	if (resource.written) {
-		EXIT("writable address resources are unsupported\n");
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-null writable address resources are unsupported: base=0x%016" PRIx64
+			           "\n",
+			           address.binding_base);
+		}
+		BindNullStorageBuffer(context, result);
+		return result;
 	}
 	const auto limit =
 	    resource.kind == ShaderRecompiler::IR::ResourceKind::Flat
@@ -133,15 +163,30 @@ NativeAddressBuffer(RenderContext& context, CommandBuffer& command_buffer,
 	uint64_t   size   = 0;
 	const auto access = HostMemoryAccess::Mapped;
 	if (!HostMemoryQueryRange(address.binding_base, limit, access, size)) {
-		EXIT("address resource is not host-accessible: base=0x%016" PRIx64 "\n",
-		     address.binding_base);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-null address resource is not host-accessible: base=0x%016" PRIx64
+			           "\n",
+			           address.binding_base);
+		}
+		BindNullStorageBuffer(context, result);
+		return result;
 	}
 	const auto& graphics  = context.GetGraphics();
 	const auto  alignment = graphics.StorageMinAlignment();
 	if (alignment == 0 ||
 	    size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange ||
 	    BufferCache::GetBufferOffset(address.binding_base) % alignment != 0) {
-		EXIT("address resource range or alignment is unsupported\n");
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-null address resource range or alignment unsupported, "
+			           "base=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+			           address.binding_base, size);
+		}
+		BindNullStorageBuffer(context, result);
+		return result;
 	}
 	auto binding =
 	    context.GetBufferCache().ObtainBuffer(command_buffer, address.binding_base, size);
@@ -367,7 +412,7 @@ static bool IsSupportedStorageTextureEncoding(const ShaderTextureResource& descr
 	       (descriptor.fields[5] & ~field5_max_mip_mask) == field5_expected;
 }
 
-void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
+bool ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
                             const ShaderTextureResource& descriptor, uint64_t size) {
 	const auto format        = descriptor.Format();
 	const bool resource_ok   = IsSupportedStorageImageResource(resource);
@@ -378,27 +423,28 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	const bool format_ok = Prospero::IsSupportedTextureFormat(format) &&
 	                       uint_resource == Prospero::IsUintTextureFormat(format);
 	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
-		return;
+		return true;
 	}
-	EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
-	     "kind=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
-	     "base_level=%u last_level=%u max_mip=%u min_lod=%u base_array=%u bc=%u msaa=%d "
-	     "depth_tile_bpe=%u swizzle_ok=%d "
-	     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-	     " extent=%ux%ux%u type=%u format=%u tile=%u swizzle=0x%03x read=%d written=%d "
-	     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
-	     resource_ok, descriptor_ok, encoding_ok, format_ok, static_cast<uint32_t>(resource.kind),
-	     static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
-	     resource.atomic, resource.depth_compare, descriptor.BaseLevel(), descriptor.LastLevel(),
-	     descriptor.MaxMip(), descriptor.MinLod(), descriptor.BaseArray5(), descriptor.BCSwizzle(),
-	     descriptor.MsaaDepth(), Prospero::RenderTargetBytesPerElement(format),
-	     IsValidImageSwizzle(descriptor.DstSelXYZW()), descriptor.Base40(), size,
-	     static_cast<uint32_t>(descriptor.Width5()) + 1u,
-	     static_cast<uint32_t>(descriptor.Height5()) + 1u,
-	     static_cast<uint32_t>(descriptor.Depth()) + 1u, descriptor.Type(), format,
-	     descriptor.TileMode(), descriptor.DstSelXYZW(), resource.read, resource.written,
-	     descriptor.fields[0], descriptor.fields[1], descriptor.fields[2], descriptor.fields[3],
-	     descriptor.fields[4], descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
+	static std::atomic<uint32_t> soft_logs {0};
+	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+		LOGF_COLOR(
+		    Log::Color::Yellow,
+		    "soft-null unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
+		    "kind=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
+		    "addr=0x%016" PRIx64 " size=0x%016" PRIx64
+		    " extent=%ux%ux%u type=%u format=%u tile=%u "
+		    "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+		    resource_ok, descriptor_ok, encoding_ok, format_ok, static_cast<uint32_t>(resource.kind),
+		    static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
+		    resource.atomic, resource.depth_compare, descriptor.Base40(), size,
+		    static_cast<uint32_t>(descriptor.Width5()) + 1u,
+		    static_cast<uint32_t>(descriptor.Height5()) + 1u,
+		    static_cast<uint32_t>(descriptor.Depth()) + 1u, descriptor.Type(), format,
+		    descriptor.TileMode(), descriptor.fields[0], descriptor.fields[1], descriptor.fields[2],
+		    descriptor.fields[3], descriptor.fields[4], descriptor.fields[5], descriptor.fields[6],
+		    descriptor.fields[7]);
+	}
+	return false;
 }
 
 struct NullImageSpec {
@@ -611,7 +657,11 @@ RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   reso
 	EXIT_NOT_IMPLEMENTED(size.size == 0 || size.align == 0 ||
 	                     (address & (static_cast<uint64_t>(size.align) - 1u)) != 0);
 	if (storage) {
-		ValidateStorageTexture(resource, descriptor, size.size);
+		if (!ValidateStorageTexture(resource, descriptor, size.size)) {
+			auto       desc = NullTextureDesc(resource, TextureCache::BindingType::Storage);
+			const auto id   = texture_cache.FindImage(desc);
+			return {id, nullptr, std::move(desc)};
+		}
 		m_context.GetBufferCache().ValidateGpuAccess(address, size.size, resource.read,
 		                                             resource.written);
 	}

@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cinttypes>
 #include <cstring>
@@ -371,7 +372,13 @@ void TextureCache::ValidateImageDesc(const ImageDesc& desc) const {
 	}
 	if (desc.type == BindingType::VideoOut &&
 	    desc.info.metadata.compression == VideoOutCompression::Unsupported) {
-		EXIT("TextureCache: unsupported compressed video-out description\n");
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: soft-accept unsupported compressed video-out description, "
+			           "addr=0x%016" PRIx64 "\n",
+			           desc.info.data.address);
+		}
 	}
 }
 
@@ -647,14 +654,22 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 			}
 			return {merged_id};
 		}
-		EXIT("TextureCache: unresolvable equal-address image overlap, address=0x%016" PRIx64
-		     " requested=%ux%u "
-		     "cached=%ux%u requested_size=0x%016" PRIx64 " cached_size=0x%016" PRIx64
-		     " type=%u/%u tile=%u/%u\n",
-		     requested.data.address, requested.resources.levels, requested.resources.layers,
-		     cached.info.resources.levels, cached.info.resources.layers, requested.data.size,
-		     cached.info.data.size, static_cast<uint32_t>(requested.type),
-		     static_cast<uint32_t>(cached.info.type), requested.tile_mode, cached.info.tile_mode);
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "TextureCache: soft-retire unresolvable equal-address image overlap, "
+			           "address=0x%016" PRIx64 " requested=%ux%u cached=%ux%u "
+			           "requested_size=0x%016" PRIx64 " cached_size=0x%016" PRIx64
+			           " type=%u/%u tile=%u/%u\n",
+			           requested.data.address, requested.resources.levels,
+			           requested.resources.layers, cached.info.resources.levels,
+			           cached.info.resources.layers, requested.data.size, cached.info.data.size,
+			           static_cast<uint32_t>(requested.type),
+			           static_cast<uint32_t>(cached.info.type), requested.tile_mode,
+			           cached.info.tile_mode);
+		}
+		DeleteImages(std::array {cached_id}, cached_id);
+		return {merged_id};
 	}
 
 	if (requested.data.address > cached.info.data.address) {
@@ -971,10 +986,19 @@ void TextureCache::RefreshImage(ImageId id, const ImageDesc& desc) {
 	}
 	if (image.info.metadata.compression != VideoOutCompression::Uncompressed) {
 		if (cpu_dirty) {
-			EXIT("TextureCache: compressed guest image refresh is unsupported\n");
+			// Emulator never produces real DCC; guest memory still holds raw pixels. Refresh from
+			// that backing instead of hard-exiting (#71–#75 Resident Evil class).
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "TextureCache: refreshing compressed video-out surface from raw guest "
+				           "backing, addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+				           image.info.data.address, image.info.data.size);
+			}
+		} else {
+			RestoreGpuTracking(image);
+			return;
 		}
-		RestoreGpuTracking(image);
-		return;
 	}
 	if (!cpu_dirty) {
 		RestoreGpuTracking(image);
@@ -1631,7 +1655,13 @@ bool TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
 		}
 		if (owner->IsGpuModified()) {
 			if (!formatted_buffer_write) {
-				EXIT("TextureCache: buffer write aliases GPU-modified image\n");
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "TextureCache: soft-retire buffer write aliases GPU-modified image, "
+					           "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+					           address, size);
+				}
 			}
 			ReleaseGpuTracking(id);
 		}

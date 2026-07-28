@@ -37,6 +37,7 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -380,7 +381,18 @@ static void GameEventDidEnterForeground(WindowLoopState& game) {
 }
 
 void WindowContext::Resize(uint32_t new_width, uint32_t new_height) {
-	EXIT_IF(new_width == 0 || new_height == 0);
+	// Minimized Win32 windows fire SIZE_CHANGED/RESIZED with 0x0 (Astro Bot splash). Ignore the
+	// degenerate size; last known-good screen size stays until a real restore arrives.
+	if (new_width == 0 || new_height == 0) {
+		static std::atomic<uint32_t> zero_resize_logs {0};
+		if (zero_resize_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "GameEventResize: ignoring degenerate resize %" PRIu32 "x%" PRIu32
+			           " (window likely minimized)\n",
+			           new_width, new_height);
+		}
+		return;
+	}
 	graphic_ctx.screen_width  = new_width;
 	graphic_ctx.screen_height = new_height;
 }
@@ -423,12 +435,15 @@ void WindowContext::ProcessWindowEvent(const SDL_WindowEvent& event) {
 
 		case SDL_WINDOWEVENT_MINIMIZED:
 			LOGF("Window %" PRIu32 " minimized\n", window_event.windowID);
+			window_minimized = true;
 			break;
 		case SDL_WINDOWEVENT_MAXIMIZED:
 			LOGF("Window %" PRIu32 " maximized\n", window_event.windowID);
+			window_minimized = false;
 			break;
 		case SDL_WINDOWEVENT_RESTORED:
 			LOGF("Window %" PRIu32 " restored\n", window_event.windowID);
+			window_minimized = false;
 			break;
 		case SDL_WINDOWEVENT_ENTER:
 			LOGF("Mouse entered window %" PRIu32 "\n", window_event.windowID);
