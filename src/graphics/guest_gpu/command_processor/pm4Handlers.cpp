@@ -6,7 +6,6 @@
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/graphicContext.h"
-#include "graphics/host_gpu/objects/label.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/presentation/videoOut.h"
@@ -19,7 +18,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cstring>
 #include <cstdio>
 #include <vector>
 
@@ -599,30 +597,7 @@ KYTY_HW_CTX_PARSER(HwCtxSetDepthRenderTarget) {
 	uint32_t count = 1;
 
 	if (cmd_id == 0xC0016900) {
-		HW::DepthZInfo r;
-
-		//	r.expclear_enabled = (buffer[0] & 0x08000000u) != 0;
-		//	r.format              = (buffer[0] >> Pm4::DB_Z_INFO_FORMAT_SHIFT) &
-		// Pm4::DB_Z_INFO_FORMAT_MASK; 	r.num_samples         = (buffer[0] >>
-		// Pm4::DB_Z_INFO_NUM_SAMPLES_SHIFT) & Pm4::DB_Z_INFO_NUM_SAMPLES_MASK; r.tile_mode_index =
-		//(buffer[0] >> Pm4::DB_Z_INFO_TILE_MODE_INDEX_SHIFT) & Pm4::DB_Z_INFO_TILE_MODE_INDEX_MASK;
-		//	r.tile_surface_enable = ((buffer[0] >> Pm4::DB_Z_INFO_TILE_SURFACE_ENABLE_SHIFT) &
-		// Pm4::DB_Z_INFO_TILE_SURFACE_ENABLE_MASK) !=0
-		// 	r.zrange_precision    = (buffer[0] >> Pm4::DB_Z_INFO_ZRANGE_PRECISION_SHIFT) &
-		// Pm4::DB_Z_INFO_ZRANGE_PRECISION_MASK;
-
-		r.format                    = KYTY_PM4_GET(buffer[0], DB_Z_INFO, FORMAT);
-		r.num_samples               = KYTY_PM4_GET(buffer[0], DB_Z_INFO, NUM_SAMPLES);
-		r.embedded_sample_locations = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ITERATE_FLUSH) != 0;
-		r.partially_resident        = KYTY_PM4_GET(buffer[0], DB_Z_INFO, PARTIALLY_RESIDENT) != 0;
-		r.num_mip_levels            = KYTY_PM4_GET(buffer[0], DB_Z_INFO, MAXMIP);
-		r.tile_mode_index           = KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_MODE_INDEX);
-		r.plane_compression         = KYTY_PM4_GET(buffer[0], DB_Z_INFO, DECOMPRESS_ON_N_ZPLANES);
-		r.expclear_enabled          = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ALLOW_EXPCLEAR) != 0;
-		r.tile_surface_enable       = KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_SURFACE_ENABLE) != 0;
-		r.zrange_precision          = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ZRANGE_PRECISION);
-
-		cp.GetCtx().SetDepthZInfo(r);
+		cp.GetCtx().SetDepthZInfo(HW::DepthZInfo::Decode(buffer[0]));
 	} else if (cmd_id == 0xC0086900) {
 		if (dw >= 22 && buffer[8] == 0xC0016900 && buffer[9] == Pm4::DB_DEPTH_INFO &&
 		    buffer[11] == 0xC0016900 && buffer[12] == Pm4::DB_DEPTH_VIEW &&
@@ -633,51 +608,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetDepthRenderTarget) {
 
 			HW::DepthRenderTarget z;
 
-			//			z.z_info.expclear_enabled    = (buffer[0] & 0x08000000u) != 0;
-			//			z.z_info.format              = (buffer[0] >> Pm4::DB_Z_INFO_FORMAT_SHIFT) &
-			// Pm4::DB_Z_INFO_FORMAT_MASK; 			z.z_info.num_samples         = (buffer[0] >>
-			// Pm4::DB_Z_INFO_NUM_SAMPLES_SHIFT) & Pm4::DB_Z_INFO_NUM_SAMPLES_MASK;
-			//			z.z_info.tile_mode_index     = (buffer[0] >>
-			// Pm4::DB_Z_INFO_TILE_MODE_INDEX_SHIFT) &
-			// Pm4::DB_Z_INFO_TILE_MODE_INDEX_MASK; 			z.z_info.tile_surface_enable =
-			// KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_SURFACE_ENABLE) != 0;
-			// z.z_info.zrange_precision    = (buffer[0] >> Pm4::DB_Z_INFO_ZRANGE_PRECISION_SHIFT) &
-			// Pm4::DB_Z_INFO_ZRANGE_PRECISION_MASK;
-
-			z.z_info.format      = KYTY_PM4_GET(buffer[0], DB_Z_INFO, FORMAT);
-			z.z_info.num_samples = KYTY_PM4_GET(buffer[0], DB_Z_INFO, NUM_SAMPLES);
-			z.z_info.embedded_sample_locations =
-			    KYTY_PM4_GET(buffer[0], DB_Z_INFO, ITERATE_FLUSH) != 0;
-			z.z_info.partially_resident =
-			    KYTY_PM4_GET(buffer[0], DB_Z_INFO, PARTIALLY_RESIDENT) != 0;
-			z.z_info.num_mip_levels  = KYTY_PM4_GET(buffer[0], DB_Z_INFO, MAXMIP);
-			z.z_info.tile_mode_index = KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_MODE_INDEX);
-			z.z_info.plane_compression =
-			    KYTY_PM4_GET(buffer[0], DB_Z_INFO, DECOMPRESS_ON_N_ZPLANES);
-			z.z_info.expclear_enabled = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ALLOW_EXPCLEAR) != 0;
-			z.z_info.tile_surface_enable =
-			    KYTY_PM4_GET(buffer[0], DB_Z_INFO, TILE_SURFACE_ENABLE) != 0;
-			z.z_info.zrange_precision = KYTY_PM4_GET(buffer[0], DB_Z_INFO, ZRANGE_PRECISION);
-
-			//			z.stencil_info.expclear_enabled     = (buffer[1] & 0x08000000u) != 0;
-			//			z.stencil_info.tile_split           = (buffer[1] >> 13u) & 0x7u;
-			//			z.stencil_info.format               = KYTY_PM4_GET(buffer[1],
-			// DB_STENCIL_INFO, FORMAT); 			z.stencil_info.tile_mode_index      =
-			// KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_MODE_INDEX);
-			//			z.stencil_info.tile_stencil_disable = KYTY_PM4_GET(buffer[1],
-			// DB_STENCIL_INFO, TILE_STENCIL_DISABLE);
-			z.stencil_info.format = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, FORMAT);
-			z.stencil_info.texture_compatible_stencil =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, ITERATE_FLUSH) != 0;
-			z.stencil_info.partially_resident =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, PARTIALLY_RESIDENT) != 0;
-			z.stencil_info.tile_split = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, RESERVED_FIELD_1);
-			z.stencil_info.tile_mode_index =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_MODE_INDEX);
-			z.stencil_info.expclear_enabled =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, ALLOW_EXPCLEAR) != 0;
-			z.stencil_info.tile_stencil_disable =
-			    KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_STENCIL_DISABLE) != 0;
+			z.z_info       = HW::DepthZInfo::Decode(buffer[0]);
+			z.stencil_info = HW::DepthStencilInfo::Decode(buffer[1]);
 
 			z.z_read_base_addr        = static_cast<uint64_t>(buffer[2]) << 8u;
 			z.stencil_read_base_addr  = static_cast<uint64_t>(buffer[3]) << 8u;
@@ -950,48 +882,23 @@ KYTY_HW_CTX_PARSER(HwCtxSetModeControl) {
 	return 1;
 }
 
-static float HwCtxBitsToFloat(uint32_t value) {
-	float result = 0.0f;
-	std::memcpy(&result, &value, sizeof(result));
-	return result;
-}
+static void HwCtxIgnorePolyOffsetRegister(uint32_t cmd_offset, uint32_t value) {
+	static std::atomic<uint32_t> log_count = 0;
 
-static void HwCtxSetPolyOffsetRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_t value) {
-	auto offset = cp.GetCtx().GetPolyOffset();
-	switch (cmd_offset) {
-		case Pm4::PA_SU_POLY_OFFSET_CLAMP: offset.clamp = HwCtxBitsToFloat(value); break;
-		case Pm4::PA_SU_POLY_OFFSET_FRONT_SCALE:
-			offset.front_scale = HwCtxBitsToFloat(value);
-			break;
-		case Pm4::PA_SU_POLY_OFFSET_FRONT_OFFSET:
-			offset.front_offset = HwCtxBitsToFloat(value);
-			break;
-		case Pm4::PA_SU_POLY_OFFSET_BACK_SCALE: offset.back_scale = HwCtxBitsToFloat(value); break;
-		case Pm4::PA_SU_POLY_OFFSET_BACK_OFFSET:
-			offset.back_offset = HwCtxBitsToFloat(value);
-			break;
-		case Pm4::PA_SU_POLY_OFFSET_DB_FMT_CNTL:
-			// Format control for poly-offset units; Vulkan bias path ignores the DB format bits.
-			break;
-		default: {
-			static std::atomic<uint32_t> log_count = 0;
-			if (log_count.fetch_add(1) < 8) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "\t soft-ignore unknown poly offset register 0x%03" PRIx32
-				           " = 0x%08" PRIx32 "\n",
-				           cmd_offset, value);
-			}
-			break;
-		}
+	auto count = log_count.fetch_add(1);
+	if (count < 8) {
+		LOGF_COLOR(Log::Color::Red,
+		           "\t temporary: ignoring polygon offset context register 0x%03" PRIx32
+		           " = 0x%08" PRIx32 " (depth bias not implemented)\n",
+		           cmd_offset, value);
 	}
-	cp.GetCtx().SetPolyOffset(offset);
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetPolyOffsetRegisters) {
 	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
 
 	for (uint32_t i = 0; i < num_values; i++) {
-		HwCtxSetPolyOffsetRegister(cp, cmd_offset + i, buffer[i]);
+		HwCtxIgnorePolyOffsetRegister(cmd_offset + i, buffer[i]);
 	}
 
 	return num_values;
@@ -1279,26 +1186,7 @@ KYTY_HW_CTX_PARSER(HwCtxSetStencilInfo) {
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
 	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::DB_STENCIL_INFO);
 
-	HW::DepthStencilInfo r;
-
-	//	r.expclear_enabled = (buffer[0] & 0x08000000u) != 0;
-	//	r.tile_split       = (buffer[0] >> 13u) & 0x7u;
-	//	r.format          = (buffer[0] >> Pm4::DB_STENCIL_INFO_FORMAT_SHIFT) &
-	// Pm4::DB_STENCIL_INFO_FORMAT_MASK; 	r.tile_mode_index = (buffer[0] >>
-	// Pm4::DB_STENCIL_INFO_TILE_MODE_INDEX_SHIFT) & Pm4::DB_STENCIL_INFO_TILE_MODE_INDEX_MASK;
-	//	r.tile_stencil_disable =
-	//	    ((buffer[0] >> Pm4::DB_STENCIL_INFO_TILE_STENCIL_DISABLE_SHIFT) &
-	// Pm4::DB_STENCIL_INFO_TILE_STENCIL_DISABLE_MASK) != 0;
-
-	r.format                     = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, FORMAT);
-	r.texture_compatible_stencil = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, ITERATE_FLUSH) != 0;
-	r.partially_resident   = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, PARTIALLY_RESIDENT) != 0;
-	r.tile_split           = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, RESERVED_FIELD_1);
-	r.tile_mode_index      = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_MODE_INDEX);
-	r.expclear_enabled     = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, ALLOW_EXPCLEAR) != 0;
-	r.tile_stencil_disable = KYTY_PM4_GET(buffer[1], DB_STENCIL_INFO, TILE_STENCIL_DISABLE) != 0;
-
-	cp.GetCtx().SetDepthStencilInfo(r);
+	cp.GetCtx().SetDepthStencilInfo(HW::DepthStencilInfo::Decode(buffer[0]));
 
 	return 1;
 }
@@ -1451,17 +1339,9 @@ static void HwShSetCsRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_
 		case Pm4::COMPUTE_PGM_RSRC3:
 		case Pm4::COMPUTE_SHADER_CHKSUM:
 		case Pm4::COMPUTE_DISPATCH_TUNNEL: HwShIgnoreComputeRegister(cmd_offset, value); break;
-		default: {
-			static std::atomic<uint32_t> soft_logs {0};
-			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "soft-ignore unsupported compute SH register 0x%08" PRIx32
-				           " = 0x%08" PRIx32 "\n",
-				           cmd_offset, value);
-			}
-			HwShIgnoreComputeRegister(cmd_offset, value);
-			break;
-		}
+		default:
+			EXIT("unsupported compute SH register 0x%08" PRIx32 " = 0x%08" PRIx32 "\n", cmd_offset,
+			     value);
 	}
 
 	cp.GetShCtx().SetCsShader(cs_regs);
@@ -1798,249 +1678,11 @@ static bool HwUcTrySetFakeRegisterRange(uint32_t cmd_offset, const uint32_t* buf
 	return true;
 }
 
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 KYTY_CP_OP_PARSER(CpOpAcquireMem) {
 	KYTY_PROFILER_FUNCTION();
 
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0055800 && cmd_id != 0xc0061050);
-
-	bool custom = (cmd_id == 0xc0061050);
-
-	uint32_t                  engine       = buffer[0] >> 31u;
-	uint32_t                  stall_mode   = (custom ? 1u : engine);
-	uint32_t                  cache_action = buffer[0] & 0x7fffffffu;
-	uint64_t                  size_lo      = buffer[1];
-	uint32_t                  size_hi      = buffer[2];
-	uint64_t                  base_lo      = buffer[3];
-	uint32_t                  base_hi      = buffer[4];
-	uint32_t                  poll         = buffer[5];
-	[[maybe_unused]] uint32_t gcr_cntl     = (custom ? buffer[6] : 0);
-
-	uint32_t target_mask     = cache_action & 0x00007FC0u;
-	uint32_t extended_action = cache_action & 0x2E000000u;
-	uint32_t action =
-	    ((cache_action & 0x00C00000u) >> 0x12u) | ((cache_action & 0x00058000u) >> 0xfu);
-
-	if (custom && engine > 1) {
-		LOGF("\t warning: custom acquire_mem unsupported engine: %" PRIu32 "\n", engine);
-	}
-
-	// EXIT_NOT_IMPLEMENTED(stall_mode != 1);
-	EXIT_NOT_IMPLEMENTED(size_hi != 0);
-	EXIT_NOT_IMPLEMENTED(base_hi != 0);
-	if (poll != 10) {
-		LOGF("\t warning: acquire_mem unexpected poll interval: %" PRIu32 "\n", poll);
-	}
-
-	switch (cache_action) {
-		case 0x00000000: {
-			if (custom && gcr_cntl != 0) {
-				static std::atomic<uint32_t> gcr_logs {0};
-				if (gcr_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-					LOGF("\t custom acquire_mem GCR-only barrier, gcr_cntl = 0x%08" PRIx32
-					     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-					     gcr_cntl, base_lo << 8u, size_lo << 8u);
-				}
-
-				// GPU ordering only — a full SynchronizeGpu() (flush every CP) on every GCR
-				// writeback stalls light titles to single-digit FPS. CPU visibility is handled
-				// by release_mem / EOP label paths that actually publish guest memory.
-				cp.MemoryBarrier();
-			}
-		} break;
-		case 0x00000040:
-		case 0x00003fc0:
-		case 0x00004000:
-		case 0x00007fc0: {
-			// target_mask set, no CB/DB action bits. Treat as an ordering barrier.
-			EXIT_IF(target_mask != cache_action);
-			EXIT_IF(extended_action != 0x00000000);
-			EXIT_IF(action != 0x00);
-
-			{
-				static std::atomic<uint32_t> soft_logs {0};
-				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-					LOGF("\t temporary: acquire_mem target-mask-only barrier, target_mask = 0x%08"
-					     PRIx32 ", gcr_cntl = 0x%08" PRIx32 ", base = 0x%016" PRIx64
-					     ", size = 0x%016" PRIx64 "\n",
-					     target_mask, gcr_cntl, base_lo << 8u, size_lo << 8u);
-				}
-			}
-
-			cp.MemoryBarrier();
-		} break;
-		case 0x02000000: {
-			// target_mask:     0x00000000 (none)
-			// extended_action: 0x02000000 (FlushAndInvalidateCbCache)
-			// action:          0x00 (none)
-			EXIT_IF(target_mask != 0x00000000);
-			EXIT_IF(extended_action != 0x02000000);
-			EXIT_IF(action != 0x00);
-
-			{
-				static std::atomic<uint32_t> soft_logs {0};
-				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-					LOGF("\t temporary: acquire_mem CB-cache-only barrier, gcr_cntl = 0x%08" PRIx32
-					     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-					     gcr_cntl, base_lo << 8u, size_lo << 8u);
-				}
-			}
-
-			cp.MemoryBarrier();
-		} break;
-		case 0x04000000: {
-			// target_mask:     0x00000000 (none)
-			// extended_action: 0x04000000 (FlushAndInvalidateDbCache)
-			// action:          0x00 (none)
-			EXIT_IF(target_mask != 0x00000000);
-			EXIT_IF(extended_action != 0x04000000);
-			EXIT_IF(action != 0x00);
-
-			{
-				static std::atomic<uint32_t> soft_logs {0};
-				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-					LOGF("\t temporary: acquire_mem DB-cache-only barrier, gcr_cntl = 0x%08" PRIx32
-					     ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-					     gcr_cntl, base_lo << 8u, size_lo << 8u);
-				}
-			}
-
-			cp.MemoryBarrier();
-		} break;
-		case 0x04004000:
-		case 0x04007fc0: {
-			// target_mask:     0x00004000 (Depth Target), 0x00007fc0 (all rt and depth)
-			// extended_action: 0x04000000 (FlushAndInvalidateDbCache)
-			// action:          0x00 (none)
-			EXIT_IF(target_mask != 0x00004000 && target_mask != 0x00007FC0);
-			EXIT_IF(extended_action != 0x04000000);
-			EXIT_IF(action != 0x00);
-
-			LOGF("\t temporary: acquire_mem DB target barrier, target_mask = 0x%08" PRIx32
-			     ", gcr_cntl = 0x%08" PRIx32 ", base = 0x%016" PRIx64 ", size = 0x%016" PRIx64 "\n",
-			     target_mask, gcr_cntl, base_lo << 8u, size_lo << 8u);
-
-			if (size_lo != 0) {
-				cp.DepthStencilBarrier(base_lo << 8u, size_lo << 8u);
-			} else {
-				cp.MemoryBarrier();
-			}
-		} break;
-		case 0x02c40040:
-		case 0x02c43fc0:
-		case 0x02c47fc0: {
-			// target_mask:     0x00000040 (rt0), 0x00003fc0 (all rt), 0x00007fc0 (all rt and depth)
-			// extended_action: 0x02000000 (FlushAndInvalidateCbCache)
-			// action:          0x38 (WriteBackAndInvalidateL1andL2)
-			EXIT_IF(target_mask != 0x00000040 && target_mask != 0x00003FC0 &&
-			        target_mask != 0x00007FC0);
-			EXIT_IF(extended_action != 0x02000000);
-			EXIT_IF(action != 0x38);
-			EXIT_NOT_IMPLEMENTED(size_lo == 0);
-			EXIT_NOT_IMPLEMENTED(base_lo == 0);
-
-			cp.RenderTextureBarrier(base_lo << 8u, size_lo << 8u);
-			cp.SynchronizeGpu();
-		} break;
-		case 0x02003fc0:
-		case 0x02007fc0: {
-			// target_mask:     0x00003FC0 (all rt), 0x00007fc0 (all rt and depth)
-			// extended_action: 0x02000000 (FlushAndInvalidateCbCache)
-			// action:          0x00 (none)
-			EXIT_IF(target_mask != 0x00003FC0 && target_mask != 0x00007fc0);
-			EXIT_IF(extended_action != 0x02000000);
-			EXIT_IF(action != 0x00);
-
-			if (size_lo == 0) {
-				if (base_lo != 0) {
-					LOGF("\t warning: acquire_mem CB-cache barrier with non-zero base");
-				}
-
-				cp.MemoryBarrier();
-			} else {
-				EXIT_NOT_IMPLEMENTED(base_lo == 0);
-
-				cp.RenderTextureBarrier(base_lo << 8u, size_lo << 8u);
-			}
-		} break;
-		case 0x00C40000: {
-			// target_mask:     0x00000000 (none)
-			// extended_action: 0x00000000 (none)
-			// action:          0x38 (WriteBackAndInvalidateL1andL2)
-			EXIT_IF(target_mask != 0x00000000);
-			EXIT_IF(extended_action != 0x00000000);
-			EXIT_IF(action != 0x38);
-			EXIT_NOT_IMPLEMENTED(size_lo != 1);
-			EXIT_NOT_IMPLEMENTED(base_lo != 0);
-
-			cp.MemoryBarrier();
-			cp.SynchronizeGpu();
-		} break;
-		case 0x00400000: {
-			// target_mask:     0x00000000 (none)
-			// extended_action: 0x00000000 (none)
-			// action:          0x10 (InvalidateL1)
-			EXIT_IF(target_mask != 0x00000000);
-			EXIT_IF(extended_action != 0x00000000);
-			EXIT_IF(action != 0x10);
-			EXIT_NOT_IMPLEMENTED(size_lo != 1);
-			EXIT_NOT_IMPLEMENTED(base_lo != 0);
-
-			cp.MemoryBarrier();
-		} break;
-		case 0x04c44000: {
-			// target_mask:     0x00004000 (Depth Target)
-			// extended_action: 0x04000000 (FlushAndInvalidateDbCache)
-			// action:          0x38 (WriteBackAndInvalidateL1andL2)
-			EXIT_IF(target_mask != 0x00004000);
-			EXIT_IF(extended_action != 0x04000000);
-			EXIT_IF(action != 0x38);
-
-			cp.DepthStencilBarrier(base_lo << 8u, size_lo << 8u);
-			cp.SynchronizeGpu();
-		} break;
-
-		case 0x06000040:
-		case 0x06000080:
-		case 0x06003fc0:
-		case 0x06007fc0: {
-			// target_mask:     0x00000040 (rt0), 0x00000080 (rt1), 0x00003fc0 (all rt), 0x00007fc0
-			// (all rt and depth) extended_action: 0x06000000 (Flush Cb & Db) action:          0x00
-			// (none)
-			if (gcr_cntl != 0 && gcr_cntl != 0x280 && gcr_cntl != 0x300) {
-				LOGF("\t temporary: acquire_mem CB+DB barrier with unhandled GCR control "
-				     "0x%08" PRIx32 "\n",
-				     gcr_cntl);
-			}
-
-			EXIT_IF(target_mask != 0x00000040 && target_mask != 0x00000080 &&
-			        target_mask != 0x00003fc0 && target_mask != 0x00007fc0);
-			EXIT_IF(extended_action != 0x06000000);
-			EXIT_IF(action != 0x00);
-
-			if (size_lo != 0) {
-				if ((target_mask & 0x00003fc0) != 0) {
-					cp.RenderTextureBarrier(base_lo << 8u, size_lo << 8u);
-				}
-				if ((target_mask & 0x00004000) != 0) {
-					cp.DepthStencilBarrier(base_lo << 8u, size_lo << 8u);
-				}
-			} else {
-				cp.MemoryBarrier();
-			}
-		} break;
-
-		default:
-			EXIT("unknown barrier: 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32
-			     "\n",
-			     cache_action, target_mask, extended_action, action);
-	}
-
-	if (stall_mode == 0) {
-		cp.BufferWait();
-	}
-
-	return (custom ? 7 : 6);
+	return (cmd_id == 0xc0061050 ? 7 : 6);
 }
 
 KYTY_CP_OP_PARSER(CpOpDispatchDirect) {
@@ -2238,12 +1880,7 @@ static uint8_t CopyDataDstToDma(uint32_t dst) {
 		default: break;
 	}
 
-	static std::atomic<uint32_t> soft_logs {0};
-	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-		LOGF_COLOR(Log::Color::Yellow,
-		           "soft-ignore unsupported copyData destination selector 0x%02" PRIx32 "\n", dst);
-	}
-	return 3;
+	EXIT("unsupported copyData destination selector 0x%02" PRIx32 "\n", dst);
 }
 
 static uint8_t CopyDataSrcToDma(uint32_t src) {
@@ -2259,12 +1896,7 @@ static uint8_t CopyDataSrcToDma(uint32_t src) {
 		default: break;
 	}
 
-	static std::atomic<uint32_t> soft_logs {0};
-	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-		LOGF_COLOR(Log::Color::Yellow,
-		           "soft-ignore unsupported copyData source selector 0x%02" PRIx32 "\n", src);
-	}
-	return 3;
+	EXIT("unsupported copyData source selector 0x%02" PRIx32 "\n", src);
 }
 
 KYTY_CP_OP_PARSER(CpOpCopyData) {
@@ -2283,25 +1915,16 @@ KYTY_CP_OP_PARSER(CpOpCopyData) {
 	const uint64_t dst           = buffer[3] | (static_cast<uint64_t>(buffer[4]) << 32u);
 	if (src_sel == (9u << 1u)) {
 		if (dst_sel != (2u << 1u) || dst == 0 || (dst & (num_bytes - 1u)) != 0) {
-			static std::atomic<uint32_t> soft_logs {0};
-			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "soft-ignore unsupported reference-clock copyData, src_sel=0x%02" PRIx32
-				           " dst_sel=0x%02" PRIx32 " dst=0x%016" PRIx64 " size=%u\n",
-				           src_sel, dst_sel, dst, num_bytes);
-			}
-			return 5;
+			EXIT("unsupported reference-clock copyData, src_sel=0x%02" PRIx32
+			     " dst_sel=0x%02" PRIx32 " dst=0x%016" PRIx64 " size=%u\n",
+			     src_sel, dst_sel, dst, num_bytes);
 		}
 		cp.WriteReferenceClock(dst, num_bytes);
 		return 5;
 	}
 	const auto dma_src = CopyDataSrcToDma(src_sel);
 	if (dma_src == 2 && num_bytes == 8) {
-		static std::atomic<uint32_t> soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF_COLOR(Log::Color::Yellow, "soft-ignore unsupported 64-bit immediate copyData\n");
-		}
-		return 5;
+		EXIT("unsupported 64-bit immediate copyData\n");
 	}
 
 	cp.DmaData(0, CopyDataDstToDma(dst_sel), dst_cache, dst, dma_src, src_cache, src, num_bytes, 1,
@@ -2321,9 +1944,6 @@ KYTY_CP_OP_PARSER(CpOpDmaData) {
 	const uint64_t dst      = buffer[3] | (static_cast<uint64_t>(buffer[4]) << 32u);
 
 	if (control == 0x60000000 && dst == 0x0003022c && (control2 >> 21u) == 0x141u) {
-		auto* addr = reinterpret_cast<void*>(src);
-
-		cp.PrefetchL2(addr, control2 & 0x1fffffu);
 		return 6;
 	}
 
@@ -2732,13 +2352,7 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 		auto pfunc = g_hw_ctx_indirect_func[cmd_offset & (Pm4::CX_NUM - 1)];
 
 		if (pfunc == nullptr) {
-			static std::atomic<uint32_t> soft_logs {0};
-			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "soft-ignore unknown cx reg at %05" PRIx32 ": 0x%" PRIx32 "\n",
-				           num_dw - dw, cmd_offset);
-			}
-			continue;
+			EXIT("unknown cx reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
 		}
 
 		pfunc(cp, cmd_offset, value);
@@ -2764,7 +2378,7 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 	if (indirect_buffer == nullptr) {
 		EXIT("indirect SH registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
 	}
-	(void)reinterpret_cast<uint64_t>(indirect_buffer);
+	const auto indirect_address = reinterpret_cast<uint64_t>(indirect_buffer);
 
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
 		auto raw_cmd_offset = indirect_buffer[0];
@@ -2785,26 +2399,23 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 		}
 
 		if (cmd_offset >= Pm4::SH_NUM) {
-			static std::atomic<uint32_t> soft_logs {0};
-			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "soft-ignore unsupported indirect SH register offset 0x%08" PRIx32
-				           " (raw 0x%08" PRIx32 "), value = 0x%08" PRIx32 "\n",
-				           cmd_offset, raw_cmd_offset, value);
-			}
-			continue;
+			EXIT("unsupported indirect SH register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
+			     "), value = 0x%08" PRIx32 "\n",
+			     cmd_offset, raw_cmd_offset, value);
 		}
 
 		auto pfunc = g_hw_sh_indirect_func[cmd_offset];
 
 		if (pfunc == nullptr) {
-			static std::atomic<uint32_t> soft_logs {0};
-			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "soft-ignore unknown sh reg at %05" PRIx32 ": 0x%" PRIx32 "\n",
-				           num_dw - dw, cmd_offset);
+			LOGF("unknown indirect SH register: index=%" PRIu32 "/%" PRIu32 ", regs=0x%016" PRIx64
+			     ", offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
+			     i, indirect_num_dw, indirect_address, cmd_offset, value);
+			auto* dump_regs = indirect_buffer - i * 2;
+			for (uint32_t j = 0; j < indirect_num_dw && j < 16; j++) {
+				LOGF("\t sh_indirect[%" PRIu32 "] offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
+				     j, dump_regs[j * 2], dump_regs[j * 2 + 1]);
 			}
-			continue;
+			EXIT("unknown sh reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
 		}
 
 		pfunc(cp, cmd_offset, value);
@@ -2853,26 +2464,20 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 			}
 		}
 		if (cmd_offset >= Pm4::UC_NUM) {
-			static std::atomic<uint32_t> soft_logs {0};
-			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "soft-ignore unsupported indirect UC register offset 0x%08" PRIx32
-				           " (raw 0x%08" PRIx32 "), value = 0x%08" PRIx32 "\n",
-				           cmd_offset, raw_cmd_offset, value);
-			}
-			continue;
+			EXIT("unsupported indirect UC register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
+			     "), value = 0x%08" PRIx32 "\n",
+			     cmd_offset, raw_cmd_offset, value);
 		}
 
 		auto pfunc = g_hw_uc_indirect_func[cmd_offset & (Pm4::UC_NUM - 1)];
 
 		if (pfunc == nullptr) {
-			static std::atomic<uint32_t> soft_logs {0};
-			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "soft-ignore unknown uc reg at %05" PRIx32 ": 0x%" PRIx32 "\n",
-				           num_dw - dw, cmd_offset);
+			auto* dump_regs = indirect_buffer - i * 2;
+			for (uint32_t j = 0; j < indirect_num_dw && j < 16; j++) {
+				LOGF("\t uc_indirect[%" PRIu32 "] offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
+				     j, dump_regs[j * 2], dump_regs[j * 2 + 1]);
 			}
-			continue;
+			EXIT("unknown uc reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
 		}
 		pfunc(cp, cmd_offset, value);
 	}
@@ -2886,11 +2491,10 @@ KYTY_CP_OP_PARSER(CpOpMarker) {
 	// EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0001000);
 
 	uint32_t id     = buffer[0] & 0xfffu;
-	uint32_t align  = (buffer[0] >> 12u) & 0xfu;
 	uint32_t len_dw = ((cmd_id >> 16u) & 0x3fffu);
 
 	switch (id) {
-		case 0x0: cp.SetEmbeddedDataMarker(buffer + 1, len_dw, align); break;
+		case 0x0: break;
 		case 0x4: cp.SetUserDataMarker(HW::UserSgprType::Vsharp); break;
 		case 0xd: cp.SetUserDataMarker(HW::UserSgprType::Region); break;
 		case 0x777: {
@@ -2913,15 +2517,7 @@ KYTY_CP_OP_PARSER(CpOpMarker) {
 			cp.FlipWithInterrupt(eop_event_type, cache_action, addr, value);
 			break;
 		}
-		default: {
-			static std::atomic<uint32_t> soft_logs {0};
-			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-				LOGF_COLOR(Log::Color::Yellow,
-				           "soft-ignore unknown marker at %05" PRIx32 ": 0x%" PRIx32 "\n",
-				           num_dw - dw, id);
-			}
-			break;
-		}
+		default: EXIT("unknown marker at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, id);
 	}
 
 	return len_dw + 1;
@@ -2945,13 +2541,9 @@ KYTY_CP_OP_PARSER(CpOpNop) {
 		return cp_op(cp, cmd_id, buffer, dw, num_dw);
 	}
 
-	static std::atomic<uint32_t> soft_logs {0};
-	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-		LOGF_COLOR(Log::Color::Yellow,
-		           "soft-ignore unknown custom code at 0x%05" PRIx32 ": 0x%02" PRIx32 "\n",
-		           num_dw - dw, r);
-	}
-	return KYTY_PM4_LEN(cmd_id) - 1;
+	EXIT("unknown custom code at 0x%05" PRIx32 ": 0x%02" PRIx32 "\n", num_dw - dw, r);
+
+	return 0;
 }
 
 KYTY_CP_OP_PARSER(CpOpNumInstances) {
@@ -2974,8 +2566,6 @@ KYTY_CP_OP_PARSER(CpOpPopMarker) {
 		LOGF("Pop marker\n");
 	}
 
-	cp.PopMarker();
-
 	return dw_num + 1;
 }
 
@@ -2990,8 +2580,6 @@ KYTY_CP_OP_PARSER(CpOpPushMarker) {
 	if (push_marker_log_count.fetch_add(1) < 128) {
 		LOGF("Push marker: %s\n", str);
 	}
-
-	cp.PushMarker(str);
 
 	return dw_num + 1;
 }
@@ -3036,10 +2624,12 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	};
 
 	if (data_sel == 0 || interrupt_selector == 4) {
-		if (eop_event_type != 0x28 || gcr_cntl != 0 || gl2_writeback) {
-			// Coalesced GPU barrier is enough for EOP/interrupt-only releases. A full
-			// SynchronizeGpu() here serialized every frame on titles that spam GL2 writeback.
-			cp.MemoryBarrier();
+		if (eop_event_type != 0x28 || gcr_cntl != 0) {
+			cp.EmitGlobalBarrier();
+		}
+
+		if (gl2_writeback) {
+			cp.SynchronizeGpu();
 		}
 
 		trigger_interrupt();
@@ -3048,8 +2638,12 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	}
 
 	if (release_dst == ReleaseMemDstMemory && dst_gpu_addr == nullptr) {
-		if (eop_event_type != 0x28 || gcr_cntl != 0 || gl2_writeback) {
-			cp.MemoryBarrier();
+		if (eop_event_type != 0x28 || gcr_cntl != 0) {
+			cp.EmitGlobalBarrier();
+		}
+
+		if (gl2_writeback) {
+			cp.SynchronizeGpu();
 		}
 
 		trigger_interrupt();
@@ -3058,7 +2652,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	}
 
 	if (ReleaseMemGcrNeedsBarrier(eop_event_type, gcr_cntl)) {
-		cp.MemoryBarrier();
+		cp.EmitGlobalBarrier();
 	}
 
 	auto cache_action = ReleaseMemCacheActionFromGcr(gcr_cntl);
@@ -3138,15 +2732,9 @@ KYTY_CP_OP_PARSER(CpOpSetContextReg) {
 	}
 
 	if (cmd_offset >= Pm4::CX_NUM) {
-		static std::atomic<uint32_t> soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "soft-ignore unknown extended context register\n\t%05" PRIx32
-			           ":\n\tcmd_id = %08" PRIx32 "\n\tcmd_offset = %08" PRIx32
-			           "\n\tvalue = %08" PRIx32 "\n",
-			           num_dw - dw, cmd_id, cmd_offset, buffer[1]);
-		}
-		return KYTY_PM4_LEN(cmd_id) - 1u;
+		EXIT("unknown extended context register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
+		     "\n\tcmd_offset = %08" PRIx32 "\n\tvalue = %08" PRIx32 "\n",
+		     num_dw - dw, cmd_id, cmd_offset, buffer[1]);
 	}
 
 	auto pfunc = g_hw_ctx_func[cmd_offset & (Pm4::CX_NUM - 1)];
@@ -3168,14 +2756,9 @@ KYTY_CP_OP_PARSER(CpOpSetContextReg) {
 			}
 			return num_values + 1u;
 		}
-		static std::atomic<uint32_t> soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "soft-ignore unknown context register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-			           "\n\tcmd_offset = %08" PRIx32 "\n",
-			           num_dw - dw, cmd_id, cmd_offset);
-		}
-		return KYTY_PM4_LEN(cmd_id) - 1u;
+		EXIT("unknown context register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
+		     "\n\tcmd_offset = %08" PRIx32 "\n",
+		     num_dw - dw, cmd_id, cmd_offset);
 	}
 
 	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);
@@ -3198,14 +2781,9 @@ KYTY_CP_OP_PARSER(CpOpSetShaderReg) {
 	auto pfunc = g_hw_sh_func[cmd_offset];
 
 	if (pfunc == nullptr) {
-		static std::atomic<uint32_t> soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "soft-ignore unknown shader register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-			           "\n\tcmd_offset = %08" PRIx32 "\n",
-			           num_dw - dw, cmd_id, cmd_offset);
-		}
-		return KYTY_PM4_LEN(cmd_id) - 1u;
+		EXIT("unknown shader register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
+		     "\n\tcmd_offset = %08" PRIx32 "\n",
+		     num_dw - dw, cmd_id, cmd_offset);
 	}
 
 	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);
@@ -3233,14 +2811,9 @@ KYTY_CP_OP_PARSER(CpOpSetUconfigReg) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	if (cmd_offset >= Pm4::UC_NUM) {
-		static std::atomic<uint32_t> soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "soft-ignore unsupported UC register offset 0x%08" PRIx32
-			           " (raw 0x%08" PRIx32 "), cmd_id = 0x%08" PRIx32 "\n",
-			           cmd_offset, raw_cmd_offset, cmd_id);
-		}
-		return KYTY_PM4_LEN(cmd_id) - 1u;
+		EXIT("unsupported UC register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
+		     "), cmd_id = 0x%08" PRIx32 "\n",
+		     cmd_offset, raw_cmd_offset, cmd_id);
 	}
 
 	auto pfunc = g_hw_uc_func[cmd_offset & (Pm4::UC_NUM - 1)];
@@ -3262,14 +2835,9 @@ KYTY_CP_OP_PARSER(CpOpSetUconfigReg) {
 			}
 			return num_values + 1u;
 		}
-		static std::atomic<uint32_t> soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "soft-ignore unknown user config register\n\t%05" PRIx32
-			           ":\n\tcmd_id = %08" PRIx32 "\n\tcmd_offset = %08" PRIx32 "\n",
-			           num_dw - dw, cmd_id, cmd_offset);
-		}
-		return KYTY_PM4_LEN(cmd_id) - 1u;
+		EXIT("unknown user config register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
+		     "\n\tcmd_offset = %08" PRIx32 "\n",
+		     num_dw - dw, cmd_id, cmd_offset);
 	}
 
 	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);
@@ -4085,37 +3653,26 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_DB_FMT_CNTL] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
+		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_CLAMP] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
+		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_FRONT_SCALE] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
+		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_FRONT_OFFSET] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
+		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_BACK_SCALE] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
+		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_BACK_OFFSET] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxSetPolyOffsetRegister(cp, cmd_offset, value);
+		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_Z_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HW::DepthZInfo r;
-		r.format                    = KYTY_PM4_GET(value, DB_Z_INFO, FORMAT);
-		r.num_samples               = KYTY_PM4_GET(value, DB_Z_INFO, NUM_SAMPLES);
-		r.embedded_sample_locations = KYTY_PM4_GET(value, DB_Z_INFO, ITERATE_FLUSH) != 0;
-		r.partially_resident        = KYTY_PM4_GET(value, DB_Z_INFO, PARTIALLY_RESIDENT) != 0;
-		r.num_mip_levels            = KYTY_PM4_GET(value, DB_Z_INFO, MAXMIP);
-		r.tile_mode_index           = KYTY_PM4_GET(value, DB_Z_INFO, TILE_MODE_INDEX);
-		r.plane_compression         = KYTY_PM4_GET(value, DB_Z_INFO, DECOMPRESS_ON_N_ZPLANES);
-		r.expclear_enabled          = KYTY_PM4_GET(value, DB_Z_INFO, ALLOW_EXPCLEAR) != 0;
-		r.tile_surface_enable       = KYTY_PM4_GET(value, DB_Z_INFO, TILE_SURFACE_ENABLE) != 0;
-		r.zrange_precision          = KYTY_PM4_GET(value, DB_Z_INFO, ZRANGE_PRECISION);
-		cp.GetCtx().SetDepthZInfo(r);
+		cp.GetCtx().SetDepthZInfo(HW::DepthZInfo::Decode(value));
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_DEPTH_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
@@ -4143,15 +3700,7 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_STENCIL_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HW::DepthStencilInfo r;
-		r.format                     = KYTY_PM4_GET(value, DB_STENCIL_INFO, FORMAT);
-		r.texture_compatible_stencil = KYTY_PM4_GET(value, DB_STENCIL_INFO, ITERATE_FLUSH) != 0;
-		r.partially_resident   = KYTY_PM4_GET(value, DB_STENCIL_INFO, PARTIALLY_RESIDENT) != 0;
-		r.tile_split           = KYTY_PM4_GET(value, DB_STENCIL_INFO, RESERVED_FIELD_1);
-		r.tile_mode_index      = KYTY_PM4_GET(value, DB_STENCIL_INFO, TILE_MODE_INDEX);
-		r.expclear_enabled     = KYTY_PM4_GET(value, DB_STENCIL_INFO, ALLOW_EXPCLEAR) != 0;
-		r.tile_stencil_disable = KYTY_PM4_GET(value, DB_STENCIL_INFO, TILE_STENCIL_DISABLE) != 0;
-		cp.GetCtx().SetDepthStencilInfo(r);
+		cp.GetCtx().SetDepthStencilInfo(HW::DepthStencilInfo::Decode(value));
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_Z_READ_BASE] = [](KYTY_HW_CTX_INDIRECT_ARGS) {

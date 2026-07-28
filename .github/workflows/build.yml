@@ -24,8 +24,7 @@ jobs:
         uses: seanmiddleditch/gha-setup-ninja@v5
 
       # vcpkg glslang[tools,opt] compiles from source and routinely hangs/times out
-      # on windows-2022 (10+ minutes on a good day, multi-hour stalls observed).
-      # Pull a prebuilt glslangValidator from the Vulkan SDK instead (cached).
+      # on windows-2022. Pull a prebuilt glslangValidator from the Vulkan SDK instead.
       - name: Install glslangValidator (Vulkan SDK)
         uses: jakoch/install-vulkan-sdk-action@v1.6.0
         with:

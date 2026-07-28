@@ -44,6 +44,7 @@ struct ConfigOptions {
 	// emulator's built-in default bindings" -- set by the Qt launcher's Input Mapping dialog.
 	std::string             keyboard_button_map;
 	std::string             controller_button_map;
+	bool                   readback_linear_images      = false;
 };
 
 void Load(const ConfigOptions& cfg);
@@ -72,6 +73,7 @@ bool SpirvDebugPrintfEnabled();
 
 bool RenderDocEnabled();
 bool NggRectlistDrawEnabled();
+bool ReadbackLinearImagesEnabled();
 
 } // namespace Config
 
