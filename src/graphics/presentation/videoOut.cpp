@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <list>
 #include <thread>
 #include <vector>
@@ -520,17 +521,27 @@ static int ReserveFlipRequest(VideoOutDriver::Impl& driver, int handle, int inde
 }
 
 Graphics::ImageInfo BufferAttributeGroup::ImageInfo(const VideoOutBuffer& buffer) const {
-	const auto compression = Graphics::ClassifyVideoOutCompression(
+	auto compression = Graphics::ClassifyVideoOutCompression(
 	    category == VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_COMPRESSED, buffer.metadata_address,
 	    attribute.dcc_control, attribute.dcc_cb_register_clear_color);
+	if (compression == Graphics::VideoOutCompression::Unsupported) {
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "soft-accept unsupported video-out compression as uncompressed, "
+			           "data=0x%016" PRIx64 " metadata=0x%016" PRIx64 " dcc_control=0x%08" PRIx32
+			           "\n",
+			           buffer.data_address, buffer.metadata_address, attribute.dcc_control);
+		}
+		compression = Graphics::VideoOutCompression::Uncompressed;
+	}
 	if (attribute.reserved0 != 0 || attribute.aspect_ratio != 0 || attribute.width == 0 ||
 	    attribute.height == 0 || attribute.width > 16384 || attribute.height > 16384 ||
 	    attribute.pitch_in_pixel != 0 ||
 	    (attribute.option != 0 &&
 	     attribute.option != VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_STRICT_COLORIMETRY) ||
 	    attribute.tiling_mode != 0 || attribute.pad0 != 0 || attribute.reserved1[0] != 0 ||
-	    attribute.reserved1[1] != 0 || attribute.reserved1[2] != 0 || buffer.data_address == 0 ||
-	    compression == Graphics::VideoOutCompression::Unsupported) {
+	    attribute.reserved1[1] != 0 || attribute.reserved1[2] != 0 || buffer.data_address == 0) {
 		EXIT("unsupported or invalid video-out surface attributes\n");
 	}
 	Graphics::VideoOutPixelFormatInfo pixel_format {};

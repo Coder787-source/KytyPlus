@@ -40,6 +40,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -421,12 +422,36 @@ void Swapchain::Create() {
 
 	m_extent = surface.capabilities.currentExtent;
 	if (m_extent.width == std::numeric_limits<uint32_t>::max()) {
+		// Minimized Win32 surfaces can report maxImageExtent=0x0; clamp would yield illegal 0.
+		const uint32_t max_w = surface.capabilities.maxImageExtent.width;
+		const uint32_t max_h = surface.capabilities.maxImageExtent.height;
 		m_extent.width =
-		    std::clamp(graphics.screen_width, surface.capabilities.minImageExtent.width,
-		               surface.capabilities.maxImageExtent.width);
+		    (max_w == 0) ? 1
+		                 : std::clamp(graphics.screen_width,
+		                              surface.capabilities.minImageExtent.width, max_w);
 		m_extent.height =
-		    std::clamp(graphics.screen_height, surface.capabilities.minImageExtent.height,
-		               surface.capabilities.maxImageExtent.height);
+		    (max_h == 0) ? 1
+		                 : std::clamp(graphics.screen_height,
+		                              surface.capabilities.minImageExtent.height, max_h);
+		if (max_w == 0 || max_h == 0) {
+			static std::atomic<uint32_t> degenerate_logs {0};
+			if (degenerate_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "Swapchain: surface reports 0x0 max extent (window likely minimized), "
+				           "falling back to %ux%u\n",
+				           m_extent.width, m_extent.height);
+			}
+		}
+	} else if (m_extent.width == 0 || m_extent.height == 0) {
+		m_extent.width  = std::max(1u, graphics.screen_width);
+		m_extent.height = std::max(1u, graphics.screen_height);
+		static std::atomic<uint32_t> degenerate_logs {0};
+		if (degenerate_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "Swapchain: surface currentExtent is 0x0 (window likely minimized), "
+			           "falling back to %ux%u\n",
+			           m_extent.width, m_extent.height);
+		}
 	}
 	uint32_t image_count = surface.capabilities.minImageCount + 1;
 	if (surface.capabilities.maxImageCount != 0) {
@@ -796,6 +821,11 @@ void Presenter::Present(Frame& frame, bool reuse) {
 	m_impl->frames.ValidateForPresent(&frame, reuse);
 
 	auto& window = m_impl->window;
+	// Skip presenting while minimized instead of churning the swapchain against a 0x0 surface.
+	if (window.window_minimized) {
+		m_impl->frames.Release(&frame, reuse);
+		return;
+	}
 	if (window.window_hidden) {
 		window.UpdateIcon();
 
