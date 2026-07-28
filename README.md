@@ -127,6 +127,7 @@ playability guarantees.
   are often rejected (`elf is not valid` / `EI_OSABI != ELFOSABI_FREEBSD`).
 
 ---
+> **Important:** Before using KytyPlus, please read our [Legal Disclaimer](./DISCLAIMER.md) regarding trademarks and the legal acquisition of guest system files.
 
 ## Install options
 
