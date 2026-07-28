@@ -24,25 +24,20 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
-#include "common/subsystems.h"
 #include "common/systemInfo.h"
 #include "common/threads.h"
 #include "common/timer.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
-#include "graphics/host_gpu/transfer.h"
 #include "graphics/host_gpu/vma.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/presentation/renderDoc.h"
-#include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "libs/controller.h"
 #include "loader/systemContent.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -62,7 +57,6 @@
 
 namespace Libs::Graphics {
 
-constexpr float FPS_UPDATE_TIME        = 1.0f;
 constexpr int   KEYBOARD_CONTROLLER_ID = -1000;
 
 struct EventKeyboard {
@@ -77,33 +71,7 @@ struct EventKeyboard {
 	double   timestamp_seconds;
 };
 
-// Converts SDL's Keymod bitmask into the standard USB HID boot-keyboard modifier byte layout
-// (bit0=LCtrl, bit1=LShift, bit2=LAlt, bit3=LGui, bit4=RCtrl, bit5=RShift, bit6=RAlt, bit7=RGui)
-// that ScePad's KeyboardData::modifier_key field is documented as using.
-static uint8_t SdlKeymodToHidModifierBitmask(uint16_t sdl_mod) {
-	uint8_t hid = 0;
-	hid |= (sdl_mod & KMOD_LCTRL) != 0 ? 0x01u : 0u;
-	hid |= (sdl_mod & KMOD_LSHIFT) != 0 ? 0x02u : 0u;
-	hid |= (sdl_mod & KMOD_LALT) != 0 ? 0x04u : 0u;
-	hid |= (sdl_mod & KMOD_LGUI) != 0 ? 0x08u : 0u;
-	hid |= (sdl_mod & KMOD_RCTRL) != 0 ? 0x10u : 0u;
-	hid |= (sdl_mod & KMOD_RSHIFT) != 0 ? 0x20u : 0u;
-	hid |= (sdl_mod & KMOD_RALT) != 0 ? 0x40u : 0u;
-	hid |= (sdl_mod & KMOD_RGUI) != 0 ? 0x80u : 0u;
-	return hid;
-}
-
-} // namespace Libs::Graphics
-
-namespace Libs::Controller {
-
-// This is the built-in fallback used whenever the user hasn't set a custom keyboard mapping in
-// the Qt launcher's Input Mapping dialog (SetKeyboardButtonMap was never called, or was called
-// with an empty list to explicitly reset to defaults). Defined here (rather than in
-// controller.cpp) because the binding codes are SDL_Keycode values, which only this windowing
-// backend file already depends on; declared in controller.h so callers elsewhere don't need to
-// know that.
-uint32_t DefaultKeyboardPadButton(int key_code) {
+static uint32_t KeyboardKeyToPadButton(int key_code) {
 	switch (key_code) {
 		case SDLK_w: return Controller::PAD_BUTTON_UP;
 		case SDLK_a: return Controller::PAD_BUTTON_LEFT;
@@ -123,22 +91,7 @@ uint32_t DefaultKeyboardPadButton(int key_code) {
 	}
 }
 
-const std::vector<InputBinding>& DefaultKeyboardBindings() {
-	static const std::vector<InputBinding> bindings = {
-	    {SDLK_w, PAD_BUTTON_UP},        {SDLK_a, PAD_BUTTON_LEFT},
-	    {SDLK_s, PAD_BUTTON_DOWN},      {SDLK_d, PAD_BUTTON_RIGHT},
-	    {SDLK_j, PAD_BUTTON_CROSS},     {SDLK_i, PAD_BUTTON_TRIANGLE},
-	    {SDLK_k, PAD_BUTTON_SQUARE},    {SDLK_l, PAD_BUTTON_CIRCLE},
-	    {SDLK_q, PAD_BUTTON_L1},        {SDLK_e, PAD_BUTTON_R1},
-	    {SDLK_RETURN, PAD_BUTTON_OPTIONS},
-	    {SDLK_RETURN2, PAD_BUTTON_OPTIONS},
-	    {SDLK_BACKSPACE, PAD_BUTTON_TOUCH_PAD},
-	    {SDLK_TAB, PAD_BUTTON_TOUCH_PAD},
-	};
-	return bindings;
-}
-
-uint32_t DefaultControllerPadButton(int button) {
+static uint32_t ControllerButtonToPadButton(int button) {
 	switch (button) {
 		case SDL_CONTROLLER_BUTTON_A: return Controller::PAD_BUTTON_CROSS;
 		case SDL_CONTROLLER_BUTTON_B: return Controller::PAD_BUTTON_CIRCLE;
@@ -154,35 +107,9 @@ uint32_t DefaultControllerPadButton(int button) {
 		case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return Controller::PAD_BUTTON_DOWN;
 		case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return Controller::PAD_BUTTON_LEFT;
 		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return Controller::PAD_BUTTON_RIGHT;
-		case SDL_CONTROLLER_BUTTON_TOUCHPAD: return Controller::PAD_BUTTON_TOUCH_PAD;
 		default: return 0;
 	}
 }
-
-const std::vector<InputBinding>& DefaultControllerBindings() {
-	static const std::vector<InputBinding> bindings = {
-	    {SDL_CONTROLLER_BUTTON_A, PAD_BUTTON_CROSS},
-	    {SDL_CONTROLLER_BUTTON_B, PAD_BUTTON_CIRCLE},
-	    {SDL_CONTROLLER_BUTTON_X, PAD_BUTTON_SQUARE},
-	    {SDL_CONTROLLER_BUTTON_Y, PAD_BUTTON_TRIANGLE},
-	    {SDL_CONTROLLER_BUTTON_BACK, PAD_BUTTON_TOUCH_PAD},
-	    {SDL_CONTROLLER_BUTTON_START, PAD_BUTTON_OPTIONS},
-	    {SDL_CONTROLLER_BUTTON_LEFTSTICK, PAD_BUTTON_L3},
-	    {SDL_CONTROLLER_BUTTON_RIGHTSTICK, PAD_BUTTON_R3},
-	    {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, PAD_BUTTON_L1},
-	    {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, PAD_BUTTON_R1},
-	    {SDL_CONTROLLER_BUTTON_DPAD_UP, PAD_BUTTON_UP},
-	    {SDL_CONTROLLER_BUTTON_DPAD_DOWN, PAD_BUTTON_DOWN},
-	    {SDL_CONTROLLER_BUTTON_DPAD_LEFT, PAD_BUTTON_LEFT},
-	    {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, PAD_BUTTON_RIGHT},
-	    {SDL_CONTROLLER_BUTTON_TOUCHPAD, PAD_BUTTON_TOUCH_PAD},
-	};
-	return bindings;
-}
-
-} // namespace Libs::Controller
-
-namespace Libs::Graphics {
 
 static Controller::Axis ControllerAxisFromSdl(int axis_id) {
 	switch (axis_id) {
@@ -281,163 +208,36 @@ constexpr uint32_t KYTY_SDL_BUTTON_RMASK  = SDL_BUTTON_RMASK;  // NOLINT(hicpp-s
 constexpr uint32_t KYTY_SDL_BUTTON_X1MASK = SDL_BUTTON_X1MASK; // NOLINT(hicpp-signed-bitwise)
 constexpr uint32_t KYTY_SDL_BUTTON_X2MASK = SDL_BUTTON_X2MASK; // NOLINT(hicpp-signed-bitwise)
 
-struct WindowGame {
-	void* private_data = nullptr;
-	void* event        = nullptr;
+namespace {
 
-	bool     m_game_need_exit        = {false};
-	bool     m_game_is_paused        = {false};
-	uint32_t m_screen_width          = {0};
-	uint32_t m_screen_height         = {0};
-	double   m_current_time_seconds  = {0.0};
-	double   m_previous_time_seconds = {0.0};
-	int      m_update_num            = {0};
-	int      m_frame_num             = {0};
-	double   m_update_time_seconds   = {0.0};
-	double   m_current_fps           = {0.0};
-	int      m_max_updates_per_frame = {4};
-	double   m_update_fixed_time     = 1.0 / 60.0;
-	int      m_fps_frames_num        = {0};
-	double   m_fps_start_time        = {0};
-};
+std::unique_ptr<WindowContext> g_window;
 
-struct WindowGamePrivate {
-	explicit WindowGamePrivate(GraphicContext& graphics): graphics(graphics) {}
-
-	Common::Mutex   mutex;
-	int             skip_frames = 0;
-	GraphicContext& graphics;
-};
-
-WindowContext* g_window_ctx = nullptr;
-static WindowGame g_window_game;
+} // namespace
 
 constexpr const char* KYTY_SDL_WINDOW_CAPTION = "Game";
 constexpr uint32_t    KYTY_SDL_WINDOW_FLAGS =
     (static_cast<uint32_t>(SDL_WINDOW_HIDDEN) | static_cast<uint32_t>(SDL_WINDOW_VULKAN));
 constexpr int KYTY_SDL_WINDOWPOS_CENTERED = SDL_WINDOWPOS_CENTERED; /*NOLINT(hicpp-signed-bitwise)*/
 
-static void CalcFrameTime(WindowGame& game, double game_time_s) {
-	game.m_previous_time_seconds = game.m_current_time_seconds;
-	game.m_current_time_seconds  = game_time_s;
-
-	game.m_frame_num++;
-	game.m_fps_frames_num++;
-
-	const auto fps_time = game.m_current_time_seconds - game.m_fps_start_time;
-	if (fps_time > FPS_UPDATE_TIME) {
-		game.m_current_fps    = static_cast<double>(game.m_fps_frames_num) / fps_time;
-		game.m_fps_frames_num = 0;
-		game.m_fps_start_time = game.m_current_time_seconds;
-	}
-}
-
-static bool Init(WindowGame& /*game*/) {
-	return true;
-}
-static bool Update(WindowGame& /*game*/) {
-	return true;
-}
-static bool Render(WindowGame& /*game*/) {
-	return true;
-}
-static bool Close(WindowGame& /*game*/) {
-	return true;
-}
-static void SetPause(WindowGame& game, bool flag) {
+static void SetPause(WindowLoopState& game, bool flag) {
 	LOGF("Pause: %s\n", flag ? "true" : "false");
 
-	game.m_game_is_paused = flag;
+	game.paused.store(flag, std::memory_order_release);
 }
 
-static bool RenderAndUpdate(WindowGame& game) {
-	static double lag = 0.0;
-
-	lag += game.m_current_time_seconds - game.m_previous_time_seconds;
-
-	int num = 0;
-
-	bool ok = true;
-
-	while (lag >= game.m_update_fixed_time) {
-		if (num < game.m_max_updates_per_frame) {
-			ok = ok && Update(game);
-
-			game.m_update_num++;
-			num++;
-			game.m_update_time_seconds = game.m_update_num * game.m_update_fixed_time;
-		}
-
-		lag -= game.m_update_fixed_time;
-	}
-
-	ok = ok && Render(game);
-
-	return ok;
-}
-
-bool GameInit(WindowGame& game, const Common::Timer& timer) {
-	EXIT_IF(game.private_data || game.event);
-	auto& graphics = g_window_ctx->graphic_ctx;
-
-	EXIT_IF(graphics.screen_width == 0 || graphics.screen_height == 0);
-
-	auto* pdata = new WindowGamePrivate(graphics);
-
-	game.private_data = pdata;
-	game.event        = new SDL_Event;
-
-	game.m_screen_width  = graphics.screen_width;
-	game.m_screen_height = graphics.screen_height;
-
-	CalcFrameTime(game, timer.GetTimeS());
-
-	return Init(game);
-}
-
-bool GameClose(WindowGame& game) {
-	EXIT_IF(!game.private_data || !game.event);
-
-	delete (static_cast<WindowGamePrivate*>(game.private_data));
-	delete (static_cast<SDL_Event*>(game.event));
-
-	return Close(game);
-}
-
-void GameShowWindow(WindowGame& game, const Common::Timer& timer) {
-	auto* p = static_cast<WindowGamePrivate*>(game.private_data);
-
-	EXIT_IF(!p);
-
-	p->mutex.Lock();
-	{
-		if (p->skip_frames > 0) {
-			p->skip_frames--;
-			LOGF("skip frame %d\n", p->skip_frames);
-		} else {
-			VideoOut::VideoOutBeginVblank();
-			if (VideoOut::VideoOutFlipWindow(0)) {
-				CalcFrameTime(game, timer.GetTimeS());
-			}
-			VideoOut::VideoOutEndVblank();
-		}
-	}
-	p->mutex.Unlock();
-}
-
-void GameEventQuit(WindowGame& game) {
+static void GameEventQuit(WindowLoopState& game) {
 	LOGF("Event: quit\n");
 
-	game.m_game_need_exit = true;
+	game.need_exit = true;
 }
 
-void GameEventTerminate(WindowGame& game) {
+static void GameEventTerminate(WindowLoopState& game) {
 	LOGF("Event: terminate\n");
 
-	game.m_game_need_exit = true;
+	game.need_exit = true;
 }
 
-void GameEventKeyboard(WindowGame& game, const EventKeyboard& key) {
+static void GameEventKeyboard(WindowLoopState& game, const EventKeyboard& key) {
 #ifdef KYTY_DBG_INPUT
 	LOGF("Key: time = %.04f, %s%s, %s%s, %s, scan = %d, key = %d, mod = %04" PRIx16 "\n",
 	     key.timestamp_seconds, (key.down ? "down" : ""), (key.up ? "up" : ""),
@@ -448,8 +248,10 @@ void GameEventKeyboard(WindowGame& game, const EventKeyboard& key) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS || KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	if (key.down) {
 		switch (key.key_code) {
-			case SDLK_ESCAPE: game.m_game_need_exit = true; break;
-			case SDLK_SPACE: SetPause(game, !game.m_game_is_paused); break;
+			case SDLK_ESCAPE: game.need_exit = true; break;
+			case SDLK_SPACE:
+				SetPause(game, !game.paused.load(std::memory_order_acquire));
+				break;
 			case SDLK_F1:
 				if (!key.repeat) {
 					RenderDocRequestCapture();
@@ -459,7 +261,7 @@ void GameEventKeyboard(WindowGame& game, const EventKeyboard& key) {
 		}
 	}
 
-	const auto button = Controller::LookupKeyboardPadButton(key.key_code);
+	const auto button = KeyboardKeyToPadButton(key.key_code);
 	if (button != 0 && (key.down || key.up) && !key.repeat) {
 		static bool keyboard_connected = false;
 		if (!keyboard_connected) {
@@ -469,17 +271,9 @@ void GameEventKeyboard(WindowGame& game, const EventKeyboard& key) {
 		Controller::ControllerButton(KEYBOARD_CONTROLLER_ID, button, key.down);
 	}
 #endif
-
-	// Real libScePad LibKeyboard backing state -- independent of the synthetic gamepad mapping
-	// above. SDL_Scancode already matches the USB HID keyboard-page usage table 1:1, so the
-	// scancode is forwarded directly as the HID key_code games expect, with no translation.
-	if ((key.down || key.up) && !key.repeat) {
-		Controller::KeyboardRawKeyEvent(static_cast<uint16_t>(key.scan_code), key.down);
-	}
-	Controller::KeyboardRawModifierState(SdlKeymodToHidModifierBitmask(key.mod));
 }
 
-void GameEventMouse([[maybe_unused]] WindowGame& game, [[maybe_unused]] const EventMouse& mb) {
+static void GameEventMouse([[maybe_unused]] const EventMouse& mb) {
 #ifdef KYTY_DBG_INPUT
 	if (mb.wheel) {
 		LOGF("Mouse wheel: time = %.04f, %s[%d, %d]\n", mb.timestamp_seconds,
@@ -498,50 +292,9 @@ void GameEventMouse([[maybe_unused]] WindowGame& game, [[maybe_unused]] const Ev
 		     mb.x, mb.y);
 	}
 #endif
-
-	// Real libScePad LibMouse backing state. Touch-originated synthetic mouse events (SDL's
-	// touch-to-mouse emulation) are excluded so a title reading both real touch input and mouse
-	// input doesn't see the same physical touch reported twice.
-	if (mb.touch) {
-		return;
-	}
-
-	if (mb.motion) {
-		// SDL_MOUSEMOTION reports the complete current button state (event->motion.state), not
-		// just one button changing, so it's safe/correct to overwrite the whole mask here.
-		uint32_t button_mask = 0;
-		button_mask |= mb.left ? Controller::MOUSE_BUTTON_LEFT : 0;
-		button_mask |= mb.right ? Controller::MOUSE_BUTTON_RIGHT : 0;
-		button_mask |= mb.middle ? Controller::MOUSE_BUTTON_MIDDLE : 0;
-		button_mask |= mb.x1 ? Controller::MOUSE_BUTTON_X1 : 0;
-		button_mask |= mb.x2 ? Controller::MOUSE_BUTTON_X2 : 0;
-		Controller::MouseRawButtonState(button_mask);
-		Controller::MouseRawMotion(mb.motion_x, mb.motion_y);
-		return;
-	}
-
-	if (mb.wheel) {
-		Controller::MouseRawWheel(mb.y);
-		return;
-	}
-
-	// SDL_MOUSEBUTTONDOWN/UP only identifies which single button changed (mb.left/right/etc.
-	// indicate the button the event is *about*, not the full current state of every button),
-	// so only that one bit is updated -- unlike the motion case above.
-	if (mb.down || mb.up) {
-		uint32_t changed_bit = 0;
-		changed_bit |= mb.left ? Controller::MOUSE_BUTTON_LEFT : 0;
-		changed_bit |= mb.right ? Controller::MOUSE_BUTTON_RIGHT : 0;
-		changed_bit |= mb.middle ? Controller::MOUSE_BUTTON_MIDDLE : 0;
-		changed_bit |= mb.x1 ? Controller::MOUSE_BUTTON_X1 : 0;
-		changed_bit |= mb.x2 ? Controller::MOUSE_BUTTON_X2 : 0;
-		if (changed_bit != 0) {
-			Controller::MouseRawButtonEvent(changed_bit, mb.down);
-		}
-	}
 }
 
-void GameEventFinger([[maybe_unused]] WindowGame& game, [[maybe_unused]] const EventFinger& f) {
+static void GameEventFinger([[maybe_unused]] const EventFinger& f) {
 #ifdef KYTY_DBG_INPUT
 	if (f.motion) {
 		LOGF("Finger motion: time = %.04f, %d, %d, (x,y) = [%f, %f], (dx,dy) = [%f, %f], pressure "
@@ -556,8 +309,7 @@ void GameEventFinger([[maybe_unused]] WindowGame& game, [[maybe_unused]] const E
 #endif
 }
 
-void GameEventController([[maybe_unused]] WindowGame&            game,
-                         [[maybe_unused]] const EventController& f) {
+static void GameEventController([[maybe_unused]] const EventController& f) {
 	EXIT_NOT_IMPLEMENTED(f.remapped);
 
 #ifdef KYTY_DBG_INPUT
@@ -588,13 +340,9 @@ void GameEventController([[maybe_unused]] WindowGame&            game,
 	}
 
 	if (f.down || f.up) {
-		const auto button = Controller::LookupControllerPadButton(f.button);
+		const auto button = ControllerButtonToPadButton(f.button);
 		if (button != 0) {
 			Controller::ControllerButton(f.id, button, f.down);
-		} else if (f.button == SDL_CONTROLLER_BUTTON_MISC1) {
-			// DualSense's dedicated mic-mute button; not part of ScePadData's button mask on
-			// real hardware, so it only drives the mic LED rather than a PAD_BUTTON_* bit.
-			Controller::ControllerMicButton(f.id, f.down);
 		}
 	}
 
@@ -607,379 +355,104 @@ void GameEventController([[maybe_unused]] WindowGame&            game,
 	}
 }
 
-} // namespace Libs::Graphics
-
-namespace Libs::Controller {
-
-void ControllerSetRumble(int id, uint8_t large_motor, uint8_t small_motor) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return;
-	}
-
-	// The real ScePad API takes a persistent 0-255 motor intensity with no duration, while SDL's
-	// rumble is duration-based. Games poll/refresh vibration state frequently, so a short hold
-	// bridges the gap: a fresh call before it expires re-arms it, and calling with 0 stops it
-	// immediately (0-intensity rumble cancels any active effect).
-	constexpr Uint32 RUMBLE_HOLD_MS = 250;
-	const auto        low_freq       = static_cast<Uint16>(large_motor) * 257U;
-	const auto        high_freq      = static_cast<Uint16>(small_motor) * 257U;
-
-	SDL_GameControllerRumble(pad, low_freq, high_freq, RUMBLE_HOLD_MS);
-}
-
-void ControllerSetLightBar(int id, uint8_t r, uint8_t g, uint8_t b) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr || !SDL_GameControllerHasLED(pad)) {
-		return;
-	}
-
-	SDL_GameControllerSetLED(pad, r, g, b);
-}
-
-void ControllerSetPlayerIndex(int id, int player_index) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return;
-	}
-
-	// SDL's PS5 HIDAPI driver reproduces the same 5-LED centered mapping the console itself
-	// uses (see SetLightsForPlayerIndex()/dualsense_set_player_leds() in hid-playstation.c),
-	// triggered automatically whenever the player index changes.
-	SDL_GameControllerSetPlayerIndex(pad, player_index);
-}
-
-// Mirrors DS5EffectsState_t from SDL's bundled hidapi PS5 driver (SDL_hidapi_ps5.c), which in
-// turn is verified against Sony's own upstreamed Linux kernel driver's
-// dualsense_output_report_common (hid-playstation.c, GPL-2.0-or-later). Both agree on this exact
-// 47-byte layout. Sent as-is through SDL_GameControllerSendEffect(), which lets SDL2's own
-// HIDAPI PS5 driver handle the USB/Bluetooth framing (headers, CRC32) transparently -- so this
-// works unmodified on both Windows and Linux.
-struct DualSenseEffectsReport {
-	uint8_t enable_bits1               = 0;
-	uint8_t enable_bits2               = 0;
-	uint8_t rumble_right               = 0;
-	uint8_t rumble_left                = 0;
-	uint8_t headphone_volume           = 0;
-	uint8_t speaker_volume             = 0;
-	uint8_t microphone_volume          = 0;
-	uint8_t audio_enable_bits          = 0;
-	uint8_t mic_light_mode             = 0;
-	uint8_t audio_mute_bits            = 0;
-	uint8_t right_trigger_effect[11]   = {};
-	uint8_t left_trigger_effect[11]    = {};
-	uint8_t unknown1[6]                = {};
-	uint8_t enable_bits3               = 0;
-	uint8_t unknown2[2]                = {};
-	uint8_t led_anim                   = 0;
-	uint8_t led_brightness             = 0;
-	uint8_t pad_lights                 = 0;
-	uint8_t led_red                    = 0;
-	uint8_t led_green                  = 0;
-	uint8_t led_blue                   = 0;
-};
-
-static_assert(sizeof(DualSenseEffectsReport) == 47);
-
-// Enable-bit flags for enable_bits1/enable_bits2/audio_mute_bits. The trigger-effect and
-// mic-light bits are cross-referenced against widely-corroborated community reverse-engineering
-// of the DualSense output report and against SDL_hidapi_ps5.c's own k_EDS5Effect* enum. The
-// audio-related bits are directly verified against Linux's hid-playstation.c
-// (DS_OUTPUT_VALID_FLAG0_SPEAKER_VOLUME_ENABLE/MIC_VOLUME_ENABLE,
-// DS_OUTPUT_VALID_FLAG1_MIC_MUTE_LED_CONTROL_ENABLE/POWER_SAVE_CONTROL_ENABLE, and
-// DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE), which is an authoritative Sony-authored source.
-constexpr uint8_t DS5_ENABLE1_RIGHT_TRIGGER_EFFECT = 0x04;
-constexpr uint8_t DS5_ENABLE1_LEFT_TRIGGER_EFFECT  = 0x08;
-constexpr uint8_t DS5_ENABLE1_SPEAKER_VOLUME       = 0x20;
-constexpr uint8_t DS5_ENABLE1_MIC_VOLUME           = 0x40;
-constexpr uint8_t DS5_ENABLE2_MIC_LIGHT            = 0x01;
-constexpr uint8_t DS5_ENABLE2_POWER_SAVE_CONTROL   = 0x02;
-constexpr uint8_t DS5_POWER_SAVE_MIC_MUTE          = 0x10;
-
-static void WriteTriggerCommand(uint8_t* dest, const Controller::DualSenseTriggerCommand& cmd) {
-	dest[0] = cmd.mode;
-	std::memcpy(dest + 1, cmd.param, sizeof(cmd.param));
-}
-
-void DualSenseSetTriggerEffect(int id, const Controller::DualSenseTriggerCommand& left,
-                               const Controller::DualSenseTriggerCommand& right) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return;
-	}
-
-	DualSenseEffectsReport report {};
-	report.enable_bits1 = DS5_ENABLE1_RIGHT_TRIGGER_EFFECT | DS5_ENABLE1_LEFT_TRIGGER_EFFECT;
-	WriteTriggerCommand(report.right_trigger_effect, right);
-	WriteTriggerCommand(report.left_trigger_effect, left);
-
-	SDL_GameControllerSendEffect(pad, &report, sizeof(report));
-}
-
-void DualSenseSetMicMuted(int id, bool muted, uint8_t led_mode) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return;
-	}
-
-	DualSenseEffectsReport report {};
-	// valid_flag1 bits: enable both the mic-mute LED control and the power-save control that
-	// actually gates the microphone hardware (see hid-playstation.c's dualsense_output_worker).
-	report.enable_bits2   = static_cast<uint8_t>(DS5_ENABLE2_MIC_LIGHT | DS5_ENABLE2_POWER_SAVE_CONTROL);
-	report.mic_light_mode = led_mode;
-	report.audio_mute_bits =
-	    static_cast<uint8_t>(muted ? DS5_POWER_SAVE_MIC_MUTE : 0);
-
-	SDL_GameControllerSendEffect(pad, &report, sizeof(report));
-}
-
-void DualSenseSetAudioVolume(int id, uint8_t speaker_volume, uint8_t mic_volume) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return;
-	}
-
-	DualSenseEffectsReport report {};
-	report.enable_bits1      = static_cast<uint8_t>(DS5_ENABLE1_SPEAKER_VOLUME | DS5_ENABLE1_MIC_VOLUME);
-	report.speaker_volume    = speaker_volume;
-	report.microphone_volume = mic_volume;
-
-	SDL_GameControllerSendEffect(pad, &report, sizeof(report));
-}
-
-void ControllerSetMotionSensorsEnabled(int id, bool enabled) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return;
-	}
-
-	if (SDL_GameControllerHasSensor(pad, SDL_SENSOR_GYRO)) {
-		SDL_GameControllerSetSensorEnabled(pad, SDL_SENSOR_GYRO, enabled ? SDL_TRUE : SDL_FALSE);
-	}
-	if (SDL_GameControllerHasSensor(pad, SDL_SENSOR_ACCEL)) {
-		SDL_GameControllerSetSensorEnabled(pad, SDL_SENSOR_ACCEL, enabled ? SDL_TRUE : SDL_FALSE);
-	}
-}
-
-// Touchpad resolution matches what PadGetControllerInformation already reports to guests.
-constexpr float TOUCHPAD_RESOLUTION_X = 1920.0f;
-constexpr float TOUCHPAD_RESOLUTION_Y = 943.0f;
-
-static uint16_t NormalizedTouchToPixel(float normalized, float resolution) {
-	const float clamped = (normalized < 0.0f ? 0.0f : (normalized > 1.0f ? 1.0f : normalized));
-	return static_cast<uint16_t>(clamped * resolution);
-}
-
-void ControllerPollExtendedState(int id, bool motion_enabled, ControllerExtendedState* out) {
-	EXIT_IF(out == nullptr);
-
-	*out = ControllerExtendedState {};
-
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return;
-	}
-
-	if (SDL_GameControllerGetNumTouchpads(pad) > 0) {
-		Uint8 state    = 0;
-		float x        = 0.0f;
-		float y        = 0.0f;
-		float pressure = 0.0f;
-		if (SDL_GameControllerGetTouchpadFinger(pad, 0, 0, &state, &x, &y, &pressure) == 0 &&
-		    state != 0) {
-			out->touch0_active = true;
-			out->touch0_x      = NormalizedTouchToPixel(x, TOUCHPAD_RESOLUTION_X);
-			out->touch0_y      = NormalizedTouchToPixel(y, TOUCHPAD_RESOLUTION_Y);
-		}
-		if (SDL_GameControllerGetTouchpadFinger(pad, 0, 1, &state, &x, &y, &pressure) == 0 &&
-		    state != 0) {
-			out->touch1_active = true;
-			out->touch1_x      = NormalizedTouchToPixel(x, TOUCHPAD_RESOLUTION_X);
-			out->touch1_y      = NormalizedTouchToPixel(y, TOUCHPAD_RESOLUTION_Y);
-		}
-	}
-
-	// DualSense Edge extras: SDL's builtin PS5 mapping (SDL_gamecontroller.c) only assigns these
-	// PADDLE1..4 slots when the connected device is actually detected as an Edge, so this is a
-	// harmless SDL_FALSE/no-op query on a standard DualSense.
-	if (SDL_GameControllerHasButton(pad, SDL_CONTROLLER_BUTTON_PADDLE1)) {
-		out->edge_paddle_right = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_PADDLE1) != 0;
-		out->edge_paddle_left  = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_PADDLE2) != 0;
-		out->edge_function_right =
-		    SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_PADDLE3) != 0;
-		out->edge_function_left =
-		    SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_PADDLE4) != 0;
-	}
-
-	if (motion_enabled) {
-		float gyro[3]  = {0.0f, 0.0f, 0.0f};
-		float accel[3] = {0.0f, 0.0f, 0.0f};
-		// SDL's gyro (rad/s) and accel (m/s^2) use the same physical units as ScePadData's
-		// angular_velocity/acceleration fields, so no conversion is needed here.
-		const bool has_gyro  = SDL_GameControllerGetSensorData(pad, SDL_SENSOR_GYRO, gyro, 3) == 0;
-		const bool has_accel = SDL_GameControllerGetSensorData(pad, SDL_SENSOR_ACCEL, accel, 3) == 0;
-		if (has_gyro || has_accel) {
-			out->motion_valid = true;
-			out->gyro_x       = gyro[0];
-			out->gyro_y       = gyro[1];
-			out->gyro_z       = gyro[2];
-			out->accel_x      = accel[0];
-			out->accel_y      = accel[1];
-			out->accel_z      = accel[2];
-		}
-	}
-}
-
-BatteryLevel ControllerGetBatteryLevel(int id) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return BatteryLevel::Unknown;
-	}
-
-	auto* joystick = SDL_GameControllerGetJoystick(pad);
-	if (joystick == nullptr) {
-		return BatteryLevel::Unknown;
-	}
-
-	switch (SDL_JoystickCurrentPowerLevel(joystick)) {
-		case SDL_JOYSTICK_POWER_EMPTY: return BatteryLevel::Empty;
-		case SDL_JOYSTICK_POWER_LOW: return BatteryLevel::Low;
-		case SDL_JOYSTICK_POWER_MEDIUM: return BatteryLevel::Medium;
-		case SDL_JOYSTICK_POWER_FULL: return BatteryLevel::Full;
-		case SDL_JOYSTICK_POWER_WIRED: return BatteryLevel::Wired;
-		default: return BatteryLevel::Unknown;
-	}
-}
-
-} // namespace Libs::Controller
-
-namespace Libs::Graphics {
-
-void GameEventDisplay([[maybe_unused]] WindowGame& game) {
-	auto* p = static_cast<WindowGamePrivate*>(game.private_data);
-
-	p->mutex.Lock();
-	game.m_screen_width  = p->graphics.screen_width;
-	game.m_screen_height = p->graphics.screen_height;
-	p->mutex.Unlock();
-}
-
-void GameEventLowMemory(WindowGame& /*game*/) {
+static void GameEventLowMemory() {
 	LOGF("Event: low_memory\n");
 }
 
-void GameEventWillEnterBackground(WindowGame& game) {
+static void GameEventWillEnterBackground(WindowLoopState& game) {
 	LOGF("Event: will_enter_background\n");
 
 	SetPause(game, true);
 }
 
-void GameEventDidEnterBackground(WindowGame& /*game*/) {
+static void GameEventDidEnterBackground() {
 	LOGF("Event: did_enter_background\n");
 }
 
-void GameEventWillEnterForeground(WindowGame& /*game*/) {
+static void GameEventWillEnterForeground() {
 	LOGF("Event: will_enter_foreground\n");
 }
 
-void GameEventDidEnterForeground(WindowGame& game) {
+static void GameEventDidEnterForeground(WindowLoopState& game) {
 	LOGF("Event: did_enter_foreground\n");
 
 	SetPause(game, false);
 }
 
-void GameEventResize(WindowGame& game, uint32_t new_width, uint32_t new_height) {
-	// Minimized Win32 windows fire SIZE_CHANGED/RESIZED with 0x0 (Astro Bot minimizes its own
-	// window briefly during splash). Ignore the degenerate size instead of hard-crashing; the
-	// last known-good screen_width/height stays in effect until a real resize/restore arrives.
-	if (new_width == 0 || new_height == 0) {
-		static std::atomic<uint32_t> zero_resize_logs {0};
-		if (zero_resize_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "GameEventResize: ignoring degenerate resize %" PRIu32 "x%" PRIu32
-			           " (window likely minimized)\n",
-			           new_width, new_height);
-		}
-		return;
-	}
-
-	auto* p = static_cast<WindowGamePrivate*>(game.private_data);
-	EXIT_IF(p == nullptr);
-
-	p->mutex.Lock();
-	{
-		p->skip_frames++;
-		p->graphics.screen_width  = new_width;
-		p->graphics.screen_height = new_height;
-
-		game.m_screen_width  = p->graphics.screen_width;
-		game.m_screen_height = p->graphics.screen_height;
-	}
-	p->mutex.Unlock();
+void WindowContext::Resize(uint32_t new_width, uint32_t new_height) {
+	EXIT_IF(new_width == 0 || new_height == 0);
+	graphic_ctx.screen_width  = new_width;
+	graphic_ctx.screen_height = new_height;
 }
 
-static void ProcessWindowEvent(WindowGame& game, SDL_WindowEvent window) {
-	switch (window.event) {
-		case SDL_WINDOWEVENT_SHOWN: LOGF("Window %" PRIu32 " shown\n", window.windowID); break;
+void WindowContext::ProcessWindowEvent(const SDL_WindowEvent& event) {
+	const auto& window_event = event;
+	switch (window_event.event) {
+		case SDL_WINDOWEVENT_SHOWN: LOGF("Window %" PRIu32 " shown\n", window_event.windowID); break;
 
-		case SDL_WINDOWEVENT_HIDDEN: LOGF("Window %" PRIu32 " hidden\n", window.windowID); break;
+		case SDL_WINDOWEVENT_HIDDEN:
+			LOGF("Window %" PRIu32 " hidden\n", window_event.windowID);
+			break;
 
-		case SDL_WINDOWEVENT_EXPOSED: LOGF("Window %" PRIu32 " exposed\n", window.windowID); break;
+		case SDL_WINDOWEVENT_EXPOSED:
+			LOGF("Window %" PRIu32 " exposed\n", window_event.windowID);
+			break;
 
 		case SDL_WINDOWEVENT_MOVED:
-			LOGF("Window %" PRIu32 " moved to %" PRId32 ",%" PRId32 "\n", window.windowID,
-			     window.data1, window.data2);
+			LOGF("Window %" PRIu32 " moved to %" PRId32 ",%" PRId32 "\n",
+			     window_event.windowID, window_event.data1, window_event.data2);
 			break;
 
 		case SDL_WINDOWEVENT_RESIZED:
-			LOGF("Window %" PRIu32 " resized to %" PRId32 "x%" PRId32 "\n", window.windowID,
-			     window.data1, window.data2);
+			LOGF("Window %" PRIu32 " resized to %" PRId32 "x%" PRId32 "\n",
+			     window_event.windowID, window_event.data1, window_event.data2);
 
 			LOGF("m: %d\n", static_cast<int>(SDL_ThreadID()));
-			GameEventResize(game, window.data1, window.data2);
+			Resize(window_event.data1, window_event.data2);
 
 			break;
 
 		case SDL_WINDOWEVENT_SIZE_CHANGED:
-			LOGF("Window %" PRIu32 " size changed to %" PRId32 "x%" PRId32 "\n", window.windowID,
-			     window.data1, window.data2);
+			LOGF("Window %" PRIu32 " size changed to %" PRId32 "x%" PRId32 "\n",
+			     window_event.windowID, window_event.data1, window_event.data2);
 
 			LOGF("m: %d\n", static_cast<int>(SDL_ThreadID()));
-			GameEventResize(game, window.data1, window.data2);
+			Resize(window_event.data1, window_event.data2);
 
 			break;
 
 		case SDL_WINDOWEVENT_MINIMIZED:
-			LOGF("Window %" PRIu32 " minimized\n", window.windowID);
-			g_window_ctx->window_minimized = true;
+			LOGF("Window %" PRIu32 " minimized\n", window_event.windowID);
 			break;
 		case SDL_WINDOWEVENT_MAXIMIZED:
-			LOGF("Window %" PRIu32 " maximized\n", window.windowID);
-			g_window_ctx->window_minimized = false;
+			LOGF("Window %" PRIu32 " maximized\n", window_event.windowID);
 			break;
 		case SDL_WINDOWEVENT_RESTORED:
-			LOGF("Window %" PRIu32 " restored\n", window.windowID);
-			g_window_ctx->window_minimized = false;
+			LOGF("Window %" PRIu32 " restored\n", window_event.windowID);
 			break;
 		case SDL_WINDOWEVENT_ENTER:
-			LOGF("Mouse entered window %" PRIu32 "\n", window.windowID);
+			LOGF("Mouse entered window %" PRIu32 "\n", window_event.windowID);
 			break;
-		case SDL_WINDOWEVENT_LEAVE: LOGF("Mouse left window %" PRIu32 "\n", window.windowID); break;
+		case SDL_WINDOWEVENT_LEAVE:
+			LOGF("Mouse left window %" PRIu32 "\n", window_event.windowID);
+			break;
 		case SDL_WINDOWEVENT_FOCUS_GAINED:
-			LOGF("Window %" PRIu32 " gained keyboard focus\n", window.windowID);
+			LOGF("Window %" PRIu32 " gained keyboard focus\n", window_event.windowID);
 			break;
 		case SDL_WINDOWEVENT_FOCUS_LOST:
-			LOGF("Window %" PRIu32 " lost keyboard focus\n", window.windowID);
+			LOGF("Window %" PRIu32 " lost keyboard focus\n", window_event.windowID);
 			break;
-		case SDL_WINDOWEVENT_CLOSE: LOGF("Window %" PRIu32 " closed\n", window.windowID); break;
+		case SDL_WINDOWEVENT_CLOSE:
+			LOGF("Window %" PRIu32 " closed\n", window_event.windowID);
+			break;
 		default:
-			LOGF("Window %" PRIu32 " got unknown event %" PRIu8 "\n", window.windowID,
-			     window.event);
+			LOGF("Window %" PRIu32 " got unknown event %" PRIu8 "\n", window_event.windowID,
+			     window_event.event);
 			break;
 	}
 }
 
-static void ProcessDisplayEvent(WindowGame& game, SDL_DisplayEvent display) {
+void WindowContext::ProcessDisplayEvent(const SDL_DisplayEvent& display) {
 	bool sdl = false;
 
 	switch (display.event) {
@@ -997,10 +470,6 @@ static void ProcessDisplayEvent(WindowGame& game, SDL_DisplayEvent display) {
 				default: LOGF("???\n");
 			}
 
-			if (!sdl) {
-				GameEventDisplay(game);
-			}
-
 			break;
 		}
 		default:
@@ -1010,27 +479,9 @@ static void ProcessDisplayEvent(WindowGame& game, SDL_DisplayEvent display) {
 	}
 }
 
-int GamePollEvent(WindowGame& game) {
-	auto* event = static_cast<SDL_Event*>(game.event);
-
-	EXIT_IF(!event);
-
-	return SDL_PollEvent(event);
-}
-
-int GameWaitEvent(WindowGame& game) {
-	auto* event = static_cast<SDL_Event*>(game.event);
-
-	EXIT_IF(!event);
-
-	return SDL_WaitEvent(event);
-}
-
-void GameProcessEvent(WindowGame& game, double time_s) {
-	auto* event = static_cast<SDL_Event*>(game.event);
-
-	EXIT_IF(!event);
-
+void WindowContext::ProcessEvent(double time_s) {
+	auto& game  = loop;
+	auto* event = &game.event;
 	EXIT_IF(SDL_GetEventState(SDL_DISPLAYEVENT) != SDL_ENABLE);
 
 	switch (event->type) {
@@ -1038,13 +489,13 @@ void GameProcessEvent(WindowGame& game, double time_s) {
 
 		case SDL_APP_TERMINATING: GameEventTerminate(game); break;
 
-		case SDL_APP_LOWMEMORY: GameEventLowMemory(game); break;
+		case SDL_APP_LOWMEMORY: GameEventLowMemory(); break;
 
 		case SDL_APP_WILLENTERBACKGROUND: GameEventWillEnterBackground(game); break;
 
-		case SDL_APP_DIDENTERBACKGROUND: GameEventDidEnterBackground(game); break;
+		case SDL_APP_DIDENTERBACKGROUND: GameEventDidEnterBackground(); break;
 
-		case SDL_APP_WILLENTERFOREGROUND: GameEventWillEnterForeground(game); break;
+		case SDL_APP_WILLENTERFOREGROUND: GameEventWillEnterForeground(); break;
 
 		case SDL_APP_DIDENTERFOREGROUND: GameEventDidEnterForeground(game); break;
 
@@ -1067,9 +518,9 @@ void GameProcessEvent(WindowGame& game, double time_s) {
 			break;
 		}
 
-		case SDL_WINDOWEVENT: ProcessWindowEvent(game, event->window); break;
+		case SDL_WINDOWEVENT: ProcessWindowEvent(event->window); break;
 
-		case SDL_DISPLAYEVENT: ProcessDisplayEvent(game, event->display); break;
+		case SDL_DISPLAYEVENT: ProcessDisplayEvent(event->display); break;
 
 		case SDL_MOUSEBUTTONDOWN:
 		case SDL_MOUSEBUTTONUP: {
@@ -1094,7 +545,7 @@ void GameProcessEvent(WindowGame& game, double time_s) {
 			mb.motion_y          = 0;
 			mb.timestamp_seconds = time_s;
 
-			GameEventMouse(game, mb);
+			GameEventMouse(mb);
 
 			break;
 		}
@@ -1121,7 +572,7 @@ void GameProcessEvent(WindowGame& game, double time_s) {
 			mb.motion_y          = 0;
 			mb.timestamp_seconds = time_s;
 
-			GameEventMouse(game, mb);
+			GameEventMouse(mb);
 
 			break;
 		}
@@ -1148,7 +599,7 @@ void GameProcessEvent(WindowGame& game, double time_s) {
 			mb.motion_y          = event->motion.yrel;
 			mb.timestamp_seconds = time_s;
 
-			GameEventMouse(game, mb);
+			GameEventMouse(mb);
 
 			break;
 		}
@@ -1170,7 +621,7 @@ void GameProcessEvent(WindowGame& game, double time_s) {
 			f.pressure          = event->tfinger.pressure;
 			f.timestamp_seconds = time_s;
 
-			GameEventFinger(game, f);
+			GameEventFinger(f);
 
 			break;
 		}
@@ -1192,7 +643,7 @@ void GameProcessEvent(WindowGame& game, double time_s) {
 			c.released          = false;
 			c.timestamp_seconds = time_s;
 
-			GameEventController(game, c);
+			GameEventController(c);
 
 			break;
 		}
@@ -1215,7 +666,7 @@ void GameProcessEvent(WindowGame& game, double time_s) {
 			c.released          = (event->cbutton.state == SDL_RELEASED);
 			c.timestamp_seconds = time_s;
 
-			GameEventController(game, c);
+			GameEventController(c);
 
 			break;
 		}
@@ -1239,67 +690,43 @@ void GameProcessEvent(WindowGame& game, double time_s) {
 			c.released          = false;
 			c.timestamp_seconds = time_s;
 
-			GameEventController(game, c);
+			GameEventController(c);
 
 			break;
 		}
 	}
 }
 
-void GameMainLoop(WindowGame& game) {
-	bool need_exit = false;
-
+void WindowContext::Run() {
 	Common::Timer timer;
 	timer.Start();
 
-	if (!GameInit(game, timer)) {
-		need_exit = true;
-	}
+	loop.event     = {};
+	loop.need_exit = false;
+	loop.paused.store(false, std::memory_order_release);
 
-	for (;;) {
-		if (need_exit) {
-			break;
-		}
-
-		if (GamePollEvent(game) != 0) {
-			GameProcessEvent(game, timer.GetTimeS());
+	while (!loop.need_exit) {
+		if (SDL_PollEvent(&loop.event) != 0) {
+			ProcessEvent(timer.GetTimeS());
 			continue;
 		}
 
-		if (game.m_game_is_paused) {
+		if (loop.paused.load(std::memory_order_acquire)) {
 			if (!timer.IsPaused()) {
 				timer.Pause();
 			}
-
-			GameWaitEvent(game);
-
-			GameProcessEvent(game, timer.GetTimeS());
-			need_exit = game.m_game_need_exit;
+			if (SDL_WaitEvent(&loop.event) == 0) {
+				EXIT("%s\n", SDL_GetError());
+			}
+			ProcessEvent(timer.GetTimeS());
 			continue;
 		}
 
-		need_exit = game.m_game_need_exit;
-
-		if (game.m_game_is_paused) {
-			if (!timer.IsPaused()) {
-				timer.Pause();
-			}
-		} else {
-			if (timer.IsPaused()) {
-				timer.Resume();
-			}
-
-			if (!need_exit) {
-				need_exit = !RenderAndUpdate(game);
-			}
-
-			if (!need_exit) {
-				GameShowWindow(game, timer);
-			}
+		if (timer.IsPaused()) {
+			timer.Resume();
 		}
+		Common::Thread::SleepMicro(1000);
 	}
-
-	GameClose(game);
 }
 
 static void WindowCreate(WindowContext& context) {
@@ -1333,29 +760,33 @@ static void WindowCreate(WindowContext& context) {
 	SDL_SetWindowResizable(context.window, SDL_FALSE);
 }
 
-void WindowInit(uint32_t width, uint32_t height) {
+Presenter& WindowInit(uint32_t width, uint32_t height) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-	EXIT_IF(g_window_ctx != nullptr);
+	EXIT_IF(g_window != nullptr);
 
-	g_window_ctx = new WindowContext;
+	auto window = std::make_unique<WindowContext>();
 
-	g_window_ctx->graphic_ctx.screen_width  = width;
-	g_window_ctx->graphic_ctx.screen_height = height;
+	window->graphic_ctx.screen_width  = width;
+	window->graphic_ctx.screen_height = height;
 
-	WindowCreate(*g_window_ctx);
-	VulkanCreate(*g_window_ctx);
-	GraphicsRenderInit(g_window_ctx->graphic_ctx);
+	WindowCreate(*window);
+	window->CreateVulkan();
+	auto& presenter = *window->presenter;
+	g_window         = std::move(window);
+	return presenter;
 }
 
 void WindowRun() {
 	KYTY_PROFILER_THREAD("Thread_Window");
+	EXIT_IF(g_window == nullptr);
 
-	GameMainLoop(g_window_game);
+	g_window->Run();
+}
 
-	// TODO: replace std::_Exit shutdown with full Vulkan teardown, then destroy
-	// the VMA allocator immediately before vkDestroyDevice.
-	Common::SubsystemsListSingleton::Instance()->ShutdownAll();
-	std::_Exit(0);
+void WindowShutdown() {
+	if (g_window != nullptr) {
+		g_window.reset();
+	}
 }
 
 static int WindowIconRead(void* user, char* data, int size) {
@@ -1417,7 +848,7 @@ static void WindowLoadPngIcon(const std::string& path, WindowIcon* icon) {
 	EXIT_NOT_IMPLEMENTED(icon->surface == nullptr);
 }
 
-void WindowUpdateIcon() {
+void WindowContext::UpdateIcon() {
 	static WindowIcon icon;
 	static bool       icon_loaded = false;
 
@@ -1430,11 +861,11 @@ void WindowUpdateIcon() {
 	}
 
 	if (icon.surface != nullptr) {
-		SDL_SetWindowIcon(g_window_ctx->window, icon.surface);
+		SDL_SetWindowIcon(window, icon.surface);
 	}
 }
 
-void WindowUpdateTitle() {
+void WindowContext::UpdateTitle() {
 	static char title[128];
 	static char title_id[12];
 	static char app_ver[12];
@@ -1443,15 +874,29 @@ void WindowUpdateTitle() {
 	    Loader::SystemContentParamSfoGetString("TITLE_ID", title_id, sizeof(title_id));
 	static bool has_app_ver =
 	    Loader::SystemContentParamSfoGetString("APP_VER", app_ver, sizeof(app_ver));
+	static uint64_t fps_start = Common::Timer::QueryPerformanceCounter();
+	static uint64_t frame_num = 0;
+	static uint64_t fps_frames = 0;
+	static double   current_fps = 0.0;
+
+	const auto now       = Common::Timer::QueryPerformanceCounter();
+	const auto frequency = Common::Timer::QueryPerformanceFrequency();
+	frame_num++;
+	fps_frames++;
+	if (now - fps_start >= frequency) {
+		current_fps = static_cast<double>(fps_frames) * static_cast<double>(frequency) /
+		              static_cast<double>(now - fps_start);
+		fps_start  = now;
+		fps_frames = 0;
+	}
 
 	auto fps = fmt::format("{}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:f}", (has_title ? title : ""),
 	                       (has_title ? ", " : ""), (has_title_id ? title_id : ""),
 	                       (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""),
-	                       (has_app_ver ? " " : ""), g_window_ctx->device_name,
-	                       g_window_ctx->processor_name, g_window_game.m_frame_num,
-	                       g_window_game.m_current_fps);
+	                       (has_app_ver ? " " : ""), device_name, processor_name,
+	                       frame_num, current_fps);
 
-	SDL_SetWindowTitle(g_window_ctx->window, fps.c_str());
+	SDL_SetWindowTitle(window, fps.c_str());
 }
 
 } // namespace Libs::Graphics

@@ -7,62 +7,18 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
-#include "graphics/host_gpu/renderer/framebufferCache.h"
+#include "graphics/host_gpu/renderer/imageView.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <atomic>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <span>
 #include <utility>
-#include <vector>
 
 namespace Libs::Graphics {
 
 namespace {
-
-// Flush the on-disk pipeline cache to disk after this many freshly compiled pipelines. Keeps the
-// cache reasonably fresh even if the emulator is closed without a clean shutdown, while avoiding a
-// disk write on every single new pipeline.
-constexpr uint32_t kDiskCacheFlushInterval = 16;
-
-std::filesystem::path GetPipelineCachePath() {
-	return std::filesystem::path("_PipelineCache") / "vk_pipeline_cache.bin";
-}
-
-// Returns true if the serialized cache blob was produced by the same driver/device that is running
-// now. The Vulkan spec allows drivers to ignore mismatched data, but validating up front avoids
-// feeding a foreign blob (recorded on a different GPU) into vkCreatePipelineCache.
-bool DiskCacheMatchesDevice(const std::vector<uint8_t>&         data,
-                            const vk::PhysicalDeviceProperties& props) {
-	// VkPipelineCacheHeaderVersionOne: length(u32) + version(u32) + vendorID(u32) + deviceID(u32) +
-	// pipelineCacheUUID(16 bytes) = 32 bytes minimum.
-	constexpr size_t kHeaderSize = 32;
-	if (data.size() < kHeaderSize) {
-		return false;
-	}
-	uint32_t header_length = 0;
-	uint32_t header_version = 0;
-	uint32_t vendor_id = 0;
-	uint32_t device_id = 0;
-	std::memcpy(&header_length, data.data() + 0, sizeof(uint32_t));
-	std::memcpy(&header_version, data.data() + 4, sizeof(uint32_t));
-	std::memcpy(&vendor_id, data.data() + 8, sizeof(uint32_t));
-	std::memcpy(&device_id, data.data() + 12, sizeof(uint32_t));
-
-	if (header_length < kHeaderSize) {
-		return false;
-	}
-	if (header_version != static_cast<uint32_t>(vk::PipelineCacheHeaderVersion::eOne)) {
-		return false;
-	}
-	if (vendor_id != props.vendorID || device_id != props.deviceID) {
-		return false;
-	}
-	return std::memcmp(data.data() + 16, props.pipelineCacheUUID.data(), VK_UUID_SIZE) == 0;
-}
 
 void NormalizeStaticParamsForDynamicState(PipelineStaticParameters& static_params) {
 	static_params.viewport_scale[0]  = 0.5f;
@@ -80,113 +36,25 @@ void NormalizeStaticParamsForDynamicState(PipelineStaticParameters& static_param
 
 } // namespace
 
+PipelineCache::~PipelineCache() {
+	auto destroy = [this](const auto& pipelines) {
+		for (const auto& [key, pipeline]: pipelines) {
+			(void)key;
+			m_graphics.device.destroyPipeline(pipeline->pipeline, nullptr);
+			m_graphics.device.destroyPipelineLayout(pipeline->pipeline_layout, nullptr);
+		}
+	};
+	destroy(m_graphics_pipelines);
+	destroy(m_compute_pipelines);
+}
+
 bool PipelineStaticParameters::operator==(const PipelineStaticParameters& other) const noexcept {
 	return std::memcmp(this, &other, sizeof(*this)) == 0;
 }
 
-void PipelineCache::EnsureDiskCacheLocked() {
-	if (m_disk_cache_ready) {
-		return;
-	}
-	m_disk_cache_ready = true;
-
-	std::vector<uint8_t> initial_data;
-	const auto           path = GetPipelineCachePath();
-	std::error_code      ec;
-	if (std::filesystem::exists(path, ec)) {
-		std::ifstream file(path, std::ios::binary | std::ios::ate);
-		if (file) {
-			const auto size = static_cast<std::streamoff>(file.tellg());
-			if (size > 0) {
-				initial_data.resize(static_cast<size_t>(size));
-				file.seekg(0, std::ios::beg);
-				file.read(reinterpret_cast<char*>(initial_data.data()), size);
-				if (!file) {
-					initial_data.clear();
-				}
-			}
-		}
-	}
-
-	if (!initial_data.empty() &&
-	    !DiskCacheMatchesDevice(initial_data, m_graphics.physical_device_properties)) {
-		LOGF("PipelineCache: on-disk cache does not match the current device, ignoring it\n");
-		initial_data.clear();
-	}
-
-	vk::PipelineCacheCreateInfo create_info {};
-	create_info.sType           = vk::StructureType::ePipelineCacheCreateInfo;
-	create_info.pNext           = nullptr;
-	create_info.flags           = {};
-	create_info.initialDataSize = initial_data.size();
-	create_info.pInitialData    = initial_data.empty() ? nullptr : initial_data.data();
-
-	auto result = m_graphics.device.createPipelineCache(&create_info, nullptr, &m_disk_cache);
-	if (result != vk::Result::eSuccess) {
-		LOGF("PipelineCache: vkCreatePipelineCache failed (%s), continuing without a disk cache\n",
-		     VulkanToString(result).c_str());
-		m_disk_cache = nullptr;
-		return;
-	}
-	LOGF("PipelineCache: initialized driver pipeline cache from %" PRIu64 " preloaded bytes\n",
-	     static_cast<uint64_t>(initial_data.size()));
-}
-
-void PipelineCache::FlushDiskCacheLocked() {
-	if (m_disk_cache == nullptr) {
-		return;
-	}
-
-	size_t size = 0;
-	if (m_graphics.device.getPipelineCacheData(m_disk_cache, &size, nullptr) !=
-	        vk::Result::eSuccess ||
-	    size == 0) {
-		return;
-	}
-	std::vector<uint8_t> data(size);
-	if (m_graphics.device.getPipelineCacheData(m_disk_cache, &size, data.data()) !=
-	    vk::Result::eSuccess) {
-		return;
-	}
-	data.resize(size);
-
-	const auto      path = GetPipelineCachePath();
-	std::error_code ec;
-	std::filesystem::create_directories(path.parent_path(), ec);
-
-	// Write to a temporary file and rename so a crash mid-write cannot corrupt the cache.
-	const auto tmp_path = std::filesystem::path(path).concat(".tmp");
-	{
-		std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
-		if (!file) {
-			return;
-		}
-		file.write(reinterpret_cast<const char*>(data.data()),
-		           static_cast<std::streamsize>(data.size()));
-		if (!file) {
-			return;
-		}
-	}
-	std::filesystem::rename(tmp_path, path, ec);
-	if (ec) {
-		std::filesystem::remove(tmp_path, ec);
-		return;
-	}
-	m_pipelines_since_flush = 0;
-}
-
-void PipelineCache::MaybeFlushDiskCacheLocked() {
-	if (m_disk_cache == nullptr) {
-		return;
-	}
-	if (++m_pipelines_since_flush >= kDiskCacheFlushInterval) {
-		FlushDiskCacheLocked();
-	}
-}
-
 PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
-    VulkanFramebuffer& framebuffer, RenderColorInfo* colors, uint32_t color_count,
-    RenderDepthInfo& depth, ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
+    RenderColorInfo* colors, uint32_t color_count, RenderDepthInfo& depth,
+    ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
     ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology, bool ps_active,
     std::span<const uint32_t> vs_spirv, std::span<const uint32_t> ps_spirv) {
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Gfx)", profiler::colors::DeepOrangeA200);
@@ -197,7 +65,6 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	EXIT_IF(ps_active && ps_spirv.empty());
 
 	Common::LockGuard lock(m_mutex);
-	EnsureDiskCacheLocked();
 	auto&             ctx    = command.GetRegisters();
 	auto&             sh_ctx = command.GetShaders();
 
@@ -206,10 +73,10 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	const HW::BlendColor& bclr                                     = ctx.GetBlendColor();
 	uint32_t              color_mask[RENDER_COLOR_ATTACHMENTS_MAX] = {};
 	for (uint32_t i = 0; i < color_count; i++) {
-		color_mask[i] = (colors[i].vulkan_buffer != nullptr
-		                     ? colors[i].export_mapping.ApplyMask(render_target_mask_slot(
-		                           ctx.GetRenderTargetMask(), colors[i].target_slot))
-		                     : 0);
+		color_mask[i] =
+		    (colors[i].image_id ? colors[i].export_mapping.ApplyMask(render_target_mask_slot(
+		                              ctx.GetRenderTargetMask(), colors[i].target_slot))
+		                        : 0);
 	}
 	const HW::ModeControl& mc = ctx.GetModeControl();
 
@@ -221,11 +88,40 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 
 	PipelineStaticParameters static_params {};
 	GraphicsPipeline         p {};
-	p.render_pass_id = framebuffer.render_pass_id;
 	p.ps_shader_id   = ps_id;
 	p.vs_shader_id   = vs_id;
 
 	static_params.color_count = color_count;
+	PipelineRenderingState rendering {};
+	rendering.color_count = color_count;
+	uint32_t attachment_samples = 0;
+	for (uint32_t i = 0; i < color_count; i++) {
+		EXIT_IF(!colors[i].image_id || colors[i].format == vk::Format::eUndefined);
+		rendering.color_formats[i] = colors[i].format;
+		if (attachment_samples == 0) {
+			attachment_samples = colors[i].samples;
+		} else if (attachment_samples != colors[i].samples) {
+			EXIT("mixed color attachment sample counts are unsupported: %u and %u\n",
+			     attachment_samples, colors[i].samples);
+		}
+	}
+	const bool with_depth =
+	    depth.format != vk::Format::eUndefined && static_cast<bool>(depth.image_id);
+	if (with_depth) {
+		const auto aspects = ImageViewOps::DepthAspectMask(depth.format);
+		rendering.depth_format =
+		    aspects & vk::ImageAspectFlagBits::eDepth ? depth.format : vk::Format::eUndefined;
+		rendering.stencil_format =
+		    aspects & vk::ImageAspectFlagBits::eStencil ? depth.format : vk::Format::eUndefined;
+		if (attachment_samples == 0) {
+			attachment_samples = depth.samples;
+		} else if (attachment_samples != depth.samples) {
+			EXIT("mixed color/depth sample counts are unsupported: %u and %u\n",
+			     attachment_samples, depth.samples);
+		}
+	}
+	EXIT_IF(attachment_samples == 0 ||
+	        vulkan_sample_count(attachment_samples) == vk::SampleCountFlagBits {});
 
 	if (ps_active && depth.depth_test_enable && ps_input_info->ps_execute_on_noop) {
 		static std::atomic<uint32_t> log_count {0};
@@ -235,27 +131,17 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	}
 
 	const auto& clip_control = ctx.GetClipControl();
-	if (!clip_control.IsZClipModeRepresentable()) {
-		static std::atomic<uint32_t> soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "Pipeline: soft-allow asymmetric Z-clip min_disable=%d max_disable=%d "
-			           "(approx clip_enable=%d)\n",
-			           clip_control.min_z_clip_disable, clip_control.max_z_clip_disable,
-			           clip_control.IsZClipEnabled());
-		}
-	}
+	EXIT_NOT_IMPLEMENTED(!clip_control.IsZClipModeRepresentable());
 	static_params.negative_one_to_one = !clip_control.dx_clip_space;
 	static_params.depth_clip_enable   = clip_control.IsZClipEnabled();
 	static_params.topology            = topology;
-	static_params.samples             = framebuffer.samples;
+	static_params.samples             = attachment_samples;
 	static_params.sample_shading_enable =
-	    ps_active && framebuffer.samples > 1 && ps_input_info->ps_sample_shading;
+	    ps_active && attachment_samples > 1 && ps_input_info->ps_sample_shading;
 	if (static_params.sample_shading_enable && !m_graphics.sample_rate_shading_enabled) {
 		EXIT("Pipeline: sample-rate shading is required but unsupported by the host\n");
 	}
-	static_params.with_depth =
-	    (depth.format != vk::Format::eUndefined && depth.vulkan_buffer != nullptr);
+	static_params.with_depth         = with_depth;
 	static_params.depth_test_enable  = depth.depth_test_enable;
 	static_params.depth_write_enable = (depth.depth_write_enable && !depth.depth_clear_enable);
 	static_params.depth_compare_op   = depth.depth_compare_op;
@@ -268,11 +154,9 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	for (uint32_t i = 0; i < RENDER_COLOR_ATTACHMENTS_MAX; i++) {
 		static_params.color_mask[i] = color_mask[i];
 	}
-	static_params.cull_back         = mc.cull_back;
-	static_params.cull_front        = mc.cull_front;
-	static_params.face              = mc.face;
-	static_params.depth_bias_enable =
-	    mc.poly_offset_front_enable || mc.poly_offset_back_enable;
+	static_params.cull_back  = mc.cull_back;
+	static_params.cull_front = mc.cull_front;
+	static_params.face       = mc.face;
 
 	for (uint32_t i = 0; i < color_count; i++) {
 		const auto& rt                        = ctx.GetRenderTarget(colors[i].target_slot);
@@ -295,7 +179,7 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	NormalizeStaticParamsForDynamicState(static_params);
 
 	GraphicsPipelineKey key {};
-	key.render_pass_id = p.render_pass_id;
+	key.rendering      = rendering;
 	key.vs_shader_id   = p.vs_shader_id;
 	key.ps_shader_id   = p.ps_shader_id;
 	key.static_params  = static_params;
@@ -318,9 +202,10 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	auto cached = std::make_unique<GraphicsPipeline>(p);
 	LogPipelineTrace("CreatePipelineInternal begin", vs_id.hash0, vs_id.crc32, ps_id.hash0,
 	                 ps_id.crc32);
-	CreatePipelineInternal(*cached, framebuffer.render_pass, vs_input_info, vs_spirv, ps_input_info,
+	CreatePipelineInternal(m_graphics, m_descriptor_cache, *cached, rendering, vs_input_info,
+	                       vs_spirv, ps_input_info,
 	                       ps_spirv, static_params, vs_id.hash0, vs_id.crc32, ps_id.hash0,
-	                       ps_id.crc32, ps_active, m_disk_cache);
+	                       ps_id.crc32, ps_active);
 	LogPipelineTrace("CreatePipelineInternal done", vs_id.hash0, vs_id.crc32, ps_id.hash0,
 	                 ps_id.crc32);
 
@@ -329,8 +214,6 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
-
-	MaybeFlushDiskCacheLocked();
 
 	return *iter->second;
 }
@@ -344,7 +227,6 @@ PipelineCache::CreateComputePipeline(ShaderComputeInputInfo&      input_info,
 	EXIT_IF(cs_spirv.empty());
 
 	Common::LockGuard lock(m_mutex);
-	EnsureDiskCacheLocked();
 
 	auto cs_id = ShaderGetIdCS(cs_regs, input_info, true);
 
@@ -363,15 +245,13 @@ PipelineCache::CreateComputePipeline(ShaderComputeInputInfo&      input_info,
 	}
 
 	auto cached = std::make_unique<ComputePipeline>(p);
-	CreatePipelineInternal(*cached, input_info, cs_spirv, m_disk_cache);
+	CreatePipelineInternal(m_graphics, m_descriptor_cache, *cached, input_info, cs_spirv);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 
 	auto [iter, inserted] = m_compute_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
-
-	MaybeFlushDiskCacheLocked();
 
 	return *iter->second;
 }

@@ -59,10 +59,9 @@ public:
 	}
 
 	[[nodiscard]] Entry& GetOrCreate(size_t page) {
-		// This project builds with exceptions disabled (-fno-exceptions), so an out-of-range
-		// page is a fatal EXIT_IF rather than a throw; IsValidPage() should have already been
-		// checked by the caller in all real usage.
-		EXIT_IF(!IsValidPage(page));
+		if (!IsValidPage(page)) {
+			EXIT("MultiLevelPageTable page is outside the guest address space");
+		}
 		auto& bucket = m_first_level[FirstLevelIndex(page)];
 		if (bucket == nullptr) {
 			bucket = std::make_unique<Bucket>();

@@ -20,8 +20,8 @@ namespace Libs::Graphics {
 struct GraphicContext;
 struct RenderColorInfo;
 struct RenderDepthInfo;
-struct VulkanFramebuffer;
 class RenderCommandBuffer;
+class DescriptorCache;
 
 namespace HW {
 class Context;
@@ -55,7 +55,6 @@ struct PipelineStaticParameters {
 	bool                       cull_front                                         = false;
 	bool                       cull_back                                          = false;
 	bool                       face                                               = false;
-	bool                       depth_bias_enable                                  = false;
 	uint8_t                    color_srcblend[RENDER_COLOR_ATTACHMENTS_MAX]       = {};
 	uint8_t                    color_comb_fcn[RENDER_COLOR_ATTACHMENTS_MAX]       = {};
 	uint8_t                    color_destblend[RENDER_COLOR_ATTACHMENTS_MAX]      = {};
@@ -83,16 +82,26 @@ static_assert(sizeof(PipelineStaticParameters) ==
                   sizeof(vk::PrimitiveTopology) + sizeof(uint32_t) + sizeof(bool) * 4 +
                   sizeof(vk::CompareOp) + sizeof(bool) + sizeof(float) * 2 + sizeof(bool) +
                   sizeof(PipelineStencilStaticState) * 2 + sizeof(uint32_t) +
-                  sizeof(uint32_t[RENDER_COLOR_ATTACHMENTS_MAX]) + sizeof(bool) * 4 +
+                  sizeof(uint32_t[RENDER_COLOR_ATTACHMENTS_MAX]) + sizeof(bool) * 3 +
                   sizeof(uint8_t[RENDER_COLOR_ATTACHMENTS_MAX]) * 6 +
                   sizeof(bool[RENDER_COLOR_ATTACHMENTS_MAX]) * 3 + sizeof(float) * 4);
 
+struct PipelineRenderingState {
+	std::array<vk::Format, RENDER_COLOR_ATTACHMENTS_MAX> color_formats {};
+	vk::Format depth_format   = vk::Format::eUndefined;
+	vk::Format stencil_format = vk::Format::eUndefined;
+	uint32_t   color_count    = 0;
+
+	bool operator==(const PipelineRenderingState&) const = default;
+};
+
 class PipelineCache {
 public:
-	explicit PipelineCache(GraphicContext& graphics): m_graphics(graphics) {
+	PipelineCache(GraphicContext& graphics, DescriptorCache& descriptor_cache)
+	    : m_graphics(graphics), m_descriptor_cache(descriptor_cache) {
 		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	}
-	~PipelineCache() { KYTY_NOT_IMPLEMENTED; }
+	~PipelineCache();
 	KYTY_CLASS_NO_COPY(PipelineCache);
 
 	struct Pipeline {
@@ -101,7 +110,6 @@ public:
 	};
 
 	struct GraphicsPipeline: Pipeline {
-		uint64_t render_pass_id = 0;
 		ShaderId vs_shader_id;
 		ShaderId ps_shader_id;
 	};
@@ -111,8 +119,8 @@ public:
 	};
 
 	GraphicsPipeline& CreateGraphicsPipeline(
-	    VulkanFramebuffer& framebuffer, RenderColorInfo* colors, uint32_t color_count,
-	    RenderDepthInfo& depth, ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
+	    RenderColorInfo* colors, uint32_t color_count, RenderDepthInfo& depth,
+	    ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
 	    ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology, bool ps_active,
 	    std::span<const uint32_t> vs_spirv, std::span<const uint32_t> ps_spirv);
 	ComputePipeline& CreateComputePipeline(ShaderComputeInputInfo&      input_info,
@@ -121,13 +129,13 @@ public:
 
 private:
 	struct GraphicsPipelineKey {
-		uint64_t                 render_pass_id = 0;
+		PipelineRenderingState   rendering;
 		ShaderId                 vs_shader_id;
 		ShaderId                 ps_shader_id;
 		PipelineStaticParameters static_params;
 
 		bool operator==(const GraphicsPipelineKey& other) const {
-			return render_pass_id == other.render_pass_id && vs_shader_id == other.vs_shader_id &&
+			return rendering == other.rendering && vs_shader_id == other.vs_shader_id &&
 			       ps_shader_id == other.ps_shader_id && static_params == other.static_params;
 		}
 	};
@@ -161,12 +169,21 @@ private:
 				Mix(hash, bytes[i]);
 			}
 		}
+
+		static void MixRendering(std::size_t& hash, const PipelineRenderingState& rendering) {
+			Mix(hash, rendering.color_count);
+			for (uint32_t i = 0; i < rendering.color_count; i++) {
+				Mix(hash, static_cast<uint32_t>(rendering.color_formats[i]));
+			}
+			Mix(hash, static_cast<uint32_t>(rendering.depth_format));
+			Mix(hash, static_cast<uint32_t>(rendering.stencil_format));
+		}
 	};
 
 	struct GraphicsPipelineKeyHash {
 		std::size_t operator()(const GraphicsPipelineKey& key) const {
 			std::size_t hash = 0;
-			PipelineKeyHash::Mix(hash, key.render_pass_id);
+			PipelineKeyHash::MixRendering(hash, key.rendering);
 			PipelineKeyHash::MixShaderId(hash, key.vs_shader_id);
 			PipelineKeyHash::MixShaderId(hash, key.ps_shader_id);
 			PipelineKeyHash::MixStaticParams(hash, key.static_params);
@@ -182,42 +199,32 @@ private:
 		}
 	};
 
-	// Lazily creates the persistent VkPipelineCache and preloads it from disk. Must be called
-	// while m_mutex is held. Safe to call repeatedly; only the first call does work.
-	void EnsureDiskCacheLocked();
-	// Serializes the current VkPipelineCache contents to disk. Must be called with m_mutex held.
-	void FlushDiskCacheLocked();
-	// Flushes the on-disk cache once enough new pipelines have accumulated. Held under m_mutex.
-	void MaybeFlushDiskCacheLocked();
-
 	GraphicContext& m_graphics;
+	DescriptorCache& m_descriptor_cache;
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>,
 	                   GraphicsPipelineKeyHash>
 	    m_graphics_pipelines;
 	std::unordered_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>, ComputePipelineKeyHash>
 	              m_compute_pipelines;
 	Common::Mutex m_mutex;
-
-	// Driver-side pipeline cache persisted across runs so shaders are not recompiled from
-	// scratch. nullptr if disk caching is unavailable; m_disk_cache_ready guards lazy init.
-	vk::PipelineCache m_disk_cache             = nullptr;
-	bool              m_disk_cache_ready       = false;
-	uint32_t          m_pipelines_since_flush  = 0;
 };
 
 void LogPipelineTrace(const char* phase, uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0,
                       uint32_t ps_crc32);
-void CreatePipelineInternal(PipelineCache::GraphicsPipeline& pipeline, vk::RenderPass render_pass,
+void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descriptor_cache,
+                            PipelineCache::GraphicsPipeline& pipeline,
+                            const PipelineRenderingState&   rendering,
                             const ShaderVertexInputInfo&    vs_input_info,
                             std::span<const uint32_t>       vs_shader,
                             const ShaderPixelInputInfo*     ps_input_info,
                             std::span<const uint32_t>       ps_shader,
                             const PipelineStaticParameters& static_params, uint32_t vs_hash0,
-                            uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active,
-                            vk::PipelineCache disk_cache);
-void CreatePipelineInternal(PipelineCache::ComputePipeline& pipeline,
+                            uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32,
+                            bool ps_active);
+void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descriptor_cache,
+                            PipelineCache::ComputePipeline& pipeline,
                             const ShaderComputeInputInfo&   input_info,
-                            std::span<const uint32_t> cs_shader, vk::PipelineCache disk_cache);
+                            std::span<const uint32_t>       cs_shader);
 
 } // namespace Libs::Graphics
 
