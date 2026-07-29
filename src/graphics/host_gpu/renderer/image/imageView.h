@@ -103,11 +103,9 @@ IsSupportedSampledDepthUintResource(const ShaderRecompiler::IR::ImageResource& r
 
 inline void ValidateStorageColorView(vk::Format image_format, vk::Format view_format,
                                      uint32_t swizzle) noexcept {
-	const auto srgb_view = SrgbStorageViewFormat(image_format);
-	const bool srgb_storage_view =
-	    srgb_view != vk::Format::eUndefined && view_format == srgb_view;
-	if ((image_format != view_format && !srgb_storage_view) ||
-	    !IsValidImageSwizzle(swizzle)) {
+	const auto srgb_view         = SrgbStorageViewFormat(image_format);
+	const bool srgb_storage_view = srgb_view != vk::Format::eUndefined && view_format == srgb_view;
+	if ((image_format != view_format && !srgb_storage_view) || !IsValidImageSwizzle(swizzle)) {
 		UnsupportedColorView("storage", image_format, view_format, swizzle);
 	}
 }
@@ -122,7 +120,10 @@ IsSupportedStorageImageResource(const ShaderRecompiler::IR::ImageResource& resou
 	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim3D ||
 	        resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DArray) &&
 	       resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::None && resource.written &&
-	       !resource.atomic && !resource.depth_compare;
+	       (!resource.atomic ||
+	        (resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint &&
+	         resource.read)) &&
+	       !resource.depth_compare;
 }
 
 inline void

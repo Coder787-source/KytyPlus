@@ -14,13 +14,13 @@
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/hostMemory.h"
-#include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/debug.h"
-#include "graphics/host_gpu/renderer/pipeline/descriptorCache.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/textureCommon.h"
+#include "graphics/host_gpu/renderer/pipeline/descriptorCache.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
-#include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/vma.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ir/BindingLayout.h"
@@ -239,11 +239,11 @@ bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor, co
 	const uint32_t     field3_expected =
 	    (descriptor.Type() << 28u) | field3_common | descriptor.DstSelXYZW();
 	const uint32_t field4_expected = descriptor.Depth() | (descriptor.BaseArray5() << 16u);
-	const bool common = (descriptor.fields[1] & field1_reserved_mask) == 0 &&
-	                    (descriptor.fields[2] & field2_reserved_mask) == 0 &&
-	                    descriptor.fields[3] == field3_expected &&
-	                    descriptor.fields[4] == field4_expected &&
-	                    descriptor.fields[5] == field5_expected;
+	const bool     common          = (descriptor.fields[1] & field1_reserved_mask) == 0 &&
+	                                 (descriptor.fields[2] & field2_reserved_mask) == 0 &&
+	                                 descriptor.fields[3] == field3_expected &&
+	                                 descriptor.fields[4] == field4_expected &&
+	                                 descriptor.fields[5] == field5_expected;
 	if (!common || (descriptor.fields[6] == 0 && descriptor.fields[7] != 0)) {
 		return false;
 	}
@@ -318,8 +318,8 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	const bool valid_2d_slice =
 	    (is_color_2d && descriptor.Depth() == 0 && descriptor.BaseArray5() == 0) ||
 	    (is_color_2d_array && descriptor.BaseArray5() <= descriptor.Depth());
-	const bool is_2d = resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D &&
-	                   valid_2d_slice;
+	const bool is_2d =
+	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D && valid_2d_slice;
 	const bool is_2d_array =
 	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DArray &&
 	    is_color_2d_array && descriptor.BaseArray5() <= descriptor.Depth();
@@ -340,13 +340,13 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	const bool supported_tile = tile == Prospero::GpuEnumValue(Prospero::TileMode::kLinear) ||
 	                            tile == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) ||
 	                            supported_depth_tile || supported_standard_tile;
+	const auto swizzle        = descriptor.DstSelXYZW();
 	const bool supported_swizzle =
-	    IsValidImageSwizzle(descriptor.DstSelXYZW()) &&
-	    (descriptor.DstSelXYZW() == DstSel(4, 5, 6, 7) || !resource.read);
+	    IsValidImageSwizzle(swizzle) &&
+	    (swizzle == DstSel(4, 5, 6, 7) || !resource.read || resource.atomic);
 	const bool supported_mip_view = descriptor.BaseLevel() == 0 || is_1d || is_2d;
 	return (is_1d || is_1d_array || is_2d || is_2d_array || is_3d) && supported_tile &&
-	       supported_mip_view &&
-	       descriptor.BaseLevel() == descriptor.LastLevel() &&
+	       supported_mip_view && descriptor.BaseLevel() == descriptor.LastLevel() &&
 	       descriptor.LastLevel() <= descriptor.MaxMip() && descriptor.MinLod() == 0 &&
 	       supported_swizzle && descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth();
 }
@@ -377,8 +377,10 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	const bool encoding_ok   = IsSupportedStorageTextureEncoding(descriptor);
 	const bool uint_resource =
 	    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint;
-	const bool format_ok = Prospero::IsSupportedTextureFormat(format) &&
-	                       uint_resource == Prospero::IsUintTextureFormat(format);
+	const bool format_ok =
+	    Prospero::IsSupportedTextureFormat(format) &&
+	    uint_resource == Prospero::IsUintTextureFormat(format) &&
+	    (!resource.atomic || format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt));
 	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
 		return;
 	}
@@ -618,12 +620,12 @@ RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   reso
 		                                             resource.written);
 	}
 
-	const auto              pixel_format = TextureGetFormat(format);
+	const auto              pixel_format        = TextureGetFormat(format);
 	const auto              storage_view_format = SrgbStorageViewFormat(pixel_format);
-	const auto              view_format =
-	    storage && storage_view_format != vk::Format::eUndefined ? storage_view_format
-	                                                            : pixel_format;
-	const auto              block_bytes  = Prospero::BlockCompressedBytesPerBlock(format);
+	const auto              view_format = storage && storage_view_format != vk::Format::eUndefined
+	                                          ? storage_view_format
+	                                          : pixel_format;
+	const auto              block_bytes = Prospero::BlockCompressedBytesPerBlock(format);
 	TextureCache::ImageDesc desc {};
 	desc.info.data         = {address, size.size};
 	desc.info.pixel_format = pixel_format;

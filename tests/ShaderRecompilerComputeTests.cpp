@@ -15220,7 +15220,7 @@ void CheckRenderTargetFormatContract() {
       resource.kind = ShaderRecompiler::IR::ResourceKind::Image;
     } else if (std::strcmp(kind, "storage-no-write") == 0) {
       resource.written = false;
-    } else if (std::strcmp(kind, "storage-atomic") == 0) {
+    } else if (std::strcmp(kind, "storage-nonuint-atomic") == 0) {
       resource.atomic = true;
     } else if (std::strcmp(kind, "storage-compare") == 0) {
       resource.depth_compare = true;
@@ -15437,6 +15437,12 @@ void CheckSampledColorViews() {
   Require("SampledColorViews", "write-only uint 2D-array storage resource",
           IsSupportedStorageImageResource(storage_resource),
           "basic write-only uint 2D-array storage resource was rejected");
+  storage_resource.dimension = ShaderRecompiler::Decoder::ImageDimension::Dim2D;
+  storage_resource.read = true;
+  storage_resource.atomic = true;
+  Require("SampledColorViews", "atomic uint 2D storage resource",
+          IsSupportedStorageImageResource(storage_resource),
+          "atomic uint storage resource was rejected");
 
   char path[MAX_PATH]{};
   Require("SampledColorViews", "host",
@@ -15446,7 +15452,7 @@ void CheckSampledColorViews() {
        {"sampled-invalid-selector", "sampled-incompatible-format",
         "sampled-invalid-high", "sampled-depth-format", "sampled-depth-swizzle",
         "storage-incompatible-format", "storage-kind", "storage-no-write",
-        "storage-atomic", "storage-compare", "storage-mip", "storage-dimension",
+        "storage-nonuint-atomic", "storage-compare", "storage-mip", "storage-dimension",
         "volume-mip-count", "volume-slice-range"}) {
     std::string command =
         std::string("\"") + path + "\" --image-view-death " + kind;
@@ -16155,6 +16161,19 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
            0x00700000u, 0x00000000u, 0x00000000u}};
 }
 
+ShaderRecompiler::IR::ImageResource AtomicStorageTextureResource() {
+  auto resource = BasicLinearStorageTextureResource();
+  resource.kind = ShaderRecompiler::IR::ResourceKind::StorageImageUint;
+  resource.read = true;
+  resource.atomic = true;
+  return resource;
+}
+
+ShaderTextureResource AtomicStorageTextureDescriptor() {
+  return {{0x304bb700u, 0xc1400000u, 0x0000001fu, 0x91b00204u, 0x00000000u,
+           0x00700000u, 0x00000000u, 0x00000000u}};
+}
+
 [[noreturn]] void RunStorageTextureDescriptorDeathCase(const char *kind) {
   auto resource = BasicStorageTextureResource();
   auto descriptor = BasicStorageTextureDescriptor();
@@ -16216,6 +16235,12 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
   } else if (std::strcmp(kind, "uint-resource-float-format") == 0) {
     resource = BasicUintArrayStorageTextureResource();
     descriptor = BasicArrayStorageTextureDescriptor();
+  } else if (std::strcmp(kind, "atomic-format") == 0) {
+    resource = AtomicStorageTextureResource();
+    descriptor = AtomicStorageTextureDescriptor();
+    descriptor.fields[1] =
+        (descriptor.fields[1] & ~0x1ff00000u) |
+        (Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt) << 20u);
   } else if (std::strcmp(kind, "depth-tile-read") == 0) {
     resource = Ppsa14053DepthTileStorageTextureResource();
     descriptor = Ppsa14053DepthTileStorageTextureDescriptor();
@@ -16590,6 +16615,18 @@ void CheckBasicStorageTextureDescriptor() {
           IsValidImageSwizzle(DstSel(4, 4, 4, 4)),
           "single-channel replicated destination selection was rejected");
 
+  const auto atomic = AtomicStorageTextureDescriptor();
+  Require("BasicStorageTexture", "atomic R32_UINT descriptor",
+          atomic.Width5() + 1u == 128 && atomic.Height5() + 1u == 1 &&
+              atomic.Depth() + 1u == 1 &&
+              atomic.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
+              atomic.Format() ==
+                  Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) &&
+              atomic.DstSelXYZW() == DstSel(4, 0, 0, 1),
+          "PPSA22102 image-atomic descriptor fixture is malformed");
+  ValidateStorageTexture(AtomicStorageTextureResource(), atomic, 0x10000);
+
   char path[MAX_PATH]{};
   Require("BasicStorageTexture", "host",
           GetModuleFileNameA(nullptr, path, MAX_PATH) != 0,
@@ -16598,7 +16635,7 @@ void CheckBasicStorageTextureDescriptor() {
        {"resource", "type", "tile", "mip", "swizzle", "linear-rgb1-read",
         "bgra-read", "r16-float-read", "r8-unorm-read", "yzwx-read",
         "reserved-swizzle", "array-base-out-of-range", "array-mip-view",
-        "reserved", "uint-format", "uint-resource-float-format",
+        "reserved", "uint-format", "uint-resource-float-format", "atomic-format",
         "depth-tile-read", "depth-tile-extent", "depth-tile-fmask"}) {
     std::string command = std::string("\"") + path +
                           "\" --storage-texture-descriptor-death " + kind;
