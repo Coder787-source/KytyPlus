@@ -242,7 +242,7 @@ static void ApplyHostThreadAffinity(uint64_t os_thread_id, KernelCpumask guest_m
 
 	CloseHandle(handle);
 }
-#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
 static void ApplyHostThreadAffinity(pthread_t handle, KernelCpumask guest_mask) {
 	const long ncpus = sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpus <= 0) {
@@ -265,6 +265,9 @@ static void ApplyHostThreadAffinity(pthread_t handle, KernelCpumask guest_mask) 
 
 	pthread_setaffinity_np(handle, sizeof(cpu_set_t), &cpuset);
 }
+#elif defined(__APPLE__)
+static void ApplyHostThreadAffinity([[maybe_unused]] pthread_t handle,
+                                    [[maybe_unused]] KernelCpumask guest_mask) {}
 #endif
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
