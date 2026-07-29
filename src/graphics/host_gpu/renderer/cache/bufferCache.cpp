@@ -394,6 +394,7 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 }
 
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size) {
+	(void)SynchronizeBacking(vaddr, size);
 	std::vector<DownloadCopy> copies;
 	{
 		FaultSafeCacheLock lock(this, m_mutex);
@@ -426,7 +427,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size) {
 		    });
 	}
 	if (copies.empty()) {
-		EXIT("BufferCache: GPU-owned invalidation has no dirty byte ranges\n");
+		return;
 	}
 	auto downloads = RecordDownloads(copies);
 	m_scheduler.FinishCurrent();

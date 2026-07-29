@@ -50,6 +50,7 @@ public:
 	[[nodiscard]] bool InvalidateMemory(PageFaultAccess access, uint64_t vaddr, uint64_t size,
 	                                    PageFaultPhase phase) noexcept;
 	void               InvalidateMemory(uint64_t vaddr, uint64_t size);
+	void               ReadMemory(uint64_t vaddr, uint64_t size);
 	void               UnmapMemory(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] BufferBinding ObtainBuffer(CommandBuffer& command, uint64_t vaddr, uint64_t size,
 	                                         bool is_written = false, bool is_read = true,
@@ -111,7 +112,6 @@ private:
 	void QueueGarbageDownload(std::span<const DownloadCopy> copies, RetiredBuffer retire);
 	void RefreshInvalidatedRanges(CommandBuffer& command, CachedBuffer& cached, uint64_t vaddr,
 	                              uint64_t size, bool upload);
-	void ReadMemory(uint64_t vaddr, uint64_t size);
 	void DiscardGpuDirtyBytesLocked(uint64_t vaddr, uint64_t size, const char* operation);
 	void WriteHostMemory(uint64_t vaddr, std::span<const uint8_t> data);
 

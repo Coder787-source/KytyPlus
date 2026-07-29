@@ -36,7 +36,8 @@ bool GpuResourceManager::InvalidateMemory(PageFaultAccess access, uint64_t vaddr
 }
 
 bool GpuResourceManager::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept {
-	if (!m_page_manager.IsMapped(fault_vaddr, 1)) {
+	constexpr uint64_t fault_size = 8;
+	if (!IsMapped(fault_vaddr, fault_size)) {
 		return false;
 	}
 	if (CommandScheduler::InDeferredOperation()) {
@@ -47,10 +48,15 @@ bool GpuResourceManager::HandleFault(PageFaultAccess access, uint64_t fault_vadd
 	bool       handled = false;
 	const auto resolve = [this, access, fault_vaddr, &handled](CommandProcessor& cp) {
 		cp.BeginReadbackTransaction();
-		(void)m_buffer_cache.SynchronizeBacking(fault_vaddr, 1);
 		{
 			ResourceMutex::FaultScope fault(m_resource_mutex);
-			handled = m_page_manager.HandleFault(access, fault_vaddr);
+			if (access == PageFaultAccess::Write) {
+				m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
+				m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
+			} else {
+				m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
+			}
+			handled = true;
 		}
 		cp.EndReadbackTransaction();
 	};
