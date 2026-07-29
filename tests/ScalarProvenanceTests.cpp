@@ -186,6 +186,39 @@ void TestCfgPhi() {
 	      "acyclic control-flow descriptor phi was not classified dynamic");
 }
 
+void TestNestedLoopPhiConvergence() {
+	Program program;
+	program.blocks.resize(4);
+	program.blocks[0].predecessors = {1};
+	program.blocks[0].successors   = {1};
+	program.blocks[1].predecessors = {0, 3};
+	program.blocks[1].successors   = {0, 2};
+	program.blocks[2].predecessors = {1};
+	program.blocks[2].successors   = {3};
+	program.blocks[3].predecessors = {2};
+	program.blocks[3].successors   = {1};
+	Instruction increment;
+	increment.op                     = Opcode::IAddU32;
+	increment.dst                    = Sgpr(0);
+	increment.src[0]                 = Sgpr(0);
+	increment.src[1]                 = Imm(1);
+	increment.src_count              = 2;
+	program.blocks[0].instructions   = {increment};
+	program.blocks[2].instructions   = {BufferUse(4, 0)};
+
+	std::string error;
+	Check(BuildScalarProvenance(program, &error), error.c_str());
+	const auto* source =
+	    GetDescriptorSource(program, program.blocks[2].instructions[0].memory.resource_source);
+	Check(source != nullptr, "nested-loop descriptor source was not attached");
+	const auto  value_id = source->dwords[0];
+	const auto& phi      = Value(program, value_id);
+	Check(phi.op == ScalarValueOp::Phi && phi.phi_args.size() == 2 &&
+	          ((phi.phi_args[0] == value_id && phi.phi_args[1] != value_id) ||
+	           (phi.phi_args[1] == value_id && phi.phi_args[0] != value_id)),
+	      "nested loop did not retain its recursive scalar provenance phi");
+}
+
 void TestDiamondReadPathsAreDynamic() {
 	std::array<uint32_t, 1> left  = {0x11111111u};
 	std::array<uint32_t, 1> right = {0x22222222u};
@@ -1045,6 +1078,7 @@ int main() {
 	try {
 		TestPerUseDescriptorDefinitions();
 		TestCfgPhi();
+		TestNestedLoopPhiConvergence();
 		TestDiamondReadPathsAreDynamic();
 		TestEquivalentConstantPhiIsStatic();
 		TestWideMoveInvalidatesAndCopiesBothDwords();

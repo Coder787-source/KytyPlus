@@ -784,10 +784,10 @@ private:
 			if (incoming.empty()) {
 				return ScalarProvenance::Undefined;
 			}
-			if (incoming.size() == 1) {
-				return incoming[0];
-			}
 			if (*phi == ScalarProvenance::Undefined) {
+				if (incoming.size() == 1) {
+					return incoming[0];
+				}
 				*phi = AddValue({ScalarValueOp::Phi, block.start_pc});
 			}
 			m_graph.values[*phi].phi_args = std::move(incoming);
