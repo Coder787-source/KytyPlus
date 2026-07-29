@@ -4772,6 +4772,52 @@ public:
               "successive near-capacity image transfers replaced the shared "
               "download buffer");
 
+      constexpr uint64_t tile_alias_offset = 0x2000000;
+      constexpr uint64_t tile_alias_size = 0x400000;
+      constexpr uint32_t tile_alias_extent = 1024;
+      std::memset(memory + tile_alias_offset, 0,
+                  static_cast<size_t>(tile_alias_size));
+      auto render_target_alias = MakeLinearDesc(
+          base + tile_alias_offset, tile_alias_size,
+          vk::Format::eR8G8B8A8Unorm,
+          Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UNorm),
+          Prospero::ImageType::kColor2D,
+          {tile_alias_extent, tile_alias_extent, 1}, 1, 4, 1);
+      render_target_alias.type = BindingType::Storage;
+      render_target_alias.info.tile_mode =
+          Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget);
+      render_target_alias.view_info.usage =
+          vk::ImageUsageFlagBits::eStorage;
+      const auto render_target_alias_image =
+          texture_cache.FindImage(render_target_alias);
+
+      auto standard_4kb_alias = render_target_alias;
+      standard_4kb_alias.type = BindingType::Texture;
+      standard_4kb_alias.info.tile_mode =
+          Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB);
+      standard_4kb_alias.view_info.usage =
+          vk::ImageUsageFlagBits::eSampled;
+      const auto standard_4kb_alias_image =
+          texture_cache.FindImage(standard_4kb_alias);
+      auto repeated_standard_4kb_alias = standard_4kb_alias;
+      const auto repeated_standard_4kb_alias_image =
+          texture_cache.FindImage(repeated_standard_4kb_alias);
+      Require(
+          name, "equal-size tile-mode alias",
+          render_target_alias_image && standard_4kb_alias_image &&
+              standard_4kb_alias_image != render_target_alias_image &&
+              repeated_standard_4kb_alias_image ==
+                  standard_4kb_alias_image &&
+              texture_cache.GetImage(render_target_alias_image)
+                      .info.tile_mode ==
+                  Prospero::GpuEnumValue(
+                      Prospero::TileMode::kRenderTarget) &&
+              texture_cache.GetImage(standard_4kb_alias_image)
+                      .info.tile_mode ==
+                  Prospero::GpuEnumValue(
+                      Prospero::TileMode::kStandard4KB),
+          "equal address/size lookup reused an incompatible tiled backing");
+
       for (auto &output : ms_observer_outputs) {
         DestroyBuffer(&output);
       }

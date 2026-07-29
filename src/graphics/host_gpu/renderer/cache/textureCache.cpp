@@ -88,15 +88,34 @@ TextureCache::~TextureCache() {
 
 bool TextureCache::SameBacking(const ImageInfo& cached, const ImageInfo& requested,
                                bool exact_format) {
-	const bool unit_extent =
-	    requested.extent.width == 1 && requested.extent.height == 1 && requested.extent.depth == 1;
-	return cached.data == requested.data && cached.extent == requested.extent &&
-	       cached.samples == requested.samples &&
-	       cached.bytes_per_block == requested.bytes_per_block &&
-	       (cached.type == requested.type || unit_extent) &&
-	       (exact_format
-	            ? cached.pixel_format == requested.pixel_format
-	            : ImageViewOps::FormatsCompatible(cached.pixel_format, requested.pixel_format));
+	if (cached.data.address != requested.data.address) {
+		return false;
+	}
+	if (cached.data.size != requested.data.size) {
+		return false;
+	}
+	if (cached.extent != requested.extent) {
+		return false;
+	}
+	if (cached.samples != requested.samples) {
+		return false;
+	}
+	if (cached.bytes_per_block != requested.bytes_per_block) {
+		return false;
+	}
+	if (cached.tile_mode != requested.tile_mode) {
+		return false;
+	}
+	if (!ImageViewOps::FormatsCompatible(cached.pixel_format, requested.pixel_format)) {
+		return false;
+	}
+	if (cached.type != requested.type && requested.extent != vk::Extent3D {1, 1, 1}) {
+		return false;
+	}
+	if (exact_format && cached.pixel_format != requested.pixel_format) {
+		return false;
+	}
+	return true;
 }
 
 TextureCache::BindingType TextureCache::UploadBinding(const Image& image) {
@@ -735,6 +754,12 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		    (requested.IsVolume() || cached.info.IsVolume())) {
 			return {ExpandImage(requested, cached_id)};
 		}
+		if (requested.tile_mode != cached.info.tile_mode) {
+			if (safe_to_delete) {
+				DeleteImages(std::array {cached_id}, cached_id);
+			}
+			return {merged_id};
+		}
 		if (requested.pixel_format != cached.info.pixel_format ||
 		    requested.data.size <= cached.info.data.size) {
 			const auto result_id = merged_id ? merged_id : cached_id;
@@ -746,12 +771,6 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		}
 		if (requested.type == cached.info.type && requested.resources > cached.info.resources) {
 			return {ExpandImage(requested, cached_id)};
-		}
-		if (requested.tile_mode != cached.info.tile_mode) {
-			if (safe_to_delete) {
-				DeleteImages(std::array {cached_id}, cached_id);
-			}
-			return {merged_id};
 		}
 		EXIT("TextureCache: unresolvable equal-address image overlap, address=0x%016" PRIx64
 		     " requested=%ux%u "
@@ -1122,7 +1141,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 
 		for (const auto id: candidates) {
 			const auto owner = ResolveOwner(id);
-			if (owner == nullptr || owner->info.data != desc.info.data) {
+			if (owner == nullptr) {
 				continue;
 			}
 			if (SameBacking(owner->info, desc.info, exact_format)) {
