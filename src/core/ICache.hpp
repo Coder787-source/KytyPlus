@@ -74,7 +74,8 @@ namespace KytyPS5::Core {
 
             size_t size = code.size();
             if (pool_offset_ + size > pool_size_) {
-                throw std::runtime_error("ICache: Executable pool exhausted. Needs expansion.");
+                std::cerr << "ICache: Executable pool exhausted. Needs expansion.\n";
+                return 0;
             }
 
             uint8_t* destination = static_cast<uint8_t*>(exec_pool_) + pool_offset_;

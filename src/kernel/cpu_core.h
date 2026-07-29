@@ -58,7 +58,8 @@ private:
  */
 class CPUCore {
 public:
-    CPUCore(std::shared_ptr<JITMemoryManager> jit_mgr);
+    CPUCore() : CPUCore(std::make_shared<JITMemoryManager>()) {}
+    explicit CPUCore(std::shared_ptr<JITMemoryManager> jit_mgr);
     ~CPUCore() = default;
 
     void Step();

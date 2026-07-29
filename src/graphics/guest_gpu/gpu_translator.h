@@ -33,9 +33,18 @@ public:
 /**
  * @brief GPUTranslator translates guest GPU packets into host API calls.
  */
+class NullHostGraphicsBackend : public IHostGraphicsBackend {
+public:
+    void Initialize() override {}
+    void SubmitCommandBuffer(const std::vector<GPUCommand>&) override {}
+    void CreateBuffer(uint64_t, size_t) override {}
+    void MapShader(const std::vector<uint8_t>&, const std::string&) override {}
+};
+
 class GPUTranslator {
 public:
-    GPUTranslator(std::unique_ptr<IHostGraphicsBackend> backend);
+    GPUTranslator() : GPUTranslator(std::make_unique<NullHostGraphicsBackend>()) {}
+    explicit GPUTranslator(std::unique_ptr<IHostGraphicsBackend> backend);
     ~GPUTranslator() = default;
 
     /**

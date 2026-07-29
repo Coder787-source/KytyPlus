@@ -2,10 +2,11 @@
 
 #include <cstdint>
 #include <functional>
-#include <unordered_map>
 #include <iostream>
-#include <string>
 #include <memory>
+#include <span>
+#include <string>
+#include <unordered_map>
 
 namespace KytyPS5::Core {
 

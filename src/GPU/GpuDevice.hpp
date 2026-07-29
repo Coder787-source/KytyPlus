@@ -6,7 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
-#include <expected>
+#include "kyty_expected.hpp"
 
 namespace KytyPS5::GPU {
 

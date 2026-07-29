@@ -1,180 +1,245 @@
 #pragma once
 
-#include <variant>
-#include <vector>
 #include <cstdint>
+#include "kyty_expected.hpp"
 #include <memory>
 #include <span>
-#include "Core\Avx512Emitter.hpp"
+#include <string>
+#include <variant>
+#include <vector>
+
+#include "Avx512Emitter.hpp"
 
 namespace KytyPS5::Core {
 
-    /**
-     * @brief ARM64 Guest State. Aligned to cache line.
-     */
-    struct alignas(64) ThreadContext {
-        uint64_t gprs[32];      // X0-X31
-        uint64_t sp;            // Stack Pointer
-        uint64_t pc;            // Program Counter
-        uint64_t nzcv;          // Condition flags
-    };
+struct alignas(64) ThreadContext {
+	uint64_t gprs[32];
+	uint64_t sp = 0;
+	uint64_t pc = 0;
+	uint64_t nzcv = 0;
+};
 
-    struct OpMov { uint8_t reg_dest; uint8_t reg_src; uint64_t offset = 0; };
-    struct OpAdd { uint8_t reg_dest; uint8_t reg_src; uint64_t offset = 0; };
-    struct OpLdr { uint8_t reg_dest; uint8_t base_reg; uint64_t offset = 0; };
-    struct OpStr { uint8_t reg_src; uint8_t base_reg; uint64_t offset = 0; };
-    struct OpJmp { uint64_t target_addr; };
-    struct OpSyscall { uint32_t call_id; };
-    struct OpAvx512 { uint32_t opcode; uint8_t zmm_reg; };
+struct OpMov {
+	uint8_t reg_dest = 0;
+	uint8_t reg_src = 0;
+	uint64_t offset = 0;
+};
+struct OpAdd {
+	uint8_t reg_dest = 0;
+	uint8_t reg_src = 0;
+	uint64_t offset = 0;
+};
+struct OpLdr {
+	uint8_t reg_dest = 0;
+	uint8_t base_reg = 0;
+	uint64_t offset = 0;
+};
+struct OpStr {
+	uint8_t reg_src = 0;
+	uint8_t base_reg = 0;
+	uint64_t offset = 0;
+};
+struct OpJmp {
+	uint64_t target_addr = 0;
+};
+struct OpSyscall {
+	uint32_t call_id = 0;
+};
+struct OpAvx512 {
+	uint32_t opcode = 0;
+	uint8_t zmm_reg = 0;
+};
 
-    using Instruction = std::variant<OpMov, OpAdd, OpLdr, OpStr, OpJmp, OpSyscall, OpAvx512>;
+using Instruction = std::variant<OpMov, OpAdd, OpLdr, OpStr, OpJmp, OpSyscall, OpAvx512>;
 
-    class JitDispatcher {
-    public:
-        JitDispatcher() = default;
+struct DispatchResult {
+	bool is_syscall = false;
+	uint32_t call_id = 0;
+	uint64_t next_pc = 0;
+	std::vector<uint64_t> args;
+};
 
-        std::vector<uint8_t> TranslateBlock(const std::vector<Instruction>& block) {
-            code_buffer_.clear();
-            for (const auto& instr : block) {
-                Emit(instr);
-            }
-            return code_buffer_;
-        }
+class JitDispatcher {
+public:
+	JitDispatcher() = default;
 
-        void Emit(const Instruction& instr) {
-            std::visit([this](auto&& arg) {
-                using T = std::decay_t<decltype(arg)>;
-                if constexpr (std::is_same_v<T, OpMov>) this->EmitMov(arg);
-                else if constexpr (std::is_same_v<T, OpAdd>) this->EmitAdd(arg);
-                else if constexpr (std::is_same_v<T, OpLdr>) this->EmitLdr(arg);
-                else if constexpr (std::is_same_v<T, OpStr>) this->EmitStr(arg);
-                else if constexpr (std::is_same_v<T, OpJmp>) this->EmitJmp(arg);
-                else if constexpr (std::is_same_v<T, OpSyscall>) this->EmitSyscall(arg);
-                else if constexpr (std::is_same_v<T, OpAvx512>) this->EmitAvx512(arg);
-            }, instr);
-        }
+	// Scaffolding stub used by SystemOrchestrator.
+	std::expected<DispatchResult, std::string> Dispatch(uint64_t entry_point) {
+		DispatchResult result;
+		result.next_pc = entry_point;
+		return result;
+	}
 
-    private:
-        // X86-64 Hot Register Map (X0-X11)
-        static constexpr uint8_t HOT_MAP[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12 }; 
-        static constexpr uint8_t CONTEXT_BASE_REG = 11; // R11 points to ThreadContext
+	std::vector<uint8_t> TranslateBlock(const std::vector<Instruction>& block) {
+		code_buffer_.clear();
+		for (const auto& instr : block) {
+			Emit(instr);
+		}
+		return code_buffer_;
+	}
 
-        void PushByte(uint8_t b) { code_buffer_.push_back(b); }
+	void Emit(const Instruction& instr) {
+		std::visit(
+		    [this](auto&& arg) {
+			    using T = std::decay_t<decltype(arg)>;
+			    if constexpr (std::is_same_v<T, OpMov>) {
+				    EmitMov(arg);
+			    } else if constexpr (std::is_same_v<T, OpAdd>) {
+				    EmitAdd(arg);
+			    } else if constexpr (std::is_same_v<T, OpLdr>) {
+				    EmitLdr(arg);
+			    } else if constexpr (std::is_same_v<T, OpStr>) {
+				    EmitStr(arg);
+			    } else if constexpr (std::is_same_v<T, OpJmp>) {
+				    EmitJmp(arg);
+			    } else if constexpr (std::is_same_v<T, OpSyscall>) {
+				    EmitSyscall(arg);
+			    } else if constexpr (std::is_same_v<T, OpAvx512>) {
+				    EmitAvx512(arg);
+			    }
+		    },
+		    instr);
+	}
 
-        void PushModRM(uint8_t modrm_reg, uint8_t rm_reg, uint32_t offset = 0) {
-            // Simplified ModRM: [mod:2][reg:3][rm:3]
-            // Mod 00 = register, 01 = [reg + disp8], 10 = [reg + disp32]
-            uint8_t modrm = 0x00;
-            if (offset == 0) {
-                modrm = (0x00 << 6) | ((modrm_reg & 7) << 3) | (rm_reg & 7);
-            } else if (offset < 128) {
-                modrm = (0x01 << 6) | ((modrm_reg & 7) << 3) | (rm_reg & 7);
-                PushByte(static_cast<uint8_t>(offset));
-            } else {
-                modrm = (0x10 << 6) | ((modrm_reg & 7) << 3) | (rm_reg & 7);
-                for(int i=0; i<4; ++i) PushByte((offset >> (i*8)) & 0xFF);
-            }
-            PushByte(modrm);
-        }
+private:
+	static constexpr uint8_t HOT_MAP[12] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12};
+	static constexpr uint8_t CONTEXT_BASE_REG = 11;
 
-        void EmitFillMove(uint8_t guest_reg, uint8_t target_hot_reg) {
-            if (guest_reg < 12) return; // Already in hot reg
-            uint32_t offset = guest_reg * 8;
-            PushByte(0x48); PushByte(0x8B); // MOV RAX, [R11 + offset]
-            PushModRM(target_hot_reg, CONTEXT_BASE_REG, offset);
-        }
+	void PushByte(uint8_t b) { code_buffer_.push_back(b); }
 
-        void EmitSpillMove(uint8_t guest_reg, uint8_t source_hot_reg) {
-            if (guest_reg < 12) return;
-            uint32_t offset = guest_reg * 8;
-            PushByte(0x48); PushByte(0x89); // MOV [R11 + offset], RAX
-            PushModRM(CONTEXT_BASE_REG, source_hot_reg, offset);
-        }
+	void PushModRM(uint8_t modrm_reg, uint8_t rm_reg, uint32_t offset = 0) {
+		if (offset == 0) {
+			PushByte(static_cast<uint8_t>((0x00 << 6) | ((modrm_reg & 7) << 3) | (rm_reg & 7)));
+		} else if (offset < 128) {
+			PushByte(static_cast<uint8_t>((0x01 << 6) | ((modrm_reg & 7) << 3) | (rm_reg & 7)));
+			PushByte(static_cast<uint8_t>(offset));
+		} else {
+			PushByte(static_cast<uint8_t>((0x02 << 6) | ((modrm_reg & 7) << 3) | (rm_reg & 7)));
+			for (int i = 0; i < 4; ++i) {
+				PushByte(static_cast<uint8_t>((offset >> (i * 8)) & 0xFF));
+			}
+		}
+	}
 
-        void EmitMov(const OpMov& op) {
-            uint8_t d = op.reg_dest < 12 ? HOT_MAP[op.reg_dest] : 10; // R10 as scratch
-            uint8_t s = op.reg_src < 12 ? HOT_MAP[op.reg_src] : 10;
-            
-            if (op.reg_src >= 12) EmitFillMove(op.reg_src, 10);
-            if (op.reg_dest >= 12) EmitFillMove(op.reg_dest, 10); // Logic simplified for sketch
-            
-            PushByte(0x48); PushByte(0x89);
-            PushModRM(d, s);
-            if (op.reg_dest >= 12) EmitSpillMove(op.reg_dest, d);
-        }
+	void EmitFillMove(uint8_t guest_reg, uint8_t target_hot_reg) {
+		if (guest_reg < 12) {
+			return;
+		}
+		PushByte(0x48);
+		PushByte(0x8B);
+		PushModRM(target_hot_reg, CONTEXT_BASE_REG, guest_reg * 8u);
+	}
 
-        void EmitAdd(const OpAdd& op) {
-            uint8_t d = op.reg_dest < 12 ? HOT_MAP[op.reg_dest] : 10;
-            uint8_t s = op.reg_src < 12 ? HOT_MAP[op.reg_src] : 10;
-            
-            if (op.reg_src >= 12) EmitFillMove(op.reg_src, 10);
-            
-            PushByte(0x48); PushByte(0x01); // ADD
-            PushModRM(d, s);
-            if (op.reg_dest >= 12) EmitSpillMove(op.reg_dest, d);
-        }
+	void EmitSpillMove(uint8_t guest_reg, uint8_t source_hot_reg) {
+		if (guest_reg < 12) {
+			return;
+		}
+		PushByte(0x48);
+		PushByte(0x89);
+		PushModRM(CONTEXT_BASE_REG, source_hot_reg, guest_reg * 8u);
+	}
 
-        void EmitLdr(const OpLdr& op) {
-            uint8_t d = op.reg_dest < 12 ? HOT_MAP[op.reg_dest] : 10;
-            uint8_t b = op.base_reg < 12 ? HOT_MAP[op.base_reg] : 10;
+	void EmitMov(const OpMov& op) {
+		const uint8_t d = op.reg_dest < 12 ? HOT_MAP[op.reg_dest] : 10;
+		const uint8_t s = op.reg_src < 12 ? HOT_MAP[op.reg_src] : 10;
+		if (op.reg_src >= 12) {
+			EmitFillMove(op.reg_src, 10);
+		}
+		PushByte(0x48);
+		PushByte(0x89);
+		PushModRM(d, s);
+		if (op.reg_dest >= 12) {
+			EmitSpillMove(op.reg_dest, d);
+		}
+	}
 
-            if (op.base_reg >= 12) EmitFillMove(op.base_reg, 10);
-            
-            // To be game-ready, we must handle GVA -> HVA.
-            // We emit a call to a runtime helper that resolves the address via VirtualMemoryManager.
-            // 1. Move BaseReg to RAX
-            // 2. Add Offset
-            // 3. Call ResolveHelper(address)
-            // 4. Move result to DestReg
-            
-            PushByte(0x48); PushByte(0x89); // MOV RAX, BaseReg
-            PushModRM(0, b); 
-            
-            if (op.offset != 0) {
-                PushByte(0x48); PushByte(0x05); // ADD RAX, imm32
-                uint32_t off = static_cast<uint32_t>(op.offset);
-                for(int i=0; i<4; ++i) PushByte((off >> (i*8)) & 0xFF);
-            }
+	void EmitAdd(const OpAdd& op) {
+		const uint8_t d = op.reg_dest < 12 ? HOT_MAP[op.reg_dest] : 10;
+		const uint8_t s = op.reg_src < 12 ? HOT_MAP[op.reg_src] : 10;
+		if (op.reg_src >= 12) {
+			EmitFillMove(op.reg_src, 10);
+		}
+		PushByte(0x48);
+		PushByte(0x01);
+		PushModRM(d, s);
+		if (op.reg_dest >= 12) {
+			EmitSpillMove(op.reg_dest, d);
+		}
+	}
 
-            // Call External Runtime Resolve
-            PushByte(0xE8); // CALL <offset_to_resolve_helper>
-            for(int i=0; i<4; ++i) PushByte(0x00); // Placeholder for linker
+	void EmitLdr(const OpLdr& op) {
+		const uint8_t d = op.reg_dest < 12 ? HOT_MAP[op.reg_dest] : 10;
+		const uint8_t b = op.base_reg < 12 ? HOT_MAP[op.base_reg] : 10;
+		if (op.base_reg >= 12) {
+			EmitFillMove(op.base_reg, 10);
+		}
+		PushByte(0x48);
+		PushByte(0x89);
+		PushModRM(0, b);
+		if (op.offset != 0) {
+			PushByte(0x48);
+			PushByte(0x05);
+			const uint32_t off = static_cast<uint32_t>(op.offset);
+			for (int i = 0; i < 4; ++i) {
+				PushByte(static_cast<uint8_t>((off >> (i * 8)) & 0xFF));
+			}
+		}
+		PushByte(0xE8);
+		for (int i = 0; i < 4; ++i) {
+			PushByte(0x00);
+		}
+		PushByte(0x48);
+		PushByte(0x89);
+		PushModRM(d, 0);
+		if (op.reg_dest >= 12) {
+			EmitSpillMove(op.reg_dest, d);
+		}
+	}
 
-            PushByte(0x48); PushByte(0x89); // MOV DestReg, RAX
-            PushModRM(d, 0);
-            if (op.reg_dest >= 12) EmitSpillMove(op.reg_dest, d);
-        }
+	void EmitStr(const OpStr& op) {
+		const uint8_t s = op.reg_src < 12 ? HOT_MAP[op.reg_src] : 10;
+		const uint8_t b = op.base_reg < 12 ? HOT_MAP[op.base_reg] : 10;
+		if (op.reg_src >= 12) {
+			EmitFillMove(op.reg_src, 10);
+		}
+		if (op.base_reg >= 12) {
+			EmitFillMove(op.base_reg, 10);
+		}
+		PushByte(0x48);
+		PushByte(0x89);
+		PushModRM(b, s, static_cast<uint32_t>(op.offset));
+	}
 
-        void EmitStr(const OpStr& op) {
-            uint8_t s = op.reg_src < 12 ? HOT_MAP[op.reg_src] : 10;
-            uint8_t b = op.base_reg < 12 ? HOT_MAP[op.base_reg] : 10;
+	void EmitJmp(const OpJmp& op) {
+		PushByte(0xE9);
+		const uint32_t rel = static_cast<uint32_t>(op.target_addr);
+		for (int i = 0; i < 4; ++i) {
+			PushByte(static_cast<uint8_t>((rel >> (i * 8)) & 0xFF));
+		}
+	}
 
-            if (op.reg_src >= 12) EmitFillMove(op.reg_src, 10);
-            if (op.base_reg >= 12) EmitFillMove(op.base_reg, 10);
+	void EmitSyscall(const OpSyscall& op) {
+		PushByte(0x48);
+		PushByte(0xB8);
+		const uint64_t id = op.call_id;
+		for (int i = 0; i < 8; ++i) {
+			PushByte(static_cast<uint8_t>((id >> (i * 8)) & 0xFF));
+		}
+		PushByte(0x0F);
+		PushByte(0x05);
+	}
 
-            PushByte(0x48); PushByte(0x89); // MOV [base + off], src
-            PushModRM(b, s, static_cast<uint32_t>(op.offset));
-        }
+	void EmitAvx512(const OpAvx512& op) {
+		(void)avx_emitter_->EmitInstruction(op.opcode, op.zmm_reg);
+		PushByte(0x62);
+		PushByte(0x00);
+		PushByte(0x00);
+		PushByte(0x00);
+	}
 
-        void EmitJmp(const OpJmp& op) {
-            PushByte(0xE9);
-            uint32_t rel = static_cast<uint32_t>(op.target_addr); // Simplified
-            for(int i=0; i<4; ++i) PushByte((rel >> (i*8)) & 0xFF);
-        }
+	std::vector<uint8_t> code_buffer_;
+	std::unique_ptr<KytyPS5::JIT::Avx512Emitter> avx_emitter_ =
+	    std::make_unique<KytyPS5::JIT::Avx512Emitter>();
+};
 
-        void EmitSyscall(const OpSyscall& op) {
-            PushByte(0x48); PushByte(0xB8); // MOV RAX, imm64
-            uint64_t id = op.call_id;
-            for(int i=0; i<8; ++i) PushByte((id >> (i*8)) & 0xFF);
-            PushByte(0x0F); PushByte(0x05); // SYSCALL
-        }
-
-        void EmitAvx512(const OpAvx512& op) {
-            avx_emitter_->EmitInstruction(op.opcode, op.zmm_reg);
-            PushByte(0x62); PushByte(0x00); PushByte(0x00); PushByte(0x00);
-        }
-
-        std::vector<uint8_t> code_buffer_;
-        std::unique_ptr<Avx512Emitter> avx_emitter_ = std::make_unique<Avx512Emitter>();
-    };
-}
+} // namespace KytyPS5::Core

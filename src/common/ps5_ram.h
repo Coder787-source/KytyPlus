@@ -1,10 +1,10 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
+#include <cstring>
 #include <memory>
-#include <stdexcept>
 #include <mutex>
+#include <iostream>
 
 namespace KytyPS5 {
 
@@ -51,7 +51,7 @@ namespace KytyPS5 {
     private:
         void validate_addr(uint64_t addr, size_t len) const {
             if (addr + len > size_) {
-                throw std::out_of_range("PS5 RAM Access Violation: Out of physical bounds");
+                std::cerr << "PS5 RAM Access Violation: Out of physical bounds\n";
             }
         }
 
