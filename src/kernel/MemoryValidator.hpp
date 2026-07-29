@@ -1,9 +1,9 @@
 #pragma once
 
-#include <expected>
+#include "kyty_expected.hpp"
 #include <vector>
 #include <mutex>
-#include "Kernel/SyscallDispatcher.hpp"
+#include "SyscallDispatcher.hpp"
 
 namespace KytyPS5::Kernel {
 

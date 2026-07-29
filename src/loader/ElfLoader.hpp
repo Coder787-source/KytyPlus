@@ -2,11 +2,11 @@
 
 #include <vector>
 #include <string>
-#include <expected>
+#include "kyty_expected.hpp"
 #include <unordered_map>
 #include <memory>
 #include <filesystem>
-#include "Kernel/SyscallDispatcher.hpp"
+#include "../kernel/SyscallDispatcher.hpp"
 
 namespace KytyPS5::Loader {
 
@@ -30,12 +30,27 @@ namespace KytyPS5::Loader {
         uint32_t type;
     };
 
+    struct LoadImage {
+        uint64_t entry_point = 0;
+    };
+
     /**
      * @brief Handles loading of PS5 ELF binaries, including segment mapping and relocations.
      */
     class ElfLoader {
     public:
-        explicit ElfLoader(std::filesystem::path binary_path) : path_(std::move(binary_path)) {}
+        explicit ElfLoader(std::filesystem::path binary_path = {}) : path_(std::move(binary_path)) {}
+
+        std::expected<LoadImage, std::string> Load(const std::string& image_path) {
+            path_ = image_path;
+            auto ok = Load();
+            if (!ok) {
+                return std::unexpected(std::string("ELF load failed"));
+            }
+            LoadImage image;
+            image.entry_point = 0;
+            return image;
+        }
 
         std::expected<void, LoaderError> Load() {
             auto header = ReadHeader();

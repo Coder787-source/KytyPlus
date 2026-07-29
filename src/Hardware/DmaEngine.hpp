@@ -1,19 +1,27 @@
 #pragma once
 
-#include <vector>
-#include <queue>
-#include <mutex>
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <cstring>
 #include <future>
-#include <expected>
-#include "Kernel/SyscallDispatcher.hpp"
+#include <mutex>
+#include <queue>
+#include <vector>
+
+#include "kyty_expected.hpp"
+#include "../kernel/SyscallDispatcher.hpp"
 
 namespace KytyPS5::Hardware {
 
     struct DmaRequest {
-        uint64_t source_addr;
-        uint64_t dest_addr;
-        size_t size;
+        uint64_t source_addr = 0;
+        uint64_t dest_addr = 0;
+        size_t size = 0;
         std::promise<std::expected<void, std::string>> promise;
+
+        DmaRequest(uint64_t src, uint64_t dst, size_t sz)
+            : source_addr(src), dest_addr(dst), size(sz) {}
     };
 
     /**
@@ -67,7 +75,7 @@ namespace KytyPS5::Hardware {
             auto dst_ptr = Kernel::MemoryManager::Instance().Translate(req->dest_addr);
 
             if (!src_ptr || !dst_ptr) {
-                req->promise.set_value(std::unexpected("DMA Address Translation Failed"));
+                req->promise.set_value(std::expected<void, std::string>(std::unexpected(std::string("DMA Address Translation Failed"))));
                 return;
             }
 

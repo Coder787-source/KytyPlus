@@ -6,7 +6,9 @@
 #include <span>
 #include <vector>
 #include <iostream>
-#include \"Core\\JitDispatcher.hpp\"\n#include \"ScePadDispatcher.hpp\"\n#include \"AstroCompatLayer.hpp\"
+#include "../core/JitDispatcher.hpp"
+#include "../../ScePadDispatcher.hpp"
+#include "../../AstroCompatLayer.hpp"
 
 namespace KytyPS5::Kernel {
 
@@ -29,24 +31,32 @@ namespace KytyPS5::Kernel {
                 return it->second(ctx, args);
             }
             
-            std::cerr << \"[KERNEL] Unimplemented Syscall ID: 0x\" << std::hex << call_id << std::endl;
+            std::cerr << "[KERNEL] Unimplemented Syscall ID: 0x" << std::hex << call_id << std::endl;
             return 0xDEADBEEF;
         }
 
     private:
         std::unordered_map<uint32_t, SyscallFunc> m_table;
         ScePadDispatcher* m_pad_dispatcher;
+        // Reserved for future AstroCompatLayer-based syscall patching (e.g. memory-map quirks
+        // for specific titles). AstroCompatLayer currently only exposes asset decompression
+        // hooks, not a syscall-level HandleMemMap, so this is not yet wired into
+        // SceKernelMemMap below -- kept as a pointer so callers can still pass one in without
+        // this header needing to change again once that hook exists.
         AstroCompatLayer* m_compat_layer;
 
         void InitializeSyscallTable() {
-            // SceKernel Memory Mapping (Wrapped by AstroCompatLayer for commercial stability)
-            m_table[0x1001] = [this](Core::ThreadContext& ctx, auto args) { 
-                return m_compat_layer ? m_compat_layer->HandleMemMap(args) : this->SceKernelMemMap(ctx, args); 
+            // SceKernel Memory Mapping
+            m_table[0x1001] = [this](Core::ThreadContext& ctx, auto args) {
+                return this->SceKernelMemMap(ctx, args);
             };
 
             // ScePad Input Dispatch (Routed through ScePadDispatcher to prevent input lag crashes)
-            m_table[0x4001] = [this](Core::ThreadContext& ctx, auto args) {
-                return m_pad_dispatcher ? m_pad_dispatcher->Dispatch(ctx, args) : 0;
+            m_table[0x4001] = [this](Core::ThreadContext& ctx, auto args) -> uint64_t {
+                if (!m_pad_dispatcher) {
+                    return 0;
+                }
+                return m_pad_dispatcher->Dispatch(args[0], args[1], args[2], args[3]);
             };
 
             // SceKernel Thread Create

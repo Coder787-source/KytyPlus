@@ -3,7 +3,7 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
-#include <expected>
+#include "kyty_expected.hpp"
 #include <immintrin.h>
 
 namespace KytyPS5::JIT {
@@ -53,6 +53,17 @@ namespace KytyPS5::JIT {
         }
 
         const std::vector<uint8_t>& GetBuffer() const { return code_buffer_; }
+
+        // Generic scaffolding entry used by JitDispatcher::EmitAvx512.
+        std::expected<void, JitError> EmitInstruction(uint32_t opcode, uint8_t zmm_reg) {
+            std::vector<uint8_t> bytes = {
+                0x62,
+                static_cast<uint8_t>(0x00 | ((zmm_reg & 7u) << 3)),
+                static_cast<uint8_t>(opcode & 0xFFu),
+                static_cast<uint8_t>(0x00 | ((zmm_reg & 7u) << 3)),
+            };
+            return AppendBytes(bytes);
+        }
 
     private:
         std::expected<void, JitError> AppendBytes(const std::vector<uint8_t>& bytes) {
