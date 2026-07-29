@@ -16,6 +16,11 @@
 #include <windows.h>
 #undef min
 #undef max
+#elif defined(__APPLE__)
+#include <pthread.h>
+#elif defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 namespace Libs::Graphics {
@@ -49,6 +54,12 @@ private:
 	static uint32_t CurrentThread() noexcept {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		return GetCurrentThreadId();
+#elif defined(__APPLE__)
+		// mach thread port is a nonzero per-thread id (0 is the "no owner" sentinel).
+		return static_cast<uint32_t>(pthread_mach_thread_np(pthread_self()));
+#elif defined(__linux__)
+		static thread_local const uint32_t tid = static_cast<uint32_t>(::syscall(SYS_gettid));
+		return tid;
 #else
 		EXIT("region tracking thread identity is unsupported on this platform\n");
 #endif

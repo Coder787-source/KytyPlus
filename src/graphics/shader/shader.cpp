@@ -13,7 +13,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
-#include "graphics/shader/recompiler/ShaderDecoder.h"
+#include "graphics/shader/recompiler/decompiler/ShaderDecoder.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/shaderVertexMetadata.h"
 #include "libs/errno.h"
@@ -836,7 +836,9 @@ static void ShaderGetStaticInputInfoPS(
 
 	ps_info = {};
 
-	ps_info.input_num                    = sh.ps_in_control;
+	// SPI_PS_IN_CONTROL.NUM_INTERP occupies bits 5:0. Keep the remaining control
+	// flags in the hardware state and extract only the input count here.
+	ps_info.input_num                    = sh.ps_in_control & 0x3fu;
 	ps_info.ps_system_input_base         = ShaderCalcPsSystemInputBase(sh);
 	const uint32_t active_inputs         = sh.ps_input_ena & sh.ps_input_addr;
 	ps_info.ps_pos_x                     = (active_inputs & 0x00000100u) != 0;

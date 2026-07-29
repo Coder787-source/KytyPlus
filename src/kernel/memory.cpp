@@ -7,7 +7,7 @@
 #include "common/threads.h"
 #include "common/virtualMemory.h"
 #include "graphics/guest_gpu/graphicsRun.h"
-#include "graphics/host_gpu/renderer/gpuResourceManager.h"
+#include "graphics/host_gpu/renderer/cache/gpuResourceManager.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 
@@ -66,8 +66,8 @@ constexpr int      PAGE_TABLE_POOL_ENTRIES =
     static_cast<int>(PAGE_TABLE_POOL_SIZE / PAGE_TABLE_GRANULARITY);
 constexpr uint64_t DEFAULT_FLEXIBLE_MEMORY_SIZE = 4ull * 1024ull * 1024ull * 1024ull;
 
-static uint64_t g_flexible_memory_size = DEFAULT_FLEXIBLE_MEMORY_SIZE;
-static Graphics::GpuResourceManager* g_gpu_resources = nullptr;
+static uint64_t                      g_flexible_memory_size = DEFAULT_FLEXIBLE_MEMORY_SIZE;
+static Graphics::GpuResourceManager* g_gpu_resources        = nullptr;
 
 static Graphics::GpuResourceManager& GetGpuResources() {
 	EXIT_IF(g_gpu_resources == nullptr);
@@ -241,6 +241,13 @@ static bool VirtualRangesOverlap(uint64_t left_start, uint64_t left_size, uint64
 
 static bool CommitFixedHostRange(uint64_t start, uint64_t size, VirtualMemory::Mode mode) {
 	constexpr uint64_t PAGE_SIZE = 0x4000;
+
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+	// Prefer one syscall, then fall back to the per-page path.
+	if (size > PAGE_SIZE && VirtualMemory::AllocFixed(start, size, mode)) {
+		return true;
+	}
+#endif
 
 	for (uint64_t addr = start; addr < start + size; addr += PAGE_SIZE) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -519,6 +526,42 @@ public:
 
 		out->clear();
 		return false;
+	}
+
+	uint64_t ClampRangeSize(uint64_t virtual_addr, uint64_t size) {
+		Common::LockGuard lock(m_mutex);
+
+		if (virtual_addr == 0 || size == 0 || size > UINT64_MAX - virtual_addr) {
+			return 0;
+		}
+
+		auto vma = std::upper_bound(
+		    m_ranges.begin(), m_ranges.end(), virtual_addr,
+		    [](uint64_t value, const Range& range) { return value < range.start; });
+		if (vma == m_ranges.begin()) {
+			return 0;
+		}
+		--vma;
+
+		const auto vma_end = End(vma->start, vma->size);
+		if (virtual_addr < vma->start || virtual_addr >= vma_end ||
+		    !IsCommittedRangeType(vma->type)) {
+			return 0;
+		}
+
+		uint64_t clamped_size = std::min(size, vma_end - virtual_addr);
+		uint64_t expected     = virtual_addr + clamped_size;
+		++vma;
+
+		while (vma != m_ranges.end() && vma->start == expected && IsCommittedRangeType(vma->type) &&
+		       clamped_size < size) {
+			const auto chunk = std::min(size - clamped_size, vma->size);
+			clamped_size += chunk;
+			expected += chunk;
+			++vma;
+		}
+
+		return clamped_size;
 	}
 
 	uint64_t CountPageTableEntries(bool gpu) {
@@ -877,6 +920,23 @@ bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 	       g_direct_memory_backing->TryReadBacking(vaddr, data, size);
 }
 
+uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {
+	EXIT_IF(g_virtual_ranges == nullptr);
+
+	const auto clamped_size = g_virtual_ranges->ClampRangeSize(vaddr, size);
+	if (clamped_size == 0) {
+		EXIT("Memory: attempted to access invalid address 0x%016" PRIx64 " with size 0x%016" PRIx64
+		     "\n",
+		     vaddr, size);
+	}
+	if (clamped_size != size) {
+		LOGF("Memory: clamped buffer range addr=0x%016" PRIx64 " size=0x%016" PRIx64
+		     " to 0x%016" PRIx64 "\n",
+		     vaddr, size, clamped_size);
+	}
+	return clamped_size;
+}
+
 void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
 	if (!TryWriteBacking(vaddr, data, size)) {
 		EXIT("Memory: required direct-backing write failed, addr=0x%016" PRIx64
@@ -885,11 +945,11 @@ void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
 	}
 }
 
-void PrepareHostWrite(uint64_t vaddr, uint64_t size) {
+void InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	if (size == 0) {
 		return;
 	}
-	GetGpuResources().PrepareHostWrite(vaddr, size);
+	(void)GetGpuResources().InvalidateMemory(vaddr, size);
 }
 
 void InstallGpuResources(Graphics::GpuResourceManager* resources) noexcept {
@@ -1931,24 +1991,24 @@ int32_t KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t le
 		return KERNEL_ERROR_EFAULT;
 	}
 
-	constexpr size_t   PAGE_SIZE         = 0x4000;
-	constexpr size_t   MAXIMUM_NAME_SIZE = 32;
-	constexpr uint64_t DEFAULT_PS5_BASE  = 0x200000000;
-	constexpr int GUEST_MAP_FIXED        = 0x10;
-	constexpr int GUEST_MAP_SHARED       = 0x01;
-	constexpr int GUEST_MAP_PRIVATE      = 0x02;
-	constexpr int GUEST_MAP_NO_OVERWRITE = 0x80;
-	constexpr int GUEST_MAP_VOID         = 0x100;
-	constexpr int GUEST_MAP_STACK        = 0x400;
-	constexpr int GUEST_MAP_NO_SYNC      = 0x800;
-	constexpr int GUEST_MAP_ANON         = 0x1000;
-	constexpr int GUEST_MAP_UNKNOWN_8000 = 0x8000;
-	constexpr int GUEST_MAP_NO_CORE      = 0x20000;
-	constexpr int GUEST_MAP_NO_COALESCE  = 0x400000;
-	constexpr int SUPPORTED_MAP_BITS =
-	    GUEST_MAP_SHARED | GUEST_MAP_PRIVATE | GUEST_MAP_FIXED | GUEST_MAP_NO_OVERWRITE |
-	    GUEST_MAP_VOID | GUEST_MAP_STACK | GUEST_MAP_NO_SYNC | GUEST_MAP_ANON |
-	    GUEST_MAP_UNKNOWN_8000 | GUEST_MAP_NO_CORE | GUEST_MAP_NO_COALESCE;
+	constexpr size_t   PAGE_SIZE              = 0x4000;
+	constexpr size_t   MAXIMUM_NAME_SIZE      = 32;
+	constexpr uint64_t DEFAULT_PS5_BASE       = 0x200000000;
+	constexpr int      GUEST_MAP_FIXED        = 0x10;
+	constexpr int      GUEST_MAP_SHARED       = 0x01;
+	constexpr int      GUEST_MAP_PRIVATE      = 0x02;
+	constexpr int      GUEST_MAP_NO_OVERWRITE = 0x80;
+	constexpr int      GUEST_MAP_VOID         = 0x100;
+	constexpr int      GUEST_MAP_STACK        = 0x400;
+	constexpr int      GUEST_MAP_NO_SYNC      = 0x800;
+	constexpr int      GUEST_MAP_ANON         = 0x1000;
+	constexpr int      GUEST_MAP_UNKNOWN_8000 = 0x8000;
+	constexpr int      GUEST_MAP_NO_CORE      = 0x20000;
+	constexpr int      GUEST_MAP_NO_COALESCE  = 0x400000;
+	constexpr int SUPPORTED_MAP_BITS = GUEST_MAP_SHARED | GUEST_MAP_PRIVATE | GUEST_MAP_FIXED |
+	                                   GUEST_MAP_NO_OVERWRITE | GUEST_MAP_VOID | GUEST_MAP_STACK |
+	                                   GUEST_MAP_NO_SYNC | GUEST_MAP_ANON | GUEST_MAP_UNKNOWN_8000 |
+	                                   GUEST_MAP_NO_CORE | GUEST_MAP_NO_COALESCE;
 
 	if (len == 0 || (len & (PAGE_SIZE - 1)) != 0) {
 		return KERNEL_ERROR_EINVAL;
@@ -3024,6 +3084,13 @@ static bool ReserveFixedHostRange(uint64_t start, uint64_t size) {
 	g_test_host_reservation_pages_before_failure = UINT32_MAX;
 #endif
 
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+	// Prefer one syscall, then fall back to the per-page path.
+	if (size > PAGE_SIZE && VirtualMemory::ReserveFixed(start, size)) {
+		return true;
+	}
+#endif
+
 	bool host_mutated = false;
 	for (uint64_t addr = start; addr < start + size; addr += PAGE_SIZE) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -3312,7 +3379,7 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 	     "\t alignment = 0x%016" PRIx64 "\n",
 	     in_addr, len, flags, alignment);
 
-	constexpr size_t PAGE_SIZE        = 0x4000;
+	constexpr size_t PAGE_SIZE              = 0x4000;
 	constexpr int    GUEST_MAP_FIXED        = 0x10;
 	constexpr int    GUEST_MAP_NO_OVERWRITE = 0x80;
 

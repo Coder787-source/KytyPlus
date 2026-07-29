@@ -48,6 +48,17 @@
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #include <fmt/format.h>
 #include <pthread_time.h>
+#elif !defined(__APPLE__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+#include <csignal> // pthread_kill is declared here, not in <pthread.h>
+#endif
+
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS && (defined(_M_X64) || defined(__x86_64__))
+#include <x86intrin.h>
 #endif
 
 #ifdef pthread_attr_getguardsize
@@ -59,6 +70,12 @@ namespace Libs {
 namespace LibKernel {
 
 LIB_NAME("libkernel", "libkernel");
+
+// macOS's <pthread.h>/<limits.h> define PTHREAD_STACK_MIN as a macro; the emulator
+// wants its own guest-side value with the same name, so drop the host macro here.
+#ifdef PTHREAD_STACK_MIN
+#undef PTHREAD_STACK_MIN
+#endif
 
 constexpr int      KEYS_MAX                  = 256;
 constexpr int      DESTRUCTOR_ITERATIONS     = 4;
@@ -95,8 +112,21 @@ static constexpr int KERNEL_PTHREAD_MUTEX_RECURSIVE  = 2;
 static constexpr int KERNEL_PTHREAD_MUTEX_NORMAL     = 3;
 static constexpr int KERNEL_PTHREAD_MUTEX_ADAPTIVE   = 4;
 
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+// OS-level thread id reported to the guest.
+static uint64_t GetHostThreadId() {
+#if defined(__APPLE__)
+	uint64_t tid = 0;
+	pthread_threadid_np(nullptr, &tid);
+	return tid;
+#else
+	return static_cast<uint64_t>(::syscall(SYS_gettid));
+#endif
+}
+#endif
+
 static uint64_t KernelReadTscNative() {
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS && (defined(_M_X64) || defined(__x86_64__))
+#if defined(_M_X64) || defined(__x86_64__)
 	return __rdtsc();
 #else
 	return Common::Timer::QueryPerformanceCounter();
@@ -105,7 +135,7 @@ static uint64_t KernelReadTscNative() {
 
 static uint64_t KernelGetTscFrequencyNative() {
 	static const uint64_t frequency = [] {
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS && (defined(_M_X64) || defined(__x86_64__))
+#if defined(_M_X64) || defined(__x86_64__)
 		const auto host_frequency = Common::Timer::QueryPerformanceFrequency();
 		if (host_frequency == 0) {
 			return uint64_t {1000000000};
@@ -879,7 +909,11 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 
 	if (g_pthread_self != nullptr) {
 		g_pthread_self->guest_host_rbx = host_rbx;
+#if defined(__APPLE__)
 		g_pthread_self->guest_host_rsp = host_rsp - (2u * sizeof(uint64_t));
+#else
+		g_pthread_self->guest_host_rsp = host_rsp - (4u * sizeof(uint64_t));
+#endif
 		g_pthread_self->guest_host_rbp = host_rbp;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		uintptr_t host_gs8  = 0;
@@ -889,18 +923,39 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 		             : "=r"(host_gs8), "=r"(host_gs10)
 		             :
 		             : "memory");
-		g_pthread_self->guest_host_rsp -= 2u * sizeof(uint64_t);
 		g_pthread_self->guest_host_gs8  = host_gs8;
 		g_pthread_self->guest_host_gs10 = host_gs10;
 #endif
 	}
 
 	// The guest ABI expects the entry argument in rdi and a 16-byte aligned stack before call.
+#if defined(__APPLE__)
+	// Keep inputs out of r12/r13.
+	register uintptr_t guest_rsp_reg asm("r14") = guest_rsp;
+	register uintptr_t guest_rbp_reg asm("r15") = guest_rbp;
 	asm volatile("pushq %%r12\n\t"
 	             "pushq %%r13\n\t"
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	             "movq %%rsp, %%r12\n\t"
+	             "movq %%rbp, %%r13\n\t"
+	             "movq %[guest_rsp], %%rsp\n\t"
+	             "movq %[guest_rbp], %%rbp\n\t"
+	             "callq *%%rsi\n\t"
+	             "movq %%r13, %%rbp\n\t"
+	             "movq %%r12, %%rsp\n\t"
+	             "popq %%r13\n\t"
+	             "popq %%r12\n\t"
+	             : "=a"(ret), "+D"(arg), "+S"(func)
+	             : [guest_rsp] "r"(guest_rsp_reg), [guest_rbp] "r"(guest_rbp_reg)
+	             : "cc", "memory", "rcx", "rdx", "r8", "r9", "r10", "r11", "xmm0", "xmm1", "xmm2",
+	               "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11",
+	               "xmm12", "xmm13", "xmm14", "xmm15");
+#else
+	// PthreadExit resumes at this frame, so all four saved registers stay on the host stack.
+	asm volatile("pushq %%r12\n\t"
+	             "pushq %%r13\n\t"
 	             "pushq %%r14\n\t"
 	             "pushq %%r15\n\t"
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	             "movq %%gs:0x08, %%r14\n\t"
 	             "movq %%gs:0x10, %%r15\n\t"
 	             "xorq %%rcx, %%rcx\n\t"
@@ -917,16 +972,23 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	             "movq %%r14, %%gs:0x08\n\t"
 	             "movq %%r15, %%gs:0x10\n\t"
+#endif
 	             "popq %%r15\n\t"
 	             "popq %%r14\n\t"
-#endif
 	             "popq %%r13\n\t"
 	             "popq %%r12\n\t"
 	             : "=a"(ret), "+D"(arg), "+S"(func)
 	             : [guest_rsp] "r"(guest_rsp), [guest_rbp] "r"(guest_rbp)
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	             : "cc", "memory", "rcx", "rdx", "r8", "r9", "r10", "r11", "xmm0", "xmm1", "xmm2",
 	               "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11",
 	               "xmm12", "xmm13", "xmm14", "xmm15");
+#else
+	             : "cc", "memory", "rcx", "rdx", "r8", "r9", "r10", "r11", "r12", "r13", "xmm0",
+	               "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10",
+	               "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
+#endif
+#endif
 
 	g_guest_entry_return_rsp = 0;
 	if (g_pthread_self != nullptr) {
@@ -960,6 +1022,29 @@ static void UpdateCurrentThreadStackAttr(PthreadAttr* attr) {
 		(*attr)->stack_addr = reinterpret_cast<void*>(low);
 		(*attr)->stack_size = high - low;
 		(*attr)->stack_user = true;
+	}
+#elif defined(__APPLE__)
+	// macOS reports a stack top and size.
+	void*        top  = pthread_get_stackaddr_np(pthread_self());
+	const size_t size = pthread_get_stacksize_np(pthread_self());
+
+	if (top != nullptr && size != 0) {
+		(*attr)->stack_addr = static_cast<void*>(static_cast<uint8_t*>(top) - size);
+		(*attr)->stack_size = size;
+		(*attr)->stack_user = true;
+	}
+#else
+	// Record the main thread's stack bounds.
+	pthread_attr_t self_attr {};
+	if (pthread_getattr_np(pthread_self(), &self_attr) == 0) {
+		void*  base = nullptr;
+		size_t size = 0;
+		if (pthread_attr_getstack(&self_attr, &base, &size) == 0 && base != nullptr && size != 0) {
+			(*attr)->stack_addr = base;
+			(*attr)->stack_size = size;
+			(*attr)->stack_user = true;
+		}
+		pthread_attr_destroy(&self_attr);
 	}
 #endif
 }
@@ -1001,6 +1086,8 @@ void PthreadInitSelfForMainThread() {
 	uint64_t os_thread_id = 0;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	os_thread_id = static_cast<uint64_t>(GetCurrentThreadId());
+#else
+	os_thread_id = GetHostThreadId();
 #endif
 	g_pthread_self->host_thread_id = os_thread_id;
 	g_pthread_main                 = g_pthread_self;
@@ -3193,6 +3280,17 @@ uint64_t PthreadGetHostThreadId(Pthread thread) {
 	return thread != nullptr ? thread->host_thread_id : 0;
 }
 
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+// Raise a host signal on another guest thread.
+bool PthreadKillHost(Pthread thread, int host_signal) {
+	if (thread == nullptr || thread->free) {
+		return false;
+	}
+
+	return ::pthread_kill(thread->p, host_signal) == 0;
+}
+#endif
+
 void PthreadQueuePendingSignal(Pthread thread, int signum) {
 	if (thread == nullptr || signum < 0 || signum >= 64) {
 		return;
@@ -3290,6 +3388,8 @@ static void* RunThread(void* arg) {
 	uint64_t os_thread_id = 0;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	os_thread_id = static_cast<uint64_t>(GetCurrentThreadId());
+#else
+	os_thread_id = GetHostThreadId();
 #endif
 	thread->host_thread_id = os_thread_id;
 

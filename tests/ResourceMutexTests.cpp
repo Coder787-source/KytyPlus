@@ -1,4 +1,4 @@
-#include "graphics/host_gpu/renderer/resourceMutex.h"
+#include "graphics/host_gpu/renderer/cache/resourceMutex.h"
 
 #include <atomic>
 #include <cstring>

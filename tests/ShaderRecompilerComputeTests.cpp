@@ -13,32 +13,32 @@
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/hostMemory.h"
 #include "graphics/host_gpu/memoryTracker.h"
-#include "graphics/host_gpu/objects/textureCommon.h"
+#include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/pageManager.h"
-#include "graphics/host_gpu/renderer/blitHelper.h"
-#include "graphics/host_gpu/renderer/bufferCache.h"
+#include "graphics/host_gpu/renderer/image/blitHelper.h"
+#include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
-#include "graphics/host_gpu/renderer/descriptors.h"
-#include "graphics/host_gpu/renderer/gpuResourceManager.h"
-#include "graphics/host_gpu/renderer/image.h"
-#include "graphics/host_gpu/renderer/imageView.h"
-#include "graphics/host_gpu/renderer/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/descriptors.h"
+#include "graphics/host_gpu/renderer/cache/gpuResourceManager.h"
+#include "graphics/host_gpu/renderer/image/image.h"
+#include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/renderDraw.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
-#include "graphics/host_gpu/renderer/resourceMutex.h"
+#include "graphics/host_gpu/renderer/cache/resourceMutex.h"
 #include "graphics/host_gpu/renderer/sync.h"
-#include "graphics/host_gpu/renderer/textureCache.h"
-#include "graphics/host_gpu/renderer/tiler.h"
+#include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/presentation/window/windowInternal.h"
-#include "graphics/shader/recompiler/BindingLayout.h"
-#include "graphics/shader/recompiler/ShaderDecoder.h"
+#include "graphics/shader/recompiler/ir/BindingLayout.h"
+#include "graphics/shader/recompiler/decompiler/ShaderDecoder.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
-#include "graphics/shader/recompiler/SpirvBuilder.h"
-#include "graphics/shader/recompiler/SpirvEmitter.h"
+#include "graphics/shader/recompiler/emitter/SpirvBuilder.h"
+#include "graphics/shader/recompiler/emitter/SpirvEmitter.h"
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 
@@ -1507,7 +1507,7 @@ public:
                 ordered_finished.load(),
             "submission barrier did not drain prior PM4 work");
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+
     constexpr uintptr_t fault_base = 0x0000000200500000ull;
     constexpr uint64_t fault_size = 0x10000;
     int64_t fault_direct_offset = -1;
@@ -1679,7 +1679,9 @@ public:
       Require("GpuCommandLane", "processor fault context",
               Gpu::CurrentCommandProcessor() == &processor,
               "processor resource test lost its command context");
-      resources.PrepareHostWrite(fault_base, sizeof(uint32_t));
+      Require("GpuCommandLane", "processor memory invalidation",
+              resources.InvalidateMemory(fault_base, sizeof(uint32_t)),
+              "processor memory invalidation did not find its mapped range");
     });
     resources.UnmapMemory(fault_base, fault_size, GpuAccess::ReadWrite);
     Require("GpuCommandLane", "processor fault unmap",
@@ -1689,7 +1691,7 @@ public:
             Libs::LibKernel::Memory::KernelReleaseDirectMemory(
                 fault_direct_offset, fault_size) == 0,
             "processor-fault direct-memory allocation release failed");
-#endif
+
 
     std::binary_semaphore command_entered{0};
     std::binary_semaphore release_command{0};
@@ -1896,7 +1898,7 @@ public:
     std::printf("[host]    %-32s ok\n", name);
   }
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+
   void CheckBufferCacheDirtyGarbageCollection() {
     constexpr const char *name = "BufferCacheDirtyGarbageCollection";
     constexpr uintptr_t base = 0x0000000200700000ull;
@@ -3195,6 +3197,10 @@ public:
       const auto fault_b_image = texture_cache.FindImage(fault_b_desc);
       texture_cache.MarkGpuWritten(fault_a_image);
       texture_cache.MarkGpuWritten(fault_b_image);
+      Require(name, "per-image watcher installation",
+              texture_cache.GetImage(fault_a_image).IsTracked() &&
+                  texture_cache.GetImage(fault_b_image).IsTracked(),
+              "same-page images did not install independent write watchers");
       constexpr uint64_t padding_fault_offset = 0x8080;
       uint32_t write_only_read_a = 0;
       uint32_t write_only_read_b = 0;
@@ -3212,13 +3218,24 @@ public:
               resources.HandleFault(PageFaultAccess::Write,
                                     base + padding_fault_offset) &&
                   texture_cache.GetImage(fault_a_image).IsGpuModified() &&
-                  texture_cache.GetImage(fault_b_image).IsGpuModified(),
+                  texture_cache.GetImage(fault_b_image).IsGpuModified() &&
+                  !texture_cache.GetImage(fault_a_image).IsTracked() &&
+                  !texture_cache.GetImage(fault_b_image).IsTracked() &&
+                  texture_cache.GetImage(fault_a_image).IsMaybeCpuDirty() &&
+                  texture_cache.GetImage(fault_b_image).IsMaybeCpuDirty(),
               "a byte-disjoint CPU write discarded authoritative images");
+      const auto retracked_a = texture_cache.FindImage(fault_a_desc);
+      const auto retracked_b = texture_cache.FindImage(fault_b_desc);
       Require(name, "same-page image re-track",
-              texture_cache.FindImage(fault_a_desc) == fault_a_image &&
-                  texture_cache.FindImage(fault_b_desc) == fault_b_image &&
+              retracked_a == fault_a_image && retracked_b == fault_b_image &&
+                  texture_cache.GetImage(fault_a_image).IsTracked() &&
+                  texture_cache.GetImage(fault_b_image).IsTracked() &&
+                  !texture_cache.GetImage(fault_a_image).IsCpuDirty() &&
+                  !texture_cache.GetImage(fault_b_image).IsCpuDirty() &&
                   texture_cache.SynchronizeImageToBuffer(base + 0x8000,
                                                          sizeof(fault_a)) &&
+                  texture_cache.GetImage(fault_a_image).IsTracked() &&
+                  texture_cache.GetImage(fault_b_image).IsTracked() &&
                   !texture_cache.GetImage(fault_a_image).IsGpuModified() &&
                   texture_cache.GetImage(fault_b_image).IsGpuModified(),
               "retiring one same-page image lost the surviving owner");
@@ -4755,6 +4772,52 @@ public:
               "successive near-capacity image transfers replaced the shared "
               "download buffer");
 
+      constexpr uint64_t tile_alias_offset = 0x2000000;
+      constexpr uint64_t tile_alias_size = 0x400000;
+      constexpr uint32_t tile_alias_extent = 1024;
+      std::memset(memory + tile_alias_offset, 0,
+                  static_cast<size_t>(tile_alias_size));
+      auto render_target_alias = MakeLinearDesc(
+          base + tile_alias_offset, tile_alias_size,
+          vk::Format::eR8G8B8A8Unorm,
+          Prospero::GpuEnumValue(Prospero::BufferFormat::k8_8_8_8UNorm),
+          Prospero::ImageType::kColor2D,
+          {tile_alias_extent, tile_alias_extent, 1}, 1, 4, 1);
+      render_target_alias.type = BindingType::Storage;
+      render_target_alias.info.tile_mode =
+          Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget);
+      render_target_alias.view_info.usage =
+          vk::ImageUsageFlagBits::eStorage;
+      const auto render_target_alias_image =
+          texture_cache.FindImage(render_target_alias);
+
+      auto standard_4kb_alias = render_target_alias;
+      standard_4kb_alias.type = BindingType::Texture;
+      standard_4kb_alias.info.tile_mode =
+          Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB);
+      standard_4kb_alias.view_info.usage =
+          vk::ImageUsageFlagBits::eSampled;
+      const auto standard_4kb_alias_image =
+          texture_cache.FindImage(standard_4kb_alias);
+      auto repeated_standard_4kb_alias = standard_4kb_alias;
+      const auto repeated_standard_4kb_alias_image =
+          texture_cache.FindImage(repeated_standard_4kb_alias);
+      Require(
+          name, "equal-size tile-mode alias",
+          render_target_alias_image && standard_4kb_alias_image &&
+              standard_4kb_alias_image != render_target_alias_image &&
+              repeated_standard_4kb_alias_image ==
+                  standard_4kb_alias_image &&
+              texture_cache.GetImage(render_target_alias_image)
+                      .info.tile_mode ==
+                  Prospero::GpuEnumValue(
+                      Prospero::TileMode::kRenderTarget) &&
+              texture_cache.GetImage(standard_4kb_alias_image)
+                      .info.tile_mode ==
+                  Prospero::GpuEnumValue(
+                      Prospero::TileMode::kStandard4KB),
+          "equal address/size lookup reused an incompatible tiled backing");
+
       for (auto &output : ms_observer_outputs) {
         DestroyBuffer(&output);
       }
@@ -6117,7 +6180,7 @@ public:
             "descriptor discovery direct-memory allocation release failed");
     std::printf("[host]    %-32s ok\n", name);
   }
-#endif
+
 
   Buffer CreateStorageBuffer(const char *shader_name,
                              const std::vector<u32> &initial,
@@ -13576,23 +13639,36 @@ TestCase DsAppendUsesEncodedGdsSelector() {
   using O = ShaderOpcode;
 
   std::vector<u32> code;
-  AppendSMovLiteral(&code, 124, 0x00000001u);
+  AppendSMovLiteral(&code, 124, 0x00000008u);
   code.push_back(EncodeDs0(0x3e, 0, true));
   code.push_back(EncodeDs1(0, 0, 0));
   code.push_back(EncodeDs0(0x3d, 0, true));
   code.push_back(EncodeDs1(1, 0, 0));
+  code.push_back(EncodeDs0(0x3e, 4, true));
+  code.push_back(EncodeDs1(2, 0, 0));
+  code.push_back(EncodeDs0(0x3d, 4, true));
+  code.push_back(EncodeDs1(3, 0, 0));
+  AppendSMovLiteral(&code, 124, 0x00080008u);
+  code.push_back(EncodeDs0(0x3e, 4, true));
+  code.push_back(EncodeDs1(4, 0, 0));
+  code.push_back(EncodeDs0(0x3d, 4, true));
+  code.push_back(EncodeDs1(5, 0, 0));
   AppendStoreVgpr(&code, 0, 0);
   AppendStoreVgpr(&code, 1, 1);
+  AppendStoreVgpr(&code, 2, 2);
+  AppendStoreVgpr(&code, 3, 3);
+  AppendStoreVgpr(&code, 4, 4);
+  AppendStoreVgpr(&code, 5, 5);
   AppendEnd(&code);
 
   TestCase test{
       "DsAppendGdsSelector",
       code,
       {},
-      {10, 74},
+      {10, 74, 20, 84, 40, 104},
       {O::SMovB32, O::DsAppend, O::DsConsume, O::BufferStoreDword, O::SEndpgm}};
-  test.gds_initial = {10};
-  test.expected_gds = {10};
+  test.gds_initial = {10, 20, 30, 40};
+  test.expected_gds = {10, 20, 30, 40};
   return test;
 }
 
@@ -15071,7 +15147,6 @@ void CheckEmbeddedFetchVertexOffset() {
   std::printf("[host]    %-32s ok\n", "EmbeddedFetchVertexOffset");
 }
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 struct CacheFaultContext {
   TextureCache *texture = nullptr;
 };
@@ -15088,7 +15163,15 @@ bool CacheFault(void *opaque, PageFaultAccess access, uint64_t vaddr,
   std::_Exit(0x7f);
 }
 
-void CheckReverseRenderTargetFormatContract() {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+void CheckRenderTargetFormatContract() {
+  const auto uint_format = TextureGetRenderTargetFormat(12u, 4u, 0u);
+  Require("RenderTargetFormat", "RGBA16 uint",
+          uint_format.format == vk::Format::eR16G16B16A16Uint &&
+              uint_format.bytes_per_element == 8u &&
+              uint_format.export_mapping.IsIdentity(),
+          "RGBA16 uint render-target tuple was rejected");
+
   const auto format = TextureGetRenderTargetFormat(12u, 7u, 2u);
   Require("ReverseRenderTarget", "exact format",
           format.format == vk::Format::eR16G16B16A16Sfloat &&
@@ -15127,8 +15210,9 @@ void CheckReverseRenderTargetFormatContract() {
   Require(
       "ReverseRenderTarget", "hard failure", exited && exit_code == 321,
       "adjacent unproven render-target tuple did not retain the fatal guard");
-  std::printf("[host]    %-32s ok\n", "ReverseRenderTargetFormat");
+  std::printf("[host]    %-32s ok\n", "RenderTargetFormat");
 }
+#endif
 
 [[noreturn]] void RunImageViewDeathCase(const char *kind) {
   if (std::strcmp(kind, "sampled-invalid-selector") == 0) {
@@ -15195,7 +15279,7 @@ void CheckReverseRenderTargetFormatContract() {
       resource.kind = ShaderRecompiler::IR::ResourceKind::Image;
     } else if (std::strcmp(kind, "storage-no-write") == 0) {
       resource.written = false;
-    } else if (std::strcmp(kind, "storage-atomic") == 0) {
+    } else if (std::strcmp(kind, "storage-nonuint-atomic") == 0) {
       resource.atomic = true;
     } else if (std::strcmp(kind, "storage-compare") == 0) {
       resource.depth_compare = true;
@@ -15211,6 +15295,7 @@ void CheckReverseRenderTargetFormatContract() {
   std::_Exit(0x7f);
 }
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 void CheckSampledColorViews() {
   Require("SampledColorViews", "identity",
           SelectSampledColorView(vk::Format::eR8G8B8A8Unorm,
@@ -15411,6 +15496,12 @@ void CheckSampledColorViews() {
   Require("SampledColorViews", "write-only uint 2D-array storage resource",
           IsSupportedStorageImageResource(storage_resource),
           "basic write-only uint 2D-array storage resource was rejected");
+  storage_resource.dimension = ShaderRecompiler::Decoder::ImageDimension::Dim2D;
+  storage_resource.read = true;
+  storage_resource.atomic = true;
+  Require("SampledColorViews", "atomic uint 2D storage resource",
+          IsSupportedStorageImageResource(storage_resource),
+          "atomic uint storage resource was rejected");
 
   char path[MAX_PATH]{};
   Require("SampledColorViews", "host",
@@ -15420,7 +15511,7 @@ void CheckSampledColorViews() {
        {"sampled-invalid-selector", "sampled-incompatible-format",
         "sampled-invalid-high", "sampled-depth-format", "sampled-depth-swizzle",
         "storage-incompatible-format", "storage-kind", "storage-no-write",
-        "storage-atomic", "storage-compare", "storage-mip", "storage-dimension",
+        "storage-nonuint-atomic", "storage-compare", "storage-mip", "storage-dimension",
         "volume-mip-count", "volume-slice-range"}) {
     std::string command =
         std::string("\"") + path + "\" --image-view-death " + kind;
@@ -15446,6 +15537,7 @@ void CheckSampledColorViews() {
   }
   std::printf("[host]    %-32s ok\n", "SampledColorRenderTargetViews");
 }
+#endif
 
 void CheckSampledDepthResource() {
   ShaderRecompiler::IR::ImageResource resource{};
@@ -16097,6 +16189,11 @@ ShaderTextureResource Standard4KBUintArrayStorageTextureDescriptor() {
            0x00700000u, 0x00000000u, 0x00000000u}};
 }
 
+ShaderTextureResource Standard64KBStorageTextureDescriptor() {
+  return {{0x011fab00u, 0xc3800000u, 0x0003c003u, 0xd0900facu, 0x00000000u,
+           0x00700000u, 0x00000000u, 0x00000000u}};
+}
+
 ShaderRecompiler::IR::ImageResource Ppsa14053DepthTileStorageTextureResource() {
   return BasicUintArrayStorageTextureResource();
 }
@@ -16120,6 +16217,19 @@ ShaderRecompiler::IR::ImageResource BasicUintVolumeStorageTextureResource() {
 
 ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
   return {{0x20180600u, 0xc0b00000u, 0x0003c003u, 0xa0000004u, 0x0000000fu,
+           0x00700000u, 0x00000000u, 0x00000000u}};
+}
+
+ShaderRecompiler::IR::ImageResource AtomicStorageTextureResource() {
+  auto resource = BasicLinearStorageTextureResource();
+  resource.kind = ShaderRecompiler::IR::ResourceKind::StorageImageUint;
+  resource.read = true;
+  resource.atomic = true;
+  return resource;
+}
+
+ShaderTextureResource AtomicStorageTextureDescriptor() {
+  return {{0x304bb700u, 0xc1400000u, 0x0000001fu, 0x91b00204u, 0x00000000u,
            0x00700000u, 0x00000000u, 0x00000000u}};
 }
 
@@ -16184,6 +16294,12 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
   } else if (std::strcmp(kind, "uint-resource-float-format") == 0) {
     resource = BasicUintArrayStorageTextureResource();
     descriptor = BasicArrayStorageTextureDescriptor();
+  } else if (std::strcmp(kind, "atomic-format") == 0) {
+    resource = AtomicStorageTextureResource();
+    descriptor = AtomicStorageTextureDescriptor();
+    descriptor.fields[1] =
+        (descriptor.fields[1] & ~0x1ff00000u) |
+        (Prospero::GpuEnumValue(Prospero::BufferFormat::k8UInt) << 20u);
   } else if (std::strcmp(kind, "depth-tile-read") == 0) {
     resource = Ppsa14053DepthTileStorageTextureResource();
     descriptor = Ppsa14053DepthTileStorageTextureDescriptor();
@@ -16209,6 +16325,7 @@ ShaderTextureResource BasicUintVolumeStorageTextureDescriptor() {
   std::_Exit(0x7f);
 }
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 void CheckBasicStorageTextureDescriptor() {
   const auto descriptor = BasicStorageTextureDescriptor();
   Require("BasicStorageTexture", "descriptor",
@@ -16266,7 +16383,7 @@ void CheckBasicStorageTextureDescriptor() {
       "PPSA06228 R11G11B10 storage descriptor fixture is malformed");
   ValidateStorageTexture(BasicBgraStorageTextureResource(), r11g11b10,
                          0x870000);
-  ValidateStorageColorView(vk::Format::eB10G11R11UfloatPack32,
+  ValidateStorageColorView(vk::Format::eB8G8R8A8Unorm,
                            vk::Format::eB10G11R11UfloatPack32,
                            r11g11b10.DstSelXYZW());
 
@@ -16442,6 +16559,30 @@ void CheckBasicStorageTextureDescriptor() {
   ValidateStorageTexture(BasicUintArrayStorageTextureResource(),
                          based_standard4kb_array, based_standard4kb_size.size);
 
+  const auto standard64kb = Standard64KBStorageTextureDescriptor();
+  const auto standard64kb_pitch = TileGetTexturePitch(
+      standard64kb.Format(), standard64kb.Width5() + 1u, 1,
+      standard64kb.TileMode());
+  TileSizeAlign standard64kb_size{};
+  TileGetTextureTotalSize(
+      standard64kb.Format(), standard64kb.Width5() + 1u,
+      standard64kb.Height5() + 1u, standard64kb.Depth() + 1u,
+      standard64kb_pitch, 1, standard64kb.TileMode(), false,
+      standard64kb_size);
+  Require("BasicStorageTexture", "Standard64KB 2D descriptor",
+          standard64kb.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray) &&
+              standard64kb.Format() == Prospero::GpuEnumValue(
+                                           Prospero::BufferFormat::k8_8_8_8UNorm) &&
+              standard64kb.TileMode() ==
+                  Prospero::GpuEnumValue(Prospero::TileMode::kStandard64KB) &&
+              standard64kb.DstSelXYZW() == DstSel(4, 5, 6, 7) &&
+              standard64kb_size.size == 0x10000 &&
+              standard64kb_size.align == 0x10000,
+          "captured Standard64KB storage descriptor is malformed");
+  ValidateStorageTexture(BasicBgraStorageTextureResource(), standard64kb,
+                         standard64kb_size.size);
+
   const auto uint_volume = BasicUintVolumeStorageTextureDescriptor();
   Require("BasicStorageTexture", "uint 3D descriptor",
           uint_volume.Base40() == 0x2018060000ull &&
@@ -16533,6 +16674,18 @@ void CheckBasicStorageTextureDescriptor() {
           IsValidImageSwizzle(DstSel(4, 4, 4, 4)),
           "single-channel replicated destination selection was rejected");
 
+  const auto atomic = AtomicStorageTextureDescriptor();
+  Require("BasicStorageTexture", "atomic R32_UINT descriptor",
+          atomic.Width5() + 1u == 128 && atomic.Height5() + 1u == 1 &&
+              atomic.Depth() + 1u == 1 &&
+              atomic.Type() ==
+                  Prospero::GpuEnumValue(Prospero::ImageType::kColor2D) &&
+              atomic.Format() ==
+                  Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt) &&
+              atomic.DstSelXYZW() == DstSel(4, 0, 0, 1),
+          "PPSA22102 image-atomic descriptor fixture is malformed");
+  ValidateStorageTexture(AtomicStorageTextureResource(), atomic, 0x10000);
+
   char path[MAX_PATH]{};
   Require("BasicStorageTexture", "host",
           GetModuleFileNameA(nullptr, path, MAX_PATH) != 0,
@@ -16541,7 +16694,7 @@ void CheckBasicStorageTextureDescriptor() {
        {"resource", "type", "tile", "mip", "swizzle", "linear-rgb1-read",
         "bgra-read", "r16-float-read", "r8-unorm-read", "yzwx-read",
         "reserved-swizzle", "array-base-out-of-range", "array-mip-view",
-        "reserved", "uint-format", "uint-resource-float-format",
+        "reserved", "uint-format", "uint-resource-float-format", "atomic-format",
         "depth-tile-read", "depth-tile-extent", "depth-tile-fmask"}) {
     std::string command = std::string("\"") + path +
                           "\" --storage-texture-descriptor-death " + kind;
@@ -16567,6 +16720,7 @@ void CheckBasicStorageTextureDescriptor() {
   }
   std::printf("[host]    %-32s ok\n", "BasicStorageTextureDescriptor");
 }
+#endif
 
 void CheckStorageTextureLinearUploadLayout() {
   constexpr uint32_t format =
@@ -16835,6 +16989,7 @@ void CheckStandard64RenderTargetTileRoundTrip() {
   std::printf("[host]    %-32s ok\n", "Standard64RenderTarget");
 }
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 void CheckStorageTextureGpuOwnedRebindState() {
   constexpr uintptr_t base = 0x0000000200200000ull;
   constexpr uint64_t size = 0x10000;
@@ -16904,6 +17059,7 @@ void CheckStorageTextureGpuOwnedRebindState() {
           VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
   std::printf("[host]    %-32s ok\n", "StorageTextureGpuOwnedRebind");
 }
+#endif
 
 void CheckNativeMsaaState() {
   Require("NativeMsaaState", "sample encoding",
@@ -17407,7 +17563,7 @@ void CheckSharedFenceResourceLifetime() {
   std::printf("[host]    %-32s ok\n", "SharedFenceResourceLifetime");
 }
 
-#endif
+
 
 void CheckEmbeddedFetchLaneSpill() {
   std::vector<u32> code;
@@ -17683,18 +17839,6 @@ int main(int argc, char **argv) {
     vulkan.CheckGpuCommandLane();
     return 0;
   }
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-  if (argc == 2 && std::strcmp(argv[1], "--reverse-rt-death") == 0) {
-    RunReverseRenderTargetDeathCase();
-  }
-  if (argc == 2 && std::strcmp(argv[1], "--reverse-rt-only") == 0) {
-    CheckReverseRenderTargetFormatContract();
-    return 0;
-  }
-  if (argc == 2 && std::strcmp(argv[1], "--standard64-rt-only") == 0) {
-    CheckStandard64RenderTargetTileRoundTrip();
-    return 0;
-  }
   if (argc == 2 && std::strcmp(argv[1], "--image-overlap-only") == 0) {
     CheckDepthAttachmentWrites();
     CheckDynamicRenderingState();
@@ -17714,15 +17858,46 @@ int main(int argc, char **argv) {
     vulkan.CheckUnifiedImageViewCache();
     return 0;
   }
+  if (argc == 2 && std::strcmp(argv[1], "--image-view-cache-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckUnifiedImageViewCache();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--storage-sampled-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckUnifiedImageViewCache();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--depth-readback-only") == 0) {
+    CheckDepthTargetFootprints();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--buffer-cache-range-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckUnifiedTextureCacheFlow();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--buffer-cache-gc-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckBufferCacheDirtyGarbageCollection();
+    return 0;
+  }
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+  if (argc == 2 && std::strcmp(argv[1], "--reverse-rt-death") == 0) {
+    RunReverseRenderTargetDeathCase();
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--reverse-rt-only") == 0) {
+    CheckRenderTargetFormatContract();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--standard64-rt-only") == 0) {
+    CheckStandard64RenderTargetTileRoundTrip();
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--image-view-only") == 0) {
     VulkanHarness vulkan;
     CheckSampledColorViews();
     CheckSampledVideoOutView(vulkan.RuntimeRenderer());
-    return 0;
-  }
-  if (argc == 2 && std::strcmp(argv[1], "--image-view-cache-only") == 0) {
-    VulkanHarness vulkan;
-    vulkan.CheckUnifiedImageViewCache();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--image-transition-only") == 0) {
@@ -17734,16 +17909,6 @@ int main(int argc, char **argv) {
     VulkanHarness vulkan;
     CheckSampledDepthResource();
     CheckSampledDepthDescriptor(vulkan.RuntimeRenderer());
-    return 0;
-  }
-  if (argc == 2 && std::strcmp(argv[1], "--buffer-cache-range-only") == 0) {
-    VulkanHarness vulkan;
-    vulkan.CheckUnifiedTextureCacheFlow();
-    return 0;
-  }
-  if (argc == 2 && std::strcmp(argv[1], "--buffer-cache-gc-only") == 0) {
-    VulkanHarness vulkan;
-    vulkan.CheckBufferCacheDirtyGarbageCollection();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--storage-bgra-only") == 0) {
@@ -17762,15 +17927,6 @@ int main(int argc, char **argv) {
     RunCase(&vulkan, ImageStoreYzwxUsesInverseSwizzle());
     return 0;
   }
-  if (argc == 2 && std::strcmp(argv[1], "--storage-sampled-only") == 0) {
-    VulkanHarness vulkan;
-    vulkan.CheckUnifiedImageViewCache();
-    return 0;
-  }
-  if (argc == 2 && std::strcmp(argv[1], "--depth-readback-only") == 0) {
-    CheckDepthTargetFootprints();
-    return 0;
-  }
   if (argc == 3 && std::strcmp(argv[1], "--image-view-death") == 0) {
     RunImageViewDeathCase(argv[2]);
   }
@@ -17783,7 +17939,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   VulkanHarness vulkan;
-  CheckReverseRenderTargetFormatContract();
+  CheckRenderTargetFormatContract();
   CheckSampledColorViews();
   CheckSampledVideoOutView(vulkan.RuntimeRenderer());
   CheckImageTransitionState(vulkan.RuntimeRenderer());

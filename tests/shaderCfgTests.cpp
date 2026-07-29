@@ -4,22 +4,22 @@
 #include "common/threads.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
-#include "graphics/host_gpu/objects/textureCommon.h"
-#include "graphics/host_gpu/renderer/imageView.h"
-#include "graphics/host_gpu/renderer/shaderResourceBarrier.h"
-#include "graphics/host_gpu/renderer/shaderSubgroup.h"
+#include "graphics/host_gpu/renderer/image/textureCommon.h"
+#include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderSubgroup.h"
 #include "graphics/shader/recompiler/ExecMask.h"
-#include "graphics/shader/recompiler/ResourceTracking.h"
-#include "graphics/shader/recompiler/ScalarProvenance.h"
-#include "graphics/shader/recompiler/ShaderCFG.h"
-#include "graphics/shader/recompiler/ShaderDecoder.h"
-#include "graphics/shader/recompiler/ShaderIR.h"
-#include "graphics/shader/recompiler/ShaderInfoCollection.h"
+#include "graphics/shader/recompiler/ir/ResourceTracking.h"
+#include "graphics/shader/recompiler/ir/ScalarProvenance.h"
+#include "graphics/shader/recompiler/cfg/ShaderCFG.h"
+#include "graphics/shader/recompiler/decompiler/ShaderDecoder.h"
+#include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/recompiler/ir/ShaderInfoCollection.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
-#include "graphics/shader/recompiler/SpirvEmitter.h"
-#include "graphics/shader/recompiler/SrtPatcher.h"
-#include "graphics/shader/recompiler/SrtWalker.h"
-#include "graphics/shader/recompiler/spirvEmitter/spirvEmitterInternal.h"
+#include "graphics/shader/recompiler/emitter/SpirvEmitter.h"
+#include "graphics/shader/recompiler/ir/SrtPatcher.h"
+#include "graphics/shader/recompiler/ir/SrtWalker.h"
+#include "graphics/shader/recompiler/emitter/spirvEmitterInternal.h"
 #include "graphics/shader/shader.h"
 #include "libs/agc.h"
 #include "spirv-tools/libspirv.hpp"
@@ -4069,13 +4069,22 @@ void TestNewShaderRecompilerVintrpLowering() {
 	CheckSpirvBinaryValidates(no_perspective_result.spirv);
 }
 
+void TestPsInputCountRegisterDecode() {
+	HW::Context context;
+	// NUM_INTERP is 3 while bit 14 is an independent control flag that must be preserved.
+	context.SetPsInControl(0x00004003u);
+	const auto ps_in_control = context.GetShaderRegisters().ps_in_control;
+	Check(ps_in_control == 0x00004003u, "SPI_PS_IN_CONTROL flags were not preserved");
+	Check((ps_in_control & 0x3fu) == 3, "SPI_PS_IN_CONTROL NUM_INTERP decoding failed");
+}
+
 void TestGraphicsCreateInterpolantMapping() {
 	ShaderRegister regs[32] = {};
 
 	Check(Gen5::GraphicsCreateInterpolantMapping(regs, nullptr, nullptr) == 0,
 	      "null pixel shader interpolant mapping failed");
 	for (uint32_t i = 0; i < 32u; i++) {
-		Check(regs[i].offset == Pm4::SPI_PS_INPUT_CNTL_0 + i,
+		Check(regs[i].offset == Pm4::CX_PS_SHADER_USAGE_BASE + i,
 		      "identity interpolant register offset was unexpected");
 		Check(regs[i].value == i, "identity interpolant register value was unexpected");
 	}
@@ -4117,7 +4126,7 @@ void TestGraphicsCreateInterpolantMapping() {
 	Check(regs[1].value == 0x00000220u, "missing interpolant mapping did not use PS default value");
 	Check(regs[2].value == 0x0000052cu, "flat/custom interpolant mapping bits were unexpected");
 	Check(regs[3].value == 0x01580304u, "f16 interpolant mapping bits were unexpected");
-	Check(regs[4].offset == Pm4::SPI_PS_INPUT_CNTL_0 + 4u && regs[4].value == 4u,
+	Check(regs[4].offset == Pm4::CX_PS_SHADER_USAGE_BASE + 4u && regs[4].value == 4u,
 	      "interpolant identity tail was not filled");
 }
 
@@ -6992,6 +7001,7 @@ int main() {
 	TestNewShaderRecompilerStorageImage2DDescriptorOverridesMimg3D();
 	TestNewShaderRecompilerImageAtomicLowering();
 	TestNewShaderRecompilerVintrpLowering();
+	TestPsInputCountRegisterDecode();
 	TestNewShaderRecompilerWideMemoryLowering();
 	TestNewShaderRecompilerBufferSignedLoadLowering();
 	TestNewShaderRecompilerBufferSubDwordStoreLowering();
