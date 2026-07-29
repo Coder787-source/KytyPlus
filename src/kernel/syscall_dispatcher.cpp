@@ -1,30 +1,36 @@
 #include "syscall_dispatcher.h"
-#include "memory.h"
-#include "fileSystem.h"
 #include <iostream>
-#include <iomanip>
+
+// Note: this file intentionally does NOT include syscall_map.h. syscall_map.h declares its own
+// SyscallHandler alias with an incompatible signature
+// (std::function<uint64_t(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t)>) from the one declared
+// in syscall_dispatcher.h (std::function<SceResult(SyscallContext&, uint64_t)>), and
+// SyscallDispatcher::Dispatch's declared signature in the header only takes
+// (SyscallContext&, uint64_t) -- it has no way to forward the extra 4 raw register arguments
+// SyscallMap::Table's handlers expect. Reconciling the two designs (unifying the handler
+// signature so SyscallDispatcher can route through SyscallMap::Table) is a bigger change than a
+// build fix should make silently; this keeps SyscallDispatcher self-contained and buildable
+// against its own declared contract instead.
 
 namespace Emulator {
 
 SyscallDispatcher::SyscallDispatcher() {
-    // We initialize the dispatcher. In a real scenario, we'd load these 
-    // from a mapping file or a predefined header of PS5 syscall IDs.
-    std::cout << "[Kernel] Syscall Dispatcher initialized. Awaiting handler registration." << std::endl;
+    std::cout << "[Syscall] Dispatcher initialized. Loading syscall table..." << std::endl;
 }
 
 SceResult SyscallDispatcher::Dispatch(SyscallContext& ctx, uint64_t syscall_id) {
     auto it = syscall_table_.find(syscall_id);
-    
-    if (it == syscall_table_.end()) {
-        LogSyscall(syscall_id, SCE_ERROR);
-        // To make games "playable", we often return a generic success or 
-        // a specific "Not Implemented" error that the game might ignore.
-        return SCE_ERROR; 
+
+    if (it != syscall_table_.end()) {
+        const SceResult result = it->second(ctx, syscall_id);
+        LogSyscall(syscall_id, result);
+        return result;
     }
 
-    SceResult result = it->second(ctx, syscall_id);
-    LogSyscall(syscall_id, result);
-    return result;
+    std::cerr << "[Syscall] Unimplemented syscall ID: 0x" << std::hex << syscall_id << std::dec
+               << std::endl;
+    LogSyscall(syscall_id, SCE_ERROR);
+    return SCE_ERROR;
 }
 
 void SyscallDispatcher::RegisterHandler(uint64_t id, SyscallHandler handler) {
@@ -32,9 +38,8 @@ void SyscallDispatcher::RegisterHandler(uint64_t id, SyscallHandler handler) {
 }
 
 void SyscallDispatcher::LogSyscall(uint64_t id, SceResult result) {
-    // High-performance logging: in a real build, this would be a ring buffer
-    std::cout << "[Syscall] ID: 0x" << std::hex << std::setw(8) << std::setfill('0') << id 
-              << " -> Result: " << std::dec << result << std::endl;
+    std::cout << "[Syscall] id=0x" << std::hex << id << std::dec << " result=" << result
+              << std::endl;
 }
 
 } // namespace Emulator

@@ -1,4 +1,6 @@
 #include "cpu_core.h"
+#include "instruction_translator.h"
+#include "common/assert.h"
 #include <iostream>
 #include <vector>
 
@@ -20,9 +22,9 @@ void* JITMemoryManager::AllocateExecutableMemory(size_t size) {
 #ifdef _WIN32
     // Allocate memory with READ/WRITE first to load the JIT'd code
     void* ptr = VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!ptr) {
-        throw std::runtime_error("Failed to allocate JIT memory via VirtualAlloc");
-    }
+    // This project builds with exceptions disabled (-fno-exceptions), so a failed JIT
+    // allocation is a fatal EXIT_IF rather than a throw.
+    EXIT_IF(ptr == nullptr);
     allocated_pages_.push_back(ptr);
     return ptr;
 #else
@@ -47,16 +49,20 @@ CPUCore::CPUCore(std::shared_ptr<JITMemoryManager> jit_mgr)
 }
 
 void CPUCore::LoadCodeBlock(const std::vector<uint8_t>& code) {
-    size_t size = code.size();
+    // Translate guest code to host code using the JIT translator
+    InstructionTranslator translator;
+    std::vector<uint8_t> translated_code = translator.TranslateBlock(code, regs_.rip);
+    
+    size_t size = translated_code.size();
     void* exec_mem = jit_manager_->AllocateExecutableMemory(size);
     
-    // Copy translated machine code into the buffer
-    std::memcpy(exec_mem, code.data(), size);
+    // Copy TRANSLATED machine code into the buffer
+    std::memcpy(exec_mem, translated_code.data(), size);
     
     // Transition from RW (Read-Write) to RX (Read-Execute) for security/stability
-    if (!jit_manager_->SetMemoryProtection(exec_mem, size, 0)) {
-        throw std::runtime_error("Failed to set JIT memory to executable");
-    }
+    // This project builds with exceptions disabled (-fno-exceptions), so a failed protection
+    // change is a fatal EXIT_IF rather than a throw.
+    EXIT_IF(!jit_manager_->SetMemoryProtection(exec_mem, size, 0));
 
     current_execution_block_ = exec_mem;
     block_size_ = size;
