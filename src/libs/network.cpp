@@ -19,7 +19,7 @@
 
 // POSIX uses plain int file descriptors for sockets; provide the Winsock spellings
 // the shared (non-guarded) code paths reference.
-using SOCKET                   = int;
+using SOCKET                           = int;
 static constexpr SOCKET INVALID_SOCKET = -1;
 #endif
 
@@ -820,10 +820,10 @@ struct NetEtherAddr {
 };
 
 #if defined(_WIN32)
-using NativeSocket = SOCKET;
+using NativeSocket                                  = SOCKET;
 static constexpr NativeSocket INVALID_NATIVE_SOCKET = INVALID_SOCKET;
 #else
-using NativeSocket = int;
+using NativeSocket                                  = int;
 static constexpr NativeSocket INVALID_NATIVE_SOCKET = -1;
 #endif
 
@@ -1738,7 +1738,8 @@ int KYTY_SYSV_ABI Accept(int s, void* addr, uint32_t* addrlen) {
 #if defined(_WIN32)
 	sockaddr_storage host_addr {};
 	int              host_addrlen = sizeof(host_addr);
-	NativeSocket accepted = ::accept(socket, reinterpret_cast<sockaddr*>(&host_addr), &host_addrlen);
+	NativeSocket     accepted =
+	    ::accept(socket, reinterpret_cast<sockaddr*>(&host_addr), &host_addrlen);
 	if (accepted == INVALID_NATIVE_SOCKET) {
 		return SetPosixSocketError();
 	}
@@ -3753,8 +3754,6 @@ int KYTY_SYSV_ABI NpGetState(int user_id, uint32_t* state) {
 int KYTY_SYSV_ABI NpGetNpReachabilityState(int user_id, uint32_t* state) {
 	PRINT_NAME();
 
-	constexpr int np_error_invalid_argument = -2141913085; /* 0x80550003 */
-
 	if (state == nullptr) {
 		return np_error_invalid_argument;
 	}
@@ -3763,6 +3762,20 @@ int KYTY_SYSV_ABI NpGetNpReachabilityState(int user_id, uint32_t* state) {
 
 	// *state = 2; // SCE_NP_REACHABILITY_STATE_REACHABLE
 	*state = 0; // SCE_NP_REACHABILITY_STATE_UNAVAILABLE
+
+	return OK;
+}
+
+int KYTY_SYSV_ABI NpHasSignedUp(int user_id, bool* has_signed_up) {
+	PRINT_NAME();
+
+	if (has_signed_up == nullptr) {
+		return np_error_invalid_argument;
+	}
+
+	LOGF("\t user_id = %d\n", user_id);
+
+	*has_signed_up = false;
 
 	return OK;
 }

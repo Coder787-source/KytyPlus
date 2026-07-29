@@ -34,7 +34,7 @@ namespace LibNet {
 
 LIB_VERSION("Net", 1, "Net", 1, 1);
 
-static thread_local int g_net_errno = 0;
+static thread_local int   g_net_errno = 0;
 static constexpr uint32_t g_in6addr_any[4] {};
 
 namespace Net = Network::Net;
@@ -1398,6 +1398,7 @@ LIB_DEFINE(InitNet_1_NpManager) {
 	LIB_FUNC("O80NrhUOPGY", NpManager::NpCheckPremium);
 	LIB_FUNC("eQH7nWPcAgc", NpManager::NpGetState);
 	LIB_FUNC("e-ZuhGEoeC4", NpManager::NpGetNpReachabilityState);
+	LIB_FUNC("Oad3rvY-NJQ", NpManager::NpHasSignedUp);
 }
 
 } // namespace LibNpManager
