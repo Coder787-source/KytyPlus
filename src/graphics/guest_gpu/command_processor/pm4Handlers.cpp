@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstdio>
 #include <vector>
 
@@ -162,6 +163,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetCentroidPriority) {
 
 	return num_values;
 }
+
+static void HwIgnoreMultiPrimIbReset([[maybe_unused]] uint32_t value) {}
 
 static void HwCtxIgnoreAaMaskRegister([[maybe_unused]] uint32_t cmd_offset,
                                       [[maybe_unused]] uint32_t value) {}
@@ -390,19 +393,25 @@ KYTY_HW_CTX_PARSER(HwCtxSetAaMask) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetBlendColor) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0046900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::CB_BLEND_RED);
+	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
+	EXIT_NOT_IMPLEMENTED(num_values == 0);
+	EXIT_NOT_IMPLEMENTED(cmd_offset < Pm4::CB_BLEND_RED || cmd_offset > Pm4::CB_BLEND_ALPHA);
+	EXIT_NOT_IMPLEMENTED(cmd_offset + num_values - 1u > Pm4::CB_BLEND_ALPHA);
 
-	HW::BlendColor r;
+	auto color = cp.GetCtx().GetBlendColor();
+	for (uint32_t i = 0; i < num_values; i++) {
+		const auto f = *reinterpret_cast<const float*>(&buffer[i]);
+		switch (cmd_offset + i) {
+			case Pm4::CB_BLEND_RED: color.red = f; break;
+			case Pm4::CB_BLEND_GREEN: color.green = f; break;
+			case Pm4::CB_BLEND_BLUE: color.blue = f; break;
+			case Pm4::CB_BLEND_ALPHA: color.alpha = f; break;
+			default: EXIT("unknown blend color register 0x%03" PRIx32 "\n", cmd_offset + i);
+		}
+	}
+	cp.GetCtx().SetBlendColor(color);
 
-	r.red   = *reinterpret_cast<const float*>(&buffer[0]);
-	r.green = *reinterpret_cast<const float*>(&buffer[1]);
-	r.blue  = *reinterpret_cast<const float*>(&buffer[2]);
-	r.alpha = *reinterpret_cast<const float*>(&buffer[3]);
-
-	cp.GetCtx().SetBlendColor(r);
-
-	return 4;
+	return num_values;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetBlendControl) {
@@ -882,23 +891,33 @@ KYTY_HW_CTX_PARSER(HwCtxSetModeControl) {
 	return 1;
 }
 
-static void HwCtxIgnorePolyOffsetRegister(uint32_t cmd_offset, uint32_t value) {
-	static std::atomic<uint32_t> log_count = 0;
-
-	auto count = log_count.fetch_add(1);
-	if (count < 8) {
-		LOGF_COLOR(Log::Color::Red,
-		           "\t temporary: ignoring polygon offset context register 0x%03" PRIx32
-		           " = 0x%08" PRIx32 " (depth bias not implemented)\n",
-		           cmd_offset, value);
+static void HwCtxSetPolyOffsetRegister(HW::Context& ctx, uint32_t cmd_offset, uint32_t value) {
+	auto offset = ctx.GetPolyOffset();
+	switch (cmd_offset) {
+		case Pm4::PA_SU_POLY_OFFSET_DB_FMT_CNTL: offset.db_format = value; break;
+		case Pm4::PA_SU_POLY_OFFSET_CLAMP: offset.clamp = std::bit_cast<float>(value); break;
+		case Pm4::PA_SU_POLY_OFFSET_FRONT_SCALE:
+			offset.front_scale = std::bit_cast<float>(value);
+			break;
+		case Pm4::PA_SU_POLY_OFFSET_FRONT_OFFSET:
+			offset.front_offset = std::bit_cast<float>(value);
+			break;
+		case Pm4::PA_SU_POLY_OFFSET_BACK_SCALE:
+			offset.back_scale = std::bit_cast<float>(value);
+			break;
+		case Pm4::PA_SU_POLY_OFFSET_BACK_OFFSET:
+			offset.back_offset = std::bit_cast<float>(value);
+			break;
+		default: EXIT("unknown polygon offset context register 0x%03" PRIx32 "\n", cmd_offset);
 	}
+	ctx.SetPolyOffset(offset);
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetPolyOffsetRegisters) {
 	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
 
 	for (uint32_t i = 0; i < num_values; i++) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset + i, buffer[i]);
+		HwCtxSetPolyOffsetRegister(cp.GetCtx(), cmd_offset + i, buffer[i]);
 	}
 
 	return num_values;
@@ -1118,6 +1137,93 @@ KYTY_HW_CTX_PARSER(HwCtxSetRenderTargetMask) {
 	return 1;
 }
 
+static HW::DepthShaderControl DecodeDepthShaderControl(uint32_t value) {
+	HW::DepthShaderControl db_shader_control {};
+	db_shader_control.other_bits = value & 0xFFFF908Eu;
+	db_shader_control.conservative_z_export_value =
+	    KYTY_PM4_GET(value, DB_SHADER_CONTROL, CONSERVATIVE_Z_EXPORT);
+	db_shader_control.shader_z_behavior = KYTY_PM4_GET(value, DB_SHADER_CONTROL, Z_ORDER);
+	db_shader_control.shader_kill_enable =
+	    KYTY_PM4_GET(value, DB_SHADER_CONTROL, KILL_ENABLE) != 0;
+	db_shader_control.shader_z_export_enable =
+	    KYTY_PM4_GET(value, DB_SHADER_CONTROL, Z_EXPORT_ENABLE) != 0;
+	db_shader_control.shader_mask_export_enable =
+	    KYTY_PM4_GET(value, DB_SHADER_CONTROL, MASK_EXPORT_ENABLE) != 0;
+	db_shader_control.shader_dual_export_enable =
+	    KYTY_PM4_GET(value, DB_SHADER_CONTROL, DUAL_EXPORT_ENABLE) != 0;
+	db_shader_control.shader_execute_on_noop =
+	    KYTY_PM4_GET(value, DB_SHADER_CONTROL, EXEC_ON_NOOP) != 0;
+	db_shader_control.alpha_to_mask_disable =
+	    KYTY_PM4_GET(value, DB_SHADER_CONTROL, ALPHA_TO_MASK_DISABLE) != 0;
+	return db_shader_control;
+}
+
+KYTY_HW_CTX_PARSER(HwCtxSetShaderMask) {
+	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
+	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::CB_SHADER_MASK);
+	cp.GetCtx().SetShaderMask(buffer[0]);
+	return 1;
+}
+
+KYTY_HW_CTX_PARSER(HwCtxSetDepthShaderControl) {
+	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
+	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::DB_SHADER_CONTROL);
+	cp.GetCtx().SetDepthShaderControl(DecodeDepthShaderControl(buffer[0]));
+	return 1;
+}
+
+KYTY_HW_CTX_PARSER(HwCtxSetBarycCntl) {
+	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
+	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::SPI_BARYC_CNTL);
+	cp.GetCtx().SetBarycCntl(buffer[0]);
+	return 1;
+}
+
+KYTY_HW_CTX_PARSER(HwCtxSetShaderZFormat) {
+	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
+	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::SPI_SHADER_Z_FORMAT);
+	cp.GetCtx().SetShaderZFormat(buffer[0]);
+	return 1;
+}
+
+KYTY_HW_CTX_PARSER(HwCtxSetScShaderControl) {
+	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
+	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::PA_SC_SHADER_CONTROL);
+	cp.GetCtx().SetScShaderControl(buffer[0]);
+	return 1;
+}
+
+KYTY_HW_CTX_PARSER(HwCtxSetMultiPrimIbResetIndx) {
+	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
+	EXIT_NOT_IMPLEMENTED(num_values == 0);
+	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::VGT_MULTI_PRIM_IB_RESET_INDX);
+	for (uint32_t i = 0; i < num_values; i++) {
+		HwIgnoreMultiPrimIbReset(buffer[i]);
+	}
+	return num_values;
+}
+
+KYTY_HW_CTX_PARSER(HwCtxSetPsInputControl) {
+	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
+	EXIT_NOT_IMPLEMENTED(num_values == 0);
+	EXIT_NOT_IMPLEMENTED(cmd_offset < Pm4::SPI_PS_INPUT_ENA ||
+	                     cmd_offset > Pm4::SPI_PS_IN_CONTROL);
+	EXIT_NOT_IMPLEMENTED(cmd_offset + num_values - 1u > Pm4::SPI_PS_IN_CONTROL);
+
+	for (uint32_t i = 0; i < num_values; i++) {
+		const auto offset = cmd_offset + i;
+		const auto value  = buffer[i];
+		switch (offset) {
+			case Pm4::SPI_PS_INPUT_ENA: cp.GetCtx().SetPsInputEna(value); break;
+			case Pm4::SPI_PS_INPUT_ADDR: cp.GetCtx().SetPsInputAddr(value); break;
+			case Pm4::SPI_INTERP_CONTROL_0: cp.GetCtx().SetInterpControl0(value); break;
+			case Pm4::SPI_PS_IN_CONTROL: cp.GetCtx().SetPsInControl(value); break;
+			default: EXIT("unknown SPI PS input control register 0x%03" PRIx32 "\n", offset);
+		}
+	}
+	return num_values;
+}
+
 KYTY_HW_CTX_PARSER(HwCtxSetScanModeControl) {
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0016900);
 	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::PA_SC_MODE_CNTL_0);
@@ -1192,23 +1298,37 @@ KYTY_HW_CTX_PARSER(HwCtxSetStencilInfo) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetStencilMask) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0026900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::DB_STENCILREFMASK);
+	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
+	EXIT_NOT_IMPLEMENTED(num_values == 0);
+	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::DB_STENCILREFMASK &&
+	                     cmd_offset != Pm4::DB_STENCILREFMASK_BF);
+	EXIT_NOT_IMPLEMENTED(cmd_offset + num_values - 1u > Pm4::DB_STENCILREFMASK_BF);
 
-	HW::StencilMask r;
-
-	r.stencil_testval      = KYTY_PM4_GET(buffer[0], DB_STENCILREFMASK, STENCILTESTVAL);
-	r.stencil_mask         = KYTY_PM4_GET(buffer[0], DB_STENCILREFMASK, STENCILMASK);
-	r.stencil_writemask    = KYTY_PM4_GET(buffer[0], DB_STENCILREFMASK, STENCILWRITEMASK);
-	r.stencil_opval        = KYTY_PM4_GET(buffer[0], DB_STENCILREFMASK, STENCILOPVAL);
-	r.stencil_testval_bf   = KYTY_PM4_GET(buffer[1], DB_STENCILREFMASK_BF, STENCILTESTVAL_BF);
-	r.stencil_mask_bf      = KYTY_PM4_GET(buffer[1], DB_STENCILREFMASK_BF, STENCILMASK_BF);
-	r.stencil_writemask_bf = KYTY_PM4_GET(buffer[1], DB_STENCILREFMASK_BF, STENCILWRITEMASK_BF);
-	r.stencil_opval_bf     = KYTY_PM4_GET(buffer[1], DB_STENCILREFMASK_BF, STENCILOPVAL_BF);
+	auto r = cp.GetCtx().GetStencilMask();
+	for (uint32_t i = 0; i < num_values; i++) {
+		const auto value = buffer[i];
+		switch (cmd_offset + i) {
+			case Pm4::DB_STENCILREFMASK:
+				r.stencil_testval   = KYTY_PM4_GET(value, DB_STENCILREFMASK, STENCILTESTVAL);
+				r.stencil_mask      = KYTY_PM4_GET(value, DB_STENCILREFMASK, STENCILMASK);
+				r.stencil_writemask = KYTY_PM4_GET(value, DB_STENCILREFMASK, STENCILWRITEMASK);
+				r.stencil_opval     = KYTY_PM4_GET(value, DB_STENCILREFMASK, STENCILOPVAL);
+				break;
+			case Pm4::DB_STENCILREFMASK_BF:
+				r.stencil_testval_bf = KYTY_PM4_GET(value, DB_STENCILREFMASK_BF, STENCILTESTVAL_BF);
+				r.stencil_mask_bf    = KYTY_PM4_GET(value, DB_STENCILREFMASK_BF, STENCILMASK_BF);
+				r.stencil_writemask_bf =
+				    KYTY_PM4_GET(value, DB_STENCILREFMASK_BF, STENCILWRITEMASK_BF);
+				r.stencil_opval_bf = KYTY_PM4_GET(value, DB_STENCILREFMASK_BF, STENCILOPVAL_BF);
+				break;
+			default:
+				EXIT("unknown stencil mask register 0x%03" PRIx32 "\n", cmd_offset + i);
+		}
+	}
 
 	cp.GetCtx().SetStencilMask(r);
 
-	return 2;
+	return num_values;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetViewportScaleOffset) {
@@ -1561,8 +1681,6 @@ KYTY_HW_UC_PARSER(HwUcSetIaMultiVgtParam) {
 	return num_values;
 }
 
-static void HwIgnoreMultiPrimIbReset([[maybe_unused]] uint32_t value) {}
-
 KYTY_HW_UC_PARSER(HwUcSetMultiPrimIbReset) {
 	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
 
@@ -1877,10 +1995,8 @@ static uint8_t CopyDataDstToDma(uint32_t dst) {
 		case 3:
 		case 6:
 		case 7: return 1;
-		default: break;
+		default: EXIT("unsupported copyData destination selector 0x%02" PRIx32 "\n", dst);
 	}
-
-	EXIT("unsupported copyData destination selector 0x%02" PRIx32 "\n", dst);
 }
 
 static uint8_t CopyDataSrcToDma(uint32_t src) {
@@ -1893,10 +2009,8 @@ static uint8_t CopyDataSrcToDma(uint32_t src) {
 		case 7: return 1;
 		case 5 << 1:
 		case (5 << 1) | 1: return 2;
-		default: break;
+		default: EXIT("unsupported copyData source selector 0x%02" PRIx32 "\n", src);
 	}
-
-	EXIT("unsupported copyData source selector 0x%02" PRIx32 "\n", src);
 }
 
 KYTY_CP_OP_PARSER(CpOpCopyData) {
@@ -3551,6 +3665,9 @@ void GraphicsInitJmpTablesCxIndirect() {
 	g_hw_ctx_indirect_func[Pm4::SPI_PS_INPUT_ADDR] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
 		cp.GetCtx().SetPsInputAddr(value);
 	};
+	g_hw_ctx_indirect_func[Pm4::SPI_INTERP_CONTROL_0] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
+		cp.GetCtx().SetInterpControl0(value);
+	};
 	g_hw_ctx_indirect_func[Pm4::SPI_PS_IN_CONTROL] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
 		cp.GetCtx().SetPsInControl(value);
 	};
@@ -3559,24 +3676,7 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_SHADER_CONTROL] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HW::DepthShaderControl db_shader_control {};
-		db_shader_control.other_bits = value & 0xFFFF908Eu;
-		db_shader_control.conservative_z_export_value =
-		    KYTY_PM4_GET(value, DB_SHADER_CONTROL, CONSERVATIVE_Z_EXPORT);
-		db_shader_control.shader_z_behavior = KYTY_PM4_GET(value, DB_SHADER_CONTROL, Z_ORDER);
-		db_shader_control.shader_kill_enable =
-		    KYTY_PM4_GET(value, DB_SHADER_CONTROL, KILL_ENABLE) != 0;
-		db_shader_control.shader_z_export_enable =
-		    KYTY_PM4_GET(value, DB_SHADER_CONTROL, Z_EXPORT_ENABLE) != 0;
-		db_shader_control.shader_mask_export_enable =
-		    KYTY_PM4_GET(value, DB_SHADER_CONTROL, MASK_EXPORT_ENABLE) != 0;
-		db_shader_control.shader_dual_export_enable =
-		    KYTY_PM4_GET(value, DB_SHADER_CONTROL, DUAL_EXPORT_ENABLE) != 0;
-		db_shader_control.shader_execute_on_noop =
-		    KYTY_PM4_GET(value, DB_SHADER_CONTROL, EXEC_ON_NOOP) != 0;
-		db_shader_control.alpha_to_mask_disable =
-		    KYTY_PM4_GET(value, DB_SHADER_CONTROL, ALPHA_TO_MASK_DISABLE) != 0;
-		cp.GetCtx().SetDepthShaderControl(db_shader_control);
+		cp.GetCtx().SetDepthShaderControl(DecodeDepthShaderControl(value));
 	};
 
 	g_hw_ctx_indirect_func[Pm4::CB_SHADER_MASK] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
@@ -3705,22 +3805,22 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_DB_FMT_CNTL] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp.GetCtx(), cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_CLAMP] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp.GetCtx(), cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_FRONT_SCALE] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp.GetCtx(), cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_FRONT_OFFSET] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp.GetCtx(), cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_BACK_SCALE] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp.GetCtx(), cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_POLY_OFFSET_BACK_OFFSET] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnorePolyOffsetRegister(cmd_offset, value);
+		HwCtxSetPolyOffsetRegister(cp.GetCtx(), cmd_offset, value);
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_Z_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {

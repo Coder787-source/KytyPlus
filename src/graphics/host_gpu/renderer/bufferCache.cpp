@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -863,6 +864,38 @@ void BufferCache::DiscardGpuDirtyBytes(uint64_t vaddr, uint64_t size) {
 	DiscardGpuDirtyBytesLocked(vaddr, size, "image output supersession");
 }
 
+void BufferCache::DownloadGpuDirtyToGuest(uint64_t vaddr, uint64_t size) {
+	if (vaddr == 0 || size == 0 || vaddr >= TRACKER_ADDRESS_SIZE ||
+	    size > TRACKER_ADDRESS_SIZE - vaddr) {
+		EXIT("BufferCache: invalid GPU-dirty download range\n");
+	}
+	std::vector<DownloadCopy> copies;
+	{
+		FaultSafeCacheLock lock(this, m_mutex);
+		for (const auto& range: m_gpu_modified_ranges.Intersections(vaddr, size)) {
+			auto owner = m_buffers.upper_bound(range.address);
+			if (owner == m_buffers.begin()) {
+				EXIT("BufferCache: GPU-dirty download has no buffer owner\n");
+			}
+			--owner;
+			auto& cached = *owner->second;
+			if (!cached.buffer->IsInBounds(range.address, range.size)) {
+				EXIT("BufferCache: GPU-dirty download is outside its buffer owner\n");
+			}
+			copies.push_back(
+			    {cached.buffer, cached.buffer->Offset(range.address), range.address, range.size});
+		}
+		if (copies.empty()) {
+			return;
+		}
+	}
+	auto downloads = RecordDownloads(copies);
+	m_scheduler.FinishCurrent();
+	PublishDownloads(downloads);
+	FaultSafeCacheLock lock(this, m_mutex);
+	DiscardGpuDirtyBytesLocked(vaddr, size, "GPU-dirty download");
+}
+
 void BufferCache::WriteHostMemory(uint64_t vaddr, std::span<const uint8_t> data) {
 	if (vaddr == 0 || data.empty() || data.size() > UINT64_MAX - vaddr) {
 		EXIT("BufferCache: invalid host DMA write\n");
@@ -892,6 +925,9 @@ std::pair<std::shared_ptr<Buffer>, uint64_t> BufferCache::ObtainBufferForImageWr
 	    size > TRACKER_ADDRESS_SIZE - vaddr) {
 		EXIT("BufferCache: invalid image destination\n");
 	}
+	if (HasGpuDirtyBytes(vaddr, size)) {
+		DownloadGpuDirtyToGuest(vaddr, size);
+	}
 	const auto stage_address = vaddr & ~(TRACKER_PAGE_SIZE - 1);
 	const auto stage_end     = (vaddr + size + TRACKER_PAGE_SIZE - 1) & ~(TRACKER_PAGE_SIZE - 1);
 	const auto stage_size    = stage_end - stage_address;
@@ -905,7 +941,9 @@ std::pair<std::shared_ptr<Buffer>, uint64_t> BufferCache::ObtainBufferForImageWr
 	m_memory_tracker.ValidateGpuDirtyOwnership(m_gpu_modified_ranges, vaddr, size,
 	                                           "image destination");
 	if (!m_gpu_modified_ranges.Intersections(vaddr, size).empty()) {
-		EXIT("BufferCache: image destination aliases GPU-owned buffer bytes\n");
+		EXIT("BufferCache: image destination still aliases GPU-owned buffer bytes after "
+		     "download, addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+		     vaddr, size);
 	}
 	const auto stage_offset = m_staging_buffer.Copy(bytes.data(), stage_size, 16);
 	std::vector<std::pair<uint64_t, uint64_t>> uploads;
@@ -1079,6 +1117,9 @@ void BufferCache::InvalidateImageAliases(uint64_t vaddr, uint64_t size) {
 	    size > TRACKER_ADDRESS_SIZE - vaddr) {
 		EXIT("BufferCache: invalid image-alias invalidation\n");
 	}
+	if (HasGpuDirtyBytes(vaddr, size)) {
+		DownloadGpuDirtyToGuest(vaddr, size);
+	}
 	FaultSafeCacheLock lock(this, m_mutex);
 	const auto         end = vaddr + size;
 	for (const auto& [address, cached]: m_buffers) {
@@ -1090,7 +1131,9 @@ void BufferCache::InvalidateImageAliases(uint64_t vaddr, uint64_t size) {
 		}
 		const auto bytes = range_end - begin;
 		if (!m_gpu_modified_ranges.Intersections(begin, bytes).empty()) {
-			EXIT("BufferCache: image ownership overlaps exact dirty buffer bytes\n");
+			EXIT("BufferCache: image-alias invalidation still overlaps GPU-dirty buffer bytes "
+			     "after download, addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+			     begin, bytes);
 		}
 		m_image_invalidated_ranges.Add(begin, bytes);
 	}
@@ -1118,29 +1161,47 @@ void BufferCache::CompleteBackingPublication(uint64_t vaddr, uint64_t size, uint
 }
 
 void BufferCache::PublishImageBuffer(uint64_t vaddr, uint64_t size) {
+	if (vaddr == 0 || size == 0 || vaddr >= TRACKER_ADDRESS_SIZE ||
+	    size > TRACKER_ADDRESS_SIZE - vaddr) {
+		EXIT("BufferCache: invalid image destination publication\n");
+	}
+	if (HasGpuDirtyBytes(vaddr, size)) {
+		DownloadGpuDirtyToGuest(vaddr, size);
+	}
 	FaultSafeCacheLock lock(this, m_mutex);
-	auto               owner = m_buffers.end();
-	for (auto it = m_buffers.begin(); it != m_buffers.end(); ++it) {
-		if (!PageOverlaps(vaddr, size, it->second->vaddr, it->second->size)) {
-			continue;
-		}
-		if (owner != m_buffers.end() || !it->second->buffer->IsInBounds(vaddr, size)) {
-			EXIT("BufferCache: image destination aliases a non-containing cached buffer\n");
-		}
-		owner = it;
+	auto&              cached = GetOrCreateBuffer(m_scheduler.Current(), vaddr, size);
+	if (!cached.buffer->IsInBounds(vaddr, size)) {
+		EXIT("BufferCache: published image destination buffer does not contain the range, "
+		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+		     vaddr, size);
 	}
 	m_memory_tracker.ValidateGpuDirtyOwnership(m_gpu_modified_ranges, vaddr, size,
 	                                           "image destination publication");
-	if (owner == m_buffers.end() || m_memory_tracker.IsRegionCpuModified(vaddr, size) ||
-	    !m_gpu_modified_ranges.Intersections(vaddr, size).empty()) {
-		EXIT("BufferCache: image destination requires clean buffer ownership\n");
+	if (!m_gpu_modified_ranges.Intersections(vaddr, size).empty()) {
+		EXIT("BufferCache: published image destination still has GPU-dirty overlap, "
+		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+		     vaddr, size);
+	}
+	if (m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
+		std::vector<std::pair<uint64_t, uint64_t>> uploads;
+		m_memory_tracker.ForEachUploadRange(
+		    vaddr, size, false,
+		    [&](uint64_t address, uint64_t upload_size) noexcept {
+			    uploads.emplace_back(address, upload_size);
+		    },
+		    [&]() noexcept {
+			    for (const auto& [address, upload_size]: uploads) {
+				    Upload(m_scheduler.Current(), *cached.buffer, cached.buffer->Offset(address),
+				           reinterpret_cast<const void*>(address), upload_size);
+			    }
+		    });
 	}
 	m_memory_tracker.MarkRegionAsGpuModified(vaddr, size);
 	m_gpu_modified_ranges.Add(vaddr, size);
 	m_image_invalidated_ranges.Subtract(vaddr, size);
 	m_memory_tracker.ValidateGpuDirtyOwnership(m_gpu_modified_ranges, vaddr, size,
 	                                           "published image destination");
-	owner->second->tick_accessed_last = m_gc_tick;
+	cached.tick_accessed_last = m_gc_tick;
 }
 
 void BufferCache::ValidateGpuAccess(uint64_t vaddr, uint64_t size, bool is_read,

@@ -317,6 +317,15 @@ bool FormatsCompatible(vk::Format base, vk::Format view) noexcept {
 	if (base == view) {
 		return true;
 	}
+	const auto is_depth_stencil = [](vk::Format format) noexcept {
+		return format == vk::Format::eD16UnormS8Uint || format == vk::Format::eD24UnormS8Uint ||
+		       format == vk::Format::eD32SfloatS8Uint;
+	};
+	// Host MSAA promotion may replace D16S8/D24S8 with D32S8 while preserving
+	// depth+stencil attachment identity for texture-cache lookups.
+	if (is_depth_stencil(base) && is_depth_stencil(view)) {
+		return true;
+	}
 	const auto base_class = FormatClass(base);
 	const auto view_class = FormatClass(view);
 	return view_class != None && (base_class & view_class) == view_class;
@@ -330,13 +339,26 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	const bool  is_storage =
 	    static_cast<bool>(normalized.usage & vk::ImageUsageFlagBits::eStorage);
 	normalized.aspect = FullAspectMask(image.format);
-	if (normalized.aspect & vk::ImageAspectFlagBits::eDepth &&
-	    IsDepthViewFormat(normalized.format)) {
+	const bool image_depth_stencil =
+	    static_cast<bool>(normalized.aspect & vk::ImageAspectFlagBits::eDepth) &&
+	    static_cast<bool>(normalized.aspect & vk::ImageAspectFlagBits::eStencil);
+	const bool view_depth_stencil =
+	    view_info.format == vk::Format::eD16UnormS8Uint ||
+	    view_info.format == vk::Format::eD24UnormS8Uint ||
+	    view_info.format == vk::Format::eD32SfloatS8Uint;
+	if (image_depth_stencil && view_depth_stencil) {
+		// Host may have promoted D24S8 -> D32S8 (or similar) for MSAA support.
+		normalized.format = image.format;
+		if (view_info.aspect == vk::ImageAspectFlagBits::eDepth ||
+		    view_info.aspect == vk::ImageAspectFlagBits::eStencil) {
+			normalized.aspect = view_info.aspect;
+		}
+	} else if (normalized.aspect & vk::ImageAspectFlagBits::eDepth &&
+	           IsDepthViewFormat(normalized.format)) {
 		normalized.format = image.format;
 		normalized.aspect = vk::ImageAspectFlagBits::eDepth;
-	}
-	if (normalized.aspect & vk::ImageAspectFlagBits::eStencil &&
-	    IsStencilViewFormat(normalized.format)) {
+	} else if (normalized.aspect & vk::ImageAspectFlagBits::eStencil &&
+	           IsStencilViewFormat(normalized.format)) {
 		normalized.format = image.format;
 		normalized.aspect = vk::ImageAspectFlagBits::eStencil;
 	}

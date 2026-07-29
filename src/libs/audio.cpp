@@ -12,6 +12,8 @@
 #include "libs/audio_internal.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "libs/ngs2_pcm.h"
+#include "libs/ngs2_vag_decoder.h"
 
 #include <optional>
 #include <string>
@@ -1298,11 +1300,6 @@ namespace Ngs2 {
 
 LIB_NAME("Ngs2", "Ngs2");
 
-// PS-ADPCM ("VAGp") decode path (#69): included into namespace Libs::Audio::Ngs2
-// so the sampler mixer can detect VAG-wrapped sampler voices and decode them
-// to PCM16 on demand without touching the existing PCM plumbing.
-#include "libs/ngs2_vag_decoder.inc"
-
 struct Ngs2SystemOption {
 	size_t    size                     = 0;
 	char      name[64]                 = {};
@@ -1750,32 +1747,21 @@ static uint32_t Ngs2GetStateFlags(const Ngs2VoiceInternal* voice) {
 	return 0;
 }
 
-// Orbis waveformType PCM values (psOff / SDK dumps).
-constexpr uint32_t kNgs2WavePcmI8         = 0x10;
-constexpr uint32_t kNgs2WavePcmU8         = 0x11;
-constexpr uint32_t kNgs2WavePcmI16Little  = 0x12;
-constexpr uint32_t kNgs2WavePcmI16Big     = 0x13;
-constexpr uint32_t kNgs2WavePcmI32Little  = 0x16;
-constexpr uint32_t kNgs2WavePcmI32Big     = 0x17;
-constexpr uint32_t kNgs2WavePcmF32Little  = 0x18;
-constexpr uint32_t kNgs2WavePcmF32Big     = 0x19;
+constexpr uint32_t kNgs2WavePcmI8        = Ngs2Pcm::kWavePcmI8;
+constexpr uint32_t kNgs2WavePcmU8        = Ngs2Pcm::kWavePcmU8;
+constexpr uint32_t kNgs2WavePcmI16Little = Ngs2Pcm::kWavePcmI16Little;
+constexpr uint32_t kNgs2WavePcmI16Big    = Ngs2Pcm::kWavePcmI16Big;
+constexpr uint32_t kNgs2WavePcmI32Little = Ngs2Pcm::kWavePcmI32Little;
+constexpr uint32_t kNgs2WavePcmI32Big    = Ngs2Pcm::kWavePcmI32Big;
+constexpr uint32_t kNgs2WavePcmF32Little = Ngs2Pcm::kWavePcmF32Little;
+constexpr uint32_t kNgs2WavePcmF32Big    = Ngs2Pcm::kWavePcmF32Big;
 
 static uint32_t Ngs2PcmBytesPerSample(uint32_t waveform_type) {
-	switch (waveform_type) {
-		case kNgs2WavePcmI8:
-		case kNgs2WavePcmU8: return 1;
-		case kNgs2WavePcmI16Little:
-		case kNgs2WavePcmI16Big: return 2;
-		case kNgs2WavePcmI32Little:
-		case kNgs2WavePcmI32Big:
-		case kNgs2WavePcmF32Little:
-		case kNgs2WavePcmF32Big: return 4;
-		default: return 0;
-	}
+	return Ngs2Pcm::BytesPerSample(waveform_type);
 }
 
 static bool Ngs2IsSupportedPcm(uint32_t waveform_type) {
-	return Ngs2PcmBytesPerSample(waveform_type) != 0;
+	return Ngs2Pcm::IsSupported(waveform_type);
 }
 
 static float Ngs2ReadPcmSample(const uint8_t* data, uint32_t waveform_type) {
@@ -1889,9 +1875,11 @@ static void Ngs2MixVoiceIntoBuffer(Ngs2VoiceInternal* voice, const Ngs2RenderBuf
 	// #69: lazy-decode VAG ("VAGp") sampler payloads to mono PCM16 on first mix.
 	// After this substitution the voice presents as a regular PCM I16 LE
 	// waveform and the rest of the existing PCM mixer handles it natively.
-	if (!voice->vag_decoded && VagIsVagContainer(voice->waveform_data, voice->waveform_data_size)) {
-		Ngs2VagWaveform decoded;
-		if (VagTryDecodeContainer(voice->waveform_data, voice->waveform_data_size, &decoded)) {
+	if (!voice->vag_decoded &&
+	    Ngs2Vag::IsContainer(voice->waveform_data, voice->waveform_data_size)) {
+		Ngs2Vag::Waveform decoded;
+		if (Ngs2Vag::TryDecodeContainer(voice->waveform_data, voice->waveform_data_size,
+		                                &decoded)) {
 			voice->vag_pcm16_cache   = std::move(decoded.samples);
 			voice->format.waveform_type = kNgs2WavePcmI16Little;
 			voice->format.sample_rate   = decoded.sample_rate > 0 ? decoded.sample_rate : 48000;
@@ -1911,14 +1899,9 @@ static void Ngs2MixVoiceIntoBuffer(Ngs2VoiceInternal* voice, const Ngs2RenderBuf
 	}
 
 	if (!Ngs2IsSupportedPcm(voice->format.waveform_type) || !Ngs2IsSupportedPcm(out->waveform_type)) {
-		static std::atomic_uint32_t soft_logs {0};
-		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF_COLOR(Log::Color::Yellow,
-			           "Ngs2: soft-skip mix unsupported waveform_type in=0x%" PRIx32
-			           " out=0x%" PRIx32 "\n",
-			           voice->format.waveform_type, out->waveform_type);
-		}
-		return;
+		EXIT("Ngs2: unsupported waveform_type in=0x%" PRIx32 " out=0x%" PRIx32
+		     " (ATRAC9/effects require ABI evidence; PCM/VAG only)\n",
+		     voice->format.waveform_type, out->waveform_type);
 	}
 	if (out->buffer == nullptr || out->num_channels == 0 || num_out_samples == 0) {
 		return;
@@ -1989,14 +1972,6 @@ static void Ngs2MixVoiceIntoBuffer(Ngs2VoiceInternal* voice, const Ngs2RenderBuf
 	}
 
 	voice->sample_pos = static_cast<uint32_t>(pos);
-}
-
-static void Ngs2SoftIgnoreSamplerCtl(uint32_t cid, uint16_t size) {
-	static std::atomic_uint32_t soft_logs {0};
-	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-		LOGF_COLOR(Log::Color::Yellow,
-		           "Ngs2: soft-ignore sampler ctl cid=0x%" PRIx32 " size=%" PRIu16 "\n", cid, size);
-	}
 }
 
 static Ngs2SystemOption Ngs2DefaultSystemOption() {
@@ -2215,8 +2190,7 @@ static void Ngs2FillDefaultRackOption(uint32_t rack_id, Ngs2RackOptionUnion* opt
 			option->custom_mastering.max_channels                                          = 8;
 			option->custom_mastering.num_peak_meter_blocks                                 = 8;
 			break;
-		default:
-			EXIT("Ngs2: unsupported rack_id 0x%" PRIx32 "\n", rack_id);
+		default: EXIT("Ngs2: unsupported rack_id 0x%" PRIx32 "\n", rack_id);
 	}
 }
 
@@ -2976,16 +2950,9 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 							case 0x0008: voice->event = Ngs2VoicePlayEvent::Kill; break;
 							case 0x0010: voice->event = Ngs2VoicePlayEvent::Pause; break;
 							case 0x0020: voice->event = Ngs2VoicePlayEvent::Resume; break;
-							default: {
-								static std::atomic_uint32_t soft_logs {0};
-								if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-									LOGF_COLOR(Log::Color::Yellow,
-									           "Ngs2: soft-ignore unknown voice event_id=0x%08" PRIx32
-									           "\n",
-									           event->event_id);
-								}
-								break;
-							}
+							default:
+								EXIT("Ngs2: unsupported voice event_id=0x%08" PRIx32 "\n",
+								     event->event_id);
 						}
 						LOGF("\t event = %u\n", event->event_id);
 						break;
@@ -3008,8 +2975,10 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 				}
 				break;
 			}
-			case 0x1000: {
-				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::Sampler);
+			case 0x1000:
+			case 0x4001: {
+				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::Sampler &&
+				                     voice->rack->type != Ngs2RackType::CustomSampler);
 				const auto cid = param->id & 0x7fffu;
 				switch (cid) {
 					case 0x0000: { // SETUP
@@ -3084,7 +3053,8 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						LOGF("\t pitch_ratio = %f\n", voice->pitch_ratio);
 						break;
 					}
-					default: Ngs2SoftIgnoreSamplerCtl(cid, param->size); break;
+					default: EXIT("Ngs2: unsupported sampler ctl cid=0x%" PRIx32 " size=%" PRIu16 "\n",
+					              cid, param->size);
 				}
 				break;
 			}
@@ -3102,23 +3072,14 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 				     module_id, ctl_id, module_no);
 				break;
 			}
-			case 0x4001:
-				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::CustomSampler);
-				break;
 			case 0x4002:
 				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::CustomSubmixer);
 				break;
 			case 0x4003:
 				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::CustomMastering);
 				break;
-			default: {
-				static std::atomic<uint32_t> soft_logs {0};
-				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
-					LOGF_COLOR(Log::Color::Yellow,
-					           "Ngs2: soft-ignore unknown voice rack_id 0x%" PRIx32 "\n", rack_id);
-				}
-				break;
-			}
+			default:
+				EXIT("Ngs2: unsupported voice rack_id 0x%" PRIx32 "\n", rack_id);
 		}
 
 		if (param->next == 0) {

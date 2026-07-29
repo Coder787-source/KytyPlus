@@ -2,9 +2,11 @@
 
 #include "common/common.h"
 #include "common/logging/log.h"
+#include "loader/nullPageFaultLog.h"
 
 #include <atomic>
 #include <cstddef>
+#include <cstring>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #include <windows.h> // IWYU pragma: keep
@@ -326,6 +328,46 @@ static size_t GetX64InstructionLength(const uint8_t* code) {
 	return 0;
 }
 
+size_t EstimateNullPageSkipLength(const uint8_t* code, bool code_readable) {
+	size_t length = 0;
+	if (code_readable && code != nullptr) {
+		length = GetX64InstructionLength(code);
+		if (length == 0 || length > 15) {
+			size_t at = 0;
+			while (at < 4 && (code[at] == 0x66 || code[at] == 0x67 || code[at] == 0xf0 ||
+			                  code[at] == 0xf2 || code[at] == 0xf3 || (code[at] & 0xf0u) == 0x40u)) {
+				++at;
+			}
+			if (at < 14) {
+				const uint8_t maybe_op = code[at];
+				if (maybe_op != 0xc3 && maybe_op != 0xc2 && maybe_op != 0xe8 && maybe_op != 0xe9) {
+					if (at + 1 < 15) {
+						const uint8_t m   = code[at + 1];
+						const uint8_t mod = static_cast<uint8_t>(m >> 6u);
+						const uint8_t rm  = static_cast<uint8_t>(m & 0x7u);
+						size_t        len = at + 2;
+						if (mod != 3 && rm == 4) {
+							++len; // SIB
+						}
+						if (mod == 1) {
+							len += 1;
+						} else if (mod == 2 || (mod == 0 && rm == 5)) {
+							len += 4;
+						}
+						if (len > 0 && len <= 15) {
+							length = len;
+						}
+					}
+				}
+			}
+		}
+	}
+	if (length == 0 || length > 15) {
+		return 1;
+	}
+	return length;
+}
+
 bool TrySkipNullPageAccess(void* native_context, uint64_t access_vaddr) {
 	// Cover the first 64 KiB — Unity/Unreal often fault on small non-null near-zero pointers
 	// after a failed Addressables/asset load (#66 class).
@@ -339,73 +381,46 @@ bool TrySkipNullPageAccess(void* native_context, uint64_t access_vaddr) {
 	}
 	const auto* code = reinterpret_cast<const uint8_t*>(context->Rip);
 	MEMORY_BASIC_INFORMATION mbi = {};
-	if (VirtualQuery(code, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
-	    (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
-		return false;
+	const bool code_readable =
+	    VirtualQuery(code, &mbi, sizeof(mbi)) != 0 && mbi.State == MEM_COMMIT &&
+	    (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0;
+	const size_t length = EstimateNullPageSkipLength(code, code_readable);
+	NullPageFaultFingerprint fingerprint {};
+	fingerprint.rip          = static_cast<uint64_t>(context->Rip);
+	fingerprint.access_vaddr = access_vaddr;
+	fingerprint.skip_length  = static_cast<uint32_t>(length);
+	fingerprint.fallback_1b =
+	    length == 1 && (!code_readable || GetX64InstructionLength(code) == 0);
+	if (code_readable && code != nullptr) {
+		fingerprint.opcode_len = static_cast<uint8_t>(std::min<size_t>(length, 16));
+		std::memcpy(fingerprint.opcode, code, fingerprint.opcode_len);
 	}
-	size_t length = GetX64InstructionLength(code);
-	// Fallback: many Unity faults are still ModRM memory ops our decoder missed. If the byte
-	// after prefixes looks like it has a ModRM, skip a conservative ModRM-sized instruction.
-	if (length == 0 || length > 15) {
-		size_t at = 0;
-		while (at < 4 && (code[at] == 0x66 || code[at] == 0x67 || code[at] == 0xf0 ||
-		                  code[at] == 0xf2 || code[at] == 0xf3 || (code[at] & 0xf0u) == 0x40u)) {
-			++at;
-		}
-		if (at < 14) {
-			const uint8_t maybe_op = code[at];
-			// Prefer treating unknown memory ops as opcode + ModRM (+ optional SIB/disp).
-			if (maybe_op != 0xc3 && maybe_op != 0xc2 && maybe_op != 0xe8 && maybe_op != 0xe9) {
-				uint8_t modrm = 0;
-				size_t  disp  = 0;
-				bool    sib   = false;
-				if (at + 1 < 15) {
-					const uint8_t m   = code[at + 1];
-					const uint8_t mod = static_cast<uint8_t>(m >> 6u);
-					const uint8_t rm  = static_cast<uint8_t>(m & 0x7u);
-					size_t        len = at + 2;
-					if (mod != 3 && rm == 4) {
-						++len; // SIB
-					}
-					if (mod == 1) {
-						len += 1;
-					} else if (mod == 2 || (mod == 0 && rm == 5)) {
-						len += 4;
-					}
-					if (len > 0 && len <= 15) {
-						length = len;
-						(void)modrm;
-						(void)disp;
-						(void)sib;
-					}
-				}
-			}
-		}
-	}
-	if (length == 0 || length > 15) {
-		// Last resort for near-null faults: skip one byte so Unity/Unreal null-object writes
-		// (#66 Blasphemous 2) do not kill the process when the decoder cannot size the insn.
-		length = 1;
+	RecordNullPageFault(fingerprint);
+	if (fingerprint.fallback_1b) {
 		static std::atomic<uint32_t> fallback_logs {0};
 		if (fallback_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
 			LOGF_COLOR(Log::Color::Yellow,
 			           "soft-skip null-page access (1-byte fallback): rip=0x%016" PRIx64
-			           " vaddr=0x%016" PRIx64 "\n",
-			           static_cast<uint64_t>(context->Rip), access_vaddr);
+			           " vaddr=0x%016" PRIx64 " code_readable=%u total_faults=%zu\n",
+			           static_cast<uint64_t>(context->Rip), access_vaddr, code_readable ? 1u : 0u,
+			           NullPageFaultCount());
 		}
-	}
-	static std::atomic<uint32_t> skip_logs {0};
-	if (skip_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-		LOGF_COLOR(Log::Color::Yellow,
-		           "soft-skip null-page access: rip=0x%016" PRIx64 " vaddr=0x%016" PRIx64
-		           " len=%zu\n",
-		           static_cast<uint64_t>(context->Rip), access_vaddr, length);
+	} else {
+		static std::atomic<uint32_t> skip_logs {0};
+		if (skip_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF_COLOR(Log::Color::Yellow, "%s total_faults=%zu\n",
+			           FormatNullPageFaultFingerprint(fingerprint).c_str(), NullPageFaultCount());
+		}
 	}
 	context->Rip += length;
 	return true;
 }
 
 #else
+
+size_t EstimateNullPageSkipLength(const uint8_t* /*code*/, bool /*code_readable*/) {
+	return 1;
+}
 
 bool TrySkipNullPageAccess(void* /*native_context*/, uint64_t /*access_vaddr*/) {
 	return false;

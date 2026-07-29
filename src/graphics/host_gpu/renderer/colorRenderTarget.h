@@ -29,6 +29,7 @@ struct RenderColorInfo {
 	uint32_t                        layer_count      = 1;
 	uint64_t                        base_addr        = 0;
 	uint64_t                        buffer_size      = 0;
+	uint64_t                        metadata_addr    = 0;
 	uint32_t                        target_slot      = 0;
 	uint32_t                        samples          = 1;
 	Prospero::ColorComponentMapping export_mapping;

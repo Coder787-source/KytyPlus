@@ -34,12 +34,26 @@ constexpr auto MakeContextDispatchTable() {
 		g_hw_ctx_func[cmd_offset] = HwCtxSetClipRect;
 	}
 	g_hw_ctx_func[Pm4::CB_TARGET_MASK]                 = HwCtxSetRenderTargetMask;
+	g_hw_ctx_func[Pm4::CB_SHADER_MASK]                 = HwCtxSetShaderMask;
 	g_hw_ctx_func[Pm4::PA_SC_GENERIC_SCISSOR_TL]       = HwCtxSetGenericScissor;
 	g_hw_ctx_func[Pm4::CB_BLEND_RED]                   = HwCtxSetBlendColor;
+	g_hw_ctx_func[Pm4::CB_BLEND_GREEN]                 = HwCtxSetBlendColor;
+	g_hw_ctx_func[Pm4::CB_BLEND_BLUE]                  = HwCtxSetBlendColor;
+	g_hw_ctx_func[Pm4::CB_BLEND_ALPHA]                 = HwCtxSetBlendColor;
 	g_hw_ctx_func[Pm4::CB_DCC_CONTROL]                 = HwCtxSetCbDccControl;
 	g_hw_ctx_func[Pm4::DB_STENCIL_CONTROL]             = HwCtxSetStencilControl;
 	g_hw_ctx_func[Pm4::DB_STENCILREFMASK]              = HwCtxSetStencilMask;
+	g_hw_ctx_func[Pm4::DB_STENCILREFMASK_BF]           = HwCtxSetStencilMask;
+	g_hw_ctx_func[Pm4::VGT_MULTI_PRIM_IB_RESET_INDX]   = HwCtxSetMultiPrimIbResetIndx;
 	g_hw_ctx_func[Pm4::SPI_PS_INPUT_CNTL_0]            = HwCtxSetPsInput;
+	g_hw_ctx_func[Pm4::SPI_PS_INPUT_ENA]               = HwCtxSetPsInputControl;
+	g_hw_ctx_func[Pm4::SPI_PS_INPUT_ADDR]              = HwCtxSetPsInputControl;
+	g_hw_ctx_func[Pm4::SPI_INTERP_CONTROL_0]           = HwCtxSetPsInputControl;
+	g_hw_ctx_func[Pm4::SPI_PS_IN_CONTROL]              = HwCtxSetPsInputControl;
+	g_hw_ctx_func[Pm4::SPI_BARYC_CNTL]                 = HwCtxSetBarycCntl;
+	g_hw_ctx_func[Pm4::SPI_SHADER_Z_FORMAT]            = HwCtxSetShaderZFormat;
+	g_hw_ctx_func[Pm4::DB_SHADER_CONTROL]              = HwCtxSetDepthShaderControl;
+	g_hw_ctx_func[Pm4::PA_SC_SHADER_CONTROL]           = HwCtxSetScShaderControl;
 	g_hw_ctx_func[Pm4::SPI_TMPRING_SIZE]               = HwCtxSetSpiTmpringSize;
 	g_hw_ctx_func[Pm4::DB_DEPTH_CONTROL]               = HwCtxSetDepthControl;
 	g_hw_ctx_func[Pm4::DB_EQAA]                        = HwCtxSetEqaaControl;

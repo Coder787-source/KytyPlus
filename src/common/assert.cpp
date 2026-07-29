@@ -71,7 +71,7 @@ int DbgExitHandler(const char* file, int line, fmt::text_style style, std::strin
 	return 1;
 }
 
-void DbgExit(int status) {
+[[noreturn]] void DbgExit(int status) {
 	std::fflush(nullptr);
 	std::_Exit(status);
 }

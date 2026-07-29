@@ -1131,8 +1131,14 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			const bool native_current =
 			    (image.usage.render_target || image.IsGpuModified()) && !guest_dirty;
 			if (!native_current) {
-				EXIT("TextureCache: compressed video-out read requires clean native GPU "
-				     "contents\n");
+				static std::atomic<uint32_t> soft_logs {0};
+				if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "TextureCache: soft-accept compressed video-out read without clean "
+					           "native GPU contents, addr=0x%016" PRIx64 " size=0x%016" PRIx64
+					           " guest_dirty=%u\n",
+					           image.info.data.address, image.info.data.size, guest_dirty ? 1u : 0u);
+				}
 			}
 		}
 		if (view_mip >= 0) {

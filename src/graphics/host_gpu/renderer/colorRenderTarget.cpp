@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/objects/textureCommon.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/descriptorCache.h"
+#include "graphics/host_gpu/renderer/image.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
@@ -40,6 +41,7 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 
 	r.target_slot    = rt_slot;
 	r.export_mapping = {};
+	r.metadata_addr  = 0;
 
 	if (rt.base.addr == 0 || mask == 0) {
 		if (graphics_debug_dump_enabled()) {
@@ -71,28 +73,48 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 		r.color_clear_value  = {};
 		return;
 	}
+	const auto soft_disable_color = [&](const char* reason) {
+		static std::atomic<uint32_t> soft_logs {0};
+		if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF("\t temporary: soft-disable color render-target (%s) slot=%" PRIu32
+			     " base=0x%010" PRIx64 "\n",
+			     reason, rt_slot, rt.base.addr);
+		}
+		r.type               = RenderColorType::NoColorOutput;
+		r.desc               = {};
+		r.base_addr          = 0;
+		r.image_id           = {};
+		r.image_view         = nullptr;
+		r.format             = vk::Format::eUndefined;
+		r.extent             = {};
+		r.base_mip_level     = 0;
+		r.base_array_layer   = 0;
+		r.buffer_size        = 0;
+		r.samples            = 1;
+		r.export_mapping     = {};
+		r.color_clear_enable = false;
+		r.color_clear_value  = {};
+	};
+
 	const auto samples = render_sample_count(rt.attrib.num_fragments);
 	if (samples == 0 || rt.attrib.num_samples != rt.attrib.num_fragments) {
-		EXIT("unsupported render-target sample configuration: samples=%u fragments=%u\n",
-		     rt.attrib.num_samples, rt.attrib.num_fragments);
+		soft_disable_color("unsupported sample configuration");
+		return;
 	}
-	const auto view = ResolveTargetViewInfo(
-	    rt.view.base_array_slice_index, rt.view.last_array_slice_index, render_target_slice_offset);
+	auto view = ResolveTargetViewInfo(rt.view.base_array_slice_index,
+	                                  rt.view.last_array_slice_index, render_target_slice_offset);
 	switch (view.type) {
 		case TargetViewType::Image2D: break;
-		case TargetViewType::Image2DArray:
-			EXIT("layered render-target views are unsupported: base=%u count=%u\n", view.base_layer,
-			     view.layer_count);
+		case TargetViewType::Image2DArray: break;
 		case TargetViewType::Unsupported:
-			EXIT("invalid render-target view: base=%u last=%u draw_offset=%u\n",
-			     rt.view.base_array_slice_index, rt.view.last_array_slice_index,
-			     render_target_slice_offset);
+			soft_disable_color("invalid render-target view");
+			return;
 	}
 	r.base_array_layer    = view.base_layer;
 	const uint32_t levels = rt.attrib2.num_mip_levels + 1u;
 	if (levels == 0 || levels > 16 || rt.view.current_mip_level >= levels) {
-		EXIT("unsupported render-target mip range: current=%u levels=%u\n",
-		     rt.view.current_mip_level, levels);
+		soft_disable_color("unsupported render-target mip range");
+		return;
 	}
 	if (graphics_debug_dump_enabled()) {
 		static std::atomic_uint log_count = 0;
@@ -130,13 +152,17 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 		case Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget):
 			tile = !RenderIsColorTileModeLinear(rt.attrib3.tile_mode);
 			break;
-		default: EXIT("unknown tile mode: %u\n", rt.attrib3.tile_mode);
+		default:
+			soft_disable_color("unknown tile mode");
+			return;
 	}
 	if (!tile && levels > 1) {
-		EXIT("linear mipmapped render targets are unsupported\n");
+		soft_disable_color("linear mipmapped render target");
+		return;
 	}
 	if (samples > 1 && (!tile || levels != 1)) {
-		EXIT("multisampled render targets require a single-mip tiled surface\n");
+		soft_disable_color("unsupported multisampled render-target layout");
+		return;
 	}
 
 	width  = rt.attrib2.width + 1;
@@ -145,34 +171,27 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 	    TextureGetRenderTargetFormat(rt.info.format, rt.info.channel_type, rt.info.channel_order);
 	const auto bytes_per_element = target_format.bytes_per_element;
 	if (bytes_per_element == 0) {
-		EXIT("render-target format has no valid element size\n");
+		soft_disable_color("render-target format has no valid element size");
+		return;
 	}
-	if (standard64 &&
-	    (rt.attrib3.dimension != 1 || rt.attrib3.depth != 0 || levels != 1 ||
-	     rt.view.current_mip_level != 0 || view.base_layer != 0 || view.image_layers != 1 ||
-	     samples != 1 || bytes_per_element != 4 || rt.pitch.pitch_div8_minus1 != 0 ||
-	     (rt.base.addr & 0xffffu) != 0 || rt.info.fmask_compression_enable ||
-	     rt.info.fmask_data_compression_disable || rt.info.fmask_one_frag_mode ||
-	     rt.info.cmask_fast_clear_enable || rt.info.dcc_compression_enable ||
-	     rt.info.cmask_is_linear != 0 || rt.info.cmask_addr_type != 0 || rt.info.alt_tile_mode ||
-	     rt.cmask.addr != 0 || rt.fmask.addr != 0 || rt.dcc_addr.addr != 0 ||
-	     rt.dcc.data_write_on_dcc_clear_to_reg)) {
-		EXIT("unsupported Standard64KB render target: addr=0x%016" PRIx64
-		     " dimension=%u depth=%u levels=%u layer=%u/%u samples=%u fragments=%u bpe=%u"
-		     " cmask=0x%016" PRIx64 " fmask=0x%016" PRIx64 " dcc=0x%016" PRIx64 "\n",
-		     rt.base.addr, rt.attrib3.dimension, rt.attrib3.depth, levels, view.base_layer,
-		     view.image_layers, rt.attrib.num_samples, rt.attrib.num_fragments, bytes_per_element,
-		     rt.cmask.addr, rt.fmask.addr, rt.dcc_addr.addr);
+	if (standard64) {
+		const auto guest_format = ImageOps::RenderTargetTransferFormat(bytes_per_element);
+		if (!TileIsStandard64KBTextureSupported(guest_format) ||
+		    (rt.base.addr & 0xffffu) != 0 || levels == 0 ||
+		    rt.info.fmask_compression_enable || rt.info.dcc_compression_enable) {
+			soft_disable_color("unsupported Standard64KB render-target configuration");
+			return;
+		}
 	}
 	if (rt.pitch.pitch_div8_minus1 != 0) {
 		pitch = (rt.pitch.pitch_div8_minus1 + 1u) << 3u;
 	} else if (tile) {
-		pitch = standard64
-		            ? TileGetTexturePitch(Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float),
-		                                  width, levels, rt.attrib3.tile_mode)
-		            : TileGetRenderTargetPitch(width, bytes_per_element, rt.attrib.num_fragments);
+		const auto guest_format = ImageOps::RenderTargetTransferFormat(bytes_per_element);
+		pitch = standard64 ? TileGetTexturePitch(guest_format, width, levels, rt.attrib3.tile_mode)
+		                   : TileGetRenderTargetPitch(width, bytes_per_element, rt.attrib.num_fragments);
 		if (pitch == 0) {
-			EXIT("unsupported render-target pitch: width=%u bytes=%u\n", width, bytes_per_element);
+			soft_disable_color("unsupported render-target pitch");
+			return;
 		}
 	} else {
 		pitch = width;
@@ -184,9 +203,9 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 		TileSizeAlign layout {};
 		bool          valid_layout = false;
 		if (standard64) {
-			TileGetTextureSize(Prospero::GpuEnumValue(Prospero::BufferFormat::k32Float), width,
-			                   height, pitch, levels, rt.attrib3.tile_mode, &layout, mip_sizes,
-			                   mip_padded);
+			const auto guest_format = ImageOps::RenderTargetTransferFormat(bytes_per_element);
+			TileGetTextureSize(guest_format, width, height, pitch, levels, rt.attrib3.tile_mode,
+			                   &layout, mip_sizes, mip_padded);
 			valid_layout = layout.size != 0 && layout.align == 65536;
 		} else {
 			valid_layout =
@@ -196,8 +215,8 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 			                                               levels, layout, mip_sizes, mip_padded);
 		}
 		if (!valid_layout) {
-			EXIT("unsupported render-target layout: %ux%u pitch=%u bytes=%u levels=%u\n", width,
-			     height, pitch, bytes_per_element, levels);
+			soft_disable_color("unsupported render-target layout");
+			return;
 		}
 		size = layout.size;
 		EXIT_IF(size > UINT32_MAX);
@@ -207,24 +226,30 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 		}
 		if (rt.slice.slice_div64_minus1 != 0 &&
 		    (static_cast<uint64_t>(rt.slice.slice_div64_minus1) + 1u) * 64u != size) {
-			EXIT("render-target slice span mismatch: encoded=0x%016" PRIx64 " derived=0x%016" PRIx64
-			     "\n",
-			     (static_cast<uint64_t>(rt.slice.slice_div64_minus1) + 1u) * 64u, size);
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF("\t temporary: accepting render-target slice span mismatch "
+				     "encoded=0x%016" PRIx64 " derived=0x%016" PRIx64 "\n",
+				     (static_cast<uint64_t>(rt.slice.slice_div64_minus1) + 1u) * 64u, size);
+			}
 		}
 	} else {
 		size = static_cast<uint64_t>(pitch) * height * bytes_per_element * samples;
 		if (size > UINT32_MAX) {
-			EXIT("linear render-target slice exceeds the supported layout size\n");
+			soft_disable_color("linear render-target slice too large");
+			return;
 		}
 		mip_sizes[0]  = {static_cast<uint32_t>(size), 0, 0, 0, 0, 0};
 		mip_padded[0] = {pitch, height};
 	}
 	if (size == 0 || size > UINT64_MAX / view.image_layers) {
-		EXIT("render-target memory footprint is invalid\n");
+		soft_disable_color("invalid render-target footprint");
+		return;
 	}
 	const auto backing_size = size * view.image_layers;
 	if (backing_size > TRACKER_ADDRESS_SIZE - rt.base.addr) {
-		EXIT("render-target backing range is invalid\n");
+		soft_disable_color("invalid render-target backing range");
+		return;
 	}
 
 	const vk::Extent2D view_extent = {std::max(width >> rt.view.current_mip_level, 1u),
@@ -252,6 +277,22 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 	desc.info.bytes_per_block = bytes_per_element;
 	desc.info.samples         = samples;
 	desc.info.tile_mode       = rt.attrib3.tile_mode;
+	const bool has_color_meta =
+	    rt.info.cmask_fast_clear_enable || rt.info.dcc_compression_enable;
+	if (has_color_meta) {
+		const auto metadata_addr = rt.dcc_addr.addr != 0 ? rt.dcc_addr.addr : rt.cmask.addr;
+		if (metadata_addr != 0) {
+			const uint64_t metadata_size =
+			    rt.cmask.addr == metadata_addr && rt.cmask_slice.slice_minus1 != 0
+			        ? (static_cast<uint64_t>(rt.cmask_slice.slice_minus1) + 1u) * 64u *
+			              view.image_layers
+			        : 0;
+			desc.info.metadata.range       = {metadata_addr, metadata_size};
+			desc.info.metadata.kind        = ImageMetadataKind::Dcc;
+			desc.info.htile_clear_mask     = 0;
+			r.metadata_addr                = metadata_addr;
+		}
+	}
 	for (uint32_t level = 0; level < levels; level++) {
 		const auto level_offset =
 		    mip_sizes[level].src_size != 0 ? mip_sizes[level].src_offset : mip_sizes[level].offset;
@@ -288,7 +329,14 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 	r.samples           = samples;
 	r.export_mapping    = target_format.export_mapping;
 	r.color_clear_enable = false;
-	r.color_clear_value = {};
+	r.color_clear_value  = {};
+	if (r.metadata_addr != 0 &&
+	    texture_cache.IsMetaCleared(r.metadata_addr, r.base_array_layer)) {
+		if (!DecodePackedColorClear(r.format, rt.clear_word0.word0, r.color_clear_value)) {
+			EXIT("unsupported color metadata clear format %d\n", static_cast<int>(r.format));
+		}
+		r.color_clear_enable = true;
+	}
 	BindRenderTarget(r.image_id);
 }
 

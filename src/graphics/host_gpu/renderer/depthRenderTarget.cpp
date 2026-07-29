@@ -148,15 +148,20 @@ void RenderExecutor::ResolveRenderDepthTarget(uint64_t submit_id, RenderCommandB
 	}
 	const bool htile_stencil_compat = depth_htile_stencil_acceleration_compatible(
 	    has_stencil, has_htile, z.stencil_info.htile_stencil_disabled);
-	const auto view = ResolveTargetViewInfo(z.depth_view.slice_start, z.depth_view.slice_max);
+	auto view = ResolveTargetViewInfo(z.depth_view.slice_start, z.depth_view.slice_max);
 	switch (view.type) {
 		case TargetViewType::Image2D: break;
-		case TargetViewType::Image2DArray:
-			DepthFatal("layered depth views are unsupported: base=%u count=%u", view.base_layer,
-			           view.layer_count);
-		case TargetViewType::Unsupported:
-			DepthFatal("invalid depth view: base=%u last=%u", z.depth_view.slice_start,
-			           z.depth_view.slice_max);
+		case TargetViewType::Image2DArray: break;
+		case TargetViewType::Unsupported: {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF("\t temporary: soft-skip invalid depth view base=%u last=%u\n",
+				     z.depth_view.slice_start, z.depth_view.slice_max);
+			}
+			r.format   = vk::Format::eUndefined;
+			r.image_id = {};
+			return;
+		}
 	}
 	if ((stencil_active && !has_stencil) || rc.resummarize_enable || rc.copy_centroid ||
 	    rc.copy_sample != 0 || z.z_info.expclear_enabled || z.stencil_info.expclear_enabled ||

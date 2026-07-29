@@ -18,26 +18,35 @@ int DbgExitIfHandler(char const* expr, char const* file, int line)
     __attribute__((analyzer_noreturn));
 int DbgNotImplementedHandler(char const* expr, char const* file, int line)
     __attribute__((analyzer_noreturn));
-void DbgExit(int status) __attribute__((analyzer_noreturn));
 #else
 int  DbgExitHandler(char const* file, int line, std::string_view text);
 int  DbgExitHandler(char const* file, int line, fmt::text_style style, std::string_view text);
 int  DbgExitIfHandler(char const* expr, char const* file, int line);
 int  DbgNotImplementedHandler(char const* expr, char const* file, int line);
-void DbgExit(int status);
 #endif
+
+[[noreturn]] void DbgExit(int status);
 
 } // namespace Common
 
+[[noreturn]] inline void KytyExitHalt() noexcept {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS || KYTY_PLATFORM == KYTY_PLATFORM_LINUX
-#define EXIT_HALT() (Common::DbgExit(321), 1)
+	Common::DbgExit(321);
 #else
-#define EXIT_HALT() (std::_Exit(321), 1)
+	std::_Exit(321);
 #endif
+}
+
+#define EXIT_HALT() (KytyExitHalt(), 1)
 
 #ifndef KYTY_FINAL
 #define EXIT_IF(x)                                                                                 \
-	((void)((x) && Common::DbgExitIfHandler(#x, __FILE__, __LINE__) != 0 && (EXIT_HALT(), 1) != 0))
+	do {                                                                                           \
+		if (x) {                                                                                   \
+			(void)Common::DbgExitIfHandler(#x, __FILE__, __LINE__);                                \
+			KytyExitHalt();                                                                        \
+		}                                                                                          \
+	} while (0)
 #else
 #define EXIT_IF(x)                                                                                 \
 	do {                                                                                           \
@@ -48,20 +57,23 @@ void DbgExit(int status);
 
 #define EXIT(...)                                                                                  \
 	do {                                                                                           \
-		((void)(Common::DbgExitHandler(__FILE__, __LINE__, ::fmt::sprintf(__VA_ARGS__)) &&         \
-		        (EXIT_HALT(), 1)));                                                                \
+		(void)Common::DbgExitHandler(__FILE__, __LINE__, ::fmt::sprintf(__VA_ARGS__));             \
+		KytyExitHalt();                                                                            \
 	} while (0)
 
 #define EXIT_COLOR(style, ...)                                                                     \
 	do {                                                                                           \
-		((void)(Common::DbgExitHandler(__FILE__, __LINE__, (style),                                \
-		                               ::fmt::sprintf(__VA_ARGS__)) &&                             \
-		        (EXIT_HALT(), 1)));                                                                \
+		(void)Common::DbgExitHandler(__FILE__, __LINE__, (style), ::fmt::sprintf(__VA_ARGS__));    \
+		KytyExitHalt();                                                                            \
 	} while (0)
 
 #define EXIT_NOT_IMPLEMENTED(x)                                                                    \
-	((void)((x) && Common::DbgNotImplementedHandler(#x, __FILE__, __LINE__) != 0 &&                \
-	        (EXIT_HALT(), 1) != 0))
+	do {                                                                                           \
+		if (x) {                                                                                   \
+			(void)Common::DbgNotImplementedHandler(#x, __FILE__, __LINE__);                        \
+			KytyExitHalt();                                                                        \
+		}                                                                                          \
+	} while (0)
 #define KYTY_NOT_IMPLEMENTED EXIT_NOT_IMPLEMENTED(true)
 
 #endif /* KYTY_COMMON_ASSERT_H_ */

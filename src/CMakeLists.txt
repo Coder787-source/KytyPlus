@@ -319,6 +319,25 @@ add_executable(shader_vertex_metadata_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(shader_vertex_metadata_tests PRIVATE ${inc_headers})
 
+add_executable(pipeline_cache_data_tests EXCLUDE_FROM_ALL
+	../tests/PipelineCacheDataTests.cpp
+	graphics/host_gpu/renderer/pipelineCacheData.cpp
+)
+target_link_libraries(pipeline_cache_data_tests Vulkan::Headers)
+target_include_directories(pipeline_cache_data_tests PRIVATE ${inc_headers})
+
+add_executable(graphics_audio_semantics_tests EXCLUDE_FROM_ALL
+	../tests/GraphicsAudioSemanticsTests.cpp
+	loader/x64InstructionEmulator.cpp
+	loader/nullPageFaultLog.cpp
+)
+target_link_libraries(graphics_audio_semantics_tests Vulkan::Headers common fmt::fmt)
+target_include_directories(graphics_audio_semantics_tests PRIVATE ${inc_headers})
+
+add_kyty_full_emulator_test(pm4_ngs2_fuzz_tests ../tests/Pm4Ngs2FuzzTests.cpp)
+
+add_kyty_full_emulator_test(soft_ignore_evidence_tests ../tests/SoftIgnoreEvidenceTests.cpp)
+
 add_executable(shader_stage_runtime_tests EXCLUDE_FROM_ALL
 	../tests/ShaderStageRuntimeTests.cpp
 	graphics/guest_gpu/gpu_format.cpp
@@ -398,6 +417,10 @@ if(BUILD_TESTING)
 	add_test(NAME image_page_table COMMAND $<TARGET_FILE:image_page_table_tests>)
 	add_test(NAME memory_tracker COMMAND $<TARGET_FILE:memory_tracker_tests>)
 	add_test(NAME page_manager COMMAND $<TARGET_FILE:page_manager_tests>)
+	add_test(NAME pipeline_cache_data COMMAND $<TARGET_FILE:pipeline_cache_data_tests>)
+	add_test(NAME graphics_audio_semantics COMMAND $<TARGET_FILE:graphics_audio_semantics_tests>)
+	add_test(NAME pm4_ngs2_fuzz COMMAND $<TARGET_FILE:pm4_ngs2_fuzz_tests> --iterations=4096)
+	add_test(NAME soft_ignore_evidence COMMAND $<TARGET_FILE:soft_ignore_evidence_tests>)
 	add_test(NAME resource_mutex COMMAND $<TARGET_FILE:resource_mutex_tests>)
 	add_test(NAME event_queue_lifetime COMMAND $<TARGET_FILE:event_queue_lifetime_tests>)
 	add_test(NAME shader_recompiler_compute COMMAND $<TARGET_FILE:shader_recompiler_compute_tests>)

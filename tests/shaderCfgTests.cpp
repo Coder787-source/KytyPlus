@@ -5356,6 +5356,32 @@ void TestNewShaderRecompilerCfgLoopSharedContinueSelectionMerges() {
 	CheckSpirvBinaryValidates(result.spirv);
 }
 
+void TestNewShaderRecompilerCfgSelectionMergeEscapesLoopDispatcher() {
+	const uint32_t shader[] = {
+	    EncodeSMovB32(0, 128),       // s0 = 0
+	    EncodeSopc(0x0a, 0, 130),    // loop: s_cmp_lt_u32 s0, 2
+	    EncodeSopp(0x04, 4),         // loop exit -> end
+	    EncodeSopc(0x06, 1, 1),      // inner selection
+	    EncodeSopp(0x05, 2),         // inner selection also exits -> end
+	    EncodeSop2(0x00, 0, 0, 129), // s_add_u32 s0, s0, 1
+	    EncodeSopp(0x02, 0xfffau),   // backedge -> loop header
+	    0xbf810000u,
+	};
+
+	ShaderRecompiler::CompileOptions options;
+	options.stage   = ShaderType::Compute;
+	options.dump_ir = true;
+
+	ShaderRecompiler::CompileResult result;
+	std::string                     error;
+	Check(ShaderRecompiler::TryRecompile(shader, options, result, &error), error.c_str());
+	Check(Common::ContainsStr(result.ir_dump, "mode=dispatcher"),
+	      "selection merge escaping a containing loop did not select dispatcher fallback");
+	Check(SpirvContainsOpcode(result.spirv, 246), "dispatcher SPIR-V lacks OpLoopMerge");
+	Check(SpirvContainsOpcode(result.spirv, 251), "dispatcher SPIR-V lacks OpSwitch");
+	CheckSpirvBinaryValidates(result.spirv);
+}
+
 void TestNewShaderRecompilerCfgDuplicateMergeStructuredSplit() {
 	const uint32_t shader[] = {
 	    EncodeSopc(0x06, 0, 0), // s_cmp_eq_u32 s0, s0
@@ -6995,6 +7021,7 @@ int main() {
 	TestNewShaderRecompilerCfgLoopHeaderDsAppendConsumeDispatcher();
 	TestNewShaderRecompilerCfgSharedOuterAndLoopMerge();
 	TestNewShaderRecompilerCfgLoopSharedContinueSelectionMerges();
+	TestNewShaderRecompilerCfgSelectionMergeEscapesLoopDispatcher();
 	TestNewShaderRecompilerCfgDuplicateMergeStructuredSplit();
 	TestNewShaderRecompilerCfgIrreducibleDispatcher();
 	TestNewShaderRecompilerExecMaskHelpers();
