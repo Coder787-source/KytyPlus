@@ -16324,7 +16324,7 @@ void CheckBasicStorageTextureDescriptor() {
       "PPSA06228 R11G11B10 storage descriptor fixture is malformed");
   ValidateStorageTexture(BasicBgraStorageTextureResource(), r11g11b10,
                          0x870000);
-  ValidateStorageColorView(vk::Format::eB10G11R11UfloatPack32,
+  ValidateStorageColorView(vk::Format::eB8G8R8A8Unorm,
                            vk::Format::eB10G11R11UfloatPack32,
                            r11g11b10.DstSelXYZW());
 

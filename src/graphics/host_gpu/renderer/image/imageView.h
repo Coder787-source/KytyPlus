@@ -103,9 +103,8 @@ IsSupportedSampledDepthUintResource(const ShaderRecompiler::IR::ImageResource& r
 
 inline void ValidateStorageColorView(vk::Format image_format, vk::Format view_format,
                                      uint32_t swizzle) noexcept {
-	const auto srgb_view         = SrgbStorageViewFormat(image_format);
-	const bool srgb_storage_view = srgb_view != vk::Format::eUndefined && view_format == srgb_view;
-	if ((image_format != view_format && !srgb_storage_view) || !IsValidImageSwizzle(swizzle)) {
+	if (!ImageViewOps::FormatsCompatible(image_format, view_format) ||
+	    !IsValidImageSwizzle(swizzle)) {
 		UnsupportedColorView("storage", image_format, view_format, swizzle);
 	}
 }
