@@ -405,6 +405,10 @@ void TestDirectMapQueryOffsetAndPartialMunmap() {
 	      "TryReadBacking should reject a range crossing an unmapped span");
 	Check(test, rejected_read == transaction_sentinel,
 	      "failed backing reads must not modify a destination prefix");
+	Check(test,
+	      Libs::LibKernel::Memory::ClampRangeSize(base + SceKernelPageSize - 0xf30, 0x1560) ==
+	          0xf30,
+	      "ClampRangeSize did not stop at an unmapped span");
 
 	info = Query(test, base + SceKernelPageSize, SceKernelVqFindNext);
 	ExpectRange(test, info, base + SceKernelPageSize * 2, base + SceKernelPageSize * 4,
@@ -472,6 +476,11 @@ void TestMunmapAcrossAdjacentFlexibleMappings() {
 	        Libs::LibKernel::Memory::KernelMapNamedFlexibleMemory(
 	            &right, SceKernelPageSize, SceKernelProtCpuRw, SceKernelMapFixed, "adjacent_right"),
 	        "KernelMapNamedFlexibleMemory(right)");
+
+	Check(test,
+	      Libs::LibKernel::Memory::ClampRangeSize(base + SceKernelPageSize - 0x100, 0x200) ==
+	          0x200,
+	      "ClampRangeSize did not cross adjacent committed mappings");
 
 	CheckOk(test, Libs::LibKernel::Memory::KernelMunmap(base, SceKernelPageSize * 2),
 	        "KernelMunmap(adjacent mappings)");

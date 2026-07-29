@@ -1217,9 +1217,9 @@ static const ShaderSemantic* find_interpolant_output_semantic(const Shader* gs, 
 }
 
 static void set_interpolant_register(ShaderRegister* regs, uint32_t index, uint32_t value) {
-	// The native implementation writes a descriptor offset (0x10000000 + index). Kyty stores
-	// decoded PM4 register offsets here because direct/custom indirect paths consume them.
-	regs[index].offset = Pm4::SPI_PS_INPUT_CNTL_0 + index;
+	// Interpolant mappings contain encoded Cx descriptors. Indirect PM4 ingestion resolves
+	// this selector and slot to the physical SPI_PS_INPUT_CNTL register.
+	regs[index].offset = Pm4::CX_PS_SHADER_USAGE_BASE + index;
 	regs[index].value  = value;
 }
 

@@ -2,17 +2,17 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
-#include "graphics/shader/recompiler/BindingLayout.h"
-#include "graphics/shader/recompiler/ResourceMaterialization.h"
-#include "graphics/shader/recompiler/ResourceTracking.h"
-#include "graphics/shader/recompiler/ScalarProvenance.h"
-#include "graphics/shader/recompiler/ShaderCFG.h"
-#include "graphics/shader/recompiler/ShaderDecoder.h"
-#include "graphics/shader/recompiler/ShaderIR.h"
-#include "graphics/shader/recompiler/ShaderInfoCollection.h"
-#include "graphics/shader/recompiler/SpirvEmitter.h"
-#include "graphics/shader/recompiler/SrtPatcher.h"
-#include "graphics/shader/recompiler/SrtWalker.h"
+#include "graphics/shader/recompiler/ir/BindingLayout.h"
+#include "graphics/shader/recompiler/ir/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ir/ResourceTracking.h"
+#include "graphics/shader/recompiler/ir/ScalarProvenance.h"
+#include "graphics/shader/recompiler/cfg/ShaderCFG.h"
+#include "graphics/shader/recompiler/decompiler/ShaderDecoder.h"
+#include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/recompiler/ir/ShaderInfoCollection.h"
+#include "graphics/shader/recompiler/emitter/SpirvEmitter.h"
+#include "graphics/shader/recompiler/ir/SrtPatcher.h"
+#include "graphics/shader/recompiler/ir/SrtWalker.h"
 
 #include <algorithm>
 #include <array>

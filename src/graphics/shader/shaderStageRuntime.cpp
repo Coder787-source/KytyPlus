@@ -1,4 +1,4 @@
-#include "graphics/shader/recompiler/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ir/ResourceMaterialization.h"
 #include "graphics/shader/shader.h"
 
 #include <utility>

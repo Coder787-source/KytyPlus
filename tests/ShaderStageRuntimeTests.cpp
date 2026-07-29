@@ -1,7 +1,7 @@
 #include "graphics/shader/shader.h"
 
-#include "graphics/shader/recompiler/ResourceMaterialization.h"
-#include "graphics/shader/recompiler/ShaderIR.h"
+#include "graphics/shader/recompiler/ir/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <cstdio>
 #include <cstdlib>
