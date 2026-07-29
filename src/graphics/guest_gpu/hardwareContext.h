@@ -352,6 +352,7 @@ struct ModeControl {
 };
 
 struct PolyOffset {
+	uint32_t db_format    = 0;
 	float clamp        = 0.0f;
 	float front_scale  = 0.0f;
 	float front_offset = 0.0f;
@@ -618,6 +619,7 @@ struct ShaderRegisters {
 	uint8_t  target_output_mode[8] = {};
 	uint32_t ps_input_ena          = 0;
 	uint32_t ps_input_addr         = 0;
+	uint32_t interp_control_0      = 0;
 	uint32_t ps_in_control         = 0;
 	uint32_t baryc_cntl            = 0;
 	uint32_t m_cbShaderMask        = 0;
@@ -953,6 +955,7 @@ public:
 	}
 	void SetPsInputEna(uint32_t value) { m_sh_regs.ps_input_ena = value; }
 	void SetPsInputAddr(uint32_t value) { m_sh_regs.ps_input_addr = value; }
+	void SetInterpControl0(uint32_t value) { m_sh_regs.interp_control_0 = value; }
 	void SetPsInControl(uint32_t value) { m_sh_regs.ps_in_control = value; }
 	void SetBarycCntl(uint32_t value) { m_sh_regs.baryc_cntl = value; }
 	void SetShaderMask(uint32_t value) { m_sh_regs.m_cbShaderMask = value; }

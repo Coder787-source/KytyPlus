@@ -55,6 +55,10 @@ struct PipelineStaticParameters {
 	bool                       cull_front                                         = false;
 	bool                       cull_back                                          = false;
 	bool                       face                                               = false;
+	bool                       depth_bias_enable                                  = false;
+	float                      depth_bias_constant                                = 0.0f;
+	float                      depth_bias_clamp                                   = 0.0f;
+	float                      depth_bias_slope                                   = 0.0f;
 	uint8_t                    color_srcblend[RENDER_COLOR_ATTACHMENTS_MAX]       = {};
 	uint8_t                    color_comb_fcn[RENDER_COLOR_ATTACHMENTS_MAX]       = {};
 	uint8_t                    color_destblend[RENDER_COLOR_ATTACHMENTS_MAX]      = {};
@@ -83,24 +87,22 @@ static_assert(sizeof(PipelineStaticParameters) ==
                   sizeof(vk::CompareOp) + sizeof(bool) + sizeof(float) * 2 + sizeof(bool) +
                   sizeof(PipelineStencilStaticState) * 2 + sizeof(uint32_t) +
                   sizeof(uint32_t[RENDER_COLOR_ATTACHMENTS_MAX]) + sizeof(bool) * 3 +
+	              sizeof(bool) + sizeof(float) * 3 +
                   sizeof(uint8_t[RENDER_COLOR_ATTACHMENTS_MAX]) * 6 +
                   sizeof(bool[RENDER_COLOR_ATTACHMENTS_MAX]) * 3 + sizeof(float) * 4);
 
 struct PipelineRenderingState {
 	std::array<vk::Format, RENDER_COLOR_ATTACHMENTS_MAX> color_formats {};
-	vk::Format depth_format   = vk::Format::eUndefined;
-	vk::Format stencil_format = vk::Format::eUndefined;
-	uint32_t   color_count    = 0;
+	vk::Format                                           depth_format   = vk::Format::eUndefined;
+	vk::Format                                           stencil_format = vk::Format::eUndefined;
+	uint32_t                                             color_count    = 0;
 
 	bool operator==(const PipelineRenderingState&) const = default;
 };
 
 class PipelineCache {
 public:
-	PipelineCache(GraphicContext& graphics, DescriptorCache& descriptor_cache)
-	    : m_graphics(graphics), m_descriptor_cache(descriptor_cache) {
-		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-	}
+	PipelineCache(GraphicContext& graphics, DescriptorCache& descriptor_cache);
 	~PipelineCache();
 	KYTY_CLASS_NO_COPY(PipelineCache);
 
@@ -118,16 +120,21 @@ public:
 		ShaderId cs_shader_id;
 	};
 
-	GraphicsPipeline& CreateGraphicsPipeline(
-	    RenderColorInfo* colors, uint32_t color_count, RenderDepthInfo& depth,
-	    ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
-	    ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology, bool ps_active,
-	    std::span<const uint32_t> vs_spirv, std::span<const uint32_t> ps_spirv);
+	GraphicsPipeline&
+	CreateGraphicsPipeline(RenderColorInfo* colors, uint32_t color_count, RenderDepthInfo& depth,
+	                       ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
+	                       ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
+	                       bool ps_active, std::span<const uint32_t> vs_spirv,
+	                       std::span<const uint32_t> ps_spirv);
 	ComputePipeline& CreateComputePipeline(ShaderComputeInputInfo&      input_info,
 	                                       const HW::ComputeShaderInfo& cs_regs,
 	                                       std::span<const uint32_t>    cs_spirv);
 
 private:
+	void LoadDriverCache();
+	void SaveDriverCache() const;
+	void MaybeSaveDriverCache();
+
 	struct GraphicsPipelineKey {
 		PipelineRenderingState   rendering;
 		ShaderId                 vs_shader_id;
@@ -199,30 +206,30 @@ private:
 		}
 	};
 
-	GraphicContext& m_graphics;
+	GraphicContext&  m_graphics;
 	DescriptorCache& m_descriptor_cache;
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>,
 	                   GraphicsPipelineKeyHash>
 	    m_graphics_pipelines;
 	std::unordered_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>, ComputePipelineKeyHash>
-	              m_compute_pipelines;
-	Common::Mutex m_mutex;
+	                  m_compute_pipelines;
+	vk::PipelineCache m_driver_cache       = nullptr;
+	uint64_t          m_new_pipeline_count = 0;
+	Common::Mutex     m_mutex;
 };
 
 void LogPipelineTrace(const char* phase, uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0,
                       uint32_t ps_crc32);
-void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descriptor_cache,
-                            PipelineCache::GraphicsPipeline& pipeline,
-                            const PipelineRenderingState&   rendering,
-                            const ShaderVertexInputInfo&    vs_input_info,
-                            std::span<const uint32_t>       vs_shader,
-                            const ShaderPixelInputInfo*     ps_input_info,
-                            std::span<const uint32_t>       ps_shader,
-                            const PipelineStaticParameters& static_params, uint32_t vs_hash0,
-                            uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32,
-                            bool ps_active);
+void CreatePipelineInternal(
+    GraphicContext& graphics, DescriptorCache& descriptor_cache,
+    PipelineCache::GraphicsPipeline& pipeline, vk::PipelineCache driver_cache,
+    const PipelineRenderingState& rendering, const ShaderVertexInputInfo& vs_input_info,
+    std::span<const uint32_t> vs_shader, const ShaderPixelInputInfo* ps_input_info,
+    std::span<const uint32_t> ps_shader, const PipelineStaticParameters& static_params,
+    uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active);
 void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descriptor_cache,
                             PipelineCache::ComputePipeline& pipeline,
+                            vk::PipelineCache               driver_cache,
                             const ShaderComputeInputInfo&   input_info,
                             std::span<const uint32_t>       cs_shader);
 

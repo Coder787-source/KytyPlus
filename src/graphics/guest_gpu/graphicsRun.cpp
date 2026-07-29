@@ -1452,7 +1452,34 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		default: break;
 	}
 
-	EXIT("unknown event type\n");
+	static std::atomic<uint32_t> soft_logs {0};
+	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+		LOGF("\t WriteAtEndOfPipe generic write "
+		     "source=0x%08" PRIx32 " eop=0x%08" PRIx32 " cache=0x%08" PRIx32
+		     " index=0x%08" PRIx32 " interrupt=%u\n",
+		     event_write_source, eop_event_type, cache_action, event_index,
+		     with_interrupt ? 1u : 0u);
+	}
+	const bool with_writeback = cache_action == 0x38 || cache_action == 0x3b;
+	if constexpr (sizeof(T) == sizeof(uint32_t)) {
+		write32(with_writeback);
+	} else {
+		auto* dst = static_cast<uint64_t*>(dst_gpu_addr);
+		std::memcpy(dst, &value, sizeof(value));
+		if (with_interrupt) {
+			if (with_writeback) {
+				Sync::WriteAtEndOfPipeWithInterruptWriteBack64(
+				    m_submit_id, CurrentBuffer(), dst, value, interrupt_context_id);
+			} else {
+				Sync::WriteAtEndOfPipeWithInterrupt64(m_submit_id, CurrentBuffer(), dst, value,
+				                                      interrupt_context_id);
+			}
+		} else if (with_writeback) {
+			Sync::WriteAtEndOfPipeWithWriteBack64(m_submit_id, CurrentBuffer(), dst, value);
+		} else {
+			Sync::WriteAtEndOfPipe64(m_submit_id, CurrentBuffer(), dst, value);
+		}
+	}
 }
 
 void CommandProcessor::WriteAtEndOfPipe32(uint32_t cache_policy, uint32_t event_write_dest,
@@ -1510,7 +1537,7 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
 		     event_type, event_index);
 	}
 
-	const auto valid_cache_event_index = event_index == 0x00000000 || event_index == 0x00000007;
+	(void)event_index;
 	switch (event_type) {
 		// CsPartialFlush, GsPartialFlush, PsPartialFlush.
 		case 0x00000007:
@@ -1519,10 +1546,6 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
 		// CbDbDataWritebackInvalidate, CbDataWritebackInvalidate.
 		case 0x00000016:
 		case 0x00000031:
-			if (!valid_cache_event_index) {
-				EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type,
-				     event_index);
-			}
 			EmitGlobalBarrier();
 			SynchronizeGpu();
 			break;
@@ -1530,10 +1553,6 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
 		case 0x0000002a:
 		case 0x0000002c:
 		case 0x0000002e:
-			if (!valid_cache_event_index) {
-				EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type,
-				     event_index);
-			}
 			EmitGlobalBarrier();
 			break;
 		case 0x0000000d:
@@ -1547,12 +1566,11 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
 		case 0x00000038:
 		case 0x00000039:
 		case 0x0000003a:
-			LOGF("\t temporary: ignoring unsupported event_write type 0x%08" PRIx32
-			     ", index 0x%08" PRIx32 "\n",
-			     event_type, event_index);
+			EmitGlobalBarrier();
 			break;
 		default:
-			EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type, event_index);
+			EXIT("unsupported event_write type 0x%08" PRIx32 ", index 0x%08" PRIx32 "\n",
+			     event_type, event_index);
 	}
 }
 
@@ -1605,7 +1623,7 @@ void CommandProcessor::FlipWithInterrupt(uint32_t eop_event_type, uint32_t cache
 	}
 
 	if (eop_event_type != 0x00000004 || cache_action != 0x00000038) {
-		EXIT("unknown event type\n");
+		EmitGlobalBarrier();
 	}
 	std::memcpy(dst_gpu_addr, &value, sizeof(value));
 	auto& command = CurrentBuffer();

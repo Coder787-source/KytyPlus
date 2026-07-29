@@ -543,6 +543,10 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		attachment.image_layout = layout;
 		attachment.clear_value  = target.color_clear_value.uint32;
 		attachment.is_clear     = target.color_clear_enable;
+		if (target.color_clear_enable && target.metadata_addr != 0 &&
+		    !cache.TouchMeta(target.metadata_addr, target.base_array_layer, false)) {
+			EXIT("failed to consume color metadata clear state\n");
+		}
 	}
 	if (depth.image_id) {
 		const auto owner = cache.ResolveOwner(depth.image_id);
@@ -770,7 +774,7 @@ bool RenderExecutor::PrepareDrawRenderState(uint64_t submit_id, RenderCommandBuf
 	return true;
 }
 
-static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
+static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
                            DrawRenderState& state) {
 	EXIT_IF(draw.name == nullptr);
 	auto& ctx    = buffer.GetRegisters();
@@ -799,7 +803,7 @@ static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	}
 
 	if (!state.ps_active) {
-		return;
+		return true;
 	}
 	if (log_phases) {
 		LogDrawPhase(draw.name, "ShaderCompileInfoPS");
@@ -808,6 +812,7 @@ static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	                         target_export_mapping, state.ps_input_info, state.ps_shader)) {
 		EXIT("ShaderCompileInfoPS failed for draw %s\n", draw.name);
 	}
+	return true;
 }
 
 static std::vector<BufferBinding> PrepareVertexBuffers(uint64_t                     submit_id,
@@ -1206,7 +1211,10 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 		return;
 	}
 
-	RefreshShaders(buffer, draw, true, state);
+	if (!RefreshShaders(buffer, draw, true, state)) {
+		ResetBindings();
+		return;
+	}
 
 	LogDrawStateIfNeeded(buffer, draw, state, true, false, index_type_and_size, index_addr);
 
@@ -1301,7 +1309,10 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer,
 	    (use_ngg_rectlist_draw &&
 	     ucfg.GetPrimType() == Prospero::GpuEnumValue(Prospero::PrimitiveType::kRectList));
 
-	RefreshShaders(buffer, draw, false, state);
+	if (!RefreshShaders(buffer, draw, false, state)) {
+		ResetBindings();
+		return;
+	}
 
 	if (draw_prim7_as_ngg && state.vs_input_info.buffers_num == 0 &&
 	    state.vs_input_info.param_export_mask == 0 && state.ps_input_info.input_num != 0) {

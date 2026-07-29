@@ -69,6 +69,26 @@ jobs:
         run: |
           cmake --build _Build/linux --target launcher --parallel
 
+      - name: Build focused CPU test subsets
+        shell: bash
+        run: |
+          cmake --build _Build/linux --parallel --target \
+            pipeline_cache_data_tests \
+            graphics_audio_semantics_tests \
+            pm4_ngs2_fuzz_tests \
+            soft_ignore_evidence_tests \
+            shader_cfg_tests
+
+      - name: Run focused graphics/audio subsets
+        shell: bash
+        run: |
+          set -e
+          _Build/linux/pipeline_cache_data_tests
+          _Build/linux/graphics_audio_semantics_tests
+          _Build/linux/pm4_ngs2_fuzz_tests --iterations=4096
+          _Build/linux/soft_ignore_evidence_tests
+          _Build/linux/shader_cfg_tests
+
       - name: Install
         shell: bash
         run: |

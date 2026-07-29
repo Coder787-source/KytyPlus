@@ -55,12 +55,21 @@ uint32_t HwCtxSetWindowOffset(CommandProcessor&, uint32_t, uint32_t, const uint3
 uint32_t HwCtxSetWindowScissor(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetClipRect(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetRenderTargetMask(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
+uint32_t HwCtxSetShaderMask(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetGenericScissor(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetBlendColor(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetCbDccControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetStencilControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetStencilMask(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetPsInput(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
+uint32_t HwCtxSetPsInputControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
+uint32_t HwCtxSetBarycCntl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
+uint32_t HwCtxSetShaderZFormat(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
+uint32_t HwCtxSetDepthShaderControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*,
+                                    uint32_t);
+uint32_t HwCtxSetScShaderControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
+uint32_t HwCtxSetMultiPrimIbResetIndx(CommandProcessor&, uint32_t, uint32_t, const uint32_t*,
+                                      uint32_t);
 uint32_t HwCtxSetSpiTmpringSize(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetDepthControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetEqaaControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);

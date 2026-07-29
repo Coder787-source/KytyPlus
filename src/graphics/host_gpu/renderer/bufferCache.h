@@ -113,6 +113,7 @@ private:
 	void RefreshInvalidatedRanges(CommandBuffer& command, CachedBuffer& cached, uint64_t vaddr,
 	                              uint64_t size, bool upload);
 	void DiscardGpuDirtyBytesLocked(uint64_t vaddr, uint64_t size, const char* operation);
+	void DownloadGpuDirtyToGuest(uint64_t vaddr, uint64_t size);
 	void WriteHostMemory(uint64_t vaddr, std::span<const uint8_t> data);
 
 	GraphicContext&                                   m_graphics;

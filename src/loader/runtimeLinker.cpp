@@ -741,13 +741,23 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			dump_guest_qwords("vorbis len", info->rcx);
 		}
 
-		EXIT("Access violation: %s [%016" PRIx64 "] %s\n",
-		     Common::EnumName(info->access_violation_type).c_str(), info->access_violation_vaddr,
-		     (info->access_violation_vaddr == g_invalid_memory ? "(Unpatched object)" : ""));
+		// Final soft path for near-null AVs that escaped the early skip (#66 Quantum Error write
+		// to 0). Prefer continuing over process death.
+		if (Loader::X64InstructionEmulator::TrySkipNullPageAccess(info->native_context,
+		                                                          info->access_violation_vaddr)) {
+			return true;
+		}
+
+		LOGF_COLOR(Log::Color::Yellow,
+		           "soft-abort Access violation: %s [%016" PRIx64 "] %s\n",
+		           Common::EnumName(info->access_violation_type).c_str(),
+		           info->access_violation_vaddr,
+		           (info->access_violation_vaddr == g_invalid_memory ? "(Unpatched object)" : ""));
 		return false;
 	}
 
-	EXIT("Unknown exception!!! (%08" PRIx32 ")", info->native_code);
+	LOGF_COLOR(Log::Color::Yellow, "soft-abort Unknown exception!!! (%08" PRIx32 ")\n",
+	           info->native_code);
 	return false;
 }
 

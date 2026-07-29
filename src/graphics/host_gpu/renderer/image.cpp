@@ -46,24 +46,36 @@ namespace {
 	return static_cast<bool>(properties.optimalTilingFeatures & feature);
 }
 
-[[nodiscard]] vk::ImageUsageFlags ImageUsageFlags(GraphicContext& graphics, const ImageInfo& info) {
-	const auto properties = graphics.GetFormatProperties(info.pixel_format);
-	auto       usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+[[nodiscard]] vk::ImageUsageFlags ImageUsageFlags(GraphicContext& graphics, vk::Format format,
+                                                  uint32_t samples) {
+	const auto properties = graphics.GetFormatProperties(format);
+	const bool is_depth   = DepthAspectTransferFormat(format) != vk::Format::eUndefined;
+	if (is_depth) {
+		// Multisampled depth/stencil needs the same attachment usage as render targets.
+		// Prefer DepthTargetImageUsage so color-to-MS-depth blit + sampling both work;
+		// ResolveHostDepthImageFormat picks a host format that actually supports it.
+		if (samples > 1) {
+			return DepthTargetImageUsage();
+		}
+		auto usage =
+		    vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst |
+		    vk::ImageUsageFlagBits::eDepthStencilAttachment;
+		if (HasFormatFeature(properties, vk::FormatFeatureFlagBits::eSampledImage)) {
+			usage |= vk::ImageUsageFlagBits::eSampled;
+		}
+		return usage;
+	}
+	auto usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
 	if (HasFormatFeature(properties, vk::FormatFeatureFlagBits::eSampledImage)) {
 		usage |= vk::ImageUsageFlagBits::eSampled;
-	}
-	if (DepthAspectTransferFormat(info.pixel_format) != vk::Format::eUndefined) {
-		usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
-		return usage;
 	}
 	if (HasFormatFeature(properties, vk::FormatFeatureFlagBits::eColorAttachment)) {
 		usage |= vk::ImageUsageFlagBits::eColorAttachment;
 	}
-	if (info.samples == 1 &&
-	    HasFormatFeature(properties, vk::FormatFeatureFlagBits::eStorageImage)) {
+	if (samples == 1 && HasFormatFeature(properties, vk::FormatFeatureFlagBits::eStorageImage)) {
 		usage |= vk::ImageUsageFlagBits::eStorage;
-	} else if (info.samples == 1) {
-		const auto compatible = SrgbStorageViewFormat(info.pixel_format);
+	} else if (samples == 1) {
+		const auto compatible = SrgbStorageViewFormat(format);
 		if (compatible != vk::Format::eUndefined &&
 		    HasFormatFeature(graphics.GetFormatProperties(compatible),
 		                     vk::FormatFeatureFlagBits::eStorageImage)) {
@@ -71,6 +83,56 @@ namespace {
 		}
 	}
 	return usage;
+}
+
+// Some hosts reject D16S8/D24S8 at MSAA. Prefer a policy-compatible depth/stencil
+// format that actually supports the sample count with the computed usage.
+[[nodiscard]] vk::Format ResolveHostDepthImageFormat(GraphicContext& graphics, vk::Format requested,
+                                                     vk::ImageType type, vk::ImageCreateFlags flags,
+                                                     uint32_t samples) {
+	const auto required_samples = vulkan_sample_count(samples);
+	const auto supports         = [&](vk::Format format, vk::ImageUsageFlags usage) {
+		vk::ImageFormatProperties properties {};
+		return format != vk::Format::eUndefined &&
+		       graphics.GetImageFormatProperties(format, type, vk::ImageTiling::eOptimal, usage,
+		                                         flags, &properties) == vk::Result::eSuccess &&
+		       static_cast<bool>(properties.sampleCounts & required_samples);
+	};
+	const auto requested_usage = ImageUsageFlags(graphics, requested, samples);
+	if (supports(requested, requested_usage)) {
+		return requested;
+	}
+	const bool has_stencil =
+	    requested == vk::Format::eD16UnormS8Uint || requested == vk::Format::eD24UnormS8Uint ||
+	    requested == vk::Format::eD32SfloatS8Uint;
+	const bool has_depth =
+	    has_stencil || requested == vk::Format::eD16Unorm || requested == vk::Format::eD32Sfloat ||
+	    requested == vk::Format::eX8D24UnormPack32;
+	if (has_stencil) {
+		constexpr std::array<vk::Format, 3> kStencilFallbacks {
+		    vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint,
+		    vk::Format::eD16UnormS8Uint};
+		for (const auto format: kStencilFallbacks) {
+			if (format == requested) {
+				continue;
+			}
+			if (supports(format, ImageUsageFlags(graphics, format, samples))) {
+				return format;
+			}
+		}
+	} else if (has_depth) {
+		constexpr std::array<vk::Format, 2> kDepthFallbacks {vk::Format::eD32Sfloat,
+		                                                     vk::Format::eD16Unorm};
+		for (const auto format: kDepthFallbacks) {
+			if (format == requested) {
+				continue;
+			}
+			if (supports(format, ImageUsageFlags(graphics, format, samples))) {
+				return format;
+			}
+		}
+	}
+	return vk::Format::eUndefined;
 }
 
 void ValidateRange(GuestRange range, const char* name) {
@@ -705,7 +767,21 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler,
 	backing.mip_levels  = info.resources.levels;
 	backing.samples     = info.samples;
 	backing.flags       = ImageCreateFlags(info);
-	backing.usage       = ImageUsageFlags(graphics, info);
+	if (DepthAspectTransferFormat(info.pixel_format) != vk::Format::eUndefined) {
+		const auto resolved =
+		    ResolveHostDepthImageFormat(graphics, info.pixel_format, backing.image_type,
+		                                backing.flags, backing.samples);
+		if (resolved == vk::Format::eUndefined) {
+			EXIT("image format does not support required usage: format=%d type=%d samples=%u\n",
+			     static_cast<int>(info.pixel_format), static_cast<int>(backing.image_type),
+			     backing.samples);
+		}
+		// Promote both the Vulkan backing and the cached identity so guest
+		// depth transfer encoding matches the host aspect (D24S8 -> D32S8).
+		backing.format      = resolved;
+		info.pixel_format   = resolved;
+	}
+	backing.usage = ImageUsageFlags(graphics, backing.format, backing.samples);
 
 	vk::ImageCreateInfo create {};
 	create.sType         = vk::StructureType::eImageCreateInfo;
