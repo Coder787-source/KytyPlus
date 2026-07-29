@@ -528,6 +528,42 @@ public:
 		return false;
 	}
 
+	uint64_t ClampRangeSize(uint64_t virtual_addr, uint64_t size) {
+		Common::LockGuard lock(m_mutex);
+
+		if (virtual_addr == 0 || size == 0 || size > UINT64_MAX - virtual_addr) {
+			return 0;
+		}
+
+		auto vma = std::upper_bound(
+		    m_ranges.begin(), m_ranges.end(), virtual_addr,
+		    [](uint64_t value, const Range& range) { return value < range.start; });
+		if (vma == m_ranges.begin()) {
+			return 0;
+		}
+		--vma;
+
+		const auto vma_end = End(vma->start, vma->size);
+		if (virtual_addr < vma->start || virtual_addr >= vma_end ||
+		    !IsCommittedRangeType(vma->type)) {
+			return 0;
+		}
+
+		uint64_t clamped_size = std::min(size, vma_end - virtual_addr);
+		uint64_t expected     = virtual_addr + clamped_size;
+		++vma;
+
+		while (vma != m_ranges.end() && vma->start == expected && IsCommittedRangeType(vma->type) &&
+		       clamped_size < size) {
+			const auto chunk = std::min(size - clamped_size, vma->size);
+			clamped_size += chunk;
+			expected += chunk;
+			++vma;
+		}
+
+		return clamped_size;
+	}
+
 	uint64_t CountPageTableEntries(bool gpu) {
 		Common::LockGuard lock(m_mutex);
 
@@ -882,6 +918,23 @@ bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
 bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return g_direct_memory_backing != nullptr &&
 	       g_direct_memory_backing->TryReadBacking(vaddr, data, size);
+}
+
+uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {
+	EXIT_IF(g_virtual_ranges == nullptr);
+
+	const auto clamped_size = g_virtual_ranges->ClampRangeSize(vaddr, size);
+	if (clamped_size == 0) {
+		EXIT("Memory: attempted to access invalid address 0x%016" PRIx64 " with size 0x%016" PRIx64
+		     "\n",
+		     vaddr, size);
+	}
+	if (clamped_size != size) {
+		LOGF("Memory: clamped buffer range addr=0x%016" PRIx64 " size=0x%016" PRIx64
+		     " to 0x%016" PRIx64 "\n",
+		     vaddr, size, clamped_size);
+	}
+	return clamped_size;
 }
 
 void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
