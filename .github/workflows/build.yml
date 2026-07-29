@@ -114,10 +114,18 @@ jobs:
           Run-Test "pm4_ngs2_fuzz" "$bin/pm4_ngs2_fuzz_tests.exe" @("--iterations=4096")
           Run-Test "soft_ignore_evidence" "$bin/soft_ignore_evidence_tests.exe"
           Run-Test "shader_cfg" "$bin/shader_cfg_tests.exe"
-          # GPU-backed subsets (Windows runners typically have a Vulkan ICD).
-          Run-Test "htile_clear" "$bin/shader_recompiler_compute_tests.exe" @("--htile-clear-only")
-          Run-Test "layered_image" "$bin/shader_recompiler_compute_tests.exe" @("--layered-image-only")
-          Run-Test "storage_sampled" "$bin/shader_recompiler_compute_tests.exe" @("--storage-sampled-only")
+          # The SDK supplies tools/headers but hosted runners may not expose a Vulkan ICD.
+          $vulkanInfo = Get-Command vulkaninfo -ErrorAction SilentlyContinue
+          if ($null -ne $vulkanInfo) {
+            & $vulkanInfo.Source --summary *> $null
+          }
+          if ($null -ne $vulkanInfo -and $LASTEXITCODE -eq 0) {
+            Run-Test "htile_clear" "$bin/shader_recompiler_compute_tests.exe" @("--htile-clear-only")
+            Run-Test "layered_image" "$bin/shader_recompiler_compute_tests.exe" @("--layered-image-only")
+            Run-Test "storage_sampled" "$bin/shader_recompiler_compute_tests.exe" @("--storage-sampled-only")
+          } else {
+            Write-Warning "Skipping GPU-backed subsets: no usable Vulkan ICD"
+          }
           if ($failed -ne 0) { exit 1 }
 
       - name: Install

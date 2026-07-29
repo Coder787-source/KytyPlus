@@ -1024,10 +1024,10 @@ KYTY_SUBSYSTEM_INIT(Memory) {
 	// a regression let some later subsystem's allocation land on this fixed address, causing
 	// VirtualAlloc() to fail with ERROR_INVALID_ADDRESS when the first guest stack was created.
 	{
-		constexpr int MAP_FIXED = 0x10;
+		constexpr int kMapFixed = 0x10;
 		void*         guest_stack_region =
 		    reinterpret_cast<void*>(GUEST_STACK_REGION_TOP - GUEST_STACK_REGION_SIZE);
-		if (KernelReserveVirtualRange(&guest_stack_region, GUEST_STACK_REGION_SIZE, MAP_FIXED, 0) !=
+		if (KernelReserveVirtualRange(&guest_stack_region, GUEST_STACK_REGION_SIZE, kMapFixed, 0) !=
 		    OK) {
 			LOGF_COLOR(Log::Color::Yellow,
 			           "Memory: couldn't pre-reserve guest-stack address range at 0x%016" PRIx64

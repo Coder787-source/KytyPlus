@@ -1,6 +1,7 @@
 #include "cpu_core.h"
 #include "instruction_translator.h"
 #include "common/assert.h"
+#include <cstring>
 #include <iostream>
 #include <vector>
 
