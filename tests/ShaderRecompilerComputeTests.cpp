@@ -13593,23 +13593,36 @@ TestCase DsAppendUsesEncodedGdsSelector() {
   using O = ShaderOpcode;
 
   std::vector<u32> code;
-  AppendSMovLiteral(&code, 124, 0x00000001u);
+  AppendSMovLiteral(&code, 124, 0x00000008u);
   code.push_back(EncodeDs0(0x3e, 0, true));
   code.push_back(EncodeDs1(0, 0, 0));
   code.push_back(EncodeDs0(0x3d, 0, true));
   code.push_back(EncodeDs1(1, 0, 0));
+  code.push_back(EncodeDs0(0x3e, 4, true));
+  code.push_back(EncodeDs1(2, 0, 0));
+  code.push_back(EncodeDs0(0x3d, 4, true));
+  code.push_back(EncodeDs1(3, 0, 0));
+  AppendSMovLiteral(&code, 124, 0x00080008u);
+  code.push_back(EncodeDs0(0x3e, 4, true));
+  code.push_back(EncodeDs1(4, 0, 0));
+  code.push_back(EncodeDs0(0x3d, 4, true));
+  code.push_back(EncodeDs1(5, 0, 0));
   AppendStoreVgpr(&code, 0, 0);
   AppendStoreVgpr(&code, 1, 1);
+  AppendStoreVgpr(&code, 2, 2);
+  AppendStoreVgpr(&code, 3, 3);
+  AppendStoreVgpr(&code, 4, 4);
+  AppendStoreVgpr(&code, 5, 5);
   AppendEnd(&code);
 
   TestCase test{
       "DsAppendGdsSelector",
       code,
       {},
-      {10, 74},
+      {10, 74, 20, 84, 40, 104},
       {O::SMovB32, O::DsAppend, O::DsConsume, O::BufferStoreDword, O::SEndpgm}};
-  test.gds_initial = {10};
-  test.expected_gds = {10};
+  test.gds_initial = {10, 20, 30, 40};
+  test.expected_gds = {10, 20, 30, 40};
   return test;
 }
 

@@ -421,13 +421,13 @@ bool DecodeDs(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, 
 	const uint32_t data0   = (word1 >> 8u) & 0xffu;
 	const uint32_t addr    = word1 & 0xffu;
 
-	inst.pc         = pc;
-	inst.word       = word0;
-	inst.word_count = 2;
-	inst.offset     = offset0 | (offset1 << 8u);
-	inst.gds        = ((word0 >> 17u) & 1u) != 0u;
-	inst.family     = Family::DS;
-	inst.opcode_id  = opcode;
+	inst.pc          = pc;
+	inst.word        = word0;
+	inst.word_count  = 2;
+	inst.offset      = offset0 | (offset1 << 8u);
+	inst.gds         = ((word0 >> 17u) & 1u) != 0u;
+	inst.family      = Family::DS;
+	inst.opcode_id   = opcode;
 	const auto* info = LookupMemoryOpcode(DS_OPS, static_cast<uint32_t>(std::size(DS_OPS)), opcode);
 	ApplyMemoryInfo(inst, info);
 	SetRawWords(inst, code, word_index, 2);
@@ -441,11 +441,6 @@ bool DecodeDs(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index, 
 	    (inst.opcode == Opcode::DsSwizzleB32 || inst.opcode == Opcode::DsWriteAddtidB32 ||
 	     inst.opcode == Opcode::DsReadAddtidB32)) {
 		SetUnsupported(inst, Family::DS, opcode, "DS swizzle/addtid is available only for LDS");
-	}
-	if (inst.gds && (inst.opcode == Opcode::DsAppend || inst.opcode == Opcode::DsConsume) &&
-	    inst.offset != 0u) {
-		SetUnsupported(inst, Family::DS, opcode,
-		               "GDS append/consume requires a zero instruction offset");
 	}
 	if (inst.opcode == Opcode::DsWriteAddtidB32 && data1 != 0u) {
 		SetUnsupported(inst, Family::DS, opcode,
