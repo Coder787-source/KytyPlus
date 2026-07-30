@@ -76,7 +76,7 @@ next unimplemented feature. Always test with a **fresh build** and attach logs w
 See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the community-reported compatibility list,
 or [file a report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)
 for a title you've tested.
-
+Want to help? Join the [KytyPlus testing discussion]https://github.com/Coder787-source/KytyPlus/discussions/2 and share results from the latest Windows release.
 ---
 
 ## Screenshots
