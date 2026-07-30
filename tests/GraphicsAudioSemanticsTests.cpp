@@ -1,7 +1,7 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
-#include "graphics/host_gpu/renderer/imageInfo.h"
+#include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/polyOffsetBias.h"
 #include "libs/ngs2_pcm.h"
 #include "libs/ngs2_vag_decoder.h"
