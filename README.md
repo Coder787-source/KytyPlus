@@ -72,7 +72,10 @@ builds on that with focused changes such as:
 
 Compatibility is still **early**. A title that no longer hits one known crash will often hit the
 next unimplemented feature. Always test with a **fresh build** and attach logs when reporting.
-See the [community compatibility list](docs/COMPATIBILITY.md), [file a compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml), or join the [testing discussion](https://github.com/Coder787-source/KytyPlus/discussions/2) to share results from the latest Windows release.
+> Help test KytyPlus: [share your results](https://github.com/Coder787-source/KytyPlus/discussions/2)
+> or [file a compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml).
+> Browse existing results in the [compatibility list](docs/COMPATIBILITY.md).
+
 ---
 
 ## Screenshots
