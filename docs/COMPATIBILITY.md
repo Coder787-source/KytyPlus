@@ -47,7 +47,7 @@ single most useful contribution you can make here — see
 
 | Title | Title ID | Status | Last tested (version) | Reports |
 |---|---|---|---|---|
-| Dead Cells |  | Reaches menu | v1.8 | [#4](https://github.com/Coder787-source/KytyPlus/issues/4) |
+|  |  |  |  |  |
 
 
 <!--
