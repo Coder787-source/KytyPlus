@@ -48,7 +48,7 @@ single most useful contribution you can make here — see
 | Title | Title ID | Status | Last tested (version) | Reports |
 |---|---|---|---|---|
 | Dead Cells |  | Reaches menu | v1.8 | [#4](https://github.com/Coder787-source/KytyPlus/issues/4) |
-| Dead Cells + PPSA-15552 |  | Reaches menu | v1.8 | [#5](https://github.com/Coder787-source/KytyPlus/issues/5) |
+
 
 <!--
 Row template (copy/paste and fill in from the issue). Use a full issue URL, not a relative link:
