@@ -3,7 +3,74 @@
 
 #include "common/abi.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
 namespace Loader::Jit {
+
+// ---------------------------------------------------------------------------
+// JIT block cache — caches scanned-and-patched code blocks so the same guest
+// code is not re-scanned every time it is executed.  LRU eviction keeps the
+// cache from growing unbounded.
+// ---------------------------------------------------------------------------
+
+struct CachedBlock {
+	uint64_t          guest_addr = 0;
+	std::vector<uint8_t> host_code;
+};
+
+class JitCache {
+public:
+	static constexpr size_t kMaxBlocks = 4096;
+
+	explicit JitCache()  = default;
+	~JitCache() = default;
+
+	// Look up a cached block by its guest address.  Returns nullptr on miss.
+	const CachedBlock* Find(uint64_t guest_addr) const {
+		auto it = m_map.find(guest_addr);
+		if (it != m_map.end()) {
+			return &it->second;
+		}
+		return nullptr;
+	}
+
+	// Insert a newly-scanned block.  Evicts the oldest entry if the cache is full.
+	void Insert(uint64_t guest_addr, std::vector<uint8_t> host_code) {
+		if (m_map.size() >= kMaxBlocks) {
+			// Evict the first (oldest) entry.
+			auto it = m_map.begin();
+			auto vec_it = std::find(m_eviction_order.begin(), m_eviction_order.end(), it->first);
+			if (vec_it != m_eviction_order.end()) {
+				m_eviction_order.erase(vec_it);
+			}
+			m_map.erase(it);
+		}
+		m_map[guest_addr] = CachedBlock{guest_addr, std::move(host_code)};
+		m_eviction_order.push_back(guest_addr);
+		if (m_eviction_order.size() > kMaxBlocks * 2) {
+			// Trim the eviction-order list periodically.
+			m_eviction_order.erase(m_eviction_order.begin(),
+			                       m_eviction_order.begin() + static_cast<ptrdiff_t>(m_eviction_order.size() - kMaxBlocks));
+		}
+	}
+
+	// Clear the entire cache (e.g. on module unload).
+	void Clear() {
+		m_map.clear();
+		m_eviction_order.clear();
+	}
+
+private:
+	std::unordered_map<uint64_t, CachedBlock> m_map;
+	std::vector<uint64_t>                     m_eviction_order;
+};
+
+// ---------------------------------------------------------------------------
+// Original JIT structures (unchanged below)
+// ---------------------------------------------------------------------------
 
 #pragma pack(1)
 

@@ -42,11 +42,10 @@ constexpr char EMULATOR_EXE[] = "kyty_emulator.exe";
 constexpr char EMULATOR_EXE[] = "kyty_emulator";
 #endif
 
-#if defined(_WIN32)
-constexpr char CMD_EXE[] = "cmd.exe";
-#elif defined(__linux__)
+#if defined(__linux__)
 constexpr char KYTY_BASH_FILE[] = "kyty_run.sh";
 #endif
+
 #if defined(_WIN32)
 constexpr DWORD CMD_X_CHARS = 175;
 constexpr DWORD CMD_Y_CHARS = 1000;
@@ -358,22 +357,12 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 	}
 #elif defined(_WIN32)
 	{
-		// cmd.exe uses backslashes as path separators. Forward slashes are
-		// interpreted as command-line option separators, which breaks paths
-		// on external drives (e.g. G:/Emulators/...).
+		// Launch the emulator directly via QProcess instead of wrapping in
+		// cmd.exe /K. This avoids an extra terminal window and eliminates
+		// path-separator issues with external drives.
 		QString native_interpreter = QDir::toNativeSeparators(interpreter);
-		// Wrap in quotes if the path contains spaces or special characters
-		// like parentheses (common in drive root labels).
-		if (native_interpreter.contains(' ') || native_interpreter.contains('(') ||
-		    native_interpreter.contains(')') || native_interpreter.contains('^') ||
-		    native_interpreter.contains('&')) {
-			native_interpreter = QStringLiteral("\"") + native_interpreter + QStringLiteral("\"");
-		}
-		process->setProgram(CMD_EXE);
-		QStringList process_args;
-		process_args << QStringLiteral("/K") << native_interpreter;
-		process_args += args;
-		process->setArguments(process_args);
+		process->setProgram(native_interpreter);
+		process->setArguments(args);
 	}
 #else
 	process->setProgram(interpreter);
@@ -387,10 +376,6 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 		args->startupInfo->dwFlags |= static_cast<DWORD>(STARTF_USECOUNTCHARS);
 		args->startupInfo->dwXCountChars = CMD_X_CHARS;
 		args->startupInfo->dwYCountChars = CMD_Y_CHARS;
-		// args->startupInfo->dwFlags |= static_cast<DWORD>(STARTF_USEFILLATTRIBUTE);
-		// args->startupInfo->dwFillAttribute =
-		//     static_cast<DWORD>(BACKGROUND_BLUE) | static_cast<DWORD>(FOREGROUND_RED) |
-		//     static_cast<DWORD>(FOREGROUND_INTENSITY);
 	});
 #endif
 	process->start();

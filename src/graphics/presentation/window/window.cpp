@@ -769,6 +769,11 @@ void WindowContext::Run() {
 	loop.need_exit = false;
 	loop.paused.store(false, std::memory_order_release);
 
+	// Frame pacing — target 60 FPS (16.67 ms per frame).
+	// Prevents the render loop from burning CPU on frames nobody sees.
+	constexpr double kTargetFrameTime = 1.0 / 60.0;
+	double           last_frame_time = timer.GetTimeS();
+
 	while (!loop.need_exit) {
 #if defined(__APPLE__)
 		DrainMainThreadTasks();
@@ -792,7 +797,15 @@ void WindowContext::Run() {
 		if (timer.IsPaused()) {
 			timer.Resume();
 		}
-		Common::Thread::SleepMicro(1000);
+
+		// Frame pacing: sleep for the remainder of the target frame time.
+		double now       = timer.GetTimeS();
+		double elapsed   = now - last_frame_time;
+		double remaining = kTargetFrameTime - elapsed;
+		if (remaining > 0.0) {
+			Common::Thread::SleepMicro(static_cast<uint64_t>(remaining * 1'000'000.0));
+		}
+		last_frame_time = timer.GetTimeS();
 	}
 }
 
