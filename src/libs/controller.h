@@ -72,6 +72,17 @@ void ControllerSetRumble(int id, uint8_t large_motor, uint8_t small_motor);
 void ControllerSetLightBar(int id, uint8_t r, uint8_t g, uint8_t b);
 void ControllerSetMotionSensorsEnabled(int id, bool enabled);
 
+// Sets HD haptics with explicit frequency and amplitude for each voice-coil actuator.
+// This replaces the old rumble-only path with frequency-rich haptic feedback.
+// frequency_hz: 20-500 Hz range (40-200 Hz is most perceptible)
+// left_amp / right_amp: 0-255 amplitude for each actuator
+// When called with amplitude 0, the actuator is silenced but the frequency is preserved
+// for the next non-zero call. Implemented by the windowing/input backend (SDL2) via
+// the DualSense HID output report's custom haptics field (unknown1[6] in the 47-byte
+// DualSenseEffectsReport, gated by enable_bits3 bit 0x04).
+void ControllerSetHapticEffect(int id, uint16_t left_freq_hz, uint8_t left_amp,
+                                uint16_t right_freq_hz, uint8_t right_amp);
+
 // Implemented by the windowing/input backend (SDL2). Sets which of the 5 white "player index"
 // LEDs below a DualSense's touchpad are lit (SDL reproduces the same left-to-right centered
 // mapping the PS5 itself uses, see hid-playstation.c's dualsense_set_player_leds()). A

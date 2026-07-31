@@ -219,12 +219,6 @@ struct Elf64_Sym // NOLINT(readability-identifier-naming)
 	Elf64_Xword   st_size;
 };
 
-// struct Elf64_Rel // NOLINT(readability-identifier-naming)
-//{
-//	Elf64_Addr  r_offset;
-//	Elf64_Xword r_info;
-//};
-
 struct Elf64_Rela // NOLINT(readability-identifier-naming)
 {
 	[[nodiscard]] Elf64_Word GetSymbol() const { return static_cast<Elf64_Word>(r_info >> 32u); }
@@ -283,8 +277,14 @@ public:
 
 	template <class T>
 	[[nodiscard]] T GetDynamicData(uint64_t offset) const {
-		return (m_dynamic_data == nullptr ? nullptr
-		                                  : reinterpret_cast<T>(m_dynamic_data.get() + offset));
+		if (m_dynamic_data == nullptr) {
+			if constexpr (std::is_pointer_v<T>) {
+				return nullptr;
+			} else {
+				return T{};
+			}
+		}
+		return reinterpret_cast<T>(m_dynamic_data.get() + offset);
 	}
 
 private:

@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/vulkanCommon.h" // IWYU pragma: export
 #include "graphics/host_gpu/vulkanInstance.h"
 
+#include <memory>
 #include <vector>
 #include <vk_mem_alloc.h>
 
@@ -32,7 +33,7 @@ struct GraphicContext: public VulkanInstance {
 	void                   AppendHardwareRayTracingDeviceExtensions(
 	    const std::vector<vk::ExtensionProperties>& available_extensions,
 	    std::vector<const char*>&                   device_extensions);
-	void LoadHardwareRayTracingFunctions() const;
+	void LoadHardwareRayTracingFunctions();
 
 	uint32_t screen_width  = 0;
 	uint32_t screen_height = 0;

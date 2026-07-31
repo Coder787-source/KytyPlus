@@ -14,7 +14,7 @@
 | storage size==0 (non-null descriptor) | EXIT |
 | depth view/format class mismatch | EXIT |
 | illegal sampled-depth IR resource shape | EXIT |
-| unsupported storage tile/encoding | soft-null until dump proves layout |
+| unsupported storage tile/encoding | soft-null in ResolveTexture when tile is the sole rejection; ValidateStorageTexture still EXIT for known-illegal IR/swizzle/mip/format |
 | unsupported sampled depth encoding | soft-null until dump proves layout |
 
 ## NGS2 beyond PCM/VAG

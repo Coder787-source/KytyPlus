@@ -99,7 +99,7 @@ static bool IsRandomDevice(const std::string& path) {
 
 static void FillRandomBuffer(void* buf, size_t nbytes) {
 	auto*              out = reinterpret_cast<uint8_t*>(buf);
-	std::random_device random;
+	thread_local std::random_device random;
 
 	for (size_t i = 0; i < nbytes; i++) {
 		out[i] = static_cast<uint8_t>(random());
@@ -193,6 +193,7 @@ void FileDescriptors::CloseAll() {
 	for (auto& f: m_files) {
 		if (f != nullptr && f->opened) {
 			f->f.Close();
+			f->opened = false;
 			delete f;
 			f = nullptr;
 		}
