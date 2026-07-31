@@ -44,7 +44,7 @@ public:
 	KYTY_CLASS_NO_COPY(KernelEqueuePrivate);
 
 	[[nodiscard]] const std::string& GetName() const { return m_name; }
-	void                             SetName(const std::string& m_name) { this->m_name = m_name; }
+	void                             SetName(const std::string& name) { m_name = name; }
 
 	int AddEvent(const KernelEqueueEvent& event);
 	int TriggerEvent(uintptr_t ident, int16_t filter, void* trigger_data);
@@ -411,14 +411,10 @@ int KYTY_SYSV_ABI KernelWaitEqueue(KernelEqueue eq, KernelEvent* ev, int num, in
 
 	if (timo == nullptr) {
 		*out = owner->WaitForEvents(ev, num, 0);
-	}
-
-	if (timo != nullptr) {
-		if (*timo == 0) {
-			*out = owner->GetTriggeredEvents(ev, num);
-		} else {
-			*out = owner->WaitForEvents(ev, num, *timo);
-		}
+	} else if (*timo == 0) {
+		*out = owner->GetTriggeredEvents(ev, num);
+	} else {
+		*out = owner->WaitForEvents(ev, num, *timo);
 	}
 
 	if (*out == KERNEL_ERROR_EBADF) {

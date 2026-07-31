@@ -358,9 +358,20 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 	}
 #elif defined(_WIN32)
 	{
+		// cmd.exe uses backslashes as path separators. Forward slashes are
+		// interpreted as command-line option separators, which breaks paths
+		// on external drives (e.g. G:/Emulators/...).
+		QString native_interpreter = QDir::toNativeSeparators(interpreter);
+		// Wrap in quotes if the path contains spaces or special characters
+		// like parentheses (common in drive root labels).
+		if (native_interpreter.contains(' ') || native_interpreter.contains('(') ||
+		    native_interpreter.contains(')') || native_interpreter.contains('^') ||
+		    native_interpreter.contains('&')) {
+			native_interpreter = QStringLiteral("\"") + native_interpreter + QStringLiteral("\"");
+		}
 		process->setProgram(CMD_EXE);
 		QStringList process_args;
-		process_args << QStringLiteral("/K") << interpreter;
+		process_args << QStringLiteral("/K") << native_interpreter;
 		process_args += args;
 		process->setArguments(process_args);
 	}

@@ -41,7 +41,7 @@ public:
 	UniqueFunction(const UniqueFunction&)                = delete;
 	UniqueFunction& operator=(const UniqueFunction&)     = delete;
 
-	Result operator()(Args... args) const {
+	Result operator()(Args... args) {
 		return m_callable->Invoke(std::forward<Args>(args)...);
 	}
 

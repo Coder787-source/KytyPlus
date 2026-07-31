@@ -590,8 +590,9 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer) {
 }
 
 void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
-	EXIT_IF(m_scheduler == nullptr || source.backing.samples != backing.samples ||
-	        mip >= backing.mip_levels || layer >= backing.layers);
+	EXIT_IF(m_scheduler == nullptr || m_graphics == nullptr ||
+	        source.backing.samples != backing.samples || mip >= backing.mip_levels ||
+	        layer >= backing.layers);
 	m_scheduler->EndRendering();
 	const auto width  = std::max(backing.extent.width >> mip, 1u);
 	const auto height = std::max(backing.extent.height >> mip, 1u);
@@ -600,24 +601,59 @@ void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
 	const auto [source_layers, destination_layers] = SanitizeCopyLayers(source, *this, depth);
 	const auto aspects                             = FullAspectMask(source.backing.format);
 	EXIT_IF(aspects != FullAspectMask(backing.format));
-	std::array<vk::ImageCopy, 2> copies {};
-	uint32_t                     copy_count = 0;
-	for (const auto aspect: {vk::ImageAspectFlagBits::eColor, vk::ImageAspectFlagBits::eDepth,
-	                         vk::ImageAspectFlagBits::eStencil}) {
-		if (!static_cast<bool>(aspects & aspect)) {
-			continue;
-		}
-		auto& copy          = copies[copy_count++];
-		copy.srcSubresource = {aspect, 0, 0, source_layers};
-		copy.dstSubresource = {aspect, mip, layer, destination_layers};
-		copy.extent         = {width, height, depth};
-	}
 	auto command = m_scheduler->Current().Handle();
 	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command);
 	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
 	               command);
-	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, backing.image,
-	                  vk::ImageLayout::eTransferDstOptimal, copy_count, copies.data());
+
+	const auto non_stencil = aspects & ~vk::ImageAspectFlagBits::eStencil;
+	for (const auto aspect: {vk::ImageAspectFlagBits::eColor, vk::ImageAspectFlagBits::eDepth}) {
+		if (!static_cast<bool>(non_stencil & aspect)) {
+			continue;
+		}
+		vk::ImageCopy copy {};
+		copy.srcSubresource = {aspect, 0, 0, source_layers};
+		copy.dstSubresource = {aspect, mip, layer, destination_layers};
+		copy.extent         = {width, height, depth};
+		command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, backing.image,
+		                  vk::ImageLayout::eTransferDstOptimal, 1, &copy);
+	}
+
+	// Some AMD hosts drop stencil during image-to-image copies of packed D*S8
+	// formats. Route the stencil plane through a scratch buffer instead.
+	if (static_cast<bool>(aspects & vk::ImageAspectFlagBits::eStencil)) {
+		const auto stencil_bytes =
+		    static_cast<uint64_t>(width) * height * depth * source_layers;
+		EXIT_IF(stencil_bytes == 0);
+		Buffer scratch(*m_graphics, *m_scheduler, MemoryUsage::DeviceLocal, 0,
+		               vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+		               stencil_bytes);
+		vk::BufferImageCopy region {};
+		region.imageSubresource = {vk::ImageAspectFlagBits::eStencil, 0, 0, source_layers};
+		region.imageExtent      = {width, height, depth};
+		command.copyImageToBuffer(source.backing.image, vk::ImageLayout::eTransferSrcOptimal,
+		                          scratch.Handle(), 1, &region);
+
+		vk::BufferMemoryBarrier2 buffer_barrier {};
+		buffer_barrier.srcStageMask        = vk::PipelineStageFlagBits2::eTransfer;
+		buffer_barrier.srcAccessMask       = vk::AccessFlagBits2::eTransferWrite;
+		buffer_barrier.dstStageMask        = vk::PipelineStageFlagBits2::eTransfer;
+		buffer_barrier.dstAccessMask       = vk::AccessFlagBits2::eTransferRead;
+		buffer_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		buffer_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		buffer_barrier.buffer              = scratch.Handle();
+		buffer_barrier.size                = stencil_bytes;
+		vk::DependencyInfo dependency {};
+		dependency.bufferMemoryBarrierCount = 1;
+		dependency.pBufferMemoryBarriers    = &buffer_barrier;
+		command.pipelineBarrier2(dependency);
+
+		region.imageSubresource = {vk::ImageAspectFlagBits::eStencil, mip, layer,
+		                           destination_layers};
+		command.copyBufferToImage(scratch.Handle(), backing.image,
+		                          vk::ImageLayout::eTransferDstOptimal, 1, &region);
+	}
+
 	Transit(vk::ImageLayout::eGeneral,
 	        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command);
 }

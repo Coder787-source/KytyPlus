@@ -443,27 +443,83 @@ bool ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 		EXIT("storage texture size is zero: kind=%u format=%u addr=0x%016" PRIx64 "\n",
 		     static_cast<uint32_t>(resource.kind), format, descriptor.Base40());
 	}
-	// Unimplemented tile/encoding combinations stay soft-null until a dump proves the layout.
-	static std::atomic<uint32_t> soft_logs {0};
-	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-		LOGF_COLOR(
-		    Log::Color::Yellow,
-		    "soft-null unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
-		    "kind=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
-		    "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-		    " extent=%ux%ux%u type=%u format=%u tile=%u "
-		    "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
-		    resource_ok, descriptor_ok, encoding_ok, format_ok, static_cast<uint32_t>(resource.kind),
-		    static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
-		    resource.atomic, resource.depth_compare, descriptor.Base40(), size,
-		    static_cast<uint32_t>(descriptor.Width5()) + 1u,
-		    static_cast<uint32_t>(descriptor.Height5()) + 1u,
-		    static_cast<uint32_t>(descriptor.Depth()) + 1u, descriptor.Type(), format,
-		    descriptor.TileMode(), descriptor.fields[0], descriptor.fields[1], descriptor.fields[2],
-		    descriptor.fields[3], descriptor.fields[4], descriptor.fields[5], descriptor.fields[6],
-		    descriptor.fields[7]);
+	EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
+	     "kind=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
+	     "base_level=%u last_level=%u max_mip=%u min_lod=%u base_array=%u bc=%u msaa=%d "
+	     "depth_tile_bpe=%u swizzle_ok=%d "
+	     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
+	     " extent=%ux%ux%u type=%u format=%u tile=%u swizzle=0x%03x read=%d written=%d "
+	     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+	     resource_ok, descriptor_ok, encoding_ok, format_ok, static_cast<uint32_t>(resource.kind),
+	     static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
+	     resource.atomic, resource.depth_compare, descriptor.BaseLevel(), descriptor.LastLevel(),
+	     descriptor.MaxMip(), descriptor.MinLod(), descriptor.BaseArray5(), descriptor.BCSwizzle(),
+	     descriptor.MsaaDepth(), Prospero::RenderTargetBytesPerElement(format),
+	     IsValidImageSwizzle(descriptor.DstSelXYZW()), descriptor.Base40(), size,
+	     static_cast<uint32_t>(descriptor.Width5()) + 1u,
+	     static_cast<uint32_t>(descriptor.Height5()) + 1u,
+	     static_cast<uint32_t>(descriptor.Depth()) + 1u, descriptor.Type(), format,
+	     descriptor.TileMode(), descriptor.DstSelXYZW(), resource.read, resource.written,
+	     descriptor.fields[0], descriptor.fields[1], descriptor.fields[2], descriptor.fields[3],
+	     descriptor.fields[4], descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
+}
+
+[[nodiscard]] bool IsSupportedStorageTextureTile(const ShaderRecompiler::IR::ImageResource& resource,
+                                                 const ShaderTextureResource& descriptor) {
+	const auto tile = descriptor.TileMode();
+	const bool is_color_2d =
+	    descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2D);
+	const bool is_color_2d_array =
+	    descriptor.Type() == Prospero::GpuEnumValue(Prospero::ImageType::kColor2DArray);
+	const bool valid_2d_slice =
+	    (is_color_2d && descriptor.Depth() == 0 && descriptor.BaseArray5() == 0) ||
+	    (is_color_2d_array && descriptor.BaseArray5() <= descriptor.Depth());
+	const bool is_2d =
+	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2D && valid_2d_slice;
+	const bool is_2d_array =
+	    resource.dimension == ShaderRecompiler::Decoder::ImageDimension::Dim2DArray &&
+	    is_color_2d_array && descriptor.BaseArray5() <= descriptor.Depth();
+	TileBlockLayout depth_block {};
+	const auto      depth_bpe = Prospero::RenderTargetBytesPerElement(descriptor.Format());
+	const bool      supported_depth_tile =
+	    tile == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) && !resource.read &&
+	    !Prospero::IsFmaskTextureFormat(descriptor.Format()) && (is_2d || is_2d_array) &&
+	    TileGetBlockLayout(TileBlockFamily::Depth64KB, depth_bpe, depth_block);
+	const bool supported_standard_tile =
+	    (tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB) &&
+	     TileIsStandard4KBTextureSupported(descriptor.Format())) ||
+	    (tile == Prospero::GpuEnumValue(Prospero::TileMode::kStandard64KB) &&
+	     TileIsStandard64KBTextureSupported(descriptor.Format()));
+	return tile == Prospero::GpuEnumValue(Prospero::TileMode::kLinear) ||
+	       tile == Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget) ||
+	       supported_depth_tile || supported_standard_tile;
+}
+
+[[nodiscard]] bool ShouldSoftNullUnsupportedStorageTile(
+    const ShaderRecompiler::IR::ImageResource& resource, const ShaderTextureResource& descriptor,
+    uint64_t size) {
+	const auto tile = descriptor.TileMode();
+	// Depth is a known tile family; illegal depth-tile combos must hard-fail.
+	if (size == 0 || tile == Prospero::GpuEnumValue(Prospero::TileMode::kDepth) ||
+	    IsSupportedStorageTextureTile(resource, descriptor) ||
+	    !IsSupportedStorageImageResource(resource) ||
+	    !IsSupportedStorageTextureEncoding(descriptor)) {
+		return false;
 	}
-	return false;
+	const auto format        = descriptor.Format();
+	const bool uint_resource =
+	    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint;
+	if (!(Prospero::IsSupportedTextureFormat(format) &&
+	      uint_resource == Prospero::IsUintTextureFormat(format) &&
+	      (!resource.atomic || format == Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt)))) {
+		return false;
+	}
+	// Accept soft-null only when swapping in a supported tile would make the descriptor legal.
+	ShaderTextureResource patched = descriptor;
+	patched.fields[3] =
+	    (patched.fields[3] & ~(0x1fu << 20u)) |
+	    (Prospero::GpuEnumValue(Prospero::TileMode::kLinear) << 20u);
+	return IsSupportedStorageTextureDescriptor(resource, patched);
 }
 
 struct NullImageSpec {
@@ -676,11 +732,20 @@ RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   reso
 	EXIT_NOT_IMPLEMENTED(size.size == 0 || size.align == 0 ||
 	                     (address & (static_cast<uint64_t>(size.align) - 1u)) != 0);
 	if (storage) {
-		if (!ValidateStorageTexture(resource, descriptor, size.size)) {
+		if (ShouldSoftNullUnsupportedStorageTile(resource, descriptor, size.size)) {
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "soft-null unsupported storage texture tile: kind=%u format=%u "
+				           "tile=%u addr=0x%016" PRIx64 "\n",
+				           static_cast<uint32_t>(resource.kind), descriptor.Format(),
+				           descriptor.TileMode(), address);
+			}
 			auto       desc = NullTextureDesc(resource, TextureCache::BindingType::Storage);
 			const auto id   = texture_cache.FindImage(desc);
 			return {id, nullptr, std::move(desc)};
 		}
+		(void)ValidateStorageTexture(resource, descriptor, size.size);
 		m_context.GetBufferCache().ValidateGpuAccess(address, size.size, resource.read,
 		                                             resource.written);
 	}

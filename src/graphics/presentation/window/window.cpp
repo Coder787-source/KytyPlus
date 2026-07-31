@@ -1072,44 +1072,6 @@ const std::vector<InputBinding>& DefaultControllerBindings() {
 
 namespace Libs::Controller {
 
-void ControllerSetRumble(int id, uint8_t large_motor, uint8_t small_motor) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return;
-	}
-
-	// The real ScePad API takes a persistent 0-255 motor intensity with no duration, while SDL's
-	// rumble is duration-based. Games poll/refresh vibration state frequently, so a short hold
-	// bridges the gap: a fresh call before it expires re-arms it, and calling with 0 stops it
-	// immediately (0-intensity rumble cancels any active effect).
-	constexpr Uint32 RUMBLE_HOLD_MS = 250;
-	const auto        low_freq       = static_cast<Uint16>(large_motor) * 257U;
-	const auto        high_freq      = static_cast<Uint16>(small_motor) * 257U;
-
-	SDL_GameControllerRumble(pad, low_freq, high_freq, RUMBLE_HOLD_MS);
-}
-
-void ControllerSetLightBar(int id, uint8_t r, uint8_t g, uint8_t b) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr || !SDL_GameControllerHasLED(pad)) {
-		return;
-	}
-
-	SDL_GameControllerSetLED(pad, r, g, b);
-}
-
-void ControllerSetPlayerIndex(int id, int player_index) {
-	auto* pad = SDL_GameControllerFromInstanceID(id);
-	if (pad == nullptr) {
-		return;
-	}
-
-	// SDL's PS5 HIDAPI driver reproduces the same 5-LED centered mapping the console itself
-	// uses (see SetLightsForPlayerIndex()/dualsense_set_player_leds() in hid-playstation.c),
-	// triggered automatically whenever the player index changes.
-	SDL_GameControllerSetPlayerIndex(pad, player_index);
-}
-
 // Mirrors DS5EffectsState_t from SDL's bundled hidapi PS5 driver (SDL_hidapi_ps5.c), which in
 // turn is verified against Sony's own upstreamed Linux kernel driver's
 // dualsense_output_report_common (hid-playstation.c, GPL-2.0-or-later). Both agree on this exact
@@ -1156,6 +1118,139 @@ constexpr uint8_t DS5_ENABLE1_MIC_VOLUME           = 0x40;
 constexpr uint8_t DS5_ENABLE2_MIC_LIGHT            = 0x01;
 constexpr uint8_t DS5_ENABLE2_POWER_SAVE_CONTROL   = 0x02;
 constexpr uint8_t DS5_POWER_SAVE_MIC_MUTE          = 0x10;
+
+// HD Haptics enable bit for enable_bits3. When set, the unknown1[6] field in the
+// DualSenseEffectsReport is interpreted as custom haptics frequency/amplitude data for the
+// voice-coil actuators. Verified against widely-corroborated community reverse-engineering
+// of the DualSense HID output report (same sources that identified the adaptive trigger layout).
+constexpr uint8_t DS5_ENABLE3_CUSTOM_HAPTICS = 0x04;
+
+// Custom haptics data layout within the unknown1[6] field (byte 24-29 of the 47-byte report).
+// Each voice-coil actuator gets a 16-bit frequency (Hz, little-endian) and 8-bit amplitude.
+// The DualSense's voice-coil actuators support approximately 20-500 Hz, with the most
+// perceptible haptic detail in the 40-200 Hz range.
+constexpr uint8_t DS5_HAPTICS_LEFT_FREQ_LO  = 0;
+constexpr uint8_t DS5_HAPTICS_LEFT_FREQ_HI  = 1;
+constexpr uint8_t DS5_HAPTICS_RIGHT_FREQ_LO = 2;
+constexpr uint8_t DS5_HAPTICS_RIGHT_FREQ_HI = 3;
+constexpr uint8_t DS5_HAPTICS_LEFT_AMP      = 4;
+constexpr uint8_t DS5_HAPTICS_RIGHT_AMP     = 5;
+
+// Default haptic frequency used when a game only sets amplitude via the standard rumble API
+// (PadSetVibration) without specifying a frequency. 150 Hz is in the middle of the DualSense's
+// most perceptible range and produces a clean, crisp feel — close to what first-party titles
+// use for general-purpose haptic feedback (e.g. footsteps, UI interactions).
+constexpr uint16_t DS5_HAPTICS_DEFAULT_FREQ_HZ = 150;
+
+// Per-controller HD haptics state: tracks the last-set frequency and amplitude for each
+// voice-coil actuator. This allows games that call PadSetVibration (which only sets amplitude)
+// to still get frequency-rich HD haptics rather than falling back to the old rumble-only path.
+struct HapticState {
+	uint16_t left_freq_hz  = DS5_HAPTICS_DEFAULT_FREQ_HZ;
+	uint16_t right_freq_hz = DS5_HAPTICS_DEFAULT_FREQ_HZ;
+	uint8_t  left_amp      = 0;
+	uint8_t  right_amp     = 0;
+};
+static std::unordered_map<int, HapticState> g_haptic_state;
+static std::mutex                           g_haptic_mutex;
+
+// Sends a full DualSense HID output report with the current haptic frequency/amplitude for
+// both voice-coil actuators. Called by ControllerSetRumble (amplitude-only) and
+// ControllerSetHapticEffect (frequency + amplitude). The enable_bits3 flag gates the custom
+// haptics data; when both amplitudes are 0, the flag is cleared to let the controller idle.
+static void DualSenseSendHapticReport(SDL_GameController* pad, int id) {
+	std::lock_guard<std::mutex> lock(g_haptic_mutex);
+	auto it = g_haptic_state.find(id);
+	if (it == g_haptic_state.end()) return;
+
+	DualSenseEffectsReport report {};
+	const auto& state = it->second;
+
+	// Pack custom haptics frequency/amplitude into the unknown1[6] field
+	report.unknown1[DS5_HAPTICS_LEFT_FREQ_LO]  = static_cast<uint8_t>(state.left_freq_hz & 0xFF);
+	report.unknown1[DS5_HAPTICS_LEFT_FREQ_HI]  = static_cast<uint8_t>((state.left_freq_hz >> 8) & 0xFF);
+	report.unknown1[DS5_HAPTICS_RIGHT_FREQ_LO] = static_cast<uint8_t>(state.right_freq_hz & 0xFF);
+	report.unknown1[DS5_HAPTICS_RIGHT_FREQ_HI] = static_cast<uint8_t>((state.right_freq_hz >> 8) & 0xFF);
+	report.unknown1[DS5_HAPTICS_LEFT_AMP]      = state.left_amp;
+	report.unknown1[DS5_HAPTICS_RIGHT_AMP]     = state.right_amp;
+
+	// Only set the custom haptics enable bit if at least one actuator has non-zero amplitude.
+	// This lets the controller fall back to its own idle/low-power state when silent.
+	if (state.left_amp > 0 || state.right_amp > 0) {
+		report.enable_bits3 = DS5_ENABLE3_CUSTOM_HAPTICS;
+	}
+
+	SDL_GameControllerSendEffect(pad, &report, sizeof(report));
+}
+
+void ControllerSetRumble(int id, uint8_t large_motor, uint8_t small_motor) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	// Map the legacy large/small motor values to the DualSense's voice-coil actuators.
+	// On real hardware, the "large motor" (low-frequency) maps to the left actuator and
+	// "small motor" (high-frequency) maps to the right actuator. We preserve the frequency
+	// that was last set (or the default 150 Hz) and only update the amplitude, giving games
+	// that use the standard PadSetVibration API frequency-rich HD haptics automatically.
+	// This replaces the old SDL_GameControllerRumble path, which only produced basic
+	// on/off rumble without frequency control.
+	{
+		std::lock_guard<std::mutex> lock(g_haptic_mutex);
+		auto& state = g_haptic_state[id];
+		state.left_amp  = large_motor;
+		state.right_amp = small_motor;
+	}
+
+	DualSenseSendHapticReport(pad, id);
+}
+
+// Sets HD haptics with explicit frequency and amplitude for each voice-coil actuator.
+// This is the full-featured API that games can use for fine-grained haptic feedback.
+// frequency_hz: 20-500 Hz range (40-200 Hz is most perceptible)
+// left_amp / right_amp: 0-255 amplitude for each actuator
+// When called with amplitude 0, the actuator is silenced but the frequency is preserved
+// for the next non-zero call.
+void ControllerSetHapticEffect(int id, uint16_t left_freq_hz, uint8_t left_amp,
+                                uint16_t right_freq_hz, uint8_t right_amp) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(g_haptic_mutex);
+		auto& state = g_haptic_state[id];
+		state.left_freq_hz  = left_freq_hz;
+		state.left_amp      = left_amp;
+		state.right_freq_hz = right_freq_hz;
+		state.right_amp     = right_amp;
+	}
+
+	DualSenseSendHapticReport(pad, id);
+}
+
+void ControllerSetLightBar(int id, uint8_t r, uint8_t g, uint8_t b) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr || !SDL_GameControllerHasLED(pad)) {
+		return;
+	}
+
+	SDL_GameControllerSetLED(pad, r, g, b);
+}
+
+void ControllerSetPlayerIndex(int id, int player_index) {
+	auto* pad = SDL_GameControllerFromInstanceID(id);
+	if (pad == nullptr) {
+		return;
+	}
+
+	// SDL's PS5 HIDAPI driver reproduces the same 5-LED centered mapping the console itself
+	// uses (see SetLightsForPlayerIndex()/dualsense_set_player_leds() in hid-playstation.c),
+	// triggered automatically whenever the player index changes.
+	SDL_GameControllerSetPlayerIndex(pad, player_index);
+}
 
 static void WriteTriggerCommand(uint8_t* dest, const Controller::DualSenseTriggerCommand& cmd) {
 	dest[0] = cmd.mode;

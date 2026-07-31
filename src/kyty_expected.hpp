@@ -12,6 +12,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <stdexcept>
 
 namespace std {
 
@@ -52,17 +53,94 @@ public:
 	constexpr bool has_value() const noexcept { return std::holds_alternative<T>(storage_); }
 	constexpr explicit operator bool() const noexcept { return has_value(); }
 
-	constexpr T& value() & { return std::get<T>(storage_); }
-	constexpr const T& value() const& { return std::get<T>(storage_); }
-	constexpr T&& value() && { return std::get<T>(std::move(storage_)); }
+	constexpr T& value() & {
+		if (!has_value()) throw bad_expected_access<E>(error());
+		return std::get<T>(storage_);
+	}
+	constexpr const T& value() const& {
+		if (!has_value()) throw bad_expected_access<E>(error());
+		return std::get<T>(storage_);
+	}
+	constexpr T&& value() && {
+		if (!has_value()) throw bad_expected_access<E>(std::move(error()));
+		return std::get<T>(std::move(storage_));
+	}
 
-	constexpr E& error() & { return std::get<E>(storage_); }
-	constexpr const E& error() const& { return std::get<E>(storage_); }
+	constexpr E& error() & {
+		if (has_value()) throw bad_expected_access<E>(E{});
+		return std::get<E>(storage_);
+	}
+	constexpr const E& error() const& {
+		if (has_value()) throw bad_expected_access<E>(E{});
+		return std::get<E>(storage_);
+	}
+
+	template <class U>
+	constexpr T value_or(U&& default_value) const& {
+		return has_value() ? value() : static_cast<T>(std::forward<U>(default_value));
+	}
+
+	template <class U>
+	constexpr T value_or(U&& default_value) && {
+		return has_value() ? std::move(value()) : static_cast<T>(std::forward<U>(default_value));
+	}
+
+	template <class F>
+	constexpr auto and_then(F&& f) & -> std::invoke_result_t<F, T&> {
+		using Result = std::invoke_result_t<F, T&>;
+		return has_value() ? std::forward<F>(f)(value()) : Result(unexpected<E>(error()));
+	}
+
+	template <class F>
+	constexpr auto and_then(F&& f) const& -> std::invoke_result_t<F, const T&> {
+		using Result = std::invoke_result_t<F, const T&>;
+		return has_value() ? std::forward<F>(f)(value()) : Result(unexpected<E>(error()));
+	}
+
+	template <class F>
+	constexpr auto and_then(F&& f) && -> std::invoke_result_t<F, T&&> {
+		using Result = std::invoke_result_t<F, T&&>;
+		return has_value() ? std::forward<F>(f)(std::move(value())) : Result(unexpected<E>(std::move(error())));
+	}
+
+	template <class F>
+	constexpr auto transform(F&& f) & -> expected<std::invoke_result_t<F, T&>, E> {
+		using Result = std::invoke_result_t<F, T&>;
+		return has_value() ? expected<Result, E>(std::forward<F>(f)(value())) : expected<Result, E>(unexpected<E>(error()));
+	}
+
+	template <class F>
+	constexpr auto transform(F&& f) const& -> expected<std::invoke_result_t<F, const T&>, E> {
+		using Result = std::invoke_result_t<F, const T&>;
+		return has_value() ? expected<Result, E>(std::forward<F>(f)(value())) : expected<Result, E>(unexpected<E>(error()));
+	}
+
+	template <class F>
+	constexpr auto transform(F&& f) && -> expected<std::invoke_result_t<F, T&&>, E> {
+		using Result = std::invoke_result_t<F, T&&>;
+		return has_value() ? expected<Result, E>(std::forward<F>(f)(std::move(value()))) : expected<Result, E>(unexpected<E>(std::move(error())));
+	}
+
+	template <class F>
+	constexpr auto or_else(F&& f) & -> expected {
+		return has_value() ? *this : std::forward<F>(f)(error());
+	}
+
+	template <class F>
+	constexpr auto or_else(F&& f) const& -> expected {
+		return has_value() ? *this : std::forward<F>(f)(error());
+	}
+
+	template <class F>
+	constexpr auto or_else(F&& f) && -> expected {
+		return has_value() ? std::move(*this) : std::forward<F>(f)(std::move(error()));
+	}
 
 	constexpr T* operator->() { return &value(); }
 	constexpr const T* operator->() const { return &value(); }
 	constexpr T& operator*() & { return value(); }
 	constexpr const T& operator*() const& { return value(); }
+	constexpr T&& operator*() && { return std::move(value()); }
 
 private:
 	std::variant<T, E> storage_;
@@ -85,9 +163,39 @@ public:
 
 	constexpr bool has_value() const noexcept { return ok_; }
 	constexpr explicit operator bool() const noexcept { return ok_; }
-	constexpr void value() const {}
-	constexpr E& error() & { return error_; }
-	constexpr const E& error() const& { return error_; }
+	constexpr void value() const {
+		if (!ok_) throw bad_expected_access<E>(error_);
+	}
+	constexpr E& error() & {
+		if (ok_) throw bad_expected_access<E>(E{});
+		return error_;
+	}
+	constexpr const E& error() const& {
+		if (ok_) throw bad_expected_access<E>(E{});
+		return error_;
+	}
+
+	template <class F>
+	constexpr auto and_then(F&& f) & -> std::invoke_result_t<F> {
+		using Result = std::invoke_result_t<F>;
+		return ok_ ? std::forward<F>(f)() : Result(unexpected<E>(error_));
+	}
+
+	template <class F>
+	constexpr auto and_then(F&& f) const& -> std::invoke_result_t<F> {
+		using Result = std::invoke_result_t<F>;
+		return ok_ ? std::forward<F>(f)() : Result(unexpected<E>(error_));
+	}
+
+	template <class F>
+	constexpr auto or_else(F&& f) & -> expected {
+		return ok_ ? *this : std::forward<F>(f)(error_);
+	}
+
+	template <class F>
+	constexpr auto or_else(F&& f) const& -> expected {
+		return ok_ ? *this : std::forward<F>(f)(error_);
+	}
 
 private:
 	bool ok_;

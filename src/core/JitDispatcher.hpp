@@ -13,10 +13,10 @@
 namespace KytyPS5::Core {
 
 struct alignas(64) ThreadContext {
-	uint64_t gprs[32];
+	uint64_t gprs[16]; // x86-64 has 16 GPRs (rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8-r15)
 	uint64_t sp = 0;
 	uint64_t pc = 0;
-	uint64_t nzcv = 0;
+	uint64_t rflags = 0;
 };
 
 struct OpMov {
@@ -173,24 +173,10 @@ private:
 		if (op.base_reg >= 12) {
 			EmitFillMove(op.base_reg, 10);
 		}
+		// MOV d, [b + offset]
 		PushByte(0x48);
-		PushByte(0x89);
-		PushModRM(0, b);
-		if (op.offset != 0) {
-			PushByte(0x48);
-			PushByte(0x05);
-			const uint32_t off = static_cast<uint32_t>(op.offset);
-			for (int i = 0; i < 4; ++i) {
-				PushByte(static_cast<uint8_t>((off >> (i * 8)) & 0xFF));
-			}
-		}
-		PushByte(0xE8);
-		for (int i = 0; i < 4; ++i) {
-			PushByte(0x00);
-		}
-		PushByte(0x48);
-		PushByte(0x89);
-		PushModRM(d, 0);
+		PushByte(0x8B);
+		PushModRM(d, b, static_cast<uint32_t>(op.offset));
 		if (op.reg_dest >= 12) {
 			EmitSpillMove(op.reg_dest, d);
 		}
@@ -205,12 +191,15 @@ private:
 		if (op.base_reg >= 12) {
 			EmitFillMove(op.base_reg, 10);
 		}
+		// MOV [b + offset], s
 		PushByte(0x48);
 		PushByte(0x89);
-		PushModRM(b, s, static_cast<uint32_t>(op.offset));
+		PushModRM(s, b, static_cast<uint32_t>(op.offset));
 	}
 
 	void EmitJmp(const OpJmp& op) {
+		// JMP rel32 — caller must compute relative offset from end of this instruction
+		// For scaffolding, emit placeholder that will be patched later
 		PushByte(0xE9);
 		const uint32_t rel = static_cast<uint32_t>(op.target_addr);
 		for (int i = 0; i < 4; ++i) {
@@ -219,22 +208,21 @@ private:
 	}
 
 	void EmitSyscall(const OpSyscall& op) {
+		// MOV RAX, call_id
 		PushByte(0x48);
 		PushByte(0xB8);
 		const uint64_t id = op.call_id;
 		for (int i = 0; i < 8; ++i) {
 			PushByte(static_cast<uint8_t>((id >> (i * 8)) & 0xFF));
 		}
+		// SYSCALL
 		PushByte(0x0F);
 		PushByte(0x05);
 	}
 
 	void EmitAvx512(const OpAvx512& op) {
-		(void)avx_emitter_->EmitInstruction(op.opcode, op.zmm_reg);
-		PushByte(0x62);
-		PushByte(0x00);
-		PushByte(0x00);
-		PushByte(0x00);
+		// Delegate to the AVX-512 emitter for proper encoding
+		avx_emitter_->EmitRaw(op.opcode, op.zmm_reg, code_buffer_);
 	}
 
 	std::vector<uint8_t> code_buffer_;

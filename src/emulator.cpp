@@ -175,7 +175,8 @@ static void Execute(const std::filesystem::path& game_patch) {
 	    },
 	    &patch_path);
 	Libs::Graphics::WindowRun();
-	std::quick_exit(0);
+	KytyClose();
+	std::_Exit(0);
 }
 
 void Run(const RunOptions& options) {

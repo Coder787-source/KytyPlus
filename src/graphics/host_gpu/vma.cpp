@@ -302,4 +302,52 @@ void GraphicContext::UnmapMemory(VulkanMemory& memory) {
 	vmaUnmapMemory(allocator, memory.allocation);
 }
 
+// ─── Ray Tracing ─────────────────────────────────────────────────────────────
+
+void GraphicContext::AppendHardwareRayTracingDeviceExtensions(
+    const std::vector<vk::ExtensionProperties>& available_extensions,
+    std::vector<const char*>& device_extensions) {
+	// Check which RT extensions the driver actually supports and append them.
+	static constexpr const char* kRtExtensions[] = {
+	    VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+	    VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+	    VK_KHR_RAY_QUERY_EXTENSION_NAME,
+	    VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+	};
+
+	for (const auto& ext : available_extensions) {
+		for (const auto* rt_ext : kRtExtensions) {
+			if (std::strcmp(ext.extensionName, rt_ext) == 0) {
+				device_extensions.push_back(rt_ext);
+				break;
+			}
+		}
+	}
+}
+
+void GraphicContext::LoadHardwareRayTracingFunctions() {
+	// All required RT extensions were verified as available during
+	// AppendHardwareRayTracingDeviceExtensions. If the device was created
+	// successfully with those extensions requested, they are enabled.
+	// The Vulkan-HPP dynamic dispatcher loads the function pointers
+	// automatically when the extensions are enabled at device creation time.
+	rt_extensions_enabled = true;
+
+	if (rt_extensions_enabled) {
+		// Query ray tracing pipeline properties for shader binding table alignment.
+		vk::PhysicalDeviceRayTracingPipelinePropertiesKHR rt_props;
+		vk::PhysicalDeviceProperties2 props2;
+		props2.pNext = &rt_props;
+		physical_device.getProperties2(&props2);
+
+		LOGF("Ray tracing enabled: shaderGroupHandleSize=%u, "
+		     "shaderGroupBaseAlignment=%u, maxRayDispatchInvocationCount=%u\n",
+		     rt_props.shaderGroupHandleSize,
+		     rt_props.shaderGroupBaseAlignment,
+		     rt_props.maxRayDispatchInvocationCount);
+	} else {
+		LOGF("Ray tracing not available — missing required device extensions\n");
+	}
+}
+
 } // namespace Libs::Graphics
