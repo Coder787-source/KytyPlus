@@ -350,11 +350,4 @@ void GraphicContext::LoadHardwareRayTracingFunctions() {
 	}
 }
 
-vk::DeviceAddress GraphicContext::GetBufferDeviceAddress(const VulkanBuffer& buffer) const {
-	if (!buffer.buffer) { return 0; }
-	vk::BufferDeviceAddressInfo info{};
-	info.buffer = buffer.buffer;
-	return device.getBufferAddress(&info);
-}
-
 } // namespace Libs::Graphics

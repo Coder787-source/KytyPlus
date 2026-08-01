@@ -26,6 +26,17 @@ void AppendExtensionIfMissing(std::vector<const char*>& extensions, const char* 
     }
 }
 
+// Helper: get buffer device address using the KHR dispatcher directly.
+// Avoids vk::BufferDeviceAddressInfo which requires VK_KHR_buffer_device_address
+// at compile time (not available on macOS MoltenVK).
+static vk::DeviceAddress GetBufferAddress(const Graphics::VulkanBuffer& buf, vk::Device device) {
+    if (!buf.buffer) { return 0; }
+    VkBufferDeviceAddressInfoKHR info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR;
+    info.buffer = static_cast<VkBuffer>(buf.buffer);
+    return VULKAN_HPP_DEFAULT_DISPATCHER.vkGetBufferDeviceAddressKHR(device, &info);
+}
+
 } // namespace
 
 void GraphicContext::AppendHardwareRayTracingDeviceExtensions(
@@ -163,7 +174,7 @@ bool RayTracingEngine::CreateAccelerationBuffer(
     }
 
     build_info.scratchData.deviceAddress =
-        m_ctx.GetBufferDeviceAddress(*m_scratch);
+        GetBufferAddress(*m_scratch, m_ctx.device, m_ctx.device);
     build_info.dstAccelerationStructure = as->handle;
 
     out_as = std::move(as);
@@ -205,12 +216,12 @@ uint64_t RayTracingEngine::BuildBlas(std::span<const float>   vertices,
     geometry.geometryType = vk::GeometryTypeKHR::eTriangles;
     geometry.geometry.triangles.vertexFormat = vk::Format::eR32G32B32Sfloat;
     geometry.geometry.triangles.vertexData.deviceAddress =
-        m_ctx.GetBufferDeviceAddress(*vertex_buffer);
+        GetBufferAddress(*vertex_buffer, m_ctx.device);
     geometry.geometry.triangles.vertexStride   = sizeof(float) * 3;
     geometry.geometry.triangles.maxVertex       = static_cast<uint32_t>(vertices.size() / 3) - 1;
     geometry.geometry.triangles.indexType      = vk::IndexType::eUint32;
     geometry.geometry.triangles.indexData.deviceAddress =
-        m_ctx.GetBufferDeviceAddress(*index_buffer);
+        GetBufferAddress(*index_buffer, m_ctx.device);
     geometry.geometry.triangles.indexCount     = static_cast<uint32_t>(indices.size());
     geometry.flags = vk::GeometryFlagBitsKHR::eOpaque;
 
@@ -278,7 +289,7 @@ uint64_t RayTracingEngine::BuildTlas(
     geometry.geometryType = vk::GeometryTypeKHR::eInstances;
     geometry.geometry.instances.arrayOfPointers = VK_FALSE;
     geometry.geometry.instances.data.deviceAddress =
-        m_ctx.GetBufferDeviceAddress(*instance_buffer);
+        GetBufferAddress(*instance_buffer, m_ctx.device);
 
     vk::AccelerationStructureBuildGeometryInfoKHR build_info{};
     build_info.type          = vk::AccelerationStructureTypeKHR::eTopLevel;
@@ -451,19 +462,19 @@ bool RayTracingEngine::CreateRayTracingPipeline(
 
     // Set up SBT regions.
     out_pipeline.rgen_region = vk::StridedDeviceAddressRegionKHR{
-        m_ctx.GetBufferDeviceAddress(*sbt_buffer),
+        GetBufferAddress(*sbt_buffer, m_ctx.device),
         rgen_size, rgen_stride
     };
     out_pipeline.miss_region = vk::StridedDeviceAddressRegionKHR{
-        m_ctx.GetBufferDeviceAddress(*sbt_buffer) + rgen_stride * rgen_count,
+        GetBufferAddress(*sbt_buffer, m_ctx.device) + rgen_stride * rgen_count,
         miss_size, miss_stride
     };
     out_pipeline.hit_region = vk::StridedDeviceAddressRegionKHR{
-        m_ctx.GetBufferDeviceAddress(*sbt_buffer) + rgen_stride * rgen_count + miss_stride * miss_count,
+        GetBufferAddress(*sbt_buffer, m_ctx.device) + rgen_stride * rgen_count + miss_stride * miss_count,
         hit_size, hit_stride
     };
     out_pipeline.callable_region = vk::StridedDeviceAddressRegionKHR{
-        m_ctx.GetBufferDeviceAddress(*sbt_buffer) + rgen_stride * rgen_count + miss_stride * miss_count + hit_stride * hit_count,
+        GetBufferAddress(*sbt_buffer, m_ctx.device) + rgen_stride * rgen_count + miss_stride * miss_count + hit_stride * hit_count,
         callable_size, callable_stride
     };
 
