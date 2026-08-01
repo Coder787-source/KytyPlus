@@ -34,7 +34,6 @@ struct GraphicContext: public VulkanInstance {
 	    const std::vector<vk::ExtensionProperties>& available_extensions,
 	    std::vector<const char*>&                   device_extensions);
 	void LoadHardwareRayTracingFunctions();
-	[[nodiscard]] vk::DeviceAddress GetBufferDeviceAddress(const VulkanBuffer& buffer) const;
 
 	uint32_t screen_width  = 0;
 	uint32_t screen_height = 0;
