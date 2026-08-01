@@ -80,6 +80,14 @@ next unimplemented feature. Always test with a **fresh build** and attach logs w
 
 ---
 
+## See it in action
+
+Video of Dead Cells booting to the main menu on KytyPlus v1.8 (i7-9700K, RTX 4060 Ti, external HDD). Tested and recorded by [@CorpseSlayer](https://github.com/KytyPS5/KytyPS5/issues/127).
+
+[▶ Watch on Streamable](https://streamable.com/7ryvh1)
+
+---
+
 ## Screenshots
 
 Screenshots below are from the KytyPS5 lineage and illustrate early boot capability — not KytyPlus
