@@ -97,25 +97,6 @@ static bool IsRandomDevice(const std::string& path) {
 	return path == "/dev/random" || path == "/dev/urandom";
 }
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-// Windows does not allow these characters in filenames: : < > " / \ | ? *
-// PS5 games may create files with ':' in the name (e.g. save data).
-// Replace all invalid characters with '_' to prevent silent save corruption.
-static void SanitizeFilenameForWindows(std::filesystem::path& path) {
-	auto str = Common::PathToGenericString(path);
-	bool changed = false;
-	for (auto& c : str) {
-		if (c == ':' || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*') {
-			c = '_';
-			changed = true;
-		}
-	}
-	if (changed) {
-		path = str;
-	}
-}
-#endif
-
 static void FillRandomBuffer(void* buf, size_t nbytes) {
 	auto*              out = reinterpret_cast<uint8_t*>(buf);
 	thread_local std::random_device random;
@@ -444,10 +425,6 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 
 	file->real_name = (directory ? g_mount_points->GetRealDirectory(file->name)
 	                             : g_mount_points->GetRealFilename(file->name));
-
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	SanitizeFilenameForWindows(file->real_name);
-#endif
 
 	if (trunc && rw_mode == Common::File::Mode::Read) {
 		return KERNEL_ERROR_EACCES;
@@ -1038,11 +1015,6 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 	auto to_path   = std::string(to);
 	auto real_from = g_mount_points->GetRealFilename(from_path);
 	auto real_to   = g_mount_points->GetRealFilename(to_path);
-
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	SanitizeFilenameForWindows(real_from);
-	SanitizeFilenameForWindows(real_to);
-#endif
 
 	EXIT_NOT_IMPLEMENTED(g_files->GetFile(real_from) != nullptr);
 	EXIT_NOT_IMPLEMENTED(g_files->GetFile(real_to) != nullptr);

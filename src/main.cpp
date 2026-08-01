@@ -63,7 +63,6 @@ static void PrintUsage() {
 	         "4-vertex path.\n");
 	::printf(
 	    "  --readback-linear-images <true|false> Read back writable linear images on submit.\n");
-	::printf("  --fullscreen, -f                     Launch in fullscreen mode.\n");
 	::printf("  --rd                                 Enable RenderDoc capture.\n");
 	::printf("  --keyboard-map <list>                Keyboard->pad button map, format "
 	         "\"code:button,...\". Set via the launcher's Input Mapping dialog.\n");

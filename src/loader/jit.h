@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <list>
 #include <unordered_map>
 #include <vector>
 
@@ -18,7 +17,7 @@ namespace Loader::Jit {
 // ---------------------------------------------------------------------------
 
 struct CachedBlock {
-	uint64_t            guest_addr = 0;
+	uint64_t          guest_addr = 0;
 	std::vector<uint8_t> host_code;
 };
 
@@ -30,50 +29,43 @@ public:
 	~JitCache() = default;
 
 	// Look up a cached block by its guest address.  Returns nullptr on miss.
-	// On hit, promotes the block to MRU (O(1) via list splice).
-	const CachedBlock* Find(uint64_t guest_addr) {
+	const CachedBlock* Find(uint64_t guest_addr) const {
 		auto it = m_map.find(guest_addr);
-		if (it == m_map.end()) {
-			return nullptr;
+		if (it != m_map.end()) {
+			return &it->second;
 		}
-		// Promote to MRU — O(1) splice.
-		m_lru.splice(m_lru.end(), m_lru, it->second.lru_it);
-		return &it->second.block;
+		return nullptr;
 	}
 
-	// Insert a newly-scanned block.  Evicts the LRU entry if the cache is full.
+	// Insert a newly-scanned block.  Evicts the oldest entry if the cache is full.
 	void Insert(uint64_t guest_addr, std::vector<uint8_t> host_code) {
 		if (m_map.size() >= kMaxBlocks) {
-			// Evict the LRU entry (front of list).
-			auto lru_addr = m_lru.front();
-			m_map.erase(lru_addr);
-			m_lru.pop_front();
+			// Evict the first (oldest) entry.
+			auto it = m_map.begin();
+			auto vec_it = std::find(m_eviction_order.begin(), m_eviction_order.end(), it->first);
+			if (vec_it != m_eviction_order.end()) {
+				m_eviction_order.erase(vec_it);
+			}
+			m_map.erase(it);
 		}
-		auto [it, inserted] = m_map.try_emplace(guest_addr);
-		if (!inserted) {
-			// Already exists — update host code and move to MRU.
-			it->second.block.host_code = std::move(host_code);
-			m_lru.splice(m_lru.end(), m_lru, it->second.lru_it);
-			return;
+		m_map[guest_addr] = CachedBlock{guest_addr, std::move(host_code)};
+		m_eviction_order.push_back(guest_addr);
+		if (m_eviction_order.size() > kMaxBlocks * 2) {
+			// Trim the eviction-order list periodically.
+			m_eviction_order.erase(m_eviction_order.begin(),
+			                       m_eviction_order.begin() + static_cast<ptrdiff_t>(m_eviction_order.size() - kMaxBlocks));
 		}
-		it->second.block   = CachedBlock{guest_addr, std::move(host_code)};
-		it->second.lru_it  = m_lru.insert(m_lru.end(), guest_addr);
 	}
 
 	// Clear the entire cache (e.g. on module unload).
 	void Clear() {
 		m_map.clear();
-		m_lru.clear();
+		m_eviction_order.clear();
 	}
 
 private:
-	struct Entry {
-		CachedBlock                   block;
-		std::list<uint64_t>::iterator lru_it;
-	};
-
-	std::unordered_map<uint64_t, Entry> m_map;
-	std::list<uint64_t>                 m_lru;
+	std::unordered_map<uint64_t, CachedBlock> m_map;
+	std::vector<uint64_t>                     m_eviction_order;
 };
 
 // ---------------------------------------------------------------------------
