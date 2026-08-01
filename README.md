@@ -1,11 +1,13 @@
 # KytyPlus
 
-[![Windows Build](https://github.com/KytyPS5/KytyPS5/actions/workflows/build.yml/badge.svg)](https://github.com/KytyPS5/KytyPS5/actions/workflows/build.yml)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D4.svg)](#system-requirements)
+[![Windows Build](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml/badge.svg)](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml)
+[![macOS Build](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml/badge.svg?os=macos)](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml)
+[![Linux Build](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml/badge.svg?os=linux)](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4.svg)](#system-requirements)
 [![Status](https://img.shields.io/badge/status-experimental-orange.svg)](#current-status)
 [![License](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
 
-**KytyPlus** is a KytyPS5-based PlayStation 5 emulator for Windows. This repository is a
+**KytyPlus** is a KytyPS5-based PlayStation 5 emulator for **Windows, macOS, and Linux**. This repository is a
 standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (itself based on
 [Kyty](https://github.com/InoriRus/Kyty)), with additional work aimed at **crash/boot reach**,
 **HLE sysmodules**, and **iGPU-friendly defaults**.
@@ -52,14 +54,14 @@ standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (i
 |----|--------|
 | A compatibility-oriented KytyPS5 derivative | An official Sony product |
 | Aimed at fewer hard EXITs and better boot reach | A claim that games are “fixed” or playable |
-| Windows + Vulkan focused | A finished, stable emulator |
+| Windows / macOS / Linux + Vulkan focused | A finished, stable emulator |
 | Tester-oriented (logs welcome) | A place to request illegal files |
 
 ---
 
 ## Current status
 
-Windows x64 only. Vulkan 1.3 required.
+Windows, macOS, and Linux. Vulkan 1.3 required (MoltenVK on macOS).
 
 Upstream KytyPS5 can already boot a range of 2D/3D titles (UE4/5, Unity, custom engines). KytyPlus
 builds on that with focused changes such as:
@@ -112,8 +114,10 @@ playability guarantees.
 
 ### Runtime
 
-- Windows 10 (1803+) or Windows 11, **64-bit**
+- Windows 10 (1803+) or Windows 11, **64-bit** (Vulkan 1.3)
 - CPU: x86-64
+- macOS 12+ (Vulkan 1.3 via MoltenVK)
+- Linux (Vulkan 1.3)
 - GPU: **Vulkan 1.3** capable, with current drivers (AMD / NVIDIA / Intel)
 - RAM: 16 GB minimum; **32 GB recommended** (especially on iGPU / UMA systems)
 
