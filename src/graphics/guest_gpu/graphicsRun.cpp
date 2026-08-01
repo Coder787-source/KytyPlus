@@ -870,6 +870,10 @@ void CommandProcessor::SetIndexBufferSize(uint32_t index_buffer_size) {
 	m_index_buffer_size = index_buffer_size;
 }
 
+void CommandProcessor::SetIndexOffset(uint32_t index_offset) {
+	m_index_offset = index_offset;
+}
+
 void CommandProcessor::SetDrawIndirectArgsBaseAddress(uint64_t draw_indirect_args_base_addr) {
 	m_draw_indirect_args_base_addr = draw_indirect_args_base_addr;
 }
