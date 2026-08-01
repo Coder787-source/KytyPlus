@@ -1,23 +1,24 @@
-# Visual Studio 2015 cache/options directory
-.vs/
-.idea/
-build/
+# Build output
 _Build/
-_Build/vscode-clang/
-_Buildwindows/
-_BuildLauncher/
-.aider*
+build/
+out/
 
-# Local-only build scripts and logs (not part of the repo)
-_build_kyty.bat
-_build_launcher.bat
-_build_tests.bat
-_configure_kyty.bat
-_configure_launcher.bat
-_configure_release.bat
-_install_release.bat
-_issue_logs/
-_issues.json
-*.zip
-*.log
-issue*_crash.png
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Qt Creator
+*.autosave
+*.user
+*.pro.user*
+
+# Build artifacts that shouldn't be committed
+KytyPlus-*/
+_prev_orig/
