@@ -13,6 +13,32 @@
 namespace Libs::Graphics {
 
 class CommandBuffer;
+struct VulkanBuffer;
+struct VulkanImage;
+struct VulkanMemory;
+
+struct GraphicContext: public VulkanInstance {
+	[[nodiscard]] bool CreateAllocator();
+	void               DestroyAllocator();
+	void               LogMemoryBudget() const;
+	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
+	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
+	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;
+	void                   CreateBuffer(uint64_t size, VulkanBuffer& buffer);
+	void                   DeleteBuffer(VulkanBuffer& buffer);
+	[[nodiscard]] bool     CreateImage(const vk::ImageCreateInfo& info, VulkanImage& image);
+	void                   DeleteImage(VulkanImage& image);
+	void                   MapMemory(VulkanMemory& memory, void*& data);
+	void                   UnmapMemory(VulkanMemory& memory);
+	void                   AppendHardwareRayTracingDeviceExtensions(
+	    const std::vector<vk::ExtensionProperties>& available_extensions,
+	    std::vector<const char*>&                   device_extensions);
+	void LoadHardwareRayTracingFunctions();
+	[[nodiscard]] vk::DeviceAddress GetBufferDeviceAddress(const VulkanBuffer& buffer) const;
+
+	uint32_t screen_width  = 0;
+	uint32_t screen_height = 0;
+};
 
 struct VulkanMemory {
 	vk::MemoryRequirements  requirements       = {};
@@ -56,29 +82,6 @@ struct VulkanBuffer {
 	VulkanMemory         memory;
 	vk::BufferUsageFlags usage       = {};
 	uint64_t             buffer_size = 0;
-};
-
-struct GraphicContext: public VulkanInstance {
-	[[nodiscard]] bool CreateAllocator();
-	void               DestroyAllocator();
-	void               LogMemoryBudget() const;
-	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
-	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
-	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;
-	void                   CreateBuffer(uint64_t size, VulkanBuffer& buffer);
-	void                   DeleteBuffer(VulkanBuffer& buffer);
-	[[nodiscard]] bool     CreateImage(const vk::ImageCreateInfo& info, VulkanImage& image);
-	void                   DeleteImage(VulkanImage& image);
-	void                   MapMemory(VulkanMemory& memory, void*& data);
-	void                   UnmapMemory(VulkanMemory& memory);
-	void                   AppendHardwareRayTracingDeviceExtensions(
-	    const std::vector<vk::ExtensionProperties>& available_extensions,
-	    std::vector<const char*>&                   device_extensions);
-	void LoadHardwareRayTracingFunctions();
-	[[nodiscard]] vk::DeviceAddress GetBufferDeviceAddress(const VulkanBuffer& buffer) const;
-
-	uint32_t screen_width  = 0;
-	uint32_t screen_height = 0;
 };
 
 } // namespace Libs::Graphics

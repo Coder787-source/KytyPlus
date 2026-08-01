@@ -819,7 +819,11 @@ void WindowContext::Run() {
 		for (int i = 0; i < frame_count; i++) {
 			avg_frame_time += frame_history[i];
 		}
-		avg_frame_time /= static_cast<double>(frame_count);
+		if (frame_count > 0) {
+			avg_frame_time /= static_cast<double>(frame_count);
+		} else {
+			avg_frame_time = kTargetFrameTime; // first frame — assume ideal
+		}
 
 		// If we're consistently below 30 FPS, skip sleeping to let the GPU catch up.
 		if (avg_frame_time < kMaxFrameTime) {
