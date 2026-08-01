@@ -770,16 +770,9 @@ void WindowContext::Run() {
 	loop.paused.store(false, std::memory_order_release);
 
 	// Frame pacing — target 60 FPS (16.67 ms per frame).
-	// Adaptive: tracks recent frame times and adjusts sleep to maintain
-	// consistent cadence even under variable GPU load.
+	// Prevents the render loop from burning CPU on frames nobody sees.
 	constexpr double kTargetFrameTime = 1.0 / 60.0;
-	constexpr double kMinSleep        = 0.0005;  // 0.5 ms minimum sleep to avoid busy-wait
-	constexpr double kMaxFrameTime    = 1.0 / 30.0; // 30 FPS floor before we stop sleeping
-	constexpr int    kHistorySize     = 10;
-	double           last_frame_time  = timer.GetTimeS();
-	double           frame_history[kHistorySize] = {};
-	int              frame_index     = 0;
-	int              frame_count     = 0;
+	double           last_frame_time = timer.GetTimeS();
 
 	while (!loop.need_exit) {
 #if defined(__APPLE__)
@@ -805,33 +798,12 @@ void WindowContext::Run() {
 			timer.Resume();
 		}
 
-		// Adaptive frame pacing.
+		// Frame pacing: sleep for the remainder of the target frame time.
 		double now       = timer.GetTimeS();
 		double elapsed   = now - last_frame_time;
-
-		// Track frame time in history ring buffer.
-		frame_history[frame_index % kHistorySize] = elapsed;
-		frame_index++;
-		if (frame_count < kHistorySize) { frame_count++; }
-
-		// Compute average frame time over history.
-		double avg_frame_time = 0.0;
-		for (int i = 0; i < frame_count; i++) {
-			avg_frame_time += frame_history[i];
-		}
-		if (frame_count > 0) {
-			avg_frame_time /= static_cast<double>(frame_count);
-		} else {
-			avg_frame_time = kTargetFrameTime; // first frame — assume ideal
-		}
-
-		// If we're consistently below 30 FPS, skip sleeping to let the GPU catch up.
-		if (avg_frame_time < kMaxFrameTime) {
-			double remaining = kTargetFrameTime - elapsed;
-			// Only sleep if we have at least kMinSleep worth of headroom.
-			if (remaining > kMinSleep) {
-				Common::Thread::SleepMicro(static_cast<uint64_t>(remaining * 1'000'000.0));
-			}
+		double remaining = kTargetFrameTime - elapsed;
+		if (remaining > 0.0) {
+			Common::Thread::SleepMicro(static_cast<uint64_t>(remaining * 1'000'000.0));
 		}
 		last_frame_time = timer.GetTimeS();
 	}
@@ -872,11 +844,6 @@ static void WindowCreate(WindowContext& context) {
 
 	if (context.window == nullptr) {
 		EXIT("%s\n", SDL_GetError());
-	}
-
-	// Apply fullscreen if requested via --fullscreen / -f flag.
-	if (Config::FullscreenEnabled()) {
-		SDL_SetWindowFullscreen(context.window, SDL_WINDOW_FULLSCREEN_DESKTOP);
 	}
 
 	SDL_SetWindowResizable(context.window, SDL_FALSE);
