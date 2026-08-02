@@ -170,7 +170,6 @@ private:
 	uint64_t         m_draw_indirect_args_base_addr     = 0;
 	uint64_t         m_dispatch_indirect_args_base_addr = 0;
 	uint32_t         m_num_instances                    = 1;
-	uint32_t         m_index_offset                     = 0;
 
 	uint32_t m_de_count          = 0;
 	uint32_t m_ce_count          = 0;
