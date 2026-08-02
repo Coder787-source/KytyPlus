@@ -21,7 +21,7 @@ jobs:
       - name: Setup Visual Studio environment
         uses: TheMrMilchmann/setup-msvc-dev@v4.0.0
         with:
-          vs-version: 2022
+          arch: x64
 
       # windows-2022 runner has ninja pre-installed; verify it is available.
       - name: Setup Ninja
