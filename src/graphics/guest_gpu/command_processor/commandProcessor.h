@@ -167,6 +167,7 @@ private:
 	uint32_t         m_index_type_and_size              = 0;
 	uint32_t         m_index_buffer_size                = 0;
 	uint64_t         m_index_base_addr                  = 0;
+	uint32_t         m_index_offset                     = 0;
 	uint64_t         m_draw_indirect_args_base_addr     = 0;
 	uint64_t         m_dispatch_indirect_args_base_addr = 0;
 	uint32_t         m_num_instances                    = 1;
