@@ -48,6 +48,7 @@
 constexpr char CONF_FILE_NAME[]    = "Kyty.ini";
 constexpr char CONF_ORG_NAME[]     = "Kyty";
 constexpr char CONF_APP_NAME[]     = "Kyty";
+constexpr char PORTABLE_MARKER[]   = "portable.txt";
 constexpr char CONF_SECTION_NAME[] = "GameConfigurations";
 constexpr char CONF_LAUNCHER[]     = "Launcher";
 constexpr char CONF_GAME_DIR[]     = "game_dir";
@@ -283,9 +284,15 @@ ConfigurationListWidget::~ConfigurationListWidget() {
 }
 
 void ConfigurationListWidget::WriteSettings() {
+	// Portable mode: if portable.txt exists next to the launcher exe, force Kyty.ini
+	// to be written in the exe directory. This lets users carry the emulator on a USB
+	// drive without leaving traces in the registry or AppData.
+	QFile portable_marker(QCoreApplication::applicationDirPath() + "/" + PORTABLE_MARKER);
+	bool  portable = portable_marker.exists();
+
 	QFile                      file = QFile(QDir(".").absoluteFilePath(CONF_FILE_NAME));
 	std::unique_ptr<QSettings> s;
-	if (file.exists()) {
+	if (file.exists() || portable) {
 		s = std::make_unique<QSettings>(CONF_FILE_NAME, QSettings::IniFormat);
 	} else {
 #ifdef __linux__
@@ -323,9 +330,14 @@ void ConfigurationListWidget::WriteSettings() {
 }
 
 void ConfigurationListWidget::ReadSettings() {
+	// Portable mode: if portable.txt exists next to the launcher exe, force Kyty.ini
+	// to be read from the exe directory. This ensures settings are always local.
+	QFile portable_marker(QCoreApplication::applicationDirPath() + "/" + PORTABLE_MARKER);
+	bool  portable = portable_marker.exists();
+
 	QFile                      file = QFile(QDir(".").absoluteFilePath(CONF_FILE_NAME));
 	std::unique_ptr<QSettings> s;
-	if (file.exists()) {
+	if (file.exists() || portable) {
 		s = std::make_unique<QSettings>(CONF_FILE_NAME, QSettings::IniFormat);
 	} else {
 #ifdef __linux__
