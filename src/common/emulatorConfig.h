@@ -45,7 +45,6 @@ struct ConfigOptions {
 	std::string             keyboard_button_map;
 	std::string             controller_button_map;
 	bool                   readback_linear_images      = false;
-	bool                   fullscreen                  = false;
 };
 
 void Load(const ConfigOptions& cfg);
@@ -75,7 +74,6 @@ bool SpirvDebugPrintfEnabled();
 bool RenderDocEnabled();
 bool NggRectlistDrawEnabled();
 bool ReadbackLinearImagesEnabled();
-bool FullscreenEnabled();
 
 } // namespace Config
 

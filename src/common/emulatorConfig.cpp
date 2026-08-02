@@ -97,8 +97,4 @@ bool ReadbackLinearImagesEnabled() {
 	return g_config->readback_linear_images;
 }
 
-bool FullscreenEnabled() {
-	return g_config->fullscreen;
-}
-
 } // namespace Config
