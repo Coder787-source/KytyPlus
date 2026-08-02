@@ -161,6 +161,8 @@ jobs:
 
       - name: Install build dependencies
         shell: bash
+        env:
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: 1
         run: brew install glslang ninja
 
       - name: Install Qt 6.10.3
