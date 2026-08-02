@@ -33,6 +33,9 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <cstring>
+#include <fstream>
+#include <sstream>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #ifndef NOMINMAX
@@ -116,6 +119,75 @@ static std::unordered_map<ShaderStageProgramKey,
                   g_shader_program_cache;
 static std::mutex g_shader_program_cache_mutex;
 
+// ---------------------------------------------------------------------------
+// Shader disk cache -- persists compiled SPIR-V to _Cache/shaders/ so shaders
+// do not need to be recompiled on every launch.
+// ---------------------------------------------------------------------------
+static constexpr const char* kShaderDiskCacheDir = "_Cache/shaders";
+
+static std::filesystem::path ShaderDiskCachePath() {
+    return std::filesystem::path(kShaderDiskCacheDir);
+}
+
+static std::string ShaderDiskCacheKey(const ShaderStageProgramKey& key) {
+    std::ostringstream os;
+    os << std::hex
+       << static_cast<uint32_t>(key.stage) << '_'
+       << key.shader_hash << '_'
+       << key.program_id.hash0 << '_'
+       << key.program_id.crc32 << '_'
+       << static_cast<uint32_t>(key.optimization_type)
+       << (key.validation ? "_v" : "")
+       << ".spv";
+    return os.str();
+}
+
+static void ShaderDiskCacheSave(const ShaderStageProgramKey& key,
+                                 const std::vector<uint32_t>& spirv) {
+    const auto dir = ShaderDiskCachePath();
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) { return; }
+
+    const auto file_path = dir / ShaderDiskCacheKey(key);
+    std::ofstream ofs(file_path, std::ios::binary);
+    if (!ofs) { return; }
+
+    // Write permutation count (1 for now) then spirv word count + words.
+    const uint32_t count = 1;
+    const uint32_t words = static_cast<uint32_t>(spirv.size());
+    ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    ofs.write(reinterpret_cast<const char*>(&words), sizeof(words));
+    ofs.write(reinterpret_cast<const char*>(spirv.data()),
+              static_cast<std::streamsize>(words * sizeof(uint32_t)));
+}
+
+static bool ShaderDiskCacheLoad(const ShaderStageProgramKey& key,
+                                 std::vector<std::vector<uint32_t>>& out_permutations) {
+    const auto file_path = ShaderDiskCachePath() / ShaderDiskCacheKey(key);
+    std::ifstream ifs(file_path, std::ios::binary);
+    if (!ifs) { return false; }
+
+    uint32_t count = 0;
+    ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
+    if (!ifs || count == 0 || count > 64) { return false; }
+
+    out_permutations.reserve(count);
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t words = 0;
+        ifs.read(reinterpret_cast<char*>(&words), sizeof(words));
+        if (!ifs || words == 0 || words > 1024 * 1024) { return false; }
+
+        std::vector<uint32_t> spirv(words);
+        ifs.read(reinterpret_cast<char*>(spirv.data()),
+                 static_cast<std::streamsize>(words * sizeof(uint32_t)));
+        if (!ifs) { return false; }
+
+        out_permutations.push_back(std::move(spirv));
+    }
+    return true;
+}
+
 static constexpr uint32_t ShaderMaxPermutationsPerProgram = 64;
 
 static std::span<const uint32_t> MakeShaderSpirvView(const std::vector<uint32_t>& spirv) {
@@ -126,6 +198,14 @@ void ShaderInit() {
 	EXIT_IF(g_shader_map != nullptr);
 
 	g_shader_map = std::make_unique<std::unordered_map<uint64_t, ShaderMappedData>>();
+
+	// Ensure disk cache directory exists.
+	std::error_code ec;
+	std::filesystem::create_directories(ShaderDiskCachePath(), ec);
+	if (ec) {
+		LOGF("ShaderDiskCache: failed to create %s: %s\n",
+		     kShaderDiskCacheDir, ec.message().c_str());
+	}
 }
 
 void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
@@ -1099,6 +1179,10 @@ static std::span<const uint32_t> AddShaderProgramPermutation(const char* stage,
 	auto cached = std::make_unique<ShaderProgramPermutation>(std::move(permutation));
 	auto spirv  = MakeShaderSpirvView(cached->spirv);
 	permutations.push_back(std::move(cached));
+
+	// Persist to disk cache (fire-and-forget).
+	ShaderDiskCacheSave(key, std::vector<uint32_t>(spirv.begin(), spirv.end()));
+
 	return spirv;
 }
 
@@ -1125,6 +1209,21 @@ bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegis
 					                         static_cast<uint64_t>(spirv.size()));
 					return true;
 				}
+			}
+		}
+
+		// Try disk cache before compiling.
+		std::vector<std::vector<uint32_t>> disk_permutations;
+		if (ShaderDiskCacheLoad(key, disk_permutations)) {
+			for (auto& disk_spirv : disk_permutations) {
+				ShaderProgramPermutation disk_perm{};
+				disk_perm.spirv = std::move(disk_spirv);
+				auto cached = std::make_unique<ShaderProgramPermutation>(std::move(disk_perm));
+				spirv = MakeShaderSpirvView(cached->spirv);
+				permutations.push_back(std::move(cached));
+				LOGF("ShaderDiskCache: loaded VS shader=0x%016" PRIx64 " words=%" PRIu64 "\n",
+				     shader_hash, static_cast<uint64_t>(spirv.size()));
+				return true;
 			}
 		}
 	}
@@ -1166,6 +1265,21 @@ bool ShaderCompileInfoPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegist
 				}
 			}
 		}
+
+		// Try disk cache before compiling.
+		std::vector<std::vector<uint32_t>> disk_permutations;
+		if (ShaderDiskCacheLoad(key, disk_permutations)) {
+			for (auto& disk_spirv : disk_permutations) {
+				ShaderProgramPermutation disk_perm{};
+				disk_perm.spirv = std::move(disk_spirv);
+				auto cached = std::make_unique<ShaderProgramPermutation>(std::move(disk_perm));
+				spirv = MakeShaderSpirvView(cached->spirv);
+				permutations.push_back(std::move(cached));
+				LOGF("ShaderDiskCache: loaded PS shader=0x%016" PRIx64 " words=%" PRIu64 "\n",
+				     shader_hash, static_cast<uint64_t>(spirv.size()));
+				return true;
+			}
+		}
 	}
 
 	std::vector<uint32_t> compiled_spirv;
@@ -1200,6 +1314,21 @@ bool ShaderCompileInfoCS(const HW::ComputeShaderInfo& regs, const HW::ShaderRegi
 					                         static_cast<uint64_t>(spirv.size()));
 					return true;
 				}
+			}
+		}
+
+		// Try disk cache before compiling.
+		std::vector<std::vector<uint32_t>> disk_permutations;
+		if (ShaderDiskCacheLoad(key, disk_permutations)) {
+			for (auto& disk_spirv : disk_permutations) {
+				ShaderProgramPermutation disk_perm{};
+				disk_perm.spirv = std::move(disk_spirv);
+				auto cached = std::make_unique<ShaderProgramPermutation>(std::move(disk_perm));
+				spirv = MakeShaderSpirvView(cached->spirv);
+				permutations.push_back(std::move(cached));
+				LOGF("ShaderDiskCache: loaded CS shader=0x%016" PRIx64 " words=%" PRIu64 "\n",
+				     shader_hash, static_cast<uint64_t>(spirv.size()));
+				return true;
 			}
 		}
 	}

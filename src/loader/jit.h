@@ -37,14 +37,20 @@ public:
 
 	void Insert(uint64_t guest_addr, std::vector<uint8_t> host_code) {
 		if (m_map.size() >= kMaxBlocks) {
+			// Evict the LRU entry (front of list).
 			uint64_t evict_addr = m_lru.front();
-			m_lru.pop_front();
 			m_map.erase(evict_addr);
+			m_lru.pop_front();
 		}
-		m_lru.push_back(guest_addr);
-		auto it = m_lru.end();
-		--it;
-		m_map[guest_addr] = {CachedBlock{guest_addr, std::move(host_code)}, it};
+		auto [it, inserted] = m_map.try_emplace(guest_addr);
+		if (!inserted) {
+			// Already exists — update host code and move to MRU.
+			it->second.block.host_code = std::move(host_code);
+			m_lru.splice(m_lru.end(), m_lru, it->second.lru_it);
+			return;
+		}
+		it->second.block   = CachedBlock{guest_addr, std::move(host_code)};
+		it->second.lru_it  = m_lru.insert(m_lru.end(), guest_addr);
 	}
 
 	void Clear() {

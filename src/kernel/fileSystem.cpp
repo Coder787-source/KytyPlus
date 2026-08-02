@@ -24,31 +24,6 @@
 #include <system_error>
 #include <vector>
 
-namespace {
-
-void SanitizeFilenameForWindows(std::filesystem::path& path)
-{
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	// Windows does not allow these characters in filenames: \ / : * ? " < > |
-	// Replace them with '_' to prevent save/load failures on Windows.
-	auto str = path.string();
-	for (auto& c : str) {
-		switch (c) {
-		case ':': case '*': case '?': case '"': case '<': case '>': case '|':
-			c = '_';
-			break;
-		default:
-			break;
-		}
-	}
-	path = std::filesystem::path(str);
-#else
-	// No-op on non-Windows platforms.
-	(void)path;
-#endif
-}
-
-} // anonymous namespace
 
 
 namespace Libs::LibKernel::FileSystem {
@@ -123,6 +98,25 @@ static FileDescriptors* g_files        = nullptr;
 static bool IsRandomDevice(const std::string& path) {
 	return path == "/dev/random" || path == "/dev/urandom";
 }
+
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+// Windows does not allow these characters in filenames: : < > " / \ | ? *
+// PS5 games may create files with ':' in the name (e.g. save data).
+// Replace all invalid characters with '_' to prevent silent save corruption.
+static void SanitizeFilenameForWindows(std::filesystem::path& path) {
+	auto str = Common::PathToGenericString(path);
+	bool changed = false;
+	for (auto& c : str) {
+		if (c == ':' || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*') {
+			c = '_';
+			changed = true;
+		}
+	}
+	if (changed) {
+		path = str;
+	}
+}
+#endif
 
 static void FillRandomBuffer(void* buf, size_t nbytes) {
 	auto*              out = reinterpret_cast<uint8_t*>(buf);
@@ -1044,6 +1038,11 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 	auto to_path   = std::string(to);
 	auto real_from = g_mount_points->GetRealFilename(from_path);
 	auto real_to   = g_mount_points->GetRealFilename(to_path);
+
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	SanitizeFilenameForWindows(real_from);
+	SanitizeFilenameForWindows(real_to);
+#endif
 
 	EXIT_NOT_IMPLEMENTED(g_files->GetFile(real_from) != nullptr);
 	EXIT_NOT_IMPLEMENTED(g_files->GetFile(real_to) != nullptr);
