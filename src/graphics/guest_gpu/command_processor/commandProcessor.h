@@ -74,7 +74,6 @@ public:
 	void SetIndexType(uint32_t index_type_and_size);
 	void SetIndexBaseAddress(uint64_t index_base_addr);
 	void SetIndexBufferSize(uint32_t index_buffer_size);
-	void SetIndexOffset(uint32_t index_offset);
 	void SetDrawIndirectArgsBaseAddress(uint64_t draw_indirect_args_base_addr);
 	void SetDispatchIndirectArgsBaseAddress(uint64_t dispatch_indirect_args_base_addr);
 	void SetNumInstances(uint32_t num_instances);
@@ -167,7 +166,6 @@ private:
 	uint32_t         m_index_type_and_size              = 0;
 	uint32_t         m_index_buffer_size                = 0;
 	uint64_t         m_index_base_addr                  = 0;
-	uint32_t         m_index_offset                     = 0;
 	uint64_t         m_draw_indirect_args_base_addr     = 0;
 	uint64_t         m_dispatch_indirect_args_base_addr = 0;
 	uint32_t         m_num_instances                    = 1;
