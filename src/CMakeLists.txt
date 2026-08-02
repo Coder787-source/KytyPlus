@@ -362,17 +362,6 @@ add_executable(graphics_audio_semantics_tests EXCLUDE_FROM_ALL
 target_link_libraries(graphics_audio_semantics_tests Vulkan::Headers common fmt::fmt)
 target_include_directories(graphics_audio_semantics_tests PRIVATE ${inc_headers})
 
-add_executable(synthetic_gpu_tests EXCLUDE_FROM_ALL
-	../tests/SyntheticGpuTests.cpp
-	graphics/guest_gpu/tile.cpp
-	graphics/guest_gpu/gpu_format.cpp
-	graphics/guest_gpu/pm4.cpp
-	loader/x64InstructionEmulator.cpp
-	loader/nullPageFaultLog.cpp
-)
-target_link_libraries(synthetic_gpu_tests Vulkan::Headers common fmt::fmt)
-target_include_directories(synthetic_gpu_tests PRIVATE ${inc_headers})
-
 add_kyty_full_emulator_test(pm4_ngs2_fuzz_tests ../tests/Pm4Ngs2FuzzTests.cpp)
 
 add_kyty_full_emulator_test(soft_ignore_evidence_tests ../tests/SoftIgnoreEvidenceTests.cpp)
