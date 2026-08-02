@@ -1220,7 +1220,7 @@ bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegis
 				disk_perm.spirv = std::move(disk_spirv);
 				auto cached = std::make_unique<ShaderProgramPermutation>(std::move(disk_perm));
 				spirv = MakeShaderSpirvView(cached->spirv);
-				permutations.push_back(std::move(cached));
+				g_shader_program_cache[key].push_back(std::move(cached));
 				LOGF("ShaderDiskCache: loaded VS shader=0x%016" PRIx64 " words=%" PRIu64 "\n",
 				     shader_hash, static_cast<uint64_t>(spirv.size()));
 				return true;
@@ -1274,7 +1274,7 @@ bool ShaderCompileInfoPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegist
 				disk_perm.spirv = std::move(disk_spirv);
 				auto cached = std::make_unique<ShaderProgramPermutation>(std::move(disk_perm));
 				spirv = MakeShaderSpirvView(cached->spirv);
-				permutations.push_back(std::move(cached));
+				g_shader_program_cache[key].push_back(std::move(cached));
 				LOGF("ShaderDiskCache: loaded PS shader=0x%016" PRIx64 " words=%" PRIu64 "\n",
 				     shader_hash, static_cast<uint64_t>(spirv.size()));
 				return true;
@@ -1325,7 +1325,7 @@ bool ShaderCompileInfoCS(const HW::ComputeShaderInfo& regs, const HW::ShaderRegi
 				disk_perm.spirv = std::move(disk_spirv);
 				auto cached = std::make_unique<ShaderProgramPermutation>(std::move(disk_perm));
 				spirv = MakeShaderSpirvView(cached->spirv);
-				permutations.push_back(std::move(cached));
+				g_shader_program_cache[key].push_back(std::move(cached));
 				LOGF("ShaderDiskCache: loaded CS shader=0x%016" PRIx64 " words=%" PRIu64 "\n",
 				     shader_hash, static_cast<uint64_t>(spirv.size()));
 				return true;
