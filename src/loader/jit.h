@@ -3,7 +3,6 @@
 
 #include "common/abi.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <list>
 #include <unordered_map>
@@ -12,13 +11,11 @@
 namespace Loader::Jit {
 
 // ---------------------------------------------------------------------------
-// JIT block cache — caches scanned-and-patched code blocks so the same guest
-// code is not re-scanned every time it is executed.  LRU eviction keeps the
-// cache from growing unbounded.
+// JIT block cache — O(1) LRU via std::list + std::unordered_map.
 // ---------------------------------------------------------------------------
 
 struct CachedBlock {
-	uint64_t            guest_addr = 0;
+	uint64_t             guest_addr = 0;
 	std::vector<uint8_t> host_code;
 };
 
@@ -29,38 +26,27 @@ public:
 	explicit JitCache()  = default;
 	~JitCache() = default;
 
-	// Look up a cached block by its guest address.  Returns nullptr on miss.
-	// On hit, promotes the block to MRU (O(1) via list splice).
-	const CachedBlock* Find(uint64_t guest_addr) {
+	CachedBlock* Find(uint64_t guest_addr) {
 		auto it = m_map.find(guest_addr);
 		if (it == m_map.end()) {
 			return nullptr;
 		}
-		// Promote to MRU — O(1) splice.
 		m_lru.splice(m_lru.end(), m_lru, it->second.lru_it);
 		return &it->second.block;
 	}
 
-	// Insert a newly-scanned block.  Evicts the LRU entry if the cache is full.
 	void Insert(uint64_t guest_addr, std::vector<uint8_t> host_code) {
 		if (m_map.size() >= kMaxBlocks) {
-			// Evict the LRU entry (front of list).
-			auto lru_addr = m_lru.front();
-			m_map.erase(lru_addr);
+			uint64_t evict_addr = m_lru.front();
 			m_lru.pop_front();
+			m_map.erase(evict_addr);
 		}
-		auto [it, inserted] = m_map.try_emplace(guest_addr);
-		if (!inserted) {
-			// Already exists — update host code and move to MRU.
-			it->second.block.host_code = std::move(host_code);
-			m_lru.splice(m_lru.end(), m_lru, it->second.lru_it);
-			return;
-		}
-		it->second.block   = CachedBlock{guest_addr, std::move(host_code)};
-		it->second.lru_it  = m_lru.insert(m_lru.end(), guest_addr);
+		m_lru.push_back(guest_addr);
+		auto it = m_lru.end();
+		--it;
+		m_map[guest_addr] = {CachedBlock{guest_addr, std::move(host_code)}, it};
 	}
 
-	// Clear the entire cache (e.g. on module unload).
 	void Clear() {
 		m_map.clear();
 		m_lru.clear();
@@ -68,8 +54,8 @@ public:
 
 private:
 	struct Entry {
-		CachedBlock                   block;
-		std::list<uint64_t>::iterator lru_it;
+		CachedBlock                         block;
+		std::list<uint64_t>::iterator       lru_it;
 	};
 
 	std::unordered_map<uint64_t, Entry> m_map;

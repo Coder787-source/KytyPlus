@@ -3663,10 +3663,6 @@ void GraphicsInitJmpTablesCxIndirect() {
 		HwCtxIgnoreObjprimIdControl(value);
 	};
 
-	g_hw_ctx_indirect_func[Pm4::GE_INDX_OFFSET] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		cp.SetIndexOffset(value);
-	};
-
 	for (auto cmd_offset = Pm4::PA_SC_CLIPRECT_RULE; cmd_offset < Pm4::PA_SC_CLIPRECT_0_TL + 8u;
 	     cmd_offset++) {
 		g_hw_ctx_indirect_func[cmd_offset] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
