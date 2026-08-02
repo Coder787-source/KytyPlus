@@ -361,6 +361,22 @@ std::filesystem::path GetRealFilename(const std::string& mounted_file_name) {
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
+#ifdef _WIN32
+static void SanitizeFilenameForWindows(std::string& filename) {
+	static constexpr char kInvalidChars[] = ":<>\"|?*";
+	for (char& c : filename) {
+		for (const char invalid : kInvalidChars) {
+			if (c == invalid) {
+				c = '_';
+				break;
+			}
+		}
+	}
+}
+#else
+static void SanitizeFilenameForWindows(std::string& /*filename*/) {}
+#endif
+
 int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	PRINT_NAME();
 
@@ -425,6 +441,8 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 
 	file->real_name = (directory ? g_mount_points->GetRealDirectory(file->name)
 	                             : g_mount_points->GetRealFilename(file->name));
+
+	SanitizeFilenameForWindows(file->real_name);
 
 	if (trunc && rw_mode == Common::File::Mode::Read) {
 		return KERNEL_ERROR_EACCES;
