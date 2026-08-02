@@ -426,6 +426,8 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	file->real_name = (directory ? g_mount_points->GetRealDirectory(file->name)
 	                             : g_mount_points->GetRealFilename(file->name));
 
+	SanitizeFilenameForWindows(file->real_name);
+
 	if (trunc && rw_mode == Common::File::Mode::Read) {
 		return KERNEL_ERROR_EACCES;
 	}
