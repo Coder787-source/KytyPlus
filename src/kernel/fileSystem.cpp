@@ -24,6 +24,33 @@
 #include <system_error>
 #include <vector>
 
+namespace {
+
+void SanitizeFilenameForWindows(std::filesystem::path& path)
+{
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	// Windows does not allow these characters in filenames: \ / : * ? " < > |
+	// Replace them with '_' to prevent save/load failures on Windows.
+	auto str = path.string();
+	for (auto& c : str) {
+		switch (c) {
+		case ':': case '*': case '?': case '"': case '<': case '>': case '|':
+			c = '_';
+			break;
+		default:
+			break;
+		}
+	}
+	path = std::filesystem::path(str);
+#else
+	// No-op on non-Windows platforms.
+	(void)path;
+#endif
+}
+
+} // anonymous namespace
+
+
 namespace Libs::LibKernel::FileSystem {
 
 LIB_NAME("libkernel", "libkernel");
