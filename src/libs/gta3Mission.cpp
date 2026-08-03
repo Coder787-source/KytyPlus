@@ -360,7 +360,7 @@ bool GTA3MissionSystem::AbortMission() {
     
     uint32_t missionId = m_activeMission.missionId;
     m_hasActiveMission = false;
-    m_activeMission = GTAMissionState{};
+    m_activeMission = GTAMissionInstance{};
     
     LOGF("[GTA3Mission] INFO: " "Mission %u aborted", missionId);
     return true;
@@ -374,11 +374,11 @@ uint32_t GTA3MissionSystem::GetActiveMissionId() const {
     return m_hasActiveMission ? m_activeMission.missionId : 0;
 }
 
-const GTAMissionState* GTA3MissionSystem::GetActiveMissionState() const {
+const GTAMissionInstance* GTA3MissionSystem::GetActiveMissionState() const {
     return m_hasActiveMission ? &m_activeMission : nullptr;
 }
 
-GTAMissionState* GTA3MissionSystem::GetActiveMissionState() {
+GTAMissionInstance* GTA3MissionSystem::GetActiveMissionState() {
     return m_hasActiveMission ? &m_activeMission : nullptr;
 }
 
