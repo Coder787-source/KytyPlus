@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/vma.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cstring>
 #include <limits>
 

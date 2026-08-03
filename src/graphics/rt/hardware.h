@@ -4,6 +4,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <memory>
+#include <span>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
