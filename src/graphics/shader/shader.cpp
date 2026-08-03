@@ -130,12 +130,24 @@ static std::filesystem::path ShaderDiskCachePath() {
 }
 
 static std::string ShaderDiskCacheKey(const ShaderStageProgramKey& key) {
+    // The program_id.ids vector carries specialization-affecting fields such as
+    // the pixel shader descriptor_set (which depends on the paired VS descriptor
+    // set presence). Two compiles of the same shader checksum but with different
+    // descriptor sets must not collide on disk, otherwise the second compile
+    // reuses SPIR-V built for the wrong descriptor set layout. Fold ids into the
+    // filename via a 32-bit mix so distinct ids produce distinct cache files.
+    uint32_t ids_hash = 0;
+    for (auto value : key.program_id.ids) {
+        ids_hash ^= Common::hash32(value) + 0x9e3779b9u + (ids_hash << 6u) + (ids_hash >> 2u);
+    }
     std::ostringstream os;
     os << std::hex
        << static_cast<uint32_t>(key.stage) << '_'
        << key.shader_hash << '_'
        << key.program_id.hash0 << '_'
        << key.program_id.crc32 << '_'
+       << ids_hash << '_'
+       << static_cast<uint32_t>(key.lane_mask_mode) << '_'
        << static_cast<uint32_t>(key.optimization_type)
        << (key.validation ? "_v" : "")
        << ".spv";
@@ -1046,6 +1058,12 @@ static bool TryUseVertexPermutation(const ShaderProgramPermutation& permutation,
 static bool TryUsePixelPermutation(const ShaderProgramPermutation& permutation,
                                    const HW::PixelShaderInfo& regs, ShaderPixelInputInfo& info,
                                    uint64_t shader_hash) {
+	// A permutation loaded from the disk cache may carry SPIR-V but no reconstructed
+	// IR program. Without the program we cannot validate the descriptor set nor
+	// materialize the stage runtime, so reject it and let the caller recompile.
+	if (permutation.program == nullptr) {
+		return false;
+	}
 	// The cached program was compiled with a specific VS descriptor set presence.
 	// If the current input's descriptor_set differs, the SPIR-V descriptor set layout
 	// is incompatible — reject the cache hit to force a fresh compile.
