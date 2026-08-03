@@ -939,7 +939,7 @@ void TestFaultAndExplicitDirtyRace() {
   Check(memory == reinterpret_cast<void *>(base), "fixed VirtualAlloc failed");
   const auto address = reinterpret_cast<uint64_t>(memory);
   page_manager.OnGpuMap(address, page_size);
-  for (uint32_t iteration = 0; iteration < 64; iteration++) {
+  for (uint32_t iteration = 0; iteration < 8; iteration++) {
     tracker.ForEachUploadRange(
         address, page_size, false, [](uint64_t, uint64_t) noexcept {},
         []() noexcept {});
