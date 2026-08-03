@@ -4,6 +4,7 @@
 #include <fstream>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <algorithm>
 
 namespace fs = std::filesystem;
@@ -59,15 +60,15 @@ void GTA3SaveManager::Shutdown() {
 }
 
 bool GTA3SaveManager::EnsureDirectoryExists() const {
-    try {
-        if (!fs::exists(m_saveDirectory)) {
-            fs::create_directories(m_saveDirectory);
+    std::error_code ec;
+    if (!fs::exists(m_saveDirectory, ec)) {
+        fs::create_directories(m_saveDirectory, ec);
+        if (ec) {
+            LOGF("[GTA3Save] ERROR: " "Failed to create directory: %s", ec.message().c_str());
+            return false;
         }
-        return true;
-    } catch (const std::exception& e) {
-        LOGF("[GTA3Save] ERROR: " "Failed to create directory: %s", e.what());
-        return false;
     }
+    return true;
 }
 
 std::string GTA3SaveManager::GetSaveFilePath(int32_t slotId) const {
@@ -110,7 +111,7 @@ bool GTA3SaveManager::SaveGame(int32_t slotId, const GTA3SaveData& data) {
         return false;
     }
     
-    try {
+    {
         std::ofstream outFile(filePath, std::ios::binary);
         if (!outFile) {
             LOGF("[GTA3Save] ERROR: " "Failed to open file for writing: %s", filePath.c_str());
@@ -133,10 +134,6 @@ bool GTA3SaveManager::SaveGame(int32_t slotId, const GTA3SaveData& data) {
         LOGF("[GTA3Save] DEBUG: " "  Mission: %u", saveData.header.missionId);
         
         return true;
-        
-    } catch (const std::exception& e) {
-        LOGF("[GTA3Save] ERROR: " "Exception while saving: %s", e.what());
-        return false;
     }
 }
 
@@ -157,7 +154,7 @@ bool GTA3SaveManager::LoadGame(int32_t slotId, GTA3SaveData& data) {
         return false;
     }
     
-    try {
+    {
         std::ifstream inFile(filePath, std::ios::binary);
         if (!inFile) {
             LOGF("[GTA3Save] ERROR: " "Failed to open file for reading: %s", filePath.c_str());
@@ -209,10 +206,6 @@ bool GTA3SaveManager::LoadGame(int32_t slotId, GTA3SaveData& data) {
         LOGF("[GTA3Save] DEBUG: " "  Player money: %u", data.player.money);
         
         return true;
-        
-    } catch (const std::exception& e) {
-        LOGF("[GTA3Save] ERROR: " "Exception while loading: %s", e.what());
-        return false;
     }
 }
 
@@ -229,9 +222,14 @@ bool GTA3SaveManager::DeleteGame(int32_t slotId) {
     
     std::string filePath = GetSaveFilePath(slotId);
     
-    try {
-        if (fs::exists(filePath)) {
-            fs::remove(filePath);
+    {
+        std::error_code ec;
+        if (fs::exists(filePath, ec)) {
+            fs::remove(filePath, ec);
+            if (ec) {
+                LOGF("[GTA3Save] ERROR: " "Failed to delete save: %s", ec.message().c_str());
+                return false;
+            }
             m_slotExists[slotId] = false;
             LOGF("[GTA3Save] INFO: " "Deleted save from slot %d", slotId);
             return true;
@@ -239,9 +237,6 @@ bool GTA3SaveManager::DeleteGame(int32_t slotId) {
             LOGF("[GTA3Save] DEBUG: " "No save to delete in slot %d", slotId);
             return false;
         }
-    } catch (const std::exception& e) {
-        LOGF("[GTA3Save] ERROR: " "Exception while deleting: %s", e.what());
-        return false;
     }
 }
 
@@ -259,7 +254,7 @@ bool GTA3SaveManager::GetSaveInfo(int32_t slotId, GTA3SaveHeader& header) {
         return false;
     }
     
-    try {
+    {
         std::ifstream inFile(filePath, std::ios::binary);
         if (!inFile) {
             return false;
@@ -270,9 +265,6 @@ bool GTA3SaveManager::GetSaveInfo(int32_t slotId, GTA3SaveHeader& header) {
         inFile.close();
         
         return inFile.gcount() == sizeof(GTA3SaveHeader);
-        
-    } catch (...) {
-        return false;
     }
 }
 

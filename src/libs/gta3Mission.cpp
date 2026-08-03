@@ -69,67 +69,67 @@ void GTA3MissionSystem::InitializeStoryMissions() {
     // Liberty City Stories
     
     // Portland Island
-    m_missions.push_back({1, "Give Me Liberty" "Meet 8-Ball in the courthouse", 
-                          GTAMissionType::Story, "8-Ball" "Courthouse", -638.0f, 892.0f, 0.0f, 0, 0, 0, true});
+    m_missions.push_back({1, "Give Me Liberty", "Meet 8-Ball in the courthouse", 
+                          GTAMissionType::Story, "8-Ball", "Courthouse", -638.0f, 892.0f, 0.0f, 0, 0, 0, true});
     
-    m_missions.push_back({2, "Luigi's Girls" "Meet Luigi at the club", 
-                          GTAMissionType::Story, "Luigi" "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 1, 100, 0, false});
+    m_missions.push_back({2, "Luigi's Girls", "Meet Luigi at the club", 
+                          GTAMissionType::Story, "Luigi", "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 1, 100, 0, false});
     
-    m_missions.push_back({3, "Don't Spank Ma Bitch Up" "Defend the brothel", 
-                          GTAMissionType::Story, "Luigi" "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 2, 200, 0, false});
+    m_missions.push_back({3, "Don't Spank Ma Bitch Up", "Defend the brothel", 
+                          GTAMissionType::Story, "Luigi", "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 2, 200, 0, false});
     
-    m_missions.push_back({4, "Drive Misty For Me" "Pick up Misty", 
-                          GTAMissionType::Story, "Luigi" "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 3, 300, 0, false});
+    m_missions.push_back({4, "Drive Misty For Me", "Pick up Misty", 
+                          GTAMissionType::Story, "Luigi", "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 3, 300, 0, false});
     
-    m_missions.push_back({5, "Pump Action Pimps" "Eliminate rival pimps", 
-                          GTAMissionType::Story, "Luigi" "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 4, 500, 0, false});
+    m_missions.push_back({5, "Pump Action Pimps", "Eliminate rival pimps", 
+                          GTAMissionType::Story, "Luigi", "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 4, 500, 0, false});
     
-    m_missions.push_back({6, "Mike Lips Last Lunch" "Meet Joey", 
-                          GTAMissionType::Story, "Joey" "Joey's Garage", -620.0f, 850.0f, 0.0f, 5, 400, 0, false});
+    m_missions.push_back({6, "Mike Lips Last Lunch", "Meet Joey", 
+                          GTAMissionType::Story, "Joey", "Joey's Garage", -620.0f, 850.0f, 0.0f, 5, 400, 0, false});
     
-    m_missions.push_back({7, "Frightened Fares" "Scare the cabbie", 
-                          GTAMissionType::Story, "Joey" "Joey's Garage", -620.0f, 850.0f, 0.0f, 6, 500, 0, false});
+    m_missions.push_back({7, "Frightened Fares", "Scare the cabbie", 
+                          GTAMissionType::Story, "Joey", "Joey's Garage", -620.0f, 850.0f, 0.0f, 6, 500, 0, false});
     
-    m_missions.push_back({8, "The Getaway" "Getaway driver job", 
-                          GTAMissionType::Story, "Joey" "Joey's Garage", -620.0f, 850.0f, 0.0f, 7, 600, 0, false});
+    m_missions.push_back({8, "The Getaway", "Getaway driver job", 
+                          GTAMissionType::Story, "Joey", "Joey's Garage", -620.0f, 850.0f, 0.0f, 7, 600, 0, false});
     
-    m_missions.push_back({9, "Cutting The Grass" "Meet Toni", 
-                          GTAMissionType::Story, "Toni" "Tavern", -700.0f, 900.0f, 0.0f, 8, 700, 0, false});
+    m_missions.push_back({9, "Cutting The Grass", "Meet Toni", 
+                          GTAMissionType::Story, "Toni", "Tavern", -700.0f, 900.0f, 0.0f, 8, 700, 0, false});
     
-    m_missions.push_back({10, "Blow Fish" "Eliminate target", 
-                          GTAMissionType::Story, "Toni" "Tavern", -700.0f, 900.0f, 0.0f, 9, 800, 0, false});
+    m_missions.push_back({10, "Blow Fish", "Eliminate target", 
+                          GTAMissionType::Story, "Toni", "Tavern", -700.0f, 900.0f, 0.0f, 9, 800, 0, false});
     
     // Staunton Island missions
-    m_missions.push_back({11, "Silence The Sneak" "First Staunton mission", 
-                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 10, 1000, 0, false});
+    m_missions.push_back({11, "Silence The Sneak", "First Staunton mission", 
+                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 10, 1000, 0, false});
     
-    m_missions.push_back({12, "Plaster Blaster" "Protect the informant", 
-                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 11, 1200, 0, false});
+    m_missions.push_back({12, "Plaster Blaster", "Protect the informant", 
+                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 11, 1200, 0, false});
     
-    m_missions.push_back({13, "Liberty Rumours" "Investigate rumors", 
-                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 12, 1400, 0, false});
+    m_missions.push_back({13, "Liberty Rumours", "Investigate rumors", 
+                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 12, 1400, 0, false});
     
-    m_missions.push_back({14, "Uzi Rider" "Eliminate rival gang", 
-                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 13, 1600, 0, false});
+    m_missions.push_back({14, "Uzi Rider", "Eliminate rival gang", 
+                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 13, 1600, 0, false});
     
-    m_missions.push_back({15, "Grand Theft Auto" "Steal cars", 
-                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 14, 1800, 0, false});
+    m_missions.push_back({15, "Grand Theft Auto", "Steal cars", 
+                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 14, 1800, 0, false});
     
     // Shoreside Vale missions
-    m_missions.push_back({16, "A Drop In The Ocean" "First Shoreside mission", 
-                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 15, 2000, 0, false});
+    m_missions.push_back({16, "A Drop In The Ocean", "First Shoreside mission", 
+                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 15, 2000, 0, false});
     
-    m_missions.push_back({17, "Uzi Money" "Collect money", 
-                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 16, 2200, 0, false});
+    m_missions.push_back({17, "Uzi Money", "Collect money", 
+                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 16, 2200, 0, false});
     
-    m_missions.push_back({18, "Toyminator" "Destroy the van", 
-                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 17, 2400, 0, false});
+    m_missions.push_back({18, "Toyminator", "Destroy the van", 
+                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 17, 2400, 0, false});
     
-    m_missions.push_back({19, "Rigged To Blow" "Final mission setup", 
-                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 18, 2600, 0, false});
+    m_missions.push_back({19, "Rigged To Blow", "Final mission setup", 
+                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 18, 2600, 0, false});
     
-    m_missions.push_back({20, "The Exchange" "Final mission", 
-                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 19, 10000, 0, false});
+    m_missions.push_back({20, "The Exchange", "Final mission", 
+                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 19, 10000, 0, false});
 
     LOGF("[GTA3Mission] INFO: " "Loaded %zu story missions", m_missions.size());
 }
@@ -360,7 +360,7 @@ bool GTA3MissionSystem::AbortMission() {
     
     uint32_t missionId = m_activeMission.missionId;
     m_hasActiveMission = false;
-    m_activeMission = GTAMissionInstance{};
+    m_activeMission = GTAMissionState{};
     
     LOGF("[GTA3Mission] INFO: " "Mission %u aborted", missionId);
     return true;
@@ -374,11 +374,11 @@ uint32_t GTA3MissionSystem::GetActiveMissionId() const {
     return m_hasActiveMission ? m_activeMission.missionId : 0;
 }
 
-const GTAMissionInstance* GTA3MissionSystem::GetActiveMissionState() const {
+const GTAMissionState* GTA3MissionSystem::GetActiveMissionState() const {
     return m_hasActiveMission ? &m_activeMission : nullptr;
 }
 
-GTAMissionInstance* GTA3MissionSystem::GetActiveMissionState() {
+GTAMissionState* GTA3MissionSystem::GetActiveMissionState() {
     return m_hasActiveMission ? &m_activeMission : nullptr;
 }
 

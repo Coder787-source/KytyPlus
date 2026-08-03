@@ -99,51 +99,51 @@ void UE4HLE::InitializeBuiltInClasses() {
 
     // Core UE4 classes
     RegisterClass("UObject", nullptr);
-    RegisterClass("UClass" "UObject");
-    RegisterClass("UFunction" "UObject");
-    RegisterClass("UProperty" "UObject");
-    RegisterClass("UStruct" "UObject");
-    RegisterClass("UEnum" "UObject");
-    RegisterClass("UPackage" "UObject");
+    RegisterClass("UClass", "UObject");
+    RegisterClass("UFunction", "UObject");
+    RegisterClass("UProperty", "UObject");
+    RegisterClass("UStruct", "UObject");
+    RegisterClass("UEnum", "UObject");
+    RegisterClass("UPackage", "UObject");
     
     // Engine classes
-    RegisterClass("UEngine" "UObject");
-    RegisterClass("UGameEngine" "UEngine");
-    RegisterClass("UWorld" "UObject");
-    RegisterClass("ULevel" "UObject");
-    RegisterClass("AActor" "UObject");
-    RegisterClass("APawn" "AActor");
-    RegisterClass("ACharacter" "APawn");
-    RegisterClass("APlayerController" "APawn");
-    RegisterClass("AGameMode" "AActor");
-    RegisterClass("AGameState" "AActor");
-    RegisterClass("AHUD" "AActor");
+    RegisterClass("UEngine", "UObject");
+    RegisterClass("UGameEngine", "UEngine");
+    RegisterClass("UWorld", "UObject");
+    RegisterClass("ULevel", "UObject");
+    RegisterClass("AActor", "UObject");
+    RegisterClass("APawn", "AActor");
+    RegisterClass("ACharacter", "APawn");
+    RegisterClass("APlayerController", "APawn");
+    RegisterClass("AGameMode", "AActor");
+    RegisterClass("AGameState", "AActor");
+    RegisterClass("AHUD", "AActor");
     
     // GTA 3 DE specific classes (common UE4 classes used)
-    RegisterClass("UTexture2D" "UObject");
-    RegisterClass("UMaterial" "UObject");
-    RegisterClass("UMaterialInstance" "UMaterial");
-    RegisterClass("UStaticMesh" "UObject");
-    RegisterClass("USkeletalMesh" "UObject");
-    RegisterClass("UAnimInstance" "UObject");
-    RegisterClass("UParticleSystem" "UObject");
-    RegisterClass("USoundBase" "UObject");
-    RegisterClass("USoundWave" "USoundBase");
-    RegisterClass("UAudioComponent" "UActorComponent");
-    RegisterClass("UActorComponent" "UObject");
-    RegisterClass("USceneComponent" "UActorComponent");
-    RegisterClass("UPrimitiveComponent" "USceneComponent");
-    RegisterClass("UStaticMeshComponent" "UPrimitiveComponent");
-    RegisterClass("USkeletalMeshComponent" "UPrimitiveComponent");
-    RegisterClass("UCameraComponent" "USceneComponent");
-    RegisterClass("UInputComponent" "UActorComponent");
+    RegisterClass("UTexture2D", "UObject");
+    RegisterClass("UMaterial", "UObject");
+    RegisterClass("UMaterialInstance", "UMaterial");
+    RegisterClass("UStaticMesh", "UObject");
+    RegisterClass("USkeletalMesh", "UObject");
+    RegisterClass("UAnimInstance", "UObject");
+    RegisterClass("UParticleSystem", "UObject");
+    RegisterClass("USoundBase", "UObject");
+    RegisterClass("USoundWave", "USoundBase");
+    RegisterClass("UAudioComponent", "UActorComponent");
+    RegisterClass("UActorComponent", "UObject");
+    RegisterClass("USceneComponent", "UActorComponent");
+    RegisterClass("UPrimitiveComponent", "USceneComponent");
+    RegisterClass("UStaticMeshComponent", "UPrimitiveComponent");
+    RegisterClass("USkeletalMeshComponent", "UPrimitiveComponent");
+    RegisterClass("UCameraComponent", "USceneComponent");
+    RegisterClass("UInputComponent", "UActorComponent");
     
     // UI classes
-    RegisterClass("UUserWidget" "UObject");
-    RegisterClass("UWidget" "UObject");
-    RegisterClass("UButton" "UWidget");
-    RegisterClass("UTextBlock" "UWidget");
-    RegisterClass("UImage" "UWidget");
+    RegisterClass("UUserWidget", "UObject");
+    RegisterClass("UWidget", "UObject");
+    RegisterClass("UButton", "UWidget");
+    RegisterClass("UTextBlock", "UWidget");
+    RegisterClass("UImage", "UWidget");
     
     LOGF("[UE4] INFO: " "Registered %zu built-in classes", m_classes.size());
 }
@@ -152,54 +152,54 @@ void UE4HLE::InitializeBuiltInFunctions() {
     LOGF("[UE4] DEBUG: " "Registering built-in functions...");
 
     // Core object functions
-    RegisterClassFunction("UObject" "IsValid");
-    RegisterClassFunction("UObject" "GetClass");
-    RegisterClassFunction("UObject" "GetName");
-    RegisterClassFunction("UObject" "GetFullName");
-    RegisterClassFunction("UObject" "MarkPendingKill");
-    RegisterClassFunction("UObject" "BeginDestroy");
+    RegisterClassFunction("UObject", "IsValid");
+    RegisterClassFunction("UObject", "GetClass");
+    RegisterClassFunction("UObject", "GetName");
+    RegisterClassFunction("UObject", "GetFullName");
+    RegisterClassFunction("UObject", "MarkPendingKill");
+    RegisterClassFunction("UObject", "BeginDestroy");
     
     // Engine functions
-    RegisterClassFunction("UEngine" "GetWorld");
-    RegisterClassFunction("UEngine" "GetGameViewport");
-    RegisterClassFunction("UEngine" "AddOnScreenDebugMessage");
+    RegisterClassFunction("UEngine", "GetWorld");
+    RegisterClassFunction("UEngine", "GetGameViewport");
+    RegisterClassFunction("UEngine", "AddOnScreenDebugMessage");
     
     // World functions
-    RegisterClassFunction("UWorld" "GetFirstPlayerController");
-    RegisterClassFunction("UWorld" "SpawnActor");
-    RegisterClassFunction("UWorld" "DestroyActor");
-    RegisterClassFunction("UWorld" "GetTimeSeconds");
-    RegisterClassFunction("UWorld" "GetRealTimeSeconds");
+    RegisterClassFunction("UWorld", "GetFirstPlayerController");
+    RegisterClassFunction("UWorld", "SpawnActor");
+    RegisterClassFunction("UWorld", "DestroyActor");
+    RegisterClassFunction("UWorld", "GetTimeSeconds");
+    RegisterClassFunction("UWorld", "GetRealTimeSeconds");
     
     // Actor functions
-    RegisterClassFunction("AActor" "GetActorLocation");
-    RegisterClassFunction("AActor" "GetActorRotation");
-    RegisterClassFunction("AActor" "SetActorLocation");
-    RegisterClassFunction("AActor" "SetActorRotation");
-    RegisterClassFunction("AActor" "GetWorld");
-    RegisterClassFunction("AActor" "Destroy");
+    RegisterClassFunction("AActor", "GetActorLocation");
+    RegisterClassFunction("AActor", "GetActorRotation");
+    RegisterClassFunction("AActor", "SetActorLocation");
+    RegisterClassFunction("AActor", "SetActorRotation");
+    RegisterClassFunction("AActor", "GetWorld");
+    RegisterClassFunction("AActor", "Destroy");
     
     // Component functions
-    RegisterClassFunction("UActorComponent" "GetOwner");
-    RegisterClassFunction("UActorComponent" "GetWorld");
-    RegisterClassFunction("USceneComponent" "GetRelativeLocation");
-    RegisterClassFunction("USceneComponent" "SetRelativeLocation");
+    RegisterClassFunction("UActorComponent", "GetOwner");
+    RegisterClassFunction("UActorComponent", "GetWorld");
+    RegisterClassFunction("USceneComponent", "GetRelativeLocation");
+    RegisterClassFunction("USceneComponent", "SetRelativeLocation");
     
     // Input functions
-    RegisterClassFunction("APlayerController" "GetHud");
-    RegisterClassFunction("APlayerController" "SetInputMode");
-    RegisterClassFunction("APlayerController" "GetPawn");
-    RegisterClassFunction("APlayerController" "Possess");
+    RegisterClassFunction("APlayerController", "GetHud");
+    RegisterClassFunction("APlayerController", "SetInputMode");
+    RegisterClassFunction("APlayerController", "GetPawn");
+    RegisterClassFunction("APlayerController", "Possess");
     
     // Game mode functions
-    RegisterClassFunction("AGameMode" "GetWorldSettings");
-    RegisterClassFunction("AGameMode" "GetGameState");
+    RegisterClassFunction("AGameMode", "GetWorldSettings");
+    RegisterClassFunction("AGameMode", "GetGameState");
     
     // String/table functions
-    RegisterClassFunction("UKismetStringLibrary" "Conv_StringToText");
-    RegisterClassFunction("UKismetTextLibrary" "Conv_TextToString");
-    RegisterClassFunction("UKismetMathLibrary" "MakeVector");
-    RegisterClassFunction("UKismetMathLibrary" "MakeRotator");
+    RegisterClassFunction("UKismetStringLibrary", "Conv_StringToText");
+    RegisterClassFunction("UKismetTextLibrary", "Conv_TextToString");
+    RegisterClassFunction("UKismetMathLibrary", "MakeVector");
+    RegisterClassFunction("UKismetMathLibrary", "MakeRotator");
     
     LOGF("[UE4] INFO: " "Registered built-in functions");
 }
@@ -522,17 +522,17 @@ void UE4HLE::AddConsoleCommand(const char* command, std::function<void()> callba
 
 void UE4HLE::Log(const char* category, const char* message) {
     if (!category || !message) return;
-    LOGF("[UE4[%s]] INFO: " , category, "%s", message);
+    LOGF("[UE4[%s]] INFO: ", category, "%s", message);
 }
 
 void UE4HLE::Warning(const char* category, const char* message) {
     if (!category || !message) return;
-    LOGF("[UE4[%s]] WARNING: " , category, "%s", message);
+    LOGF("[UE4[%s]] WARNING: ", category, "%s", message);
 }
 
 void UE4HLE::Error(const char* category, const char* message) {
     if (!category || !message) return;
-    LOGF("[UE4[%s]] ERROR: " , category, "%s", message);
+    LOGF("[UE4[%s]] ERROR: ", category, "%s", message);
 }
 
 int32_t UE4HLE::GetObjectCount() const {
