@@ -405,12 +405,31 @@ SysFileTimeStruct SysFileGetLastWriteTimeUtc(const std::filesystem::path& name) 
 
 void SysFileGetLastAccessAndWriteTimeUtc(const std::filesystem::path& name, SysFileTimeStruct& a,
                                          SysFileTimeStruct& w) {
-	// TODO() open file with dwDesiredAccess = 0
-	// TODO() open directory
-	sys_file_t* f = SysFileOpenR(name);
-	a.is_invalid  = w.is_invalid =
-	    (f->type == SYS_FILE_ERROR || (GetFileTime(f->handle, nullptr, &a.time, &w.time) == 0));
-	SysFileClose(f);
+	// Handle both files and directories with minimal access rights
+	auto wide = name.wstring();
+	
+	// Use FILE_READ_ATTRIBUTES for metadata-only access (handles dwDesiredAccess=0 semantics)
+	// FILE_FLAG_BACKUP_SEMANTICS allows opening directories
+	HANDLE h = CreateFileW(
+		wide.c_str(),
+		FILE_READ_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr,
+		OPEN_EXISTING,
+		FILE_FLAG_BACKUP_SEMANTICS,
+		nullptr
+	);
+	
+	if (h == INVALID_HANDLE_VALUE) {
+		a.is_invalid = true;
+		w.is_invalid = true;
+		return;
+	}
+	
+	BOOL result = GetFileTime(h, nullptr, &a.time, &w.time);
+	CloseHandle(h);
+	
+	a.is_invalid = w.is_invalid = (result == 0);
 }
 
 void SysFileGetLastAccessAndWriteTimeUtc(sys_file_t& f, SysFileTimeStruct& a,

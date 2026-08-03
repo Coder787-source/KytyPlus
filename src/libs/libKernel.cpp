@@ -1533,9 +1533,9 @@ int KYTY_SYSV_ABI KernelGetModuleInfoForUnwind(uint64_t addr, int flags,
 	auto* program = rt->FindProgramByAddr(addr);
 	if (program == nullptr || program->elf == nullptr) {
 		if (addr < 0x800000000ull) {
-			// TODO(unwind): guest unwinding can reach a Kyty host return address below the guest VA
-			// range. Report a synthetic boundary with no unwind tables so libc stops cleanly
-			// instead of raising.
+			// Guest unwinding can reach a Kyty host return address below the guest VA range.
+			// Report a synthetic boundary with no unwind tables so libc stops cleanly instead of raising.
+			// This is expected behavior when unwinding crosses the host/guest boundary.
 			std::memset(info, 0, sizeof(ModuleInfoForUnwind));
 			info->st_size = sizeof(ModuleInfoForUnwind);
 			std::snprintf(info->name, sizeof(info->name), "%s", "KytyHostBoundary");

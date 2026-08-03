@@ -23,8 +23,17 @@ LIB_VERSION("SaveData", 1, "SaveData", 1, 1);
 
 namespace SaveData {
 
-// TODO(): specify dir at launcher
-static constexpr char     SAVE_DATA_DIR[]      = "_SaveData";
+// Configurable save data directory - can be set via launcher or environment variable
+static std::string GetSaveDataDir() {
+	// Check environment variable first (allows launcher to override)
+	const char* env_dir = std::getenv("KYTY_SAVE_DATA_DIR");
+	if (env_dir != nullptr && env_dir[0] != '\0') {
+		return std::string(env_dir);
+	}
+	
+	// Default to _SaveData in current working directory
+	return "_SaveData";
+}
 static constexpr uint64_t SAVE_DATA_BLOCKS_MAX = 16384;
 
 struct SceSaveDataDirName {
@@ -379,7 +388,7 @@ int KYTY_SYSV_ABI SaveDataDirNameSearch(const SaveDataDirNameSearchCond* cond,
 
 	std::vector<std::string> dir_list;
 	std::string              root =
-	    Common::FixDirectorySlash((std::string(SAVE_DATA_DIR) + "/" + get_title_id()));
+	    Common::FixDirectorySlash((GetSaveDataDir() + "/" + get_title_id()));
 
 	if (Common::File::IsDirectoryExisting(root)) {
 		for (const auto& entry: Common::File::GetDirEntries(root)) {
@@ -447,7 +456,7 @@ int KYTY_SYSV_ABI SaveDataMount3(const SaveDataMount3* mount, SaveDataMountResul
 
 	Common::LockGuard lock(g_mount_mutex);
 	const std::string dir_name  = mount->dir_name->data;
-	const std::string mount_dir = std::string(SAVE_DATA_DIR) + "/" + get_title_id() + "/" + dir_name;
+	const std::string mount_dir = GetSaveDataDir() + "/" + get_title_id() + "/" + dir_name;
 	const bool        create    = ((mount->mount_mode & 4u) != 0);
 	const bool        create2   = ((mount->mount_mode & 32u) != 0);
 	const bool        open      = (!create && !create2 && ((mount->mount_mode & 3u) != 0));
@@ -603,7 +612,7 @@ int KYTY_SYSV_ABI SaveDataTransferringMount(const SaveDataTransferringMount* mou
 
 	Common::LockGuard lock(g_mount_mutex);
 	const std::string dir_name  = mount->dir_name->data;
-	const std::string mount_dir = std::string(SAVE_DATA_DIR) + "/" + get_title_id() + "/" + dir_name;
+	const std::string mount_dir = GetSaveDataDir() + "/" + get_title_id() + "/" + dir_name;
 	const int         slot      = g_mount_slots.FindAvailable(dir_name);
 	if (slot == SaveDataMountSlots::BUSY) {
 		return SAVE_DATA_ERROR_BUSY;
@@ -694,7 +703,7 @@ int KYTY_SYSV_ABI SaveDataDelete(const SaveDataDelete* del) {
 	     del->dir_name->data);
 
 	std::string dir =
-	    std::string(SAVE_DATA_DIR) + "/" + get_title_id() + "/" + std::string(del->dir_name->data);
+	    GetSaveDataDir() + "/" + get_title_id() + "/" + std::string(del->dir_name->data);
 	if (Common::File::IsDirectoryExisting(dir)) {
 		Common::File::DeleteDirectory(dir);
 	}
