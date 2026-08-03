@@ -1046,6 +1046,14 @@ static bool TryUseVertexPermutation(const ShaderProgramPermutation& permutation,
 static bool TryUsePixelPermutation(const ShaderProgramPermutation& permutation,
                                    const HW::PixelShaderInfo& regs, ShaderPixelInputInfo& info,
                                    uint64_t shader_hash) {
+	// The cached program was compiled with a specific VS descriptor set presence.
+	// If the current input's descriptor_set differs, the SPIR-V descriptor set layout
+	// is incompatible — reject the cache hit to force a fresh compile.
+	if (permutation.program->bindings.descriptor_set != info.descriptor_set) {
+		LOGF("TryUsePixelPermutation: REJECTED cached PS descriptor_set=%u != current=%u hash=0x%016" PRIx64 "\n",
+		     permutation.program->bindings.descriptor_set, info.descriptor_set, shader_hash);
+		return false;
+	}
 	std::string error;
 	if (!ShaderMaterializeStageRuntime(
 	        permutation.program,
