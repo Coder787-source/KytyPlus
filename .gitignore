@@ -22,3 +22,5 @@ Thumbs.db
 # Build artifacts that shouldn't be committed
 KytyPlus-*/
 _prev_orig/
+
+_issue_logs/
