@@ -143,7 +143,7 @@ public:
     void TriggerPageFault(uint64_t virtualAddress, bool isWrite);
 
     // Statistics
-    MMUStats GetStats() const { return m_stats; }
+    MMUStats GetStats() const;
     void ResetStats();
     uint64_t GetUsedMemory() const;
     uint64_t GetFreeMemory() const;
