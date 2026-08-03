@@ -1,10 +1,12 @@
 #pragma once
 
-#include "common/types.h"
+#include "common.h"
 #include <memory>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <shared_mutex>
+#include <functional>
 
 namespace Kyty::Common {
 

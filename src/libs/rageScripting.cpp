@@ -91,7 +91,7 @@ uint64_t RageScriptingManager::CallNative(uint64_t hash, uint64_t* args, uint32_
         return 0;
     }
     
-    std::shared_lock lock(mutex_);
+    std::unique_lock lock(mutex_);
     
     auto it = natives_.find(hash);
     if (it == natives_.end()) {
@@ -226,7 +226,7 @@ const ScriptThread* RageScriptingManager::GetThread(uint32_t thread_id) const {
         return nullptr;
     }
     
-    std::shared_lock lock(mutex_);
+    std::unique_lock lock(mutex_);
     
     auto it = threads_.find(thread_id);
     if (it == threads_.end()) {
@@ -284,7 +284,7 @@ bool RageScriptingManager::IsMissionTriggerActive(uint64_t trigger_hash) const {
         return false;
     }
     
-    std::shared_lock lock(mutex_);
+    std::unique_lock lock(mutex_);
     
     auto it = mission_triggers_.find(trigger_hash);
     if (it == mission_triggers_.end()) {
@@ -364,7 +364,7 @@ uint32_t RageScriptingManager::GetActiveThreadCount() const {
         return 0;
     }
     
-    std::shared_lock lock(mutex_);
+    std::unique_lock lock(mutex_);
     
     uint32_t count = 0;
     for (const auto& [id, thread] : threads_) {
@@ -378,7 +378,7 @@ uint32_t RageScriptingManager::GetActiveThreadCount() const {
 }
 
 uint32_t RageScriptingManager::GetNativeCount() const {
-    std::shared_lock lock(mutex_);
+    std::unique_lock lock(mutex_);
     return static_cast<uint32_t>(natives_.size());
 }
 

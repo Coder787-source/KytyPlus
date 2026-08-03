@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common/common.h"
-#include "common/virtualMemory.h"
+#include "common.h"
+#include "virtualMemory.h"
 #include <atomic>
 #include <mutex>
 #include <unordered_map>

@@ -210,7 +210,7 @@ NetworkError NetworkStubsManager::SendRequestSync(uint64_t request_id, NetworkRe
 }
 
 bool NetworkStubsManager::IsRequestComplete(uint64_t request_id) const {
-    std::shared_lock lock(mutex_);
+    std::unique_lock lock(mutex_);
     
     // Sync requests are always "complete"
     return completed_responses_.find(request_id) != completed_responses_.end();

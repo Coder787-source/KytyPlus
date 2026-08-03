@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include <algorithm>
 #include <cstring>
+#include <shared_mutex>
 
 namespace Common {
 
@@ -286,7 +287,7 @@ MemoryStats OpenWorldMemoryManager::GetStats() const {
         return stats;
     }
     
-    std::shared_lock lock(mutex_);
+    std::unique_lock lock(mutex_);
     
     stats.total_allocated = 0;
     stats.total_free = pool_total_size_;
@@ -321,7 +322,7 @@ uint64_t OpenWorldMemoryManager::GetFragmentationPercent() const {
         return 0;
     }
     
-    std::shared_lock lock(mutex_);
+    std::unique_lock lock(mutex_);
     return CalculateFragmentation();
 }
 

@@ -1,6 +1,6 @@
-#include "common/mmuVirtualMemory.h"
-#include "common/log.h"
-#include "common/assert.h"
+#include "mmuVirtualMemory.h"
+#include "logging/log.h"
+#include "assert.h"
 #include <algorithm>
 #include <cstring>
 
@@ -25,7 +25,7 @@ bool MMU::Initialize(uint64_t virtualSize, uint64_t physicalSize) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
     if (m_initialized) {
-        LOG_WARNING("MMU", "Already initialized");
+        LOGF("[\1] WARNING: " "Already initialized");
         return true;
     }
 
@@ -34,7 +34,7 @@ bool MMU::Initialize(uint64_t virtualSize, uint64_t physicalSize) {
 
     m_totalPages = static_cast<uint32_t>(m_virtualSize / MMU_PAGE_SIZE);
 
-    LOG_INFO("MMU", "Initializing: Virtual=%llu GB, Physical=%llu GB, Pages=%u",
+    LOGF("[\1] INFO: " "Initializing: Virtual=%llu GB, Physical=%llu GB, Pages=%u",
              m_virtualSize / (1024 * 1024 * 1024),
              m_physicalSize / (1024 * 1024 * 1024),
              m_totalPages);
@@ -56,7 +56,7 @@ bool MMU::Initialize(uint64_t virtualSize, uint64_t physicalSize) {
     // Allocate physical memory
     // In production, this would use large pages and NUMA-aware allocation
     m_physicalMemory.resize(m_physicalSize);
-    LOG_INFO("MMU", "Physical memory allocated: %zu bytes", m_physicalMemory.size());
+    LOGF("[\1] INFO: " "Physical memory allocated: %zu bytes", m_physicalMemory.size());
 
     // Initialize address space
     m_nextAddress = 0x400000; // Start after system reserved (4MB)
@@ -64,7 +64,7 @@ bool MMU::Initialize(uint64_t virtualSize, uint64_t physicalSize) {
     m_initialized = true;
     ResetStats();
 
-    LOG_INFO("MMU", "Initialization complete");
+    LOGF("[\1] INFO: " "Initialization complete");
     return true;
 }
 
@@ -91,7 +91,7 @@ void MMU::Shutdown() {
 
     m_initialized = false;
 
-    LOG_INFO("MMU", "Shutdown complete");
+    LOGF("[\1] INFO: " "Shutdown complete");
 }
 
 uint64_t MMU::Allocate(uint64_t size, MemoryProtection protection, MemoryType type, uint64_t alignment) {
@@ -107,7 +107,7 @@ uint64_t MMU::Allocate(uint64_t size, MemoryProtection protection, MemoryType ty
     // Find contiguous free region
     uint64_t endAddress = baseAddress + size;
     if (endAddress > m_virtualSize) {
-        LOG_ERROR("MMU", "Out of virtual memory");
+        LOGF("[\1] ERROR: " "Out of virtual memory");
         return 0;
     }
 
@@ -115,21 +115,21 @@ uint64_t MMU::Allocate(uint64_t size, MemoryProtection protection, MemoryType ty
     for (uint64_t addr = baseAddress; addr < endAddress; addr += MMU_PAGE_SIZE) {
         MemoryPage* page = GetPage(addr);
         if (!page) {
-            LOG_ERROR("MMU", "Invalid page address: 0x%llx", addr);
+            LOGF("[\1] ERROR: " "Invalid page address: 0x%llx", addr);
             // Free already allocated pages
             FreeRange(baseAddress, addr - baseAddress);
             return 0;
         }
 
         if (page->isPresent) {
-            LOG_ERROR("MMU", "Page already allocated at 0x%llx", addr);
+            LOGF("[\1] ERROR: " "Page already allocated at 0x%llx", addr);
             FreeRange(baseAddress, addr - baseAddress);
             return 0;
         }
 
         // Commit the page
         if (!CommitPage(addr)) {
-            LOG_ERROR("MMU", "Failed to commit page at 0x%llx", addr);
+            LOGF("[\1] ERROR: " "Failed to commit page at 0x%llx", addr);
             FreeRange(baseAddress, addr - baseAddress);
             return 0;
         }
@@ -152,7 +152,7 @@ uint64_t MMU::Allocate(uint64_t size, MemoryProtection protection, MemoryType ty
     m_nextAddress = endAddress;
     UpdateStats();
 
-    LOG_DEBUG("MMU", "Allocated %llu bytes at 0x%llx", size, baseAddress);
+    LOGF("[\1] DEBUG: " "Allocated %llu bytes at 0x%llx", size, baseAddress);
     return baseAddress;
 }
 
@@ -170,7 +170,7 @@ uint64_t MMU::AllocateAt(uint64_t address, uint64_t size, MemoryProtection prote
     for (uint64_t addr = address; addr < address + size; addr += MMU_PAGE_SIZE) {
         MemoryPage* page = GetPage(addr);
         if (!page || page->isPresent) {
-            LOG_ERROR("MMU", "Region not free at 0x%llx", addr);
+            LOGF("[\1] ERROR: " "Region not free at 0x%llx", addr);
             return 0;
         }
     }
@@ -178,7 +178,7 @@ uint64_t MMU::AllocateAt(uint64_t address, uint64_t size, MemoryProtection prote
     // Allocate pages at specified address
     for (uint64_t addr = address; addr < address + size; addr += MMU_PAGE_SIZE) {
         if (!CommitPage(addr)) {
-            LOG_ERROR("MMU", "Failed to commit page at 0x%llx", addr);
+            LOGF("[\1] ERROR: " "Failed to commit page at 0x%llx", addr);
             return 0;
         }
 
@@ -200,7 +200,7 @@ uint64_t MMU::AllocateAt(uint64_t address, uint64_t size, MemoryProtection prote
 
     UpdateStats();
 
-    LOG_DEBUG("MMU", "Allocated %llu bytes at 0x%llx (requested)", size, address);
+    LOGF("[\1] DEBUG: " "Allocated %llu bytes at 0x%llx (requested)", size, address);
     return address;
 }
 
@@ -245,13 +245,13 @@ void MMU::FreeRange(uint64_t address, uint64_t size) {
 
     UpdateStats();
 
-    LOG_DEBUG("MMU", "Freed %llu bytes at 0x%llx", size, address);
+    LOGF("[\1] DEBUG: " "Freed %llu bytes at 0x%llx", size, address);
 }
 
 uint64_t MMU::MapFile(const std::string& filePath, uint64_t offset, uint64_t size,
                       MemoryProtection protection) {
     // File mapping stub - in production would use CreateFileMapping/MapViewOfFile
-    LOG_INFO("MMU", "MapFile: %s offset=%llu size=%llu (stub)", filePath.c_str(), offset, size);
+    LOGF("[\1] INFO: " "MapFile: %s offset=%llu size=%llu (stub)", filePath.c_str(), offset, size);
 
     // Allocate memory for mapped region
     uint64_t address = Allocate(size, protection, MemoryType::Mapped);
@@ -303,7 +303,7 @@ bool MMU::Protect(uint64_t address, uint64_t size, MemoryProtection protection) 
         page->protection = protection;
     }
 
-    LOG_DEBUG("MMU", "Changed protection at 0x%llx to %d", address, static_cast<int>(protection));
+    LOGF("[\1] DEBUG: " "Changed protection at 0x%llx to %d", address, static_cast<int>(protection));
     return true;
 }
 
@@ -347,7 +347,7 @@ void MMU::ReadBlock(uint64_t address, void* dest, uint64_t size) const {
 
         const uint8_t* src = GetPointer(address);
         if (!src) {
-            LOG_ERROR("MMU", "Invalid read at 0x%llx", address);
+            LOGF("[\1] ERROR: " "Invalid read at 0x%llx", address);
             std::memset(destPtr + offset, 0, remaining);
             return;
         }
@@ -375,7 +375,7 @@ void MMU::WriteBlock(uint64_t address, const void* src, uint64_t size) {
 
         uint8_t* dest = GetPointer(address);
         if (!dest) {
-            LOG_ERROR("MMU", "Invalid write at 0x%llx", address);
+            LOGF("[\1] ERROR: " "Invalid write at 0x%llx", address);
             return;
         }
 
@@ -472,7 +472,7 @@ uint64_t MMU::AllocateLargePage(uint64_t size, MemoryProtection protection) {
             MemoryPage* page = GetPage(pageAddr);
 
             if (!page || page->isPresent) {
-                LOG_ERROR("MMU", "Cannot allocate large page at 0x%llx", addr);
+                LOGF("[\1] ERROR: " "Cannot allocate large page at 0x%llx", addr);
                 return 0;
             }
 
@@ -490,7 +490,7 @@ uint64_t MMU::AllocateLargePage(uint64_t size, MemoryProtection protection) {
     m_nextAddress = baseAddress + size;
     UpdateStats();
 
-    LOG_INFO("MMU", "Allocated large page: %llu bytes at 0x%llx", size, baseAddress);
+    LOGF("[\1] INFO: " "Allocated large page: %llu bytes at 0x%llx", size, baseAddress);
     return baseAddress;
 }
 
@@ -507,7 +507,7 @@ void MMU::FreeLargePage(uint64_t address) {
 
 void MMU::EnableCompression(bool enable) {
     m_compressionEnabled = enable;
-    LOG_INFO("MMU", "Memory compression %s", enable ? "enabled" : "disabled");
+    LOGF("[\1] INFO: " "Memory compression %s", enable ? "enabled" : "disabled");
 }
 
 uint64_t MMU::GetCompressedPageCount() const {
@@ -524,7 +524,7 @@ void MMU::TriggerPageFault(uint64_t virtualAddress, bool isWrite) {
     if (m_pageFaultHandler) {
         m_pageFaultHandler(virtualAddress, isWrite);
     } else {
-        LOG_ERROR("MMU", "Page fault at 0x%llx (write=%d)", virtualAddress, isWrite ? 1 : 0);
+        LOGF("[\1] ERROR: " "Page fault at 0x%llx (write=%d)", virtualAddress, isWrite ? 1 : 0);
     }
 }
 
@@ -557,9 +557,9 @@ double MMU::GetUtilization() const {
 }
 
 void MMU::DumpRegions() const {
-    LOG_INFO("MMU", "Memory Regions:");
+    LOGF("[\1] INFO: " "Memory Regions:");
     for (const auto& region : m_regions) {
-        LOG_INFO("MMU", "  0x%llx - 0x%llx (%llu bytes) prot=%d type=%d name=%s",
+        LOGF("[\1] INFO: " "  0x%llx - 0x%llx (%llu bytes) prot=%d type=%d name=%s",
                  region.baseAddress,
                  region.baseAddress + region.size,
                  region.size,
