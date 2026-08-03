@@ -1,0 +1,99 @@
+{
+	"bmi-installation" : 
+	{
+		"destination" : ".",
+		"message-level" : "",
+		"permissions" : "",
+		"script-location" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/launcher/CMakeFiles/launcher.dir/install-cxx-module-bmi-Release.cmake"
+	},
+	"compiler-frontend-variant" : "MSVC",
+	"compiler-id" : "Clang",
+	"compiler-simulate-id" : "MSVC",
+	"config" : "Release",
+	"cxx-modules" : {},
+	"database-info" : null,
+	"dir-cur-bld" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/launcher",
+	"dir-cur-src" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher",
+	"dir-top-bld" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher",
+	"dir-top-src" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src",
+	"exports" : [],
+	"forward-modules-from-target-dirs" : [],
+	"include-dirs" : 
+	[
+		"launcher",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\launcher",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\gtest\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\gtest",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\fmt\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\magic_enum\\include\\magic_enum",
+		".",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\launcher\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\launcher\\src",
+		"launcher\\launcher_autogen\\include",
+		"C:\\Qt\\6.10.3\\msvc2022_64\\include\\QtConcurrent",
+		"C:\\Qt\\6.10.3\\msvc2022_64\\include",
+		"C:\\Qt\\6.10.3\\msvc2022_64\\include\\QtCore",
+		"C:\\Qt\\6.10.3\\msvc2022_64\\mkspecs\\win32-msvc",
+		"C:\\Qt\\6.10.3\\msvc2022_64\\include\\QtNetwork",
+		"C:\\Qt\\6.10.3\\msvc2022_64\\include\\QtWidgets",
+		"C:\\Qt\\6.10.3\\msvc2022_64\\include\\QtGui",
+		"C:\\VulkanSDK\\1.4.350.0\\include"
+	],
+	"language" : "CXX",
+	"linked-target-dirs" : [],
+	"module-dir" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/launcher/CMakeFiles/launcher.dir",
+	"sources" : 
+	{
+		"launcher/CMakeFiles/launcher.dir/src/compatibilityDatabase.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/compatibilityDatabase.cpp"
+		},
+		"launcher/CMakeFiles/launcher.dir/src/configurationEditDialog.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/configurationEditDialog.cpp"
+		},
+		"launcher/CMakeFiles/launcher.dir/src/configurationItem.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/configurationItem.cpp"
+		},
+		"launcher/CMakeFiles/launcher.dir/src/configurationListWidget.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/configurationListWidget.cpp"
+		},
+		"launcher/CMakeFiles/launcher.dir/src/inputMappingDialog.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/inputMappingDialog.cpp"
+		},
+		"launcher/CMakeFiles/launcher.dir/src/keyCaptureLineEdit.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/keyCaptureLineEdit.cpp"
+		},
+		"launcher/CMakeFiles/launcher.dir/src/main.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/main.cpp"
+		},
+		"launcher/CMakeFiles/launcher.dir/src/mainDialog.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/mainDialog.cpp"
+		},
+		"launcher/CMakeFiles/launcher.dir/src/mandatoryLineEdit.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/mandatoryLineEdit.cpp"
+		},
+		"launcher/CMakeFiles/launcher.dir/src/trophyViewerDialog.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/launcher/src/trophyViewerDialog.cpp"
+		}
+	}
+}

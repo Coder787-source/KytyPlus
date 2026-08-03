@@ -1,0 +1,135 @@
+{
+	"bmi-installation" : null,
+	"compiler-frontend-variant" : "MSVC",
+	"compiler-id" : "Clang",
+	"compiler-simulate-id" : "MSVC",
+	"config" : "Release",
+	"cxx-modules" : {},
+	"database-info" : null,
+	"dir-cur-bld" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/common",
+	"dir-cur-src" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common",
+	"dir-top-bld" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher",
+	"dir-top-src" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src",
+	"exports" : [],
+	"forward-modules-from-target-dirs" : [],
+	"include-dirs" : 
+	[
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\gtest\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\gtest",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\fmt\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\magic_enum\\include\\magic_enum",
+		".",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\cpuinfo\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\3rdparty\\fmt\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\3rdparty\\cpuinfo\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\3rdparty\\spdlog\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\3rdparty\\tracy\\public"
+	],
+	"language" : "CXX",
+	"linked-target-dirs" : [],
+	"module-dir" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/common/CMakeFiles/common.dir",
+	"sources" : 
+	{
+		"common/CMakeFiles/common.dir/assert.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/assert.cpp"
+		},
+		"common/CMakeFiles/common.dir/commonSubsystem.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/commonSubsystem.cpp"
+		},
+		"common/CMakeFiles/common.dir/dateTime.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/dateTime.cpp"
+		},
+		"common/CMakeFiles/common.dir/debug.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/debug.cpp"
+		},
+		"common/CMakeFiles/common.dir/emulatorConfig.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/emulatorConfig.cpp"
+		},
+		"common/CMakeFiles/common.dir/file.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/file.cpp"
+		},
+		"common/CMakeFiles/common.dir/hostException.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/hostException.cpp"
+		},
+		"common/CMakeFiles/common.dir/logging/log.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/logging/log.cpp"
+		},
+		"common/CMakeFiles/common.dir/platform/sysLinuxDbg.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/platform/sysLinuxDbg.cpp"
+		},
+		"common/CMakeFiles/common.dir/platform/sysLinuxFileIO.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/platform/sysLinuxFileIO.cpp"
+		},
+		"common/CMakeFiles/common.dir/platform/sysLinuxVirtual.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/platform/sysLinuxVirtual.cpp"
+		},
+		"common/CMakeFiles/common.dir/platform/sysWindowsDbg.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/platform/sysWindowsDbg.cpp"
+		},
+		"common/CMakeFiles/common.dir/platform/sysWindowsFileIO.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/platform/sysWindowsFileIO.cpp"
+		},
+		"common/CMakeFiles/common.dir/platform/sysWindowsVirtual.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/platform/sysWindowsVirtual.cpp"
+		},
+		"common/CMakeFiles/common.dir/profiler.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/profiler.cpp"
+		},
+		"common/CMakeFiles/common.dir/subsystems.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/subsystems.cpp"
+		},
+		"common/CMakeFiles/common.dir/systemInfo.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/systemInfo.cpp"
+		},
+		"common/CMakeFiles/common.dir/threads.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/threads.cpp"
+		},
+		"common/CMakeFiles/common.dir/timer.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/timer.cpp"
+		},
+		"common/CMakeFiles/common.dir/virtualMemory.cpp.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src/common/virtualMemory.cpp"
+		}
+	}
+}

@@ -1,0 +1,33 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/cpuinfo/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SDL2/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/external/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/source/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/source/opt/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/source/reduce/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/source/fuzz/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/source/link/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/source/lint/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/source/diff/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/tools/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/tools/emacs/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/test/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/examples/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/SPIRV-Tools/examples/cpp-interface/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/xxHash/build/cmake/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/fmt/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/nlohmann_json/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/spdlog/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/ffmpeg-core/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/tracy/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/winpthread/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/common/cmake_install.cmake",
+		"C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/launcher/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

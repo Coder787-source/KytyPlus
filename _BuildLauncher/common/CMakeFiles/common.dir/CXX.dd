@@ -1,0 +1,41 @@
+ninja_dyndep_version = 1.0
+build common\CMakeFiles\common.dir\assert.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\commonSubsystem.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\dateTime.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\debug.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\emulatorConfig.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\file.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\hostException.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\logging\log.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\platform\sysLinuxDbg.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\platform\sysLinuxFileIO.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\platform\sysLinuxVirtual.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\platform\sysWindowsDbg.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\platform\sysWindowsFileIO.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\platform\sysWindowsVirtual.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\profiler.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\subsystems.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\systemInfo.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\threads.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\timer.cpp.obj: dyndep
+
+build common\CMakeFiles\common.dir\virtualMemory.cpp.obj: dyndep
+

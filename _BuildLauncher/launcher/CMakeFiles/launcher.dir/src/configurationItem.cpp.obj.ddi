@@ -1,0 +1,9 @@
+{
+  "revision": 0,
+  "rules": [
+    {
+      "primary-output": "launcher\\CMakeFiles\\launcher.dir\\src\\configurationItem.cpp.obj"
+    }
+  ],
+  "version": 1
+}

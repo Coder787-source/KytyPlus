@@ -1,0 +1,3 @@
+C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_Release/v1.7/KytyPlus/kyty_emulator.exe
+C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_Release/v1.7/KytyPlus/launcher.exe
+C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_Release/v1.7/KytyPlus/libwinpthread-1.dll

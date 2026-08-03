@@ -1,0 +1,9 @@
+{
+  "revision": 0,
+  "rules": [
+    {
+      "primary-output": "common\\CMakeFiles\\common.dir\\timer.cpp.obj"
+    }
+  ],
+  "version": 1
+}

@@ -1,0 +1,36 @@
+{
+	"bmi-installation" : null,
+	"compiler-frontend-variant" : "MSVC",
+	"compiler-id" : "Clang",
+	"compiler-simulate-id" : "MSVC",
+	"config" : "Release",
+	"cxx-modules" : {},
+	"database-info" : null,
+	"dir-cur-bld" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/fmt",
+	"dir-cur-src" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/3rdparty/fmt",
+	"dir-top-bld" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher",
+	"dir-top-src" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/src",
+	"exports" : [],
+	"forward-modules-from-target-dirs" : [],
+	"include-dirs" : 
+	[
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\gtest\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\gtest",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\fmt\\include",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src\\..\\3rdparty\\magic_enum\\include\\magic_enum",
+		".",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\src",
+		"C:\\Users\\Keshav\\Desktop\\Ps5Emu\\KytyPS5\\3rdparty\\fmt\\include"
+	],
+	"language" : "CXX",
+	"linked-target-dirs" : [],
+	"module-dir" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/_BuildLauncher/3rdparty/fmt/CMakeFiles/fmt-c.dir",
+	"sources" : 
+	{
+		"3rdparty/fmt/CMakeFiles/fmt-c.dir/src/fmt-c.cc.obj" : 
+		{
+			"language" : "CXX",
+			"source" : "C:/Users/Keshav/Desktop/Ps5Emu/KytyPS5/3rdparty/fmt/src/fmt-c.cc"
+		}
+	}
+}

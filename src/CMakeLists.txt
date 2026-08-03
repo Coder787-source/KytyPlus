@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12...4.3)
+﻿cmake_minimum_required(VERSION 3.12...4.3)
 
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.0)
 	set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum policy version for bundled dependencies")
@@ -164,6 +164,8 @@ file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	graphics/host_gpu/renderer/image/*.h
 	graphics/host_gpu/renderer/pipeline/*.cpp
 	graphics/host_gpu/renderer/pipeline/*.h
+	graphics/rt/*.cpp
+	graphics/rt/*.h
 	graphics/shader/*.cpp
 	graphics/shader/*.h
 	graphics/shader/recompiler/*.cpp

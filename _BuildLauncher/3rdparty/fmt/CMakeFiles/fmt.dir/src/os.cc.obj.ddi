@@ -1,0 +1,9 @@
+{
+  "revision": 0,
+  "rules": [
+    {
+      "primary-output": "3rdparty\\fmt\\CMakeFiles\\fmt.dir\\src\\os.cc.obj"
+    }
+  ],
+  "version": 1
+}

@@ -1,0 +1,5 @@
+ninja_dyndep_version = 1.0
+build 3rdparty\fmt\CMakeFiles\fmt.dir\src\format.cc.obj: dyndep
+
+build 3rdparty\fmt\CMakeFiles\fmt.dir\src\os.cc.obj: dyndep
+

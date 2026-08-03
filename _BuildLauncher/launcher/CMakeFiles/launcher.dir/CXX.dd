@@ -1,0 +1,21 @@
+ninja_dyndep_version = 1.0
+build launcher\CMakeFiles\launcher.dir\src\compatibilityDatabase.cpp.obj: dyndep
+
+build launcher\CMakeFiles\launcher.dir\src\configurationEditDialog.cpp.obj: dyndep
+
+build launcher\CMakeFiles\launcher.dir\src\configurationItem.cpp.obj: dyndep
+
+build launcher\CMakeFiles\launcher.dir\src\configurationListWidget.cpp.obj: dyndep
+
+build launcher\CMakeFiles\launcher.dir\src\inputMappingDialog.cpp.obj: dyndep
+
+build launcher\CMakeFiles\launcher.dir\src\keyCaptureLineEdit.cpp.obj: dyndep
+
+build launcher\CMakeFiles\launcher.dir\src\main.cpp.obj: dyndep
+
+build launcher\CMakeFiles\launcher.dir\src\mainDialog.cpp.obj: dyndep
+
+build launcher\CMakeFiles\launcher.dir\src\mandatoryLineEdit.cpp.obj: dyndep
+
+build launcher\CMakeFiles\launcher.dir\src\trophyViewerDialog.cpp.obj: dyndep
+

@@ -43,7 +43,7 @@ struct RtPipeline {
 // Manages all RT state for a device.
 class RayTracingEngine {
 public:
-    explicit RayTracingEngine(const GraphicContext& ctx);
+    explicit RayTracingEngine(GraphicContext& ctx);
     ~RayTracingEngine();
 
     KYTY_CLASS_NO_COPY(RayTracingEngine);
@@ -91,7 +91,19 @@ private:
                                   vk::AccelerationStructureTypeKHR              type,
                                   std::unique_ptr<RtAccelerationStructure>&    out_as);
 
-    const GraphicContext& m_ctx;
+    // RT function pointers loaded at construction time.
+    struct RtFunctions {
+        PFN_vkCreateAccelerationStructureKHR           vkCreateAccelerationStructureKHR           = nullptr;
+        PFN_vkDestroyAccelerationStructureKHR          vkDestroyAccelerationStructureKHR          = nullptr;
+        PFN_vkGetAccelerationStructureBuildSizesKHR   vkGetAccelerationStructureBuildSizesKHR   = nullptr;
+        PFN_vkCmdBuildAccelerationStructuresKHR       vkCmdBuildAccelerationStructuresKHR       = nullptr;
+        PFN_vkGetAccelerationStructureDeviceAddressKHR vkGetAccelerationStructureDeviceAddressKHR = nullptr;
+        PFN_vkCreateRayTracingPipelinesKHR             vkCreateRayTracingPipelinesKHR             = nullptr;
+        PFN_vkGetRayTracingShaderGroupHandlesKHR       vkGetRayTracingShaderGroupHandlesKHR       = nullptr;
+    };
+    RtFunctions m_fn{};
+
+    GraphicContext& m_ctx;
     bool                  m_enabled = false;
 
     std::vector<BlasEntry> m_blas_entries;
