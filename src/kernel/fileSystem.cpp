@@ -117,6 +117,9 @@ static void SanitizeFilenameForWindows(std::filesystem::path& path) {
 		path = str;
 	}
 }
+#else
+// No sanitization needed on non-Windows platforms (macOS, Linux).
+static void SanitizeFilenameForWindows(std::filesystem::path& /*path*/) {}
 #endif
 
 static void FillRandomBuffer(void* buf, size_t nbytes) {
