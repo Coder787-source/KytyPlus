@@ -7,10 +7,9 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
-#include <codecvt>
+#include <cstdint>
 #include <filesystem>
 #include <fmt/format.h>
-#include <locale>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -317,9 +316,36 @@ inline std::string SafeCsv(std::string_view text) {
 }
 
 inline std::string Utf16ToUtf8(const char16_t* utf16) {
-	std::u16string                                                    input(utf16);
-	std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> convert;
-	return convert.to_bytes(input);
+	// Manual UTF-16 to UTF-8 conversion (avoids deprecated C++11 codecvt)
+	std::string result;
+	const char16_t* p = utf16;
+	while (*p) {
+		char32_t cp;
+		if (*p >= 0xD800 && *p <= 0xDBFF && *(p + 1) >= 0xDC00 && *(p + 1) <= 0xDFFF) {
+			cp = (static_cast<char32_t>(*p - 0xD800) << 10) | static_cast<char32_t>(*(p + 1) - 0xDC00);
+			cp += 0x10000;
+			p += 2;
+		} else {
+			cp = static_cast<char32_t>(*p);
+			++p;
+		}
+		if (cp < 0x80) {
+			result += static_cast<char>(cp);
+		} else if (cp < 0x800) {
+			result += static_cast<char>(0xC0 | (cp >> 6));
+			result += static_cast<char>(0x80 | (cp & 0x3F));
+		} else if (cp < 0x10000) {
+			result += static_cast<char>(0xE0 | (cp >> 12));
+			result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+			result += static_cast<char>(0x80 | (cp & 0x3F));
+		} else {
+			result += static_cast<char>(0xF0 | (cp >> 18));
+			result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+			result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+			result += static_cast<char>(0x80 | (cp & 0x3F));
+		}
+	}
+	return result;
 }
 
 inline ByteBuffer HexToBin(std::string_view text) {
