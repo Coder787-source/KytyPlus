@@ -1,5 +1,5 @@
 #include "saveDataChecksum.h"
-#include "common/logging.hpp"
+#include "common/logging/log.h"
 #include <cstring>
 #include <algorithm>
 

@@ -1,5 +1,5 @@
 #include "libs/videoDecoder.h"
-#include "common/log.h"
+#include "common/logging/log.h"
 #include <algorithm>
 #include <cstring>
 #include <chrono>
@@ -19,19 +19,19 @@ VideoDecoder::~VideoDecoder() {
 
 bool VideoDecoder::Initialize(const VideoDecoderParams& params) {
     if (m_initialized) {
-        LOG_WARNING("VideoDecoder", "Already initialized");
+        LOGF("[VideoDecoder] WARNING: " "Already initialized");
         return true;
     }
 
     // Validate parameters
     if (params.width <= 0 || params.width > VIDEO_DECODER_MAX_WIDTH ||
         params.height <= 0 || params.height > VIDEO_DECODER_MAX_HEIGHT) {
-        LOG_ERROR("VideoDecoder", "Invalid resolution: %dx%d", params.width, params.height);
+        LOGF("[VideoDecoder] ERROR: " "Invalid resolution: %dx%d", params.width, params.height);
         return false;
     }
 
     if (!IsCodecSupported(params.codec)) {
-        LOG_ERROR("VideoDecoder", "Unsupported codec: %d", static_cast<int>(params.codec));
+        LOGF("[VideoDecoder] ERROR: " "Unsupported codec: %d", static_cast<int>(params.codec));
         return false;
     }
 
@@ -54,19 +54,19 @@ bool VideoDecoder::Initialize(const VideoDecoderParams& params) {
             success = InitializeBink();
             break;
         default:
-            LOG_ERROR("VideoDecoder", "Unknown codec");
+            LOGF("[VideoDecoder] ERROR: " "Unknown codec");
             return false;
     }
 
     if (!success) {
-        LOG_ERROR("VideoDecoder", "Failed to initialize codec %d", static_cast<int>(params.codec));
+        LOGF("[VideoDecoder] ERROR: " "Failed to initialize codec %d", static_cast<int>(params.codec));
         return false;
     }
 
     m_initialized = true;
     ResetStats();
 
-    LOG_INFO("VideoDecoder", "Initialized: %s %dx%d @ %dfps, HW=%d",
+    LOGF("[VideoDecoder] INFO: " "Initialized: %s %dx%d @ %dfps, HW=%d",
              params.codec == VideoCodec::H264_AVC ? "H.264" :
              params.codec == VideoCodec::H265_HEVC ? "H.265" :
              params.codec == VideoCodec::VP9 ? "VP9" : "BINK",
@@ -90,14 +90,14 @@ void VideoDecoder::Shutdown() {
     
     m_initialized = false;
     
-    LOG_INFO("VideoDecoder", "Shutdown complete");
+    LOGF("[VideoDecoder] INFO: " "Shutdown complete");
 }
 
 bool VideoDecoder::InitializeH264() {
     // H.264/AVC initialization
     // In production: avcodec_find_decoder(AV_CODEC_ID_H264), avcodec_alloc_context3, etc.
     
-    LOG_INFO("VideoDecoder", "H.264 decoder initialized (stub)");
+    LOGF("[VideoDecoder] INFO: " "H.264 decoder initialized (stub)");
     return true;
 }
 
@@ -105,7 +105,7 @@ bool VideoDecoder::InitializeH265() {
     // H.265/HEVC initialization
     // In production: avcodec_find_decoder(AV_CODEC_ID_HEVC), etc.
     
-    LOG_INFO("VideoDecoder", "H.265 decoder initialized (stub)");
+    LOGF("[VideoDecoder] INFO: " "H.265 decoder initialized (stub)");
     return true;
 }
 
@@ -113,7 +113,7 @@ bool VideoDecoder::InitializeVP9() {
     // VP9 initialization
     // In production: avcodec_find_decoder(AV_CODEC_ID_VP9), etc.
     
-    LOG_INFO("VideoDecoder", "VP9 decoder initialized (stub)");
+    LOGF("[VideoDecoder] INFO: " "VP9 decoder initialized (stub)");
     return true;
 }
 
@@ -121,7 +121,7 @@ bool VideoDecoder::InitializeBink() {
     // Bink Video initialization (used in many PS5 games for cutscenes)
     // In production: link against libbink or RAD Video Tools
     
-    LOG_INFO("VideoDecoder", "Bink decoder initialized (stub)");
+    LOGF("[VideoDecoder] INFO: " "Bink decoder initialized (stub)");
     return true;
 }
 
@@ -161,7 +161,7 @@ bool VideoDecoder::DecodePacket(const uint8_t* data, int32_t size, int64_t times
         UpdateStats(decodeTime);
     } else {
         m_stats.decodeErrors++;
-        LOG_WARNING("VideoDecoder", "Decode error at timestamp %lld", timestamp);
+        LOGF("[VideoDecoder] WARNING: " "Decode error at timestamp %lld", timestamp);
     }
 
     return success;
@@ -265,19 +265,19 @@ bool VideoDecoder::Seek(int64_t timestamp) {
     Flush();
     
     // In production, seek in the codec context
-    LOG_INFO("VideoDecoder", "Seek to timestamp %lld", timestamp);
+    LOGF("[VideoDecoder] INFO: " "Seek to timestamp %lld", timestamp);
     
     return true;
 }
 
 void VideoDecoder::SetPlaybackRate(float rate) {
     m_playbackRate = std::max(0.1f, std::min(10.0f, rate));
-    LOG_INFO("VideoDecoder", "Playback rate: %.2fx", m_playbackRate);
+    LOGF("[VideoDecoder] INFO: " "Playback rate: %.2fx", m_playbackRate);
 }
 
 void VideoDecoder::Flush() {
     m_frameQueue.clear();
-    LOG_INFO("VideoDecoder", "Flushed frame queue");
+    LOGF("[VideoDecoder] INFO: " "Flushed frame queue");
 }
 
 void VideoDecoder::ResetStats() {
@@ -368,7 +368,7 @@ std::shared_ptr<VideoDecoder> VideoDecoderManager::CreateDecoder(const VideoDeco
     auto decoder = std::make_shared<VideoDecoder>();
     
     if (!decoder->Initialize(params)) {
-        LOG_ERROR("VideoDecoderManager", "Failed to create decoder");
+        LOGF("[VideoDecoderManager] ERROR: " "Failed to create decoder");
         return nullptr;
     }
     

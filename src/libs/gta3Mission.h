@@ -58,7 +58,7 @@ struct GTAMissionObjective {
     uint32_t currentCount = 0;
 };
 
-struct GTAMissionState {
+struct GTAMissionInstance {
     uint32_t missionId = 0;
     GTAMissionState state = GTAMissionState::NotAvailable;
     float startTime = 0.0f;
@@ -74,7 +74,7 @@ struct GTAMissionState {
 // Mission callbacks
 using MissionStartCallback = std::function<void(uint32_t missionId)>;
 using MissionCompleteCallback = std::function<void(uint32_t missionId, bool success)>;
-using MissionUpdateCallback = std::function<void(uint32_t missionId, const GTAMissionState&)>;
+using MissionUpdateCallback = std::function<void(uint32_t missionId, const GTAMissionInstance&)>;
 
 // Mission system for GTA 3 DE
 class GTA3MissionSystem {
@@ -107,8 +107,8 @@ public:
     // Active mission
     bool HasActiveMission() const;
     uint32_t GetActiveMissionId() const;
-    const GTAMissionState* GetActiveMissionState() const;
-    GTAMissionState* GetActiveMissionState();
+    const GTAMissionInstance* GetActiveMissionState() const;
+    GTAMissionInstance* GetActiveMissionState();
     
     // Objectives
     bool AddObjective(const std::string& description, bool optional = false);
@@ -157,7 +157,7 @@ private:
     std::vector<int32_t> m_missionFailures;
     std::vector<bool> m_missionUnlocked;
     
-    GTAMissionState m_activeMission;
+    GTAMissionInstance m_activeMission;
     bool m_hasActiveMission = false;
     
     uint32_t m_totalPlayTime = 0;

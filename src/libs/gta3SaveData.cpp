@@ -1,5 +1,5 @@
 #include "libs/gta3SaveData.h"
-#include "common/log.h"
+#include "common/logging/log.h"
 #include "common/file.h"
 #include <fstream>
 #include <cstring>
@@ -27,14 +27,14 @@ GTA3SaveManager::~GTA3SaveManager() {
 
 bool GTA3SaveManager::Initialize(const std::string& saveDirectory) {
     if (m_initialized) {
-        LOG_WARNING("GTA3Save", "Already initialized");
+        LOGF("[GTA3Save] WARNING: " "Already initialized");
         return true;
     }
 
     m_saveDirectory = saveDirectory;
     
     if (!EnsureDirectoryExists()) {
-        LOG_ERROR("GTA3Save", "Failed to create save directory: %s", m_saveDirectory.c_str());
+        LOGF("[GTA3Save] ERROR: " "Failed to create save directory: %s", m_saveDirectory.c_str());
         return false;
     }
 
@@ -46,8 +46,8 @@ bool GTA3SaveManager::Initialize(const std::string& saveDirectory) {
 
     m_initialized = true;
     
-    LOG_INFO("GTA3Save", "Initialized: %s", m_saveDirectory.c_str());
-    LOG_INFO("GTA3Save", "Found %d existing saves", GetSaveCount());
+    LOGF("[GTA3Save] INFO: " "Initialized: %s", m_saveDirectory.c_str());
+    LOGF("[GTA3Save] INFO: " "Found %d existing saves", GetSaveCount());
 
     return true;
 }
@@ -55,7 +55,7 @@ bool GTA3SaveManager::Initialize(const std::string& saveDirectory) {
 void GTA3SaveManager::Shutdown() {
     m_initialized = false;
     m_slotExists.fill(false);
-    LOG_INFO("GTA3Save", "Shutdown complete");
+    LOGF("[GTA3Save] INFO: " "Shutdown complete");
 }
 
 bool GTA3SaveManager::EnsureDirectoryExists() const {
@@ -65,7 +65,7 @@ bool GTA3SaveManager::EnsureDirectoryExists() const {
         }
         return true;
     } catch (const std::exception& e) {
-        LOG_ERROR("GTA3Save", "Failed to create directory: %s", e.what());
+        LOGF("[GTA3Save] ERROR: " "Failed to create directory: %s", e.what());
         return false;
     }
 }
@@ -83,12 +83,12 @@ std::string GTA3SaveManager::GetSaveFilePath(int32_t slotId) const {
 
 bool GTA3SaveManager::SaveGame(int32_t slotId, const GTA3SaveData& data) {
     if (!m_initialized) {
-        LOG_ERROR("GTA3Save", "Not initialized");
+        LOGF("[GTA3Save] ERROR: " "Not initialized");
         return false;
     }
     
     if (slotId < 0 || slotId >= GTA3_MAX_SAVE_SLOTS) {
-        LOG_ERROR("GTA3Save", "Invalid slot ID: %d", slotId);
+        LOGF("[GTA3Save] ERROR: " "Invalid slot ID: %d", slotId);
         return false;
     }
 
@@ -106,14 +106,14 @@ bool GTA3SaveManager::SaveGame(int32_t slotId, const GTA3SaveData& data) {
     // Write to file
     std::string filePath = GetSaveFilePath(slotId);
     if (filePath.empty()) {
-        LOG_ERROR("GTA3Save", "Invalid file path for slot %d", slotId);
+        LOGF("[GTA3Save] ERROR: " "Invalid file path for slot %d", slotId);
         return false;
     }
     
     try {
         std::ofstream outFile(filePath, std::ios::binary);
         if (!outFile) {
-            LOG_ERROR("GTA3Save", "Failed to open file for writing: %s", filePath.c_str());
+            LOGF("[GTA3Save] ERROR: " "Failed to open file for writing: %s", filePath.c_str());
             return false;
         }
         
@@ -121,46 +121,46 @@ bool GTA3SaveManager::SaveGame(int32_t slotId, const GTA3SaveData& data) {
         outFile.close();
         
         if (!outFile) {
-            LOG_ERROR("GTA3Save", "Failed to write save data");
+            LOGF("[GTA3Save] ERROR: " "Failed to write save data");
             return false;
         }
         
         m_slotExists[slotId] = true;
         
-        LOG_INFO("GTA3Save", "Saved game to slot %d: %s", slotId, saveData.header.saveName);
-        LOG_DEBUG("GTA3Save", "  Location: %s", saveData.header.locationName);
-        LOG_DEBUG("GTA3Save", "  Play time: %u seconds", saveData.header.playTimeSeconds);
-        LOG_DEBUG("GTA3Save", "  Mission: %u", saveData.header.missionId);
+        LOGF("[GTA3Save] INFO: " "Saved game to slot %d: %s", slotId, saveData.header.saveName);
+        LOGF("[GTA3Save] DEBUG: " "  Location: %s", saveData.header.locationName);
+        LOGF("[GTA3Save] DEBUG: " "  Play time: %u seconds", saveData.header.playTimeSeconds);
+        LOGF("[GTA3Save] DEBUG: " "  Mission: %u", saveData.header.missionId);
         
         return true;
         
     } catch (const std::exception& e) {
-        LOG_ERROR("GTA3Save", "Exception while saving: %s", e.what());
+        LOGF("[GTA3Save] ERROR: " "Exception while saving: %s", e.what());
         return false;
     }
 }
 
 bool GTA3SaveManager::LoadGame(int32_t slotId, GTA3SaveData& data) {
     if (!m_initialized) {
-        LOG_ERROR("GTA3Save", "Not initialized");
+        LOGF("[GTA3Save] ERROR: " "Not initialized");
         return false;
     }
     
     if (slotId < 0 || slotId >= GTA3_MAX_SAVE_SLOTS) {
-        LOG_ERROR("GTA3Save", "Invalid slot ID: %d", slotId);
+        LOGF("[GTA3Save] ERROR: " "Invalid slot ID: %d", slotId);
         return false;
     }
     
     std::string filePath = GetSaveFilePath(slotId);
     if (!fs::exists(filePath)) {
-        LOG_DEBUG("GTA3Save", "No save found in slot %d", slotId);
+        LOGF("[GTA3Save] DEBUG: " "No save found in slot %d", slotId);
         return false;
     }
     
     try {
         std::ifstream inFile(filePath, std::ios::binary);
         if (!inFile) {
-            LOG_ERROR("GTA3Save", "Failed to open file for reading: %s", filePath.c_str());
+            LOGF("[GTA3Save] ERROR: " "Failed to open file for reading: %s", filePath.c_str());
             return false;
         }
         
@@ -168,19 +168,19 @@ bool GTA3SaveManager::LoadGame(int32_t slotId, GTA3SaveData& data) {
         inFile.close();
         
         if (!inFile) {
-            LOG_ERROR("GTA3Save", "Failed to read save data");
+            LOGF("[GTA3Save] ERROR: " "Failed to read save data");
             return false;
         }
         
         // Validate magic number
         if (data.header.magic != 0x47544133) { // "GTA3"
-            LOG_ERROR("GTA3Save", "Invalid save file magic: 0x%08X", data.header.magic);
+            LOGF("[GTA3Save] ERROR: " "Invalid save file magic: 0x%08X", data.header.magic);
             return false;
         }
         
         // Validate version
         if (data.header.version != GTA3_SAVE_VERSION) {
-            LOG_WARNING("GTA3Save", "Save version mismatch: expected %d, got %d",
+            LOGF("[GTA3Save] WARNING: " "Save version mismatch: expected %d, got %d",
                         GTA3_SAVE_VERSION, data.header.version);
             // Continue anyway for backwards compatibility
         }
@@ -190,40 +190,40 @@ bool GTA3SaveManager::LoadGame(int32_t slotId, GTA3SaveData& data) {
         uint32_t actualChecksum = CalculateChecksum(data);
         
         if (expectedChecksum != actualChecksum) {
-            LOG_WARNING("GTA3Save", "Checksum mismatch: expected 0x%08X, got 0x%08X",
+            LOGF("[GTA3Save] WARNING: " "Checksum mismatch: expected 0x%08X, got 0x%08X",
                         expectedChecksum, actualChecksum);
             // Continue anyway - some saves may have been modified
         }
         
         // Validate slot ID
         if (data.header.slotId != static_cast<uint32_t>(slotId)) {
-            LOG_WARNING("GTA3Save", "Slot ID mismatch: file says %d, expected %d",
+            LOGF("[GTA3Save] WARNING: " "Slot ID mismatch: file says %d, expected %d",
                         data.header.slotId, slotId);
         }
         
-        LOG_INFO("GTA3Save", "Loaded game from slot %d: %s", slotId, data.header.saveName);
-        LOG_DEBUG("GTA3Save", "  Location: %s", data.header.locationName);
-        LOG_DEBUG("GTA3Save", "  Play time: %u seconds", data.header.playTimeSeconds);
-        LOG_DEBUG("GTA3Save", "  Mission: %u", data.header.missionId);
-        LOG_DEBUG("GTA3Save", "  Player health: %u", data.player.health);
-        LOG_DEBUG("GTA3Save", "  Player money: %u", data.player.money);
+        LOGF("[GTA3Save] INFO: " "Loaded game from slot %d: %s", slotId, data.header.saveName);
+        LOGF("[GTA3Save] DEBUG: " "  Location: %s", data.header.locationName);
+        LOGF("[GTA3Save] DEBUG: " "  Play time: %u seconds", data.header.playTimeSeconds);
+        LOGF("[GTA3Save] DEBUG: " "  Mission: %u", data.header.missionId);
+        LOGF("[GTA3Save] DEBUG: " "  Player health: %u", data.player.health);
+        LOGF("[GTA3Save] DEBUG: " "  Player money: %u", data.player.money);
         
         return true;
         
     } catch (const std::exception& e) {
-        LOG_ERROR("GTA3Save", "Exception while loading: %s", e.what());
+        LOGF("[GTA3Save] ERROR: " "Exception while loading: %s", e.what());
         return false;
     }
 }
 
 bool GTA3SaveManager::DeleteGame(int32_t slotId) {
     if (!m_initialized) {
-        LOG_ERROR("GTA3Save", "Not initialized");
+        LOGF("[GTA3Save] ERROR: " "Not initialized");
         return false;
     }
     
     if (slotId < 0 || slotId >= GTA3_MAX_SAVE_SLOTS) {
-        LOG_ERROR("GTA3Save", "Invalid slot ID: %d", slotId);
+        LOGF("[GTA3Save] ERROR: " "Invalid slot ID: %d", slotId);
         return false;
     }
     
@@ -233,14 +233,14 @@ bool GTA3SaveManager::DeleteGame(int32_t slotId) {
         if (fs::exists(filePath)) {
             fs::remove(filePath);
             m_slotExists[slotId] = false;
-            LOG_INFO("GTA3Save", "Deleted save from slot %d", slotId);
+            LOGF("[GTA3Save] INFO: " "Deleted save from slot %d", slotId);
             return true;
         } else {
-            LOG_DEBUG("GTA3Save", "No save to delete in slot %d", slotId);
+            LOGF("[GTA3Save] DEBUG: " "No save to delete in slot %d", slotId);
             return false;
         }
     } catch (const std::exception& e) {
-        LOG_ERROR("GTA3Save", "Exception while deleting: %s", e.what());
+        LOGF("[GTA3Save] ERROR: " "Exception while deleting: %s", e.what());
         return false;
     }
 }
@@ -328,13 +328,13 @@ bool GTA3SaveManager::ValidateChecksum(const GTA3SaveData& data) {
 
 bool GTA3SaveManager::ExportToJson(int32_t slotId, const std::string& jsonPath) {
     // Stub - would require JSON library
-    LOG_INFO("GTA3Save", "ExportToJson: slot=%d path=%s (stub)", slotId, jsonPath.c_str());
+    LOGF("[GTA3Save] INFO: " "ExportToJson: slot=%d path=%s (stub)", slotId, jsonPath.c_str());
     return false;
 }
 
 bool GTA3SaveManager::ImportFromJson(const std::string& jsonPath, int32_t slotId) {
     // Stub - would require JSON library
-    LOG_INFO("GTA3Save", "ImportFromJson: path=%s slot=%d (stub)", jsonPath.c_str(), slotId);
+    LOGF("[GTA3Save] INFO: " "ImportFromJson: path=%s slot=%d (stub)", jsonPath.c_str(), slotId);
     return false;
 }
 

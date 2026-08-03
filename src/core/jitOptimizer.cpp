@@ -1,5 +1,5 @@
 #include "core/jitOptimizer.h"
-#include "common/log.h"
+#include "common/logging/log.h"
 #include <algorithm>
 #include <cstring>
 #include <chrono>
@@ -26,7 +26,7 @@ bool JITOptimizer::Initialize(const JITConfig& config) {
     std::lock_guard<std::mutex> lock(m_blockMutex);
 
     if (m_initialized) {
-        LOG_WARNING("JIT", "Already initialized");
+        LOGF("[JIT] WARNING: " "Already initialized");
         return true;
     }
 
@@ -35,7 +35,7 @@ bool JITOptimizer::Initialize(const JITConfig& config) {
     m_cacheMemory.resize(m_cacheSize);
     m_cacheUsed = 0;
 
-    LOG_INFO("JIT", "Initialized: Cache=%zu MB, OptLevel=%d, Linking=%d, SIMD=%d, PGO=%d",
+    LOGF("[JIT] INFO: " "Initialized: Cache=%zu MB, OptLevel=%d, Linking=%d, SIMD=%d, PGO=%d",
              m_cacheSize / (1024 * 1024),
              static_cast<int>(config.optLevel),
              config.enableLinking ? 1 : 0,
@@ -63,7 +63,7 @@ void JITOptimizer::Shutdown() {
 
     m_initialized = false;
 
-    LOG_INFO("JIT", "Shutdown complete");
+    LOGF("[JIT] INFO: " "Shutdown complete");
 }
 
 uint64_t JITOptimizer::CompileBlock(uint64_t guestAddress, const uint8_t* code, size_t size) {
@@ -86,7 +86,7 @@ uint64_t JITOptimizer::CompileBlock(uint64_t guestAddress, const uint8_t* code, 
     // Create new block
     JITBlock* block = CreateBlock(guestAddress);
     if (!block) {
-        LOG_ERROR("JIT", "Failed to create block at 0x%llx", guestAddress);
+        LOGF("[JIT] ERROR: " "Failed to create block at 0x%llx", guestAddress);
         return 0;
     }
 
@@ -98,7 +98,7 @@ uint64_t JITOptimizer::CompileBlock(uint64_t guestAddress, const uint8_t* code, 
     size_t hostSize = size * 4; // Estimated expansion
     uint8_t* hostCode = AllocateCacheMemory(hostSize);
     if (!hostCode) {
-        LOG_ERROR("JIT", "Failed to allocate cache memory");
+        LOGF("[JIT] ERROR: " "Failed to allocate cache memory");
         DeleteBlock(block);
         return 0;
     }
@@ -128,7 +128,7 @@ uint64_t JITOptimizer::CompileBlock(uint64_t guestAddress, const uint8_t* code, 
 
     RecordCompilation(guestAddress, compileTime);
 
-    LOG_DEBUG("JIT", "Compiled block: guest=0x%llx host=0x%llx size=%zu time=%.2fms",
+    LOGF("[JIT] DEBUG: " "Compiled block: guest=0x%llx host=0x%llx size=%zu time=%.2fms",
               guestAddress, block->hostAddress, size, compileTime);
 
     if (m_compilationCallback) {
@@ -150,7 +150,7 @@ void JITOptimizer::InvalidateBlock(uint64_t guestAddress) {
     if (block) {
         DeleteBlock(block);
         m_stats.deoptimizations++;
-        LOG_DEBUG("JIT", "Invalidated block at 0x%llx", guestAddress);
+        LOGF("[JIT] DEBUG: " "Invalidated block at 0x%llx", guestAddress);
     }
 }
 
@@ -171,7 +171,7 @@ void JITOptimizer::InvalidateRange(uint64_t start, uint64_t end) {
         }
     }
 
-    LOG_INFO("JIT", "Invalidated %zu blocks in range 0x%llx-0x%llx", toInvalidate.size(), start, end);
+    LOGF("[JIT] INFO: " "Invalidated %zu blocks in range 0x%llx-0x%llx", toInvalidate.size(), start, end);
 }
 
 void JITOptimizer::ClearCache() {
@@ -188,7 +188,7 @@ void JITOptimizer::ClearCache() {
     m_cacheUsed = 0;
     m_stats = JITStats{};
 
-    LOG_INFO("JIT", "Cache cleared");
+    LOGF("[JIT] INFO: " "Cache cleared");
 }
 
 void JITOptimizer::RecordExecution(uint64_t guestAddress) {
@@ -226,7 +226,7 @@ void JITOptimizer::MarkBlockHot(uint64_t guestAddress) {
         return;
     }
 
-    LOG_INFO("JIT", "Block 0x%llx is hot (%d executions), optimizing...", guestAddress, block->executionCount);
+    LOGF("[JIT] INFO: " "Block 0x%llx is hot (%d executions), optimizing...", guestAddress, block->executionCount);
 
     if (m_config.enableSIMD && m_config.optLevel >= OptimizationLevel::Aggressive) {
         ApplySIMDOptimization(*block);
@@ -246,7 +246,7 @@ void JITOptimizer::MarkBlockCold(uint64_t guestAddress) {
         return;
     }
 
-    LOG_DEBUG("JIT", "Block 0x%llx is cold, deoptimizing", guestAddress);
+    LOGF("[JIT] DEBUG: " "Block 0x%llx is cold, deoptimizing", guestAddress);
 
     // Reset optimization flags
     block->isOptimized = false;
@@ -258,7 +258,7 @@ bool JITOptimizer::OptimizeBlock(JITBlock& block) {
     // Basic optimization: remove redundant instructions
     // In production: full optimization pipeline
     
-    LOG_DEBUG("JIT", "Optimizing block at 0x%llx", block.guestAddress);
+    LOGF("[JIT] DEBUG: " "Optimizing block at 0x%llx", block.guestAddress);
     
     // Placeholder for actual optimization
     return true;
@@ -281,7 +281,7 @@ bool JITOptimizer::LinkBlock(JITBlock& block, uint64_t targetAddress) {
     block.isLinked = true;
     m_stats.linkedBlocks++;
 
-    LOG_DEBUG("JIT", "Linked block 0x%llx -> 0x%llx", block.guestAddress, targetAddress);
+    LOGF("[JIT] DEBUG: " "Linked block 0x%llx -> 0x%llx", block.guestAddress, targetAddress);
     return true;
 }
 
@@ -325,7 +325,7 @@ void JITOptimizer::ApplyPGO(JITBlock& block) {
     auto branchIt = m_branchProbabilities.find(block.guestAddress);
     if (branchIt != m_branchProbabilities.end()) {
         // Optimize for most likely branches
-        LOG_DEBUG("JIT", "PGO: Block 0x%llx avg time=%.3fms", block.guestAddress, avgTime);
+        LOGF("[JIT] DEBUG: " "PGO: Block 0x%llx avg time=%.3fms", block.guestAddress, avgTime);
     }
 }
 
@@ -334,7 +334,7 @@ bool JITOptimizer::ApplySIMDOptimization(JITBlock& block) {
         return false;
     }
 
-    LOG_DEBUG("JIT", "Applying SIMD optimization to block 0x%llx", block.guestAddress);
+    LOGF("[JIT] DEBUG: " "Applying SIMD optimization to block 0x%llx", block.guestAddress);
     
     // In production: vectorization analysis and transformation
     return true;
@@ -353,7 +353,7 @@ void JITOptimizer::QueueCompilation(uint64_t guestAddress, const uint8_t* code, 
     m_compilationQueue.emplace_back(guestAddress, std::vector<uint8_t>(code, code + size));
     m_pendingCompilations++;
 
-    LOG_DEBUG("JIT", "Queued compilation for 0x%llx (queue size=%zu)", guestAddress, m_compilationQueue.size());
+    LOGF("[JIT] DEBUG: " "Queued compilation for 0x%llx (queue size=%zu)", guestAddress, m_compilationQueue.size());
 }
 
 void JITOptimizer::ProcessCompilationQueue() {
@@ -382,14 +382,14 @@ void JITOptimizer::AllocateRegisters(JITBlock& block) {
     // Register allocation
     // In production: graph coloring or linear scan
     
-    LOG_DEBUG("JIT", "Allocating registers for block 0x%llx", block.guestAddress);
+    LOGF("[JIT] DEBUG: " "Allocating registers for block 0x%llx", block.guestAddress);
 }
 
 void JITOptimizer::SpillRegisters(JITBlock& block) {
     // Register spilling
     // In production: spill to stack when registers exhausted
     
-    LOG_DEBUG("JIT", "Spilling registers for block 0x%llx", block.guestAddress);
+    LOGF("[JIT] DEBUG: " "Spilling registers for block 0x%llx", block.guestAddress);
 }
 
 void JITOptimizer::SetCompilationCallback(CompilationCallback callback) {
@@ -443,7 +443,7 @@ double JITOptimizer::GetCacheUtilization() const {
 void JITOptimizer::DefragmentCache() {
     std::lock_guard<std::mutex> lock(m_blockMutex);
 
-    LOG_INFO("JIT", "Defragmenting cache...");
+    LOGF("[JIT] INFO: " "Defragmenting cache...");
     
     // In production: compact cache, update pointers
     // For now, just log
@@ -452,38 +452,38 @@ void JITOptimizer::DefragmentCache() {
 void JITOptimizer::DumpBlock(uint64_t guestAddress) const {
     const JITBlock* block = FindBlock(guestAddress);
     if (!block) {
-        LOG_INFO("JIT", "Block 0x%llx not found", guestAddress);
+        LOGF("[JIT] INFO: " "Block 0x%llx not found", guestAddress);
         return;
     }
 
-    LOG_INFO("JIT", "Block 0x%llx:", guestAddress);
-    LOG_INFO("JIT", "  Host: 0x%llx", block->hostAddress);
-    LOG_INFO("JIT", "  Guest Size: %zu", block->guestSize);
-    LOG_INFO("JIT", "  Host Size: %zu", block->hostSize);
-    LOG_INFO("JIT", "  Exec Count: %d", block->executionCount);
-    LOG_INFO("JIT", "  Optimized: %d", block->isOptimized ? 1 : 0);
-    LOG_INFO("JIT", "  Linked: %d", block->isLinked ? 1 : 0);
-    LOG_INFO("JIT", "  Cached: %d", block->isCached ? 1 : 0);
-    LOG_INFO("JIT", "  Compile Time: %.2f ms", block->compileTime);
-    LOG_INFO("JIT", "  Exec Time: %.2f ms", block->execTime);
+    LOGF("[JIT] INFO: " "Block 0x%llx:", guestAddress);
+    LOGF("[JIT] INFO: " "  Host: 0x%llx", block->hostAddress);
+    LOGF("[JIT] INFO: " "  Guest Size: %zu", block->guestSize);
+    LOGF("[JIT] INFO: " "  Host Size: %zu", block->hostSize);
+    LOGF("[JIT] INFO: " "  Exec Count: %d", block->executionCount);
+    LOGF("[JIT] INFO: " "  Optimized: %d", block->isOptimized ? 1 : 0);
+    LOGF("[JIT] INFO: " "  Linked: %d", block->isLinked ? 1 : 0);
+    LOGF("[JIT] INFO: " "  Cached: %d", block->isCached ? 1 : 0);
+    LOGF("[JIT] INFO: " "  Compile Time: %.2f ms", block->compileTime);
+    LOGF("[JIT] INFO: " "  Exec Time: %.2f ms", block->execTime);
 }
 
 void JITOptimizer::DumpStats() const {
-    LOG_INFO("JIT", "=== JIT Statistics ===");
-    LOG_INFO("JIT", "Total Blocks: %llu", m_stats.totalBlocks);
-    LOG_INFO("JIT", "Cached Blocks: %llu", m_stats.cachedBlocks);
-    LOG_INFO("JIT", "Optimized Blocks: %llu", m_stats.optimizedBlocks);
-    LOG_INFO("JIT", "Linked Blocks: %llu", m_stats.linkedBlocks);
-    LOG_INFO("JIT", "Cache Hits: %llu", m_stats.cacheHits);
-    LOG_INFO("JIT", "Cache Misses: %llu", m_stats.cacheMisses);
-    LOG_INFO("JIT", "Hit Rate: %.1f%%", GetCacheHitRate());
-    LOG_INFO("JIT", "Compilations: %llu", m_stats.compilations);
-    LOG_INFO("JIT", "Deoptimizations: %llu", m_stats.deoptimizations);
-    LOG_INFO("JIT", "Avg Compile Time: %.2f ms", m_stats.averageCompileTime);
-    LOG_INFO("JIT", "Avg Exec Time: %.2f ms", m_stats.averageExecTime);
-    LOG_INFO("JIT", "Speedup: %.2fx", GetSpeedup());
-    LOG_INFO("JIT", "Cache Usage: %zu / %zu (%.1f%%)", m_cacheUsed, m_cacheSize, GetCacheUtilization());
-    LOG_INFO("JIT", "======================");
+    LOGF("[JIT] INFO: " "=== JIT Statistics ===");
+    LOGF("[JIT] INFO: " "Total Blocks: %llu", m_stats.totalBlocks);
+    LOGF("[JIT] INFO: " "Cached Blocks: %llu", m_stats.cachedBlocks);
+    LOGF("[JIT] INFO: " "Optimized Blocks: %llu", m_stats.optimizedBlocks);
+    LOGF("[JIT] INFO: " "Linked Blocks: %llu", m_stats.linkedBlocks);
+    LOGF("[JIT] INFO: " "Cache Hits: %llu", m_stats.cacheHits);
+    LOGF("[JIT] INFO: " "Cache Misses: %llu", m_stats.cacheMisses);
+    LOGF("[JIT] INFO: " "Hit Rate: %.1f%%", GetCacheHitRate());
+    LOGF("[JIT] INFO: " "Compilations: %llu", m_stats.compilations);
+    LOGF("[JIT] INFO: " "Deoptimizations: %llu", m_stats.deoptimizations);
+    LOGF("[JIT] INFO: " "Avg Compile Time: %.2f ms", m_stats.averageCompileTime);
+    LOGF("[JIT] INFO: " "Avg Exec Time: %.2f ms", m_stats.averageExecTime);
+    LOGF("[JIT] INFO: " "Speedup: %.2fx", GetSpeedup());
+    LOGF("[JIT] INFO: " "Cache Usage: %zu / %zu (%.1f%%)", m_cacheUsed, m_cacheSize, GetCacheUtilization());
+    LOGF("[JIT] INFO: " "======================");
 }
 
 bool JITOptimizer::IsBlockOptimized(uint64_t guestAddress) const {
@@ -546,7 +546,7 @@ void JITOptimizer::UpdateStats() {
 uint8_t* JITOptimizer::AllocateCacheMemory(size_t size) {
     if (m_cacheUsed + size > m_cacheSize) {
         // Cache full - would need eviction policy
-        LOG_WARNING("JIT", "Cache full, cannot allocate %zu bytes", size);
+        LOGF("[JIT] WARNING: " "Cache full, cannot allocate %zu bytes", size);
         return nullptr;
     }
 

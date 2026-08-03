@@ -1,5 +1,5 @@
 #include "libs/ue4HLE.h"
-#include "common/log.h"
+#include "common/logging/log.h"
 #include "common/dateTime.h"
 #include <algorithm>
 #include <cstring>
@@ -20,7 +20,7 @@ static std::unordered_map<std::string, UE4NativeFunc> g_nativeFunctions;
 void RegisterUENative(const char* name, UE4NativeFunc func) {
     if (!name || !func) return;
     g_nativeFunctions[name] = func;
-    LOG_DEBUG("UE4", "Registered native: %s", name);
+    LOGF("[UE4] DEBUG: " "Registered native: %s", name);
 }
 
 UE4HLE::UE4HLE() {
@@ -34,11 +34,11 @@ UE4HLE::~UE4HLE() {
 
 bool UE4HLE::Initialize() {
     if (m_initialized) {
-        LOG_WARNING("UE4", "Already initialized");
+        LOGF("[UE4] WARNING: " "Already initialized");
         return true;
     }
 
-    LOG_INFO("UE4", "Initializing UE4 HLE...");
+    LOGF("[UE4] INFO: " "Initializing UE4 HLE...");
 
     // Initialize built-in classes
     InitializeBuiltInClasses();
@@ -61,9 +61,9 @@ bool UE4HLE::Initialize() {
 
     m_initialized = true;
 
-    LOG_INFO("UE4", "UE4 HLE initialized successfully");
-    LOG_INFO("UE4", "  Classes: %zu", m_classes.size());
-    LOG_INFO("UE4", "  Objects: %zu", m_objects.size());
+    LOGF("[UE4] INFO: " "UE4 HLE initialized successfully");
+    LOGF("[UE4] INFO: " "  Classes: %zu", m_classes.size());
+    LOGF("[UE4] INFO: " "  Objects: %zu", m_objects.size());
 
     return true;
 }
@@ -73,7 +73,7 @@ void UE4HLE::Shutdown() {
         return;
     }
 
-    LOG_INFO("UE4", "Shutting down UE4 HLE...");
+    LOGF("[UE4] INFO: " "Shutting down UE4 HLE...");
 
     // Destroy all objects
     for (auto& obj : m_objects) {
@@ -91,139 +91,139 @@ void UE4HLE::Shutdown() {
     m_engineState.isInitialized = false;
     m_initialized = false;
 
-    LOG_INFO("UE4", "UE4 HLE shutdown complete");
+    LOGF("[UE4] INFO: " "UE4 HLE shutdown complete");
 }
 
 void UE4HLE::InitializeBuiltInClasses() {
-    LOG_DEBUG("UE4", "Registering built-in classes...");
+    LOGF("[UE4] DEBUG: " "Registering built-in classes...");
 
     // Core UE4 classes
     RegisterClass("UObject", nullptr);
-    RegisterClass("UClass", "UObject");
-    RegisterClass("UFunction", "UObject");
-    RegisterClass("UProperty", "UObject");
-    RegisterClass("UStruct", "UObject");
-    RegisterClass("UEnum", "UObject");
-    RegisterClass("UPackage", "UObject");
+    RegisterClass("UClass" "UObject");
+    RegisterClass("UFunction" "UObject");
+    RegisterClass("UProperty" "UObject");
+    RegisterClass("UStruct" "UObject");
+    RegisterClass("UEnum" "UObject");
+    RegisterClass("UPackage" "UObject");
     
     // Engine classes
-    RegisterClass("UEngine", "UObject");
-    RegisterClass("UGameEngine", "UEngine");
-    RegisterClass("UWorld", "UObject");
-    RegisterClass("ULevel", "UObject");
-    RegisterClass("AActor", "UObject");
-    RegisterClass("APawn", "AActor");
-    RegisterClass("ACharacter", "APawn");
-    RegisterClass("APlayerController", "APawn");
-    RegisterClass("AGameMode", "AActor");
-    RegisterClass("AGameState", "AActor");
-    RegisterClass("AHUD", "AActor");
+    RegisterClass("UEngine" "UObject");
+    RegisterClass("UGameEngine" "UEngine");
+    RegisterClass("UWorld" "UObject");
+    RegisterClass("ULevel" "UObject");
+    RegisterClass("AActor" "UObject");
+    RegisterClass("APawn" "AActor");
+    RegisterClass("ACharacter" "APawn");
+    RegisterClass("APlayerController" "APawn");
+    RegisterClass("AGameMode" "AActor");
+    RegisterClass("AGameState" "AActor");
+    RegisterClass("AHUD" "AActor");
     
     // GTA 3 DE specific classes (common UE4 classes used)
-    RegisterClass("UTexture2D", "UObject");
-    RegisterClass("UMaterial", "UObject");
-    RegisterClass("UMaterialInstance", "UMaterial");
-    RegisterClass("UStaticMesh", "UObject");
-    RegisterClass("USkeletalMesh", "UObject");
-    RegisterClass("UAnimInstance", "UObject");
-    RegisterClass("UParticleSystem", "UObject");
-    RegisterClass("USoundBase", "UObject");
-    RegisterClass("USoundWave", "USoundBase");
-    RegisterClass("UAudioComponent", "UActorComponent");
-    RegisterClass("UActorComponent", "UObject");
-    RegisterClass("USceneComponent", "UActorComponent");
-    RegisterClass("UPrimitiveComponent", "USceneComponent");
-    RegisterClass("UStaticMeshComponent", "UPrimitiveComponent");
-    RegisterClass("USkeletalMeshComponent", "UPrimitiveComponent");
-    RegisterClass("UCameraComponent", "USceneComponent");
-    RegisterClass("UInputComponent", "UActorComponent");
+    RegisterClass("UTexture2D" "UObject");
+    RegisterClass("UMaterial" "UObject");
+    RegisterClass("UMaterialInstance" "UMaterial");
+    RegisterClass("UStaticMesh" "UObject");
+    RegisterClass("USkeletalMesh" "UObject");
+    RegisterClass("UAnimInstance" "UObject");
+    RegisterClass("UParticleSystem" "UObject");
+    RegisterClass("USoundBase" "UObject");
+    RegisterClass("USoundWave" "USoundBase");
+    RegisterClass("UAudioComponent" "UActorComponent");
+    RegisterClass("UActorComponent" "UObject");
+    RegisterClass("USceneComponent" "UActorComponent");
+    RegisterClass("UPrimitiveComponent" "USceneComponent");
+    RegisterClass("UStaticMeshComponent" "UPrimitiveComponent");
+    RegisterClass("USkeletalMeshComponent" "UPrimitiveComponent");
+    RegisterClass("UCameraComponent" "USceneComponent");
+    RegisterClass("UInputComponent" "UActorComponent");
     
     // UI classes
-    RegisterClass("UUserWidget", "UObject");
-    RegisterClass("UWidget", "UObject");
-    RegisterClass("UButton", "UWidget");
-    RegisterClass("UTextBlock", "UWidget");
-    RegisterClass("UImage", "UWidget");
+    RegisterClass("UUserWidget" "UObject");
+    RegisterClass("UWidget" "UObject");
+    RegisterClass("UButton" "UWidget");
+    RegisterClass("UTextBlock" "UWidget");
+    RegisterClass("UImage" "UWidget");
     
-    LOG_INFO("UE4", "Registered %zu built-in classes", m_classes.size());
+    LOGF("[UE4] INFO: " "Registered %zu built-in classes", m_classes.size());
 }
 
 void UE4HLE::InitializeBuiltInFunctions() {
-    LOG_DEBUG("UE4", "Registering built-in functions...");
+    LOGF("[UE4] DEBUG: " "Registering built-in functions...");
 
     // Core object functions
-    RegisterClassFunction("UObject", "IsValid");
-    RegisterClassFunction("UObject", "GetClass");
-    RegisterClassFunction("UObject", "GetName");
-    RegisterClassFunction("UObject", "GetFullName");
-    RegisterClassFunction("UObject", "MarkPendingKill");
-    RegisterClassFunction("UObject", "BeginDestroy");
+    RegisterClassFunction("UObject" "IsValid");
+    RegisterClassFunction("UObject" "GetClass");
+    RegisterClassFunction("UObject" "GetName");
+    RegisterClassFunction("UObject" "GetFullName");
+    RegisterClassFunction("UObject" "MarkPendingKill");
+    RegisterClassFunction("UObject" "BeginDestroy");
     
     // Engine functions
-    RegisterClassFunction("UEngine", "GetWorld");
-    RegisterClassFunction("UEngine", "GetGameViewport");
-    RegisterClassFunction("UEngine", "AddOnScreenDebugMessage");
+    RegisterClassFunction("UEngine" "GetWorld");
+    RegisterClassFunction("UEngine" "GetGameViewport");
+    RegisterClassFunction("UEngine" "AddOnScreenDebugMessage");
     
     // World functions
-    RegisterClassFunction("UWorld", "GetFirstPlayerController");
-    RegisterClassFunction("UWorld", "SpawnActor");
-    RegisterClassFunction("UWorld", "DestroyActor");
-    RegisterClassFunction("UWorld", "GetTimeSeconds");
-    RegisterClassFunction("UWorld", "GetRealTimeSeconds");
+    RegisterClassFunction("UWorld" "GetFirstPlayerController");
+    RegisterClassFunction("UWorld" "SpawnActor");
+    RegisterClassFunction("UWorld" "DestroyActor");
+    RegisterClassFunction("UWorld" "GetTimeSeconds");
+    RegisterClassFunction("UWorld" "GetRealTimeSeconds");
     
     // Actor functions
-    RegisterClassFunction("AActor", "GetActorLocation");
-    RegisterClassFunction("AActor", "GetActorRotation");
-    RegisterClassFunction("AActor", "SetActorLocation");
-    RegisterClassFunction("AActor", "SetActorRotation");
-    RegisterClassFunction("AActor", "GetWorld");
-    RegisterClassFunction("AActor", "Destroy");
+    RegisterClassFunction("AActor" "GetActorLocation");
+    RegisterClassFunction("AActor" "GetActorRotation");
+    RegisterClassFunction("AActor" "SetActorLocation");
+    RegisterClassFunction("AActor" "SetActorRotation");
+    RegisterClassFunction("AActor" "GetWorld");
+    RegisterClassFunction("AActor" "Destroy");
     
     // Component functions
-    RegisterClassFunction("UActorComponent", "GetOwner");
-    RegisterClassFunction("UActorComponent", "GetWorld");
-    RegisterClassFunction("USceneComponent", "GetRelativeLocation");
-    RegisterClassFunction("USceneComponent", "SetRelativeLocation");
+    RegisterClassFunction("UActorComponent" "GetOwner");
+    RegisterClassFunction("UActorComponent" "GetWorld");
+    RegisterClassFunction("USceneComponent" "GetRelativeLocation");
+    RegisterClassFunction("USceneComponent" "SetRelativeLocation");
     
     // Input functions
-    RegisterClassFunction("APlayerController", "GetHud");
-    RegisterClassFunction("APlayerController", "SetInputMode");
-    RegisterClassFunction("APlayerController", "GetPawn");
-    RegisterClassFunction("APlayerController", "Possess");
+    RegisterClassFunction("APlayerController" "GetHud");
+    RegisterClassFunction("APlayerController" "SetInputMode");
+    RegisterClassFunction("APlayerController" "GetPawn");
+    RegisterClassFunction("APlayerController" "Possess");
     
     // Game mode functions
-    RegisterClassFunction("AGameMode", "GetWorldSettings");
-    RegisterClassFunction("AGameMode", "GetGameState");
+    RegisterClassFunction("AGameMode" "GetWorldSettings");
+    RegisterClassFunction("AGameMode" "GetGameState");
     
     // String/table functions
-    RegisterClassFunction("UKismetStringLibrary", "Conv_StringToText");
-    RegisterClassFunction("UKismetTextLibrary", "Conv_TextToString");
-    RegisterClassFunction("UKismetMathLibrary", "MakeVector");
-    RegisterClassFunction("UKismetMathLibrary", "MakeRotator");
+    RegisterClassFunction("UKismetStringLibrary" "Conv_StringToText");
+    RegisterClassFunction("UKismetTextLibrary" "Conv_TextToString");
+    RegisterClassFunction("UKismetMathLibrary" "MakeVector");
+    RegisterClassFunction("UKismetMathLibrary" "MakeRotator");
     
-    LOG_INFO("UE4", "Registered built-in functions");
+    LOGF("[UE4] INFO: " "Registered built-in functions");
 }
 
 int32_t UE4HLE::Init() {
-    LOG_INFO("UE4", "UE4::Init() called");
+    LOGF("[UE4] INFO: " "UE4::Init() called");
     return m_initialized ? 0 : -1;
 }
 
 int32_t UE4HLE::InitCommandLine(const char* commandLine) {
-    LOG_INFO("UE4", "UE4::InitCommandLine(): %s", commandLine ? commandLine : "null");
+    LOGF("[UE4] INFO: " "UE4::InitCommandLine(): %s", commandLine ? commandLine : "null");
     
     // Parse common command line args
     if (commandLine) {
         std::string cmd(commandLine);
         
         if (cmd.find("-windowed") != std::string::npos) {
-            LOG_INFO("UE4", "Windowed mode requested");
+            LOGF("[UE4] INFO: " "Windowed mode requested");
         }
         if (cmd.find("-res=") != std::string::npos) {
-            LOG_INFO("UE4", "Resolution override requested");
+            LOGF("[UE4] INFO: " "Resolution override requested");
         }
         if (cmd.find("-log") != std::string::npos) {
-            LOG_INFO("UE4", "Logging enabled");
+            LOGF("[UE4] INFO: " "Logging enabled");
         }
     }
     
@@ -231,12 +231,12 @@ int32_t UE4HLE::InitCommandLine(const char* commandLine) {
 }
 
 void UE4HLE::Exit() {
-    LOG_INFO("UE4", "UE4::Exit() called");
+    LOGF("[UE4] INFO: " "UE4::Exit() called");
     RequestExit(0);
 }
 
 void UE4HLE::RequestExit(int32_t exitCode) {
-    LOG_INFO("UE4", "UE4::RequestExit(%d)", exitCode);
+    LOGF("[UE4] INFO: " "UE4::RequestExit(%d)", exitCode);
     m_engineState.isGameStarted = false;
 }
 
@@ -282,14 +282,14 @@ uint32_t UE4HLE::FindClass(const char* className) {
         return it->second;
     }
     
-    LOG_DEBUG("UE4", "Class not found: %s", className);
+    LOGF("[UE4] DEBUG: " "Class not found: %s", className);
     return 0;
 }
 
 uint32_t UE4HLE::SpawnObject(uint32_t classId, const char* name) {
     UE4Class* cls = GetClass(classId);
     if (!cls) {
-        LOG_ERROR("UE4", "SpawnObject: Invalid class ID %u", classId);
+        LOGF("[UE4] ERROR: " "SpawnObject: Invalid class ID %u", classId);
         return 0;
     }
     
@@ -300,7 +300,7 @@ uint32_t UE4HLE::SpawnObject(uint32_t classId, const char* name) {
     
     uint32_t objId = CreateObject(objType, name, cls->name.c_str());
     
-    LOG_DEBUG("UE4", "Spawned object: %s (class=%s, id=%u)", 
+    LOGF("[UE4] DEBUG: " "Spawned object: %s (class=%s, id=%u)", 
               name ? name : "unnamed", cls->name.c_str(), objId);
     
     return objId;
@@ -312,7 +312,7 @@ void UE4HLE::DestroyObject(uint32_t objectId) {
     UE4Object* obj = GetObject(objectId);
     if (!obj) return;
     
-    LOG_DEBUG("UE4", "Destroying object: %s (id=%u)", obj->name.c_str(), objectId);
+    LOGF("[UE4] DEBUG: " "Destroying object: %s (id=%u)", obj->name.c_str(), objectId);
     
     // Remove from name map
     if (!obj->name.empty()) {
@@ -339,7 +339,7 @@ uint32_t UE4HLE::RegisterClass(const char* className, const char* parentClass) {
     }
     
     if (m_classes.size() >= UE4_MAX_CLASSES) {
-        LOG_ERROR("UE4", "Maximum class count reached");
+        LOGF("[UE4] ERROR: " "Maximum class count reached");
         return 0;
     }
     
@@ -353,7 +353,7 @@ uint32_t UE4HLE::RegisterClass(const char* className, const char* parentClass) {
     m_classes.push_back(std::move(cls));
     m_classNameToId[className] = classId;
     
-    LOG_DEBUG("UE4", "Registered class: %s (parent=%s, id=%u)", 
+    LOGF("[UE4] DEBUG: " "Registered class: %s (parent=%s, id=%u)", 
               className, parentClass ? parentClass : "none", classId);
     
     return classId;
@@ -380,7 +380,7 @@ bool UE4HLE::GetPropertyValue(uint32_t objectId, const char* propertyName, void*
     if (!obj || !propertyName || !outValue) return false;
     
     // Stub - in production would access actual property data
-    LOG_DEBUG("UE4", "GetProperty: obj=%u prop=%s (stub)", objectId, propertyName);
+    LOGF("[UE4] DEBUG: " "GetProperty: obj=%u prop=%s (stub)", objectId, propertyName);
     std::memset(outValue, 0, 64); // Zero out for safety
     return true;
 }
@@ -390,7 +390,7 @@ bool UE4HLE::SetPropertyValue(uint32_t objectId, const char* propertyName, const
     if (!obj || !propertyName || !value) return false;
     
     // Stub - in production would set actual property data
-    LOG_DEBUG("UE4", "SetProperty: obj=%u prop=%s (stub)", objectId, propertyName);
+    LOGF("[UE4] DEBUG: " "SetProperty: obj=%u prop=%s (stub)", objectId, propertyName);
     return true;
 }
 
@@ -399,7 +399,7 @@ uint64_t UE4HLE::CallFunction(uint32_t objectId, const char* functionName, void*
     
     UE4Object* obj = GetObject(objectId);
     if (!obj) {
-        LOG_DEBUG("UE4", "CallFunction: Invalid object %u", objectId);
+        LOGF("[UE4] DEBUG: " "CallFunction: Invalid object %u", objectId);
         return 0;
     }
     
@@ -410,20 +410,20 @@ uint64_t UE4HLE::CallFunction(uint32_t objectId, const char* functionName, void*
     }
     
     // Default stub behavior
-    LOG_DEBUG("UE4", "CallFunction: %s::%s (stub)", obj->name.c_str(), functionName);
+    LOGF("[UE4] DEBUG: " "CallFunction: %s::%s (stub)", obj->name.c_str(), functionName);
     return 0;
 }
 
 uint64_t UE4HLE::ProcessEvent(uint32_t objectId, uint32_t functionId, void* params) {
     // UE4's native event processor
-    LOG_DEBUG("UE4", "ProcessEvent: obj=%u func=%u", objectId, functionId);
+    LOGF("[UE4] DEBUG: " "ProcessEvent: obj=%u func=%u", objectId, functionId);
     return 0;
 }
 
 bool UE4HLE::LoadMap(const char* mapName) {
     if (!mapName) return false;
     
-    LOG_INFO("UE4", "Loading map: %s", mapName);
+    LOGF("[UE4] INFO: " "Loading map: %s", mapName);
     
     m_engineState.currentMap = 1;
     m_engineState.isGameStarted = true;
@@ -433,7 +433,7 @@ bool UE4HLE::LoadMap(const char* mapName) {
 }
 
 bool UE4HLE::UnloadMap() {
-    LOG_INFO("UE4", "Unloading map");
+    LOGF("[UE4] INFO: " "Unloading map");
     m_engineState.currentMap = 0;
     m_engineState.isGameStarted = false;
     return true;
@@ -442,12 +442,12 @@ bool UE4HLE::UnloadMap() {
 bool UE4HLE::OpenLevel(const char* levelName) {
     if (!levelName) return false;
     
-    LOG_INFO("UE4", "Opening level: %s", levelName);
+    LOGF("[UE4] INFO: " "Opening level: %s", levelName);
     return LoadMap(levelName);
 }
 
 void UE4HLE::ServerTravel(const char* url, bool bAbsolute) {
-    LOG_INFO("UE4", "ServerTravel: %s (absolute=%d)", url ? url : "null", bAbsolute ? 1 : 0);
+    LOGF("[UE4] INFO: " "ServerTravel: %s (absolute=%d)", url ? url : "null", bAbsolute ? 1 : 0);
     
     if (url) {
         LoadMap(url);
@@ -469,20 +469,20 @@ float UE4HLE::GetRealTimeSeconds() const {
 }
 
 bool UE4HLE::BindInput(const char* commandName, const char* keyName) {
-    LOG_DEBUG("UE4", "BindInput: %s -> %s", commandName ? commandName : "null", 
+    LOGF("[UE4] DEBUG: " "BindInput: %s -> %s", commandName ? commandName : "null", 
               keyName ? keyName : "null");
     return true;
 }
 
 bool UE4HLE::UnbindInput(const char* commandName) {
-    LOG_DEBUG("UE4", "UnbindInput: %s", commandName ? commandName : "null");
+    LOGF("[UE4] DEBUG: " "UnbindInput: %s", commandName ? commandName : "null");
     return true;
 }
 
 bool UE4HLE::ExecCommand(const char* command) {
     if (!command) return false;
     
-    LOG_INFO("UE4", "Exec: %s", command);
+    LOGF("[UE4] INFO: " "Exec: %s", command);
     
     // Check for built-in commands
     std::string cmd(command);
@@ -494,7 +494,7 @@ bool UE4HLE::ExecCommand(const char* command) {
     
     if (cmd == "pause") {
         m_engineState.isPaused = !m_engineState.isPaused;
-        LOG_INFO("UE4", "Game %s", m_engineState.isPaused ? "paused" : "resumed");
+        LOGF("[UE4] INFO: " "Game %s", m_engineState.isPaused ? "paused" : "resumed");
         return true;
     }
     
@@ -510,29 +510,29 @@ bool UE4HLE::ExecCommand(const char* command) {
         return true;
     }
     
-    LOG_WARNING("UE4", "Unknown command: %s", command);
+    LOGF("[UE4] WARNING: " "Unknown command: %s", command);
     return false;
 }
 
 void UE4HLE::AddConsoleCommand(const char* command, std::function<void()> callback) {
     if (!command) return;
     m_consoleCommands[command] = std::move(callback);
-    LOG_DEBUG("UE4", "Added console command: %s", command);
+    LOGF("[UE4] DEBUG: " "Added console command: %s", command);
 }
 
 void UE4HLE::Log(const char* category, const char* message) {
     if (!category || !message) return;
-    LOG_INFO("UE4[%s]", category, "%s", message);
+    LOGF("[UE4[%s]] INFO: " , category, "%s", message);
 }
 
 void UE4HLE::Warning(const char* category, const char* message) {
     if (!category || !message) return;
-    LOG_WARNING("UE4[%s]", category, "%s", message);
+    LOGF("[UE4[%s]] WARNING: " , category, "%s", message);
 }
 
 void UE4HLE::Error(const char* category, const char* message) {
     if (!category || !message) return;
-    LOG_ERROR("UE4[%s]", category, "%s", message);
+    LOGF("[UE4[%s]] ERROR: " , category, "%s", message);
 }
 
 int32_t UE4HLE::GetObjectCount() const {
@@ -544,24 +544,24 @@ int32_t UE4HLE::GetClassCount() const {
 }
 
 void UE4HLE::DumpObjects() const {
-    LOG_INFO("UE4", "=== UE4 Objects ===");
+    LOGF("[UE4] INFO: " "=== UE4 Objects ===");
     for (const auto& obj : m_objects) {
         if (obj && obj->isInitialized) {
-            LOG_INFO("UE4", "  [%u] %s (%s)", obj->id, obj->name.c_str(), obj->className.c_str());
+            LOGF("[UE4] INFO: " "  [%u] %s (%s)", obj->id, obj->name.c_str(), obj->className.c_str());
         }
     }
-    LOG_INFO("UE4", "Total: %d objects", GetObjectCount());
+    LOGF("[UE4] INFO: " "Total: %d objects", GetObjectCount());
 }
 
 void UE4HLE::DumpClasses() const {
-    LOG_INFO("UE4", "=== UE4 Classes ===");
+    LOGF("[UE4] INFO: " "=== UE4 Classes ===");
     for (const auto& cls : m_classes) {
         if (cls && cls->isRegistered) {
-            LOG_INFO("UE4", "  [%u] %s (parent: %s)", cls->id, cls->name.c_str(), 
+            LOGF("[UE4] INFO: " "  [%u] %s (parent: %s)", cls->id, cls->name.c_str(), 
                      cls->parentClass.c_str());
         }
     }
-    LOG_INFO("UE4", "Total: %d classes", GetClassCount());
+    LOGF("[UE4] INFO: " "Total: %d classes", GetClassCount());
 }
 
 UE4Object* UE4HLE::GetObject(uint32_t id) {
@@ -596,7 +596,7 @@ const UE4Class* UE4HLE::GetClass(uint32_t id) const {
 
 uint32_t UE4HLE::CreateObject(UE4ObjectType type, const char* name, const char* className) {
     if (m_objects.size() >= UE4_MAX_OBJECTS) {
-        LOG_ERROR("UE4", "Maximum object count reached");
+        LOGF("[UE4] ERROR: " "Maximum object count reached");
         return 0;
     }
     

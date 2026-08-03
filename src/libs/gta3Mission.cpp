@@ -1,5 +1,5 @@
 #include "libs/gta3Mission.h"
-#include "common/log.h"
+#include "common/logging/log.h"
 #include <algorithm>
 #include <cstring>
 
@@ -26,11 +26,11 @@ GTA3MissionSystem::~GTA3MissionSystem() {
 
 bool GTA3MissionSystem::Initialize() {
     if (m_initialized) {
-        LOG_WARNING("GTA3Mission", "Already initialized");
+        LOGF("[GTA3Mission] WARNING: " "Already initialized");
         return true;
     }
 
-    LOG_INFO("GTA3Mission", "Initializing mission system...");
+    LOGF("[GTA3Mission] INFO: " "Initializing mission system...");
 
     // Initialize mission definitions
     InitializeStoryMissions();
@@ -43,8 +43,8 @@ bool GTA3MissionSystem::Initialize() {
 
     m_initialized = true;
     
-    LOG_INFO("GTA3Mission", "Initialized %zu missions", m_missions.size());
-    LOG_INFO("GTA3Mission", "Unlocked missions: %zu", 
+    LOGF("[GTA3Mission] INFO: " "Initialized %zu missions", m_missions.size());
+    LOGF("[GTA3Mission] INFO: " "Unlocked missions: %zu", 
              std::count(m_missionUnlocked.begin(), m_missionUnlocked.end(), true));
 
     return true;
@@ -59,83 +59,83 @@ void GTA3MissionSystem::Shutdown() {
     m_hasActiveMission = false;
     m_initialized = false;
     
-    LOG_INFO("GTA3Mission", "Shutdown complete");
+    LOGF("[GTA3Mission] INFO: " "Shutdown complete");
 }
 
 void GTA3MissionSystem::InitializeStoryMissions() {
-    LOG_DEBUG("GTA3Mission", "Initializing story missions...");
+    LOGF("[GTA3Mission] DEBUG: " "Initializing story missions...");
 
     // GTA 3 Story Missions (simplified list)
     // Liberty City Stories
     
     // Portland Island
-    m_missions.push_back({1, "Give Me Liberty", "Meet 8-Ball in the courthouse", 
-                          GTAMissionType::Story, "8-Ball", "Courthouse", -638.0f, 892.0f, 0.0f, 0, 0, 0, true});
+    m_missions.push_back({1, "Give Me Liberty" "Meet 8-Ball in the courthouse", 
+                          GTAMissionType::Story, "8-Ball" "Courthouse", -638.0f, 892.0f, 0.0f, 0, 0, 0, true});
     
-    m_missions.push_back({2, "Luigi's Girls", "Meet Luigi at the club", 
-                          GTAMissionType::Story, "Luigi", "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 1, 100, 0, false});
+    m_missions.push_back({2, "Luigi's Girls" "Meet Luigi at the club", 
+                          GTAMissionType::Story, "Luigi" "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 1, 100, 0, false});
     
-    m_missions.push_back({3, "Don't Spank Ma Bitch Up", "Defend the brothel", 
-                          GTAMissionType::Story, "Luigi", "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 2, 200, 0, false});
+    m_missions.push_back({3, "Don't Spank Ma Bitch Up" "Defend the brothel", 
+                          GTAMissionType::Story, "Luigi" "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 2, 200, 0, false});
     
-    m_missions.push_back({4, "Drive Misty For Me", "Pick up Misty", 
-                          GTAMissionType::Story, "Luigi", "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 3, 300, 0, false});
+    m_missions.push_back({4, "Drive Misty For Me" "Pick up Misty", 
+                          GTAMissionType::Story, "Luigi" "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 3, 300, 0, false});
     
-    m_missions.push_back({5, "Pump Action Pimps", "Eliminate rival pimps", 
-                          GTAMissionType::Story, "Luigi", "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 4, 500, 0, false});
+    m_missions.push_back({5, "Pump Action Pimps" "Eliminate rival pimps", 
+                          GTAMissionType::Story, "Luigi" "Paulie's Revue Bar", -580.0f, 920.0f, 0.0f, 4, 500, 0, false});
     
-    m_missions.push_back({6, "Mike Lips Last Lunch", "Meet Joey", 
-                          GTAMissionType::Story, "Joey", "Joey's Garage", -620.0f, 850.0f, 0.0f, 5, 400, 0, false});
+    m_missions.push_back({6, "Mike Lips Last Lunch" "Meet Joey", 
+                          GTAMissionType::Story, "Joey" "Joey's Garage", -620.0f, 850.0f, 0.0f, 5, 400, 0, false});
     
-    m_missions.push_back({7, "Frightened Fares", "Scare the cabbie", 
-                          GTAMissionType::Story, "Joey", "Joey's Garage", -620.0f, 850.0f, 0.0f, 6, 500, 0, false});
+    m_missions.push_back({7, "Frightened Fares" "Scare the cabbie", 
+                          GTAMissionType::Story, "Joey" "Joey's Garage", -620.0f, 850.0f, 0.0f, 6, 500, 0, false});
     
-    m_missions.push_back({8, "The Getaway", "Getaway driver job", 
-                          GTAMissionType::Story, "Joey", "Joey's Garage", -620.0f, 850.0f, 0.0f, 7, 600, 0, false});
+    m_missions.push_back({8, "The Getaway" "Getaway driver job", 
+                          GTAMissionType::Story, "Joey" "Joey's Garage", -620.0f, 850.0f, 0.0f, 7, 600, 0, false});
     
-    m_missions.push_back({9, "Cutting The Grass", "Meet Toni", 
-                          GTAMissionType::Story, "Toni", "Tavern", -700.0f, 900.0f, 0.0f, 8, 700, 0, false});
+    m_missions.push_back({9, "Cutting The Grass" "Meet Toni", 
+                          GTAMissionType::Story, "Toni" "Tavern", -700.0f, 900.0f, 0.0f, 8, 700, 0, false});
     
-    m_missions.push_back({10, "Blow Fish", "Eliminate target", 
-                          GTAMissionType::Story, "Toni", "Tavern", -700.0f, 900.0f, 0.0f, 9, 800, 0, false});
+    m_missions.push_back({10, "Blow Fish" "Eliminate target", 
+                          GTAMissionType::Story, "Toni" "Tavern", -700.0f, 900.0f, 0.0f, 9, 800, 0, false});
     
     // Staunton Island missions
-    m_missions.push_back({11, "Silence The Sneak", "First Staunton mission", 
-                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 10, 1000, 0, false});
+    m_missions.push_back({11, "Silence The Sneak" "First Staunton mission", 
+                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 10, 1000, 0, false});
     
-    m_missions.push_back({12, "Plaster Blaster", "Protect the informant", 
-                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 11, 1200, 0, false});
+    m_missions.push_back({12, "Plaster Blaster" "Protect the informant", 
+                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 11, 1200, 0, false});
     
-    m_missions.push_back({13, "Liberty Rumours", "Investigate rumors", 
-                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 12, 1400, 0, false});
+    m_missions.push_back({13, "Liberty Rumours" "Investigate rumors", 
+                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 12, 1400, 0, false});
     
-    m_missions.push_back({14, "Uzi Rider", "Eliminate rival gang", 
-                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 13, 1600, 0, false});
+    m_missions.push_back({14, "Uzi Rider" "Eliminate rival gang", 
+                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 13, 1600, 0, false});
     
-    m_missions.push_back({15, "Grand Theft Auto", "Steal cars", 
-                          GTAMissionType::Story, "Asuka", "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 14, 1800, 0, false});
+    m_missions.push_back({15, "Grand Theft Auto" "Steal cars", 
+                          GTAMissionType::Story, "Asuka" "Asuka's Hideout", 1200.0f, 400.0f, 0.0f, 14, 1800, 0, false});
     
     // Shoreside Vale missions
-    m_missions.push_back({16, "A Drop In The Ocean", "First Shoreside mission", 
-                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 15, 2000, 0, false});
+    m_missions.push_back({16, "A Drop In The Ocean" "First Shoreside mission", 
+                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 15, 2000, 0, false});
     
-    m_missions.push_back({17, "Uzi Money", "Collect money", 
-                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 16, 2200, 0, false});
+    m_missions.push_back({17, "Uzi Money" "Collect money", 
+                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 16, 2200, 0, false});
     
-    m_missions.push_back({18, "Toyminator", "Destroy the van", 
-                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 17, 2400, 0, false});
+    m_missions.push_back({18, "Toyminator" "Destroy the van", 
+                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 17, 2400, 0, false});
     
-    m_missions.push_back({19, "Rigged To Blow", "Final mission setup", 
-                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 18, 2600, 0, false});
+    m_missions.push_back({19, "Rigged To Blow" "Final mission setup", 
+                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 18, 2600, 0, false});
     
-    m_missions.push_back({20, "The Exchange", "Final mission", 
-                          GTAMissionType::Story, "Donald", "Airport", 2400.0f, -800.0f, 0.0f, 19, 10000, 0, false});
+    m_missions.push_back({20, "The Exchange" "Final mission", 
+                          GTAMissionType::Story, "Donald" "Airport", 2400.0f, -800.0f, 0.0f, 19, 10000, 0, false});
 
-    LOG_INFO("GTA3Mission", "Loaded %zu story missions", m_missions.size());
+    LOGF("[GTA3Mission] INFO: " "Loaded %zu story missions", m_missions.size());
 }
 
 void GTA3MissionSystem::InitializeSideMissions() {
-    LOG_DEBUG("GTA3Mission", "Initializing side missions...");
+    LOGF("[GTA3Mission] DEBUG: " "Initializing side missions...");
 
     // Side activities (simplified)
     size_t sideStart = m_missions.size();
@@ -202,7 +202,7 @@ void GTA3MissionSystem::InitializeSideMissions() {
         m_missions.push_back(mission);
     }
 
-    LOG_INFO("GTA3Mission", "Loaded %zu side missions", m_missions.size() - sideStart);
+    LOGF("[GTA3Mission] INFO: " "Loaded %zu side missions", m_missions.size() - sideStart);
 }
 
 bool GTA3MissionSystem::LoadMissionDefinitions() {
@@ -265,22 +265,22 @@ std::vector<uint32_t> GTA3MissionSystem::GetAvailableMissions() const {
 
 bool GTA3MissionSystem::StartMission(uint32_t missionId) {
     if (!IsMissionAvailable(missionId)) {
-        LOG_WARNING("GTA3Mission", "Cannot start mission %u: not available", missionId);
+        LOGF("[GTA3Mission] WARNING: " "Cannot start mission %u: not available", missionId);
         return false;
     }
     
     if (m_hasActiveMission) {
-        LOG_WARNING("GTA3Mission", "Cannot start mission %u: another mission is active", missionId);
+        LOGF("[GTA3Mission] WARNING: " "Cannot start mission %u: another mission is active", missionId);
         return false;
     }
     
     const GTAMissionInfo* info = GetMissionInfo(missionId);
     if (!info) {
-        LOG_ERROR("GTA3Mission", "Invalid mission ID: %u", missionId);
+        LOGF("[GTA3Mission] ERROR: " "Invalid mission ID: %u", missionId);
         return false;
     }
     
-    LOG_INFO("GTA3Mission", "Starting mission %u: %s", missionId, info->name.c_str());
+    LOGF("[GTA3Mission] INFO: " "Starting mission %u: %s", missionId, info->name.c_str());
     
     // Initialize active mission state
     m_activeMission.missionId = missionId;
@@ -307,14 +307,14 @@ bool GTA3MissionSystem::StartMission(uint32_t missionId) {
 
 bool GTA3MissionSystem::CompleteMission(uint32_t missionId, bool success) {
     if (!m_hasActiveMission || m_activeMission.missionId != missionId) {
-        LOG_WARNING("GTA3Mission", "Cannot complete mission %u: not active", missionId);
+        LOGF("[GTA3Mission] WARNING: " "Cannot complete mission %u: not active", missionId);
         return false;
     }
     
     const GTAMissionInfo* info = GetMissionInfo(missionId);
     
     if (success) {
-        LOG_INFO("GTA3Mission", "Mission %u PASSED: %s", missionId, info->name.c_str());
+        LOGF("[GTA3Mission] INFO: " "Mission %u PASSED: %s", missionId, info->name.c_str());
         
         m_missionCompleted[missionId - 1] = true;
         m_activeMission.missionPassed = true;
@@ -325,7 +325,7 @@ bool GTA3MissionSystem::CompleteMission(uint32_t missionId, bool success) {
         
         m_missionPlayTime += static_cast<uint32_t>(m_activeMission.currentTime);
     } else {
-        LOG_INFO("GTA3Mission", "Mission %u FAILED: %s", missionId, info->name.c_str());
+        LOGF("[GTA3Mission] INFO: " "Mission %u FAILED: %s", missionId, info->name.c_str());
         
         m_missionFailed[missionId - 1] = true;
         m_missionFailures[missionId - 1]++;
@@ -360,9 +360,9 @@ bool GTA3MissionSystem::AbortMission() {
     
     uint32_t missionId = m_activeMission.missionId;
     m_hasActiveMission = false;
-    m_activeMission = GTAMissionState{};
+    m_activeMission = GTAMissionInstance{};
     
-    LOG_INFO("GTA3Mission", "Mission %u aborted", missionId);
+    LOGF("[GTA3Mission] INFO: " "Mission %u aborted", missionId);
     return true;
 }
 
@@ -374,11 +374,11 @@ uint32_t GTA3MissionSystem::GetActiveMissionId() const {
     return m_hasActiveMission ? m_activeMission.missionId : 0;
 }
 
-const GTAMissionState* GTA3MissionSystem::GetActiveMissionState() const {
+const GTAMissionInstance* GTA3MissionSystem::GetActiveMissionState() const {
     return m_hasActiveMission ? &m_activeMission : nullptr;
 }
 
-GTAMissionState* GTA3MissionSystem::GetActiveMissionState() {
+GTAMissionInstance* GTA3MissionSystem::GetActiveMissionState() {
     return m_hasActiveMission ? &m_activeMission : nullptr;
 }
 
@@ -396,7 +396,7 @@ bool GTA3MissionSystem::AddObjective(const std::string& description, bool option
     
     m_activeMission.objectives.push_back(obj);
     
-    LOG_DEBUG("GTA3Mission", "Added objective: %s", description.c_str());
+    LOGF("[GTA3Mission] DEBUG: " "Added objective: %s", description.c_str());
     return true;
 }
 
@@ -408,7 +408,7 @@ bool GTA3MissionSystem::CompleteObjective(uint32_t objectiveIndex) {
     m_activeMission.objectives[objectiveIndex].isCompleted = true;
     m_activeMission.currentObjectiveIndex++;
     
-    LOG_DEBUG("GTA3Mission", "Objective %u completed", objectiveIndex);
+    LOGF("[GTA3Mission] DEBUG: " "Objective %u completed", objectiveIndex);
     
     // Check if all required objectives are complete
     bool allComplete = true;
@@ -420,7 +420,7 @@ bool GTA3MissionSystem::CompleteObjective(uint32_t objectiveIndex) {
     }
     
     if (allComplete) {
-        LOG_INFO("GTA3Mission", "All objectives complete for mission %u", m_activeMission.missionId);
+        LOGF("[GTA3Mission] INFO: " "All objectives complete for mission %u", m_activeMission.missionId);
         CompleteMission(m_activeMission.missionId, true);
     }
     
@@ -486,7 +486,7 @@ int32_t GTA3MissionSystem::GetMissionFailures(uint32_t missionId) const {
 void GTA3MissionSystem::UnlockMission(uint32_t missionId) {
     if (missionId > 0 && missionId <= m_missions.size()) {
         m_missionUnlocked[missionId - 1] = true;
-        LOG_DEBUG("GTA3Mission", "Unlocked mission %u: %s", missionId, 
+        LOGF("[GTA3Mission] DEBUG: " "Unlocked mission %u: %s", missionId, 
                   m_missions[missionId - 1].name.c_str());
     }
 }
@@ -498,12 +498,12 @@ void GTA3MissionSystem::LockMission(uint32_t missionId) {
 }
 
 void GTA3MissionSystem::UnlockNextMissions(uint32_t completedMissionId) {
-    LOG_DEBUG("GTA3Mission", "Checking for missions to unlock after %u", completedMissionId);
+    LOGF("[GTA3Mission] DEBUG: " "Checking for missions to unlock after %u", completedMissionId);
     
     for (size_t i = 0; i < m_missions.size(); i++) {
         if (m_missions[i].prerequisiteMission == completedMissionId) {
             UnlockMission(static_cast<uint32_t>(i + 1));
-            LOG_INFO("GTA3Mission", "Unlocked follow-up mission %u: %s", 
+            LOGF("[GTA3Mission] INFO: " "Unlocked follow-up mission %u: %s", 
                      static_cast<uint32_t>(i + 1), m_missions[i].name.c_str());
         }
     }
@@ -534,41 +534,41 @@ void GTA3MissionSystem::SetMissionUpdateCallback(MissionUpdateCallback callback)
 }
 
 void GTA3MissionSystem::DumpMissionProgress() const {
-    LOG_INFO("GTA3Mission", "=== Mission Progress ===");
-    LOG_INFO("GTA3Mission", "Total Missions: %zu", m_missions.size());
-    LOG_INFO("GTA3Mission", "Completed: %d", GetCompletedMissionCount());
-    LOG_INFO("GTA3Mission", "Completion: %.1f%%", GetCompletionPercentage());
+    LOGF("[GTA3Mission] INFO: " "=== Mission Progress ===");
+    LOGF("[GTA3Mission] INFO: " "Total Missions: %zu", m_missions.size());
+    LOGF("[GTA3Mission] INFO: " "Completed: %d", GetCompletedMissionCount());
+    LOGF("[GTA3Mission] INFO: " "Completion: %.1f%%", GetCompletionPercentage());
     
     int completed = 0;
     for (size_t i = 0; i < m_missions.size() && completed < 20; i++) {
         if (m_missionCompleted[i]) {
-            LOG_INFO("GTA3Mission", "  [✓] %s", m_missions[i].name.c_str());
+            LOGF("[GTA3Mission] INFO: " "  [✓] %s", m_missions[i].name.c_str());
             completed++;
         }
     }
     
     if (GetCompletedMissionCount() > 20) {
-        LOG_INFO("GTA3Mission", "  ... and %d more", GetCompletedMissionCount() - 20);
+        LOGF("[GTA3Mission] INFO: " "  ... and %d more", GetCompletedMissionCount() - 20);
     }
 }
 
 void GTA3MissionSystem::DebugPrintActiveMission() const {
     if (!m_hasActiveMission) {
-        LOG_INFO("GTA3Mission", "No active mission");
+        LOGF("[GTA3Mission] INFO: " "No active mission");
         return;
     }
     
     const GTAMissionInfo* info = GetMissionInfo(m_activeMission.missionId);
     if (!info) return;
     
-    LOG_INFO("GTA3Mission", "Active Mission: %s", info->name.c_str());
-    LOG_INFO("GTA3Mission", "  Description: %s", info->description.c_str());
-    LOG_INFO("GTA3Mission", "  Type: %d", static_cast<int>(info->type));
-    LOG_INFO("GTA3Mission", "  Giver: %s", info->giverName.c_str());
-    LOG_INFO("GTA3Mission", "  Location: %s", info->locationName.c_str());
-    LOG_INFO("GTA3Mission", "  Objectives: %zu", m_activeMission.objectives.size());
-    LOG_INFO("GTA3Mission", "  Current Objective: %u", m_activeMission.currentObjectiveIndex);
-    LOG_INFO("GTA3Mission", "  Failures: %d", m_activeMission.failures);
+    LOGF("[GTA3Mission] INFO: " "Active Mission: %s", info->name.c_str());
+    LOGF("[GTA3Mission] INFO: " "  Description: %s", info->description.c_str());
+    LOGF("[GTA3Mission] INFO: " "  Type: %d", static_cast<int>(info->type));
+    LOGF("[GTA3Mission] INFO: " "  Giver: %s", info->giverName.c_str());
+    LOGF("[GTA3Mission] INFO: " "  Location: %s", info->locationName.c_str());
+    LOGF("[GTA3Mission] INFO: " "  Objectives: %zu", m_activeMission.objectives.size());
+    LOGF("[GTA3Mission] INFO: " "  Current Objective: %u", m_activeMission.currentObjectiveIndex);
+    LOGF("[GTA3Mission] INFO: " "  Failures: %d", m_activeMission.failures);
 }
 
 bool GTA3MissionSystem::CheckPrerequisites(uint32_t missionId) const {

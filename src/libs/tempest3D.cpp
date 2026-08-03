@@ -1,5 +1,5 @@
 #include "libs/tempest3D.h"
-#include "common/log.h"
+#include "common/logging/log.h"
 #include <algorithm>
 #include <cstring>
 
@@ -42,7 +42,7 @@ bool Tempest3DEngine::Initialize(int32_t sampleRate) {
     
     m_initialized = true;
     
-    LOG_INFO("Tempest3D", "Initialized with sample rate %d Hz", sampleRate);
+    LOGF("[Tempest3D] INFO: " "Initialized with sample rate %d Hz", sampleRate);
     return true;
 }
 
@@ -55,7 +55,7 @@ void Tempest3DEngine::Shutdown() {
     m_tempBuffer.clear();
     m_initialized = false;
     
-    LOG_INFO("Tempest3D", "Shutdown complete");
+    LOGF("[Tempest3D] INFO: " "Shutdown complete");
 }
 
 void Tempest3DEngine::InitializeHRTFTable() {
@@ -107,7 +107,7 @@ void Tempest3DEngine::InitializeHRTFTable() {
         }
     }
     
-    LOG_INFO("Tempest3D", "HRTF table initialized with %zu entries", m_hrtfTable.size());
+    LOGF("[Tempest3D] INFO: " "HRTF table initialized with %zu entries", m_hrtfTable.size());
 }
 
 const HRTFFilter& Tempest3DEngine::GetHRTFFilter(float azimuth, float elevation) {
@@ -136,7 +136,7 @@ const HRTFFilter& Tempest3DEngine::GetHRTFFilter(float azimuth, float elevation)
 
 uint32_t Tempest3DEngine::CreateAudioObject() {
     if (m_audioObjects.size() >= TEMPEST_MAX_OBJECTS) {
-        LOG_ERROR("Tempest3D", "Maximum audio objects reached");
+        LOGF("[Tempest3D] ERROR: " "Maximum audio objects reached");
         return 0;
     }
     
@@ -185,7 +185,7 @@ TempestAudioObject* Tempest3DEngine::GetAudioObject(uint32_t objectId) {
 
 uint32_t Tempest3DEngine::CreateAudioBed(int32_t channelConfig) {
     if (m_audioBeds.size() >= TEMPEST_MAX_BEDS) {
-        LOG_ERROR("Tempest3D", "Maximum audio beds reached");
+        LOGF("[Tempest3D] ERROR: " "Maximum audio beds reached");
         return 0;
     }
     

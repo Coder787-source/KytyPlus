@@ -1,6 +1,6 @@
 #include "tempestAudioFix.h"
 #include "tempest3D.h"
-#include "common/logging.hpp"
+#include "common/logging/log.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>

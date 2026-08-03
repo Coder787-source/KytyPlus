@@ -1,6 +1,6 @@
 #include "ue4MissionNatives.h"
 #include "ue4HLE.h"
-#include "common/logging.hpp"
+#include "common/logging/log.h"
 #include <algorithm>
 
 namespace Kyty::Libs {

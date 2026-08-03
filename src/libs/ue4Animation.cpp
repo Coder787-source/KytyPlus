@@ -1,6 +1,6 @@
 #include "ue4Animation.h"
 #include "ue4HLE.h"
-#include "common/logging.hpp"
+#include "common/logging/log.h"
 #include <algorithm>
 #include <cmath>
 
