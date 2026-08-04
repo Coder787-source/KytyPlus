@@ -6,6 +6,8 @@
 #include <vector>
 #include <functional>
 #include <unordered_map>
+#include <mutex>
+#include <atomic>
 
 namespace Libs {
 
@@ -256,7 +258,17 @@ public:
      * @brief Check if scripting system is initialized
      */
     bool IsInitialized() const { return initialized_; }
-    
+
+    /**
+     * @brief Wrapper for CreateThread native
+     */
+    static uint64_t CreateThreadWrapper(uint64_t* args, uint32_t arg_count);
+
+    /**
+     * @brief Wrapper for ActivateMissionTrigger native
+     */
+    static uint64_t ActivateMissionTriggerWrapper(uint64_t* args, uint32_t arg_count);
+
 private:
     RageScriptingManager() = default;
     ~RageScriptingManager();

@@ -137,7 +137,7 @@ struct FHitResult {
     ECollisionChannel hitChannel;
     
     FHitResult() : flags(EHitResultFlags::None), time(1.0f), itemHit(0), 
-                   faceIndex(0), hitActorId(0), hitChannel(ECC_WorldStatic) {}
+                   faceIndex(0), hitActorId(0), hitChannel(ECollisionChannel::ECC_WorldStatic) {}
     
     bool IsBlockingHit() const {
         return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(EHitResultFlags::bBlockingHit)) != 0;
@@ -158,11 +158,11 @@ struct CollisionResponseContainer {
     ECollisionResponse responseVehicle;
     ECollisionResponse responsePhysicsBody;
     
-    CollisionResponseContainer() : responseWorldStatic(ECR_Block),
-                                    responseWorldDynamic(ECR_Block),
-                                    responsePawn(ECR_Overlap),
-                                    responseVehicle(ECR_Block),
-                                    responsePhysicsBody(ECR_Block) {}
+    CollisionResponseContainer() : responseWorldStatic(ECollisionResponse::ECR_Block),
+                                    responseWorldDynamic(ECollisionResponse::ECR_Block),
+                                    responsePawn(ECollisionResponse::ECR_Overlap),
+                                    responseVehicle(ECollisionResponse::ECR_Block),
+                                    responsePhysicsBody(ECollisionResponse::ECR_Block) {}
 };
 
 /**

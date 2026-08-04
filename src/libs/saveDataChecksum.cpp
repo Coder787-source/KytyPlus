@@ -5,8 +5,6 @@
 
 namespace Kyty::Libs {
 
-using namespace Kyty::Common;
-
 //=============================================================================
 // SaveFileHeader Implementation
 //=============================================================================
@@ -37,18 +35,18 @@ void SaveDataChecksum::Initialize() {
         return;
     }
     
-    Log::Info("[SaveChecksum] Initializing checksum system...");
+    LOGF("[SaveChecksum] Initializing checksum system...\n");
     
     InitializeCRC32Table();
     InitializeGTA3SaveChecksums();
     
     m_initialized = true;
     
-    Log::Info("[SaveChecksum] Checksum system initialized");
+    LOGF("[SaveChecksum] Checksum system initialized\n");
 }
 
 void SaveDataChecksum::Shutdown() {
-    Log::Info("[SaveChecksum] Shutting down checksum system...");
+    LOGF("[SaveChecksum] Shutting down checksum system...\n");
     m_initialized = false;
 }
 
@@ -90,7 +88,7 @@ void SaveDataChecksum::CalculateMD5(const uint8_t* data, size_t size, uint8_t* o
     
     std::memcpy(outHash, hash, 16);
     
-    Log::Debug("[SaveChecksum] Calculated MD5 hash");
+    LOGF("[SaveChecksum] Calculated MD5 hash\n");
 }
 
 void SaveDataChecksum::CalculateSHA1(const uint8_t* data, size_t size, uint8_t* outHash) {
@@ -111,7 +109,7 @@ void SaveDataChecksum::CalculateSHA1(const uint8_t* data, size_t size, uint8_t* 
     
     std::memcpy(outHash, hash, 20);
     
-    Log::Debug("[SaveChecksum] Calculated SHA1 hash");
+    LOGF("[SaveChecksum] Calculated SHA1 hash\n");
 }
 
 bool SaveDataChecksum::CalculateChecksum(const uint8_t* data, size_t size, EChecksumType type,
@@ -136,7 +134,7 @@ bool SaveDataChecksum::CalculateChecksum(const uint8_t* data, size_t size, EChec
             CalculateSHA1(data, size, outChecksum);
             return true;
             
-        case EChecksumType::Custom:
+        case EChecksumType::Custom: {
             // Custom checksum - XOR based
             if (checksumSize < 4) return false;
             uint32_t custom = 0;
@@ -145,6 +143,7 @@ bool SaveDataChecksum::CalculateChecksum(const uint8_t* data, size_t size, EChec
             }
             *reinterpret_cast<uint32_t*>(outChecksum) = custom;
             return true;
+        }
             
         default:
             return false;
@@ -171,9 +170,9 @@ bool SaveDataChecksum::ValidateChecksum(const uint8_t* data, size_t size,
     bool valid = (std::memcmp(calculatedChecksum, expectedChecksum, checksumSize) == 0);
     
     if (!valid) {
-        Log::Warning("[SaveChecksum] Checksum validation failed!");
+        LOGF("[SaveChecksum] Checksum validation failed!\n");
     } else {
-        Log::Debug("[SaveChecksum] Checksum validation passed");
+        LOGF("[SaveChecksum] Checksum validation passed\n");
     }
     
     return valid;
@@ -238,7 +237,7 @@ size_t SaveDataChecksum::GetChecksumSize(EChecksumType type) const {
 void SaveDataChecksum::SetValidationEnabled(bool enabled) {
     if (m_validationEnabled != enabled) {
         m_validationEnabled = enabled;
-        Log::Info("[SaveChecksum] Validation %s", enabled ? "enabled" : "disabled");
+        LOGF("[SaveChecksum] Validation %s\n", enabled ? "enabled" : "disabled");
     }
 }
 
@@ -251,7 +250,7 @@ bool SaveDataChecksum::IsValidationEnabled() const {
 //=============================================================================
 
 void InitializeGTA3SaveChecksums() {
-    Log::Info("[SaveChecksum] Initializing GTA 3 DE save checksum support...");
+    LOGF("[SaveChecksum] Initializing GTA 3 DE save checksum support...\n");
     
     // GTA 3 DE uses a custom checksum format
     // This is handled by the Custom checksum type
@@ -266,7 +265,7 @@ bool ValidateGTA3Save(const uint8_t* data, size_t size) {
     
     // Check magic number
     if (header->magic != 0x4B595459) {
-        Log::Warning("[SaveChecksum] Invalid GTA 3 save magic number");
+        LOGF("[SaveChecksum] Invalid GTA 3 save magic number\n");
         return false;
     }
     
@@ -291,11 +290,11 @@ bool RepairGTA3Save(uint8_t* data, size_t size) {
     
     auto& checksum = SaveDataChecksum::Instance();
     if (checksum.AddChecksumToHeader(*header, saveData, saveDataSize)) {
-        Log::Info("[SaveChecksum] Repaired GTA 3 save checksum");
+        LOGF("[SaveChecksum] Repaired GTA 3 save checksum\n");
         return true;
     }
     
-    Log::Warning("[SaveChecksum] Failed to repair GTA 3 save");
+    LOGF("[SaveChecksum] Failed to repair GTA 3 save\n");
     return false;
 }
 

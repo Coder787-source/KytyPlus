@@ -5,8 +5,6 @@
 
 namespace Kyty::Libs {
 
-using namespace Kyty::Common;
-
 //=============================================================================
 // CollisionObject Internal Structure
 //=============================================================================
@@ -22,7 +20,7 @@ struct PhysicsCollision::CollisionObject {
     bool isVehicle;
     bool isCharacter;
     
-    CollisionObject() : id(0), channel(ECC_WorldStatic), enabled(true),
+    CollisionObject() : id(0), channel(ECollisionChannel::ECC_WorldStatic), enabled(true),
                         isVehicle(false), isCharacter(false) {}
 };
 
@@ -37,35 +35,35 @@ PhysicsCollision& PhysicsCollision::Instance() {
 
 bool PhysicsCollision::Initialize() {
     if (m_initialized) {
-        Log::Warning("[PhysCol] Already initialized");
+        LOGF("[PhysCol] Already initialized\n");
         return true;
     }
     
-    Log::Info("[PhysCol] Initializing collision system...");
+    LOGF("[PhysCol] Initializing collision system...\n");
     
     // Initialize GTA 3 DE specific fixes
     InitializeGTA3CollisionFixes();
     
     m_initialized = true;
     
-    Log::Info("[PhysCol] Collision system initialized");
+    LOGF("[PhysCol] Collision system initialized\n");
     return true;
 }
 
 void PhysicsCollision::Shutdown() {
-    Log::Info("[PhysCol] Shutting down collision system...");
+    LOGF("[PhysCol] Shutting down collision system...\n");
     
     m_objects.clear();
     m_initialized = false;
     
-    Log::Info("[PhysCol] Collision system shut down");
+    LOGF("[PhysCol] Collision system shut down\n");
 }
 
 bool PhysicsCollision::RegisterObject(uint32_t objectId, const CollisionShape& shape,
                                        ECollisionChannel channel,
                                        const CollisionResponseContainer& response) {
     if (m_objects.find(objectId) != m_objects.end()) {
-        Log::Warning("[PhysCol] Object already registered: %u", objectId);
+        LOGF("[PhysCol] Object already registered: %u\n", objectId);
         return false;
     }
     
@@ -79,7 +77,7 @@ bool PhysicsCollision::RegisterObject(uint32_t objectId, const CollisionShape& s
     obj->enabled = true;
     
     m_objects[objectId] = std::move(obj);
-    Log::Debug("[PhysCol] Registered object %u (channel=%d, type=%d)", 
+    LOGF("[PhysCol] Registered object %u (channel=%d, type=%d)\n", 
                objectId, static_cast<int>(channel), static_cast<int>(shape.type));
     
     return true;
@@ -100,7 +98,7 @@ void PhysicsCollision::RemoveObject(uint32_t objectId) {
     auto it = m_objects.find(objectId);
     if (it != m_objects.end()) {
         m_objects.erase(it);
-        Log::Debug("[PhysCol] Removed object %u", objectId);
+        LOGF("[PhysCol] Removed object %u\n", objectId);
     }
 }
 
@@ -161,7 +159,7 @@ bool PhysicsCollision::LineTraceSingle(const FVector3& start, const FVector3& en
     }
     
     if (foundHit) {
-        Log::Debug("[PhysCol] Line trace hit at time %.3f", closestTime);
+        LOGF("[PhysCol] Line trace hit at time %.3f\n", closestTime);
     }
     
     return foundHit;
@@ -272,7 +270,7 @@ FVector3 PhysicsCollision::ResolvePenetration(uint32_t objectId, float penetrati
     FVector3 correction = penetrationNormal * (penetrationDepth + 0.01f); // Add small bias
     FVector3 resolvedPos = it->second->position + correction;
     
-    Log::Debug("[PhysCol] Resolved penetration for object %u (depth=%.3f)", 
+    LOGF("[PhysCol] Resolved penetration for object %u (depth=%.3f)\n", 
                objectId, penetrationDepth);
     
     return resolvedPos;
@@ -282,7 +280,7 @@ void PhysicsCollision::SetCollisionEnabled(uint32_t objectId, bool enabled) {
     auto it = m_objects.find(objectId);
     if (it != m_objects.end()) {
         it->second->enabled = enabled;
-        Log::Debug("[PhysCol] Set collision %s for object %u", 
+        LOGF("[PhysCol] Set collision %s for object %u\n", 
                    enabled ? "enabled" : "disabled", objectId);
     }
 }
@@ -303,7 +301,7 @@ size_t PhysicsCollision::GetObjectCount() const {
 void PhysicsCollision::SetFixEnabled(bool enabled) {
     if (m_fixEnabled != enabled) {
         m_fixEnabled = enabled;
-        Log::Info("[PhysCol] Collision fixes %s", enabled ? "enabled" : "disabled");
+        LOGF("[PhysCol] Collision fixes %s\n", enabled ? "enabled" : "disabled");
     }
 }
 
@@ -316,13 +314,13 @@ bool PhysicsCollision::IsFixEnabled() const {
 //=============================================================================
 
 void InitializeGTA3CollisionFixes() {
-    Log::Info("[PhysCol] Initializing GTA 3 DE collision fixes...");
+    LOGF("[PhysCol] Initializing GTA 3 DE collision fixes...\n");
     
     ApplyVehicleCollisionFixes();
     ApplyCharacterCollisionFixes();
     ApplyWorldCollisionFixes();
     
-    Log::Info("[PhysCol] GTA 3 DE collision fixes initialized");
+    LOGF("[PhysCol] GTA 3 DE collision fixes initialized\n");
 }
 
 void ApplyVehicleCollisionFixes() {
@@ -330,7 +328,7 @@ void ApplyVehicleCollisionFixes() {
     
     // Fix: Prevent vehicles from clipping through ground
     // This is handled by improving collision detection frequency
-    Log::Info("[PhysCol] Applied vehicle collision fixes");
+    LOGF("[PhysCol] Applied vehicle collision fixes\n");
 }
 
 void ApplyCharacterCollisionFixes() {
@@ -338,7 +336,7 @@ void ApplyCharacterCollisionFixes() {
     
     // Fix: Prevent characters from falling through floors
     // Improved capsule collision detection
-    Log::Info("[PhysCol] Applied character collision fixes");
+    LOGF("[PhysCol] Applied character collision fixes\n");
 }
 
 void ApplyWorldCollisionFixes() {
@@ -346,7 +344,7 @@ void ApplyWorldCollisionFixes() {
     
     // Fix: Improve world object collision accuracy
     // Better handling of static mesh collisions
-    Log::Info("[PhysCol] Applied world collision fixes");
+    LOGF("[PhysCol] Applied world collision fixes\n");
 }
 
 } // namespace Kyty::Libs
