@@ -386,7 +386,7 @@ void TestResourceDescriptorClassification()
     const char* vulkanIcdPath = "C:\\Windows\\System32\\vulkan-1.dll";
     std::string icdEnv = "VK_ICD_FILENAMES=" + std::string(vulkanIcdPath);
     _putenv(icdEnv.c_str());
-    KYTY_LOG("Set VK_ICD_FILENAMES=%s", vulkanIcdPath);
+    printf("Set VK_ICD_FILENAMES=%s\n", vulkanIcdPath);
 #endif
 	uint32_t raw_texture[8] = {};
 	raw_texture[3]          = 9u << 28u;
