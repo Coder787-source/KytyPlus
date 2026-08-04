@@ -7,6 +7,9 @@
 
 namespace Kyty::Libs {
 
+// Forward declaration
+void RegisterClassFunction(const char* className, const char* functionName);
+
 // Global UE4 HLE instance
 static UE4HLE g_ue4HLE;
 

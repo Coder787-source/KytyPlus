@@ -113,8 +113,16 @@ enum class EPropertyFlags : uint64_t {
 class UObject;
 class UClass;
 class UField;
-class UProperty;
 class UStruct;
+
+// UProperty definition (needed for make_unique)
+struct UProperty {
+    std::string name;
+    std::string type;
+    uint64_t flags = 0;
+    size_t offset = 0;
+    size_t size = 0;
+};
 
 /**
  * UE4 Class Registration Entry
