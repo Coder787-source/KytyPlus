@@ -89,32 +89,32 @@ Video of Dead Cells booting to the main menu on KytyPlus v1.8 (i7-9700K, RTX 406
 ---
 
 ## Screenshots
-
 Screenshots below are from the KytyPS5 lineage and illustrate early boot capability — not KytyPlus
-playability guarantees.
+playability guarantees. Titles are intentionally unnamed.
 
 <table align="center">
   <tr>
     <td align="center">
-      <strong>Disgaea 6</strong><br>
-      <img src="docs/screenshots/ps5-01.png" width="300" alt="Disgaea 6">
+      <strong>Tactical RPG — title screen</strong><br>
+      <img src="docs/screenshots/ps5-01.png" width="300" alt="Tactical RPG title screen">
     </td>
     <td align="center">
-      <strong>Dreaming Sarah</strong><br>
-      <img src="docs/screenshots/ps5-03.png" width="300" alt="Dreaming Sarah">
+      <strong>Indie adventure — boot</strong><br>
+      <img src="docs/screenshots/ps5-03.png" width="300" alt="Indie adventure boot">
     </td>
   </tr>
   <tr>
     <td align="center">
-      <strong>Minecraft Legends</strong><br>
-      <img src="docs/screenshots/ps5-04.png" width="300" alt="Minecraft Legends">
+      <strong>3D action-strategy — menu</strong><br>
+      <img src="docs/screenshots/ps5-04.png" width="300" alt="3D action-strategy menu">
     </td>
     <td align="center">
-      <strong>SILENT HILL: The Short Message</strong><br>
-      <img src="docs/screenshots/ps5-05.png" width="300" alt="SILENT HILL: The Short Message">
+      <strong>First-person title — boot</strong><br>
+      <img src="docs/screenshots/ps5-05.png" width="300" alt="First-person title boot">
     </td>
   </tr>
 </table>
+
 
 ---
 
