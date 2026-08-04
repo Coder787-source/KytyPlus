@@ -1,4 +1,4 @@
-#include <vulkan/vulkan.hpp>
+#include <vulkan/vulkan.h>
 #include <iostream>
 #include <vector>
 #include <cstring>
@@ -17,19 +17,23 @@ void TestResourceDescriptorClassification() {
 
     // Check if Vulkan is available
     uint32_t instanceVersion;
-    if (vk::enumerateInstanceVersion(&instanceVersion) != vk::Result::eSuccess) {
+    if (vkEnumerateInstanceVersion(&instanceVersion) != VK_SUCCESS) {
         std::cout << "Vulkan not available: Loader not found or incompatible" << std::endl;
         std::cout << "Skipping test: Vulkan not available" << std::endl;
         return;
     }
 
     // Check for required instance extensions
+    uint32_t extensionCount = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
+    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+    vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, availableExtensions.data());
+
     std::vector<const char*> requiredExtensions = {
         VK_KHR_SURFACE_EXTENSION_NAME,
         VK_KHR_WIN32_SURFACE_EXTENSION_NAME
     };
 
-    auto availableExtensions = vk::enumerateInstanceExtensionProperties();
     for (const auto& extension : requiredExtensions) {
         bool found = false;
         for (const auto& available : availableExtensions) {
@@ -46,27 +50,23 @@ void TestResourceDescriptorClassification() {
     }
 
     // Create Vulkan instance
-    try {
-        vk::InstanceCreateInfo createInfo;
-        createInfo.enabledExtensionCount = static_cast<uint32_t>(requiredExtensions.size());
-        createInfo.ppEnabledExtensionNames = requiredExtensions.data();
+    VkInstanceCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(requiredExtensions.size());
+    createInfo.ppEnabledExtensionNames = requiredExtensions.data();
 
-        auto instance = vk::createInstance(createInfo);
-        std::cout << "Vulkan instance created successfully using AMD Radeon 780M" << std::endl;
-
-        // Cleanup
-        instance.destroy();
-
-    } catch (const vk::SystemError& e) {
-        std::cout << "Failed to create Vulkan instance: " << e.what() << std::endl;
+    VkInstance instance;
+    if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
+        std::cout << "Failed to create Vulkan instance" << std::endl;
         std::cout << "Skipping test: Vulkan initialization failed" << std::endl;
         return;
     }
 
+    std::cout << "Vulkan instance created successfully using AMD Radeon 780M" << std::endl;
+    vkDestroyInstance(instance, nullptr);
     std::cout << "TestResourceDescriptorClassification: Test completed." << std::endl;
 }
 
-// Add a main function
 int main() {
     TestResourceDescriptorClassification();
     return 0;
