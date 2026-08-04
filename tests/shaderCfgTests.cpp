@@ -355,7 +355,11 @@ void EnsureConfigInitialized() {
 	}
 }
 
-void TestResourceDescriptorClassification() {
+void TestResourceDescriptorClassification()
+{
+#ifdef _WIN32
+    ValidateVulkan();
+#endif {
 	uint32_t raw_texture[8] = {};
 	raw_texture[3]          = 9u << 28u;
 	raw_texture[5]          = 2u << 27u;
