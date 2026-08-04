@@ -4,7 +4,20 @@ on: [push, pull_request]
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            preset: windows
+          - os: macos-latest
+            preset: macos
+          - os: ubuntu-latest
+            preset: linux
+
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -15,14 +28,45 @@ jobs:
           cache: true
           stripdown: false  # Install full SDK
 
-      - name: Install Swiftshader (CI fallback)
+      - name: Install Linux Vulkan runtime deps
+        if: runner.os == 'Linux'
         run: |
-          Invoke-WebRequest -Uri "https://github.com/google/swiftshader/releases/download/vulkan-1.3.290.0/swiftshader-win.zip" -OutFile "$env:RUNNER_TEMP\swiftshader.zip"
-          Expand-Archive -Path "$env:RUNNER_TEMP\swiftshader.zip" -DestinationPath "$env:RUNNER_TEMP\swiftshader"
-          Copy-Item -Path "$env:RUNNER_TEMP\swiftshader\vulkan-1.dll" -Destination "$env:GITHUB_WORKSPACE"
+          sudo apt-get update
+          sudo apt-get install -y libvulkan1 libvulkan-dev mesa-vulkan-drivers vulkan-tools
 
-      - name: Configure CMake
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
         run: cmake -B _Build/windows -DCMAKE_VERBOSE_MAKEFILE=ON
 
-      - name: Build
+      - name: Configure CMake (macOS)
+        if: runner.os == 'macOS'
+        run: cmake -B _Build/macos -DCMAKE_VERBOSE_MAKEFILE=ON
+
+      - name: Configure CMake (Linux)
+        if: runner.os == 'Linux'
+        run: cmake -B _Build/linux -DCMAKE_VERBOSE_MAKEFILE=ON
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
         run: cmake --build _Build/windows --config Release
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: cmake --build _Build/macos --config Release
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --build _Build/linux --config Release
+
+      - name: Run shader config tests
+        shell: bash
+        run: |
+          if [ -f _Build/windows/shader_cfg_tests/Release/shader_cfg_tests.exe ]; then
+            _Build/windows/shader_cfg_tests/Release/shader_cfg_tests.exe
+          elif [ -f _Build/macos/shader_cfg_tests/shader_cfg_tests ]; then
+            _Build/macos/shader_cfg_tests/shader_cfg_tests
+          elif [ -f _Build/linux/shader_cfg_tests/shader_cfg_tests ]; then
+            _Build/linux/shader_cfg_tests/shader_cfg_tests
+          else
+            echo "shader_cfg_tests binary not found, skipping run"
+          fi
