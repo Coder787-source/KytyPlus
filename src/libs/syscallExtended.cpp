@@ -7,6 +7,8 @@
 #include "kernel/pthread.h"
 #include "kernel/fileSystem.h"
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <chrono>
 #include <thread>
@@ -374,8 +376,10 @@ int32_t sysDebugPrint(const char* format, ...) {
     
     va_list args;
     va_start(args, format);
-    LOGF("[GuestPrint] DEBUG: ", format, args);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
+    LOGF("[GuestPrint] DEBUG: %s", buf);
     
     return 0;
 }

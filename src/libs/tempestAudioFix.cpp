@@ -7,7 +7,7 @@
 
 namespace Kyty::Libs {
 
-using namespace Kyty::Common;
+using namespace Common;
 
 //=============================================================================
 // TempestAudioFix Implementation
@@ -20,11 +20,11 @@ TempestAudioFix& TempestAudioFix::Instance() {
 
 bool TempestAudioFix::Initialize() {
     if (m_initialized) {
-        Log::Warning("[TempestFix] Already initialized");
+        LOGF("[TempestFix] WARNING: Already initialized");
         return true;
     }
     
-    Log::Info("[TempestFix] Initializing audio fix system...");
+    LOGF("[TempestFix] INFO: Initializing audio fix system...");
     
     // Initialize with default buffer pool
     const size_t defaultBufferCount = 8;
@@ -39,13 +39,13 @@ bool TempestAudioFix::Initialize() {
     
     m_initialized = true;
     
-    Log::Info("[TempestFix] Audio fix system initialized (%zu buffers, %zu streams)",
+    LOGF("[TempestFix] INFO: Audio fix system initialized (%zu buffers, %zu streams)",
               m_buffers.size(), m_streams.size());
     return true;
 }
 
 void TempestAudioFix::Shutdown() {
-    Log::Info("[TempestFix] Shutting down audio fix system...");
+    LOGF("[TempestFix] INFO: Shutting down audio fix system...");
     
     m_buffers.clear();
     m_streams.clear();
@@ -54,7 +54,7 @@ void TempestAudioFix::Shutdown() {
     m_nextStreamId = 1;
     m_initialized = false;
     
-    Log::Info("[TempestFix] Audio fix system shut down");
+    LOGF("[TempestFix] INFO: Audio fix system shut down");
 }
 
 uint32_t TempestAudioFix::CreateBuffer(size_t sampleCount, size_t channelCount, float sampleRate) {
@@ -70,7 +70,7 @@ uint32_t TempestAudioFix::CreateBuffer(size_t sampleCount, size_t channelCount, 
     uint32_t bufferId = buffer->bufferId;
     m_buffers[bufferId] = std::move(buffer);
     
-    Log::Debug("[TempestFix] Created buffer %u (%zu samples, %zu channels, %.0f Hz)",
+    LOGF("[TempestFix] DEBUG: Created buffer %u (%zu samples, %zu channels, %.0f Hz)",
                bufferId, sampleCount, channelCount, sampleRate);
     
     return bufferId;
@@ -80,7 +80,7 @@ void TempestAudioFix::DestroyBuffer(uint32_t bufferId) {
     auto it = m_buffers.find(bufferId);
     if (it != m_buffers.end()) {
         m_buffers.erase(it);
-        Log::Debug("[TempestFix] Destroyed buffer %u", bufferId);
+        LOGF("[TempestFix] DEBUG: Destroyed buffer %u", bufferId);
     }
 }
 
@@ -175,7 +175,7 @@ uint32_t TempestAudioFix::CreateStream(const std::string& name, bool is3D, bool 
     uint32_t streamId = stream->streamId;
     m_streams[streamId] = std::move(stream);
     
-    Log::Debug("[TempestFix] Created stream %u: %s (3D=%d, loop=%d)",
+    LOGF("[TempestFix] DEBUG: Created stream %u: %s (3D=%d, loop=%d)",
                streamId, name.c_str(), is3D, isLooping);
     
     return streamId;
@@ -185,7 +185,7 @@ void TempestAudioFix::DestroyStream(uint32_t streamId) {
     auto it = m_streams.find(streamId);
     if (it != m_streams.end()) {
         m_streams.erase(it);
-        Log::Debug("[TempestFix] Destroyed stream %u", streamId);
+        LOGF("[TempestFix] DEBUG: Destroyed stream %u", streamId);
     }
 }
 
@@ -206,7 +206,7 @@ bool TempestAudioFix::PlayStream(uint32_t streamId) {
     stream->isPaused = false;
     stream->startTime = 0; // Would use real timestamp
     
-    Log::Debug("[TempestFix] Playing stream %u", streamId);
+    LOGF("[TempestFix] DEBUG: Playing stream %u", streamId);
     return true;
 }
 
@@ -221,7 +221,7 @@ void TempestAudioFix::PauseStream(uint32_t streamId) {
     if (stream->isPlaying && !stream->isPaused) {
         stream->isPaused = true;
         stream->pausedTime = 0; // Would use real timestamp
-        Log::Debug("[TempestFix] Paused stream %u", streamId);
+        LOGF("[TempestFix] DEBUG: Paused stream %u", streamId);
     }
 }
 
@@ -236,7 +236,7 @@ void TempestAudioFix::ResumeStream(uint32_t streamId) {
     if (stream->isPaused) {
         stream->isPaused = false;
         stream->isPlaying = true;
-        Log::Debug("[TempestFix] Resumed stream %u", streamId);
+        LOGF("[TempestFix] DEBUG: Resumed stream %u", streamId);
     }
 }
 
@@ -252,7 +252,7 @@ void TempestAudioFix::StopStream(uint32_t streamId) {
     stream->isPaused = false;
     stream->activeBuffer = 0;
     
-    Log::Debug("[TempestFix] Stopped stream %u", streamId);
+    LOGF("[TempestFix] DEBUG: Stopped stream %u", streamId);
 }
 
 void TempestAudioFix::SetStreamVolume(uint32_t streamId, float volume) {
@@ -280,7 +280,7 @@ void TempestAudioFix::SetStream3DPosition(uint32_t streamId, float x, float y, f
     }
     
     // 3D position would be passed to Tempest 3D audio engine
-    Log::Debug("[TempestFix] Set 3D position for stream %u: (%.2f, %.2f, %.2f)",
+    LOGF("[TempestFix] DEBUG: Set 3D position for stream %u: (%.2f, %.2f, %.2f)",
                streamId, x, y, z);
 }
 
@@ -340,7 +340,7 @@ bool TempestAudioFix::IsStreamPlaying(uint32_t streamId) const {
 void TempestAudioFix::SetFixEnabled(bool enabled) {
     if (m_fixEnabled != enabled) {
         m_fixEnabled = enabled;
-        Log::Info("[TempestFix] Audio fixes %s", enabled ? "enabled" : "disabled");
+        LOGF("[TempestFix] INFO: Audio fixes %s", enabled ? "enabled" : "disabled");
     }
 }
 
@@ -351,7 +351,7 @@ bool TempestAudioFix::IsFixEnabled() const {
 void TempestAudioFix::SetAudioQuality(EAudioQuality quality) {
     if (m_audioQuality != quality) {
         m_audioQuality = quality;
-        Log::Info("[TempestFix] Audio quality set to %d", static_cast<int>(quality));
+        LOGF("[TempestFix] INFO: Audio quality set to %d", static_cast<int>(quality));
     }
 }
 
@@ -373,7 +373,7 @@ void TempestAudioFix::PreventBufferUnderrun(uint32_t bufferId) {
         return;
     }
     
-    Log::Debug("[TempestFix] Preventing buffer underrun for buffer %u", bufferId);
+    LOGF("[TempestFix] DEBUG: Preventing buffer underrun for buffer %u", bufferId);
     
     // Strategy 1: Insert silence to prevent crackling
     // Strategy 2: Reduce latency requirements
@@ -393,7 +393,7 @@ void TempestAudioFix::SynchronizeBuffers(uint32_t streamId) {
     // Ensure buffers are synchronized for smooth playback
     // This prevents gaps between buffer transitions
     
-    Log::Debug("[TempestFix] Synchronizing buffers for stream %u", streamId);
+    LOGF("[TempestFix] DEBUG: Synchronizing buffers for stream %u", streamId);
 }
 
 //=============================================================================
@@ -401,14 +401,14 @@ void TempestAudioFix::SynchronizeBuffers(uint32_t streamId) {
 //=============================================================================
 
 void InitializeTempestAudioFixes() {
-    Log::Info("[TempestFix] Initializing Tempest audio fixes...");
+    LOGF("[TempestFix] INFO: Initializing Tempest audio fixes...");
     
     // Apply specific fixes for known audio crackling issues
     ApplyAudioCracklingFix(1); // Buffer underrun fix
     ApplyAudioCracklingFix(2); // Sample rate conversion fix
     ApplyAudioCracklingFix(3); // Timing synchronization fix
     
-    Log::Info("[TempestFix] Tempest audio fixes initialized");
+    LOGF("[TempestFix] INFO: Tempest audio fixes initialized");
 }
 
 void ApplyAudioCracklingFix(int issueType) {
@@ -417,21 +417,21 @@ void ApplyAudioCracklingFix(int issueType) {
     switch (issueType) {
         case 1: // Buffer underrun
             fix.SetFixEnabled(true);
-            Log::Info("[TempestFix] Applied buffer underrun fix");
+            LOGF("[TempestFix] INFO: Applied buffer underrun fix");
             break;
             
         case 2: // Sample rate conversion
             fix.SetAudioQuality(EAudioQuality::High);
-            Log::Info("[TempestFix] Applied sample rate conversion fix");
+            LOGF("[TempestFix] INFO: Applied sample rate conversion fix");
             break;
             
         case 3: // Timing synchronization
             fix.SetFixEnabled(true);
-            Log::Info("[TempestFix] Applied timing synchronization fix");
+            LOGF("[TempestFix] INFO: Applied timing synchronization fix");
             break;
             
         default:
-            Log::Warning("[TempestFix] Unknown fix type: %d", issueType);
+            LOGF("[TempestFix] WARNING: Unknown fix type: %d", issueType);
             break;
     }
 }

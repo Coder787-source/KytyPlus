@@ -5,7 +5,7 @@
 
 namespace Kyty::Libs {
 
-using namespace Kyty::Common;
+using namespace Common;
 
 //=============================================================================
 // UE4ClassesExtended Implementation
@@ -21,7 +21,7 @@ bool UE4ClassesExtended::RegisterClass(const std::string& className,
                                         uint32_t classSize,
                                         uint32_t flags) {
     if (m_classes.find(className) != m_classes.end()) {
-        Log::Warning("[UE4] Class already registered: %s", className.c_str());
+        LOGF("[UE4] Class already registered: %s", className.c_str());
         return false;
     }
     
@@ -32,7 +32,7 @@ bool UE4ClassesExtended::RegisterClass(const std::string& className,
     entry->classFlags = flags;
     
     m_classes[className] = std::move(entry);
-    Log::Debug("[UE4] Registered class: %s (size=%u, parent=%s)", 
+    LOGF("[UE4] Registered class: %s (size=%u, parent=%s)", 
                className.c_str(), classSize, superClassName.c_str());
     
     return true;
@@ -46,7 +46,7 @@ bool UE4ClassesExtended::RegisterProperty(const std::string& className,
                                            uint64_t flags) {
     auto it = m_classes.find(className);
     if (it == m_classes.end()) {
-        Log::Warning("[UE4] Cannot register property on unregistered class: %s", className.c_str());
+        LOGF("[UE4] Cannot register property on unregistered class: %s", className.c_str());
         return false;
     }
     
@@ -54,7 +54,7 @@ bool UE4ClassesExtended::RegisterProperty(const std::string& className,
     // Property registration stub - actual implementation would set up property metadata
     
     it->second->properties[propertyName] = prop.release();
-    Log::Debug("[UE4] Registered property: %s.%s (type=%s, offset=%zu)", 
+    LOGF("[UE4] Registered property: %s.%s (type=%s, offset=%zu)", 
                className.c_str(), propertyName.c_str(), propertyType.c_str(), offset);
     
     return true;
@@ -65,12 +65,12 @@ bool UE4ClassesExtended::RegisterFunction(const std::string& className,
                                            std::function<void*()> stub) {
     auto it = m_classes.find(className);
     if (it == m_classes.end()) {
-        Log::Warning("[UE4] Cannot register function on unregistered class: %s", className.c_str());
+        LOGF("[UE4] Cannot register function on unregistered class: %s", className.c_str());
         return false;
     }
     
     it->second->functionStubs[functionName] = std::move(stub);
-    Log::Debug("[UE4] Registered function: %s::%s", className.c_str(), functionName.c_str());
+    LOGF("[UE4] Registered function: %s::%s", className.c_str(), functionName.c_str());
     
     return true;
 }
@@ -93,11 +93,11 @@ size_t UE4ClassesExtended::GetClassCount() const {
 
 bool UE4ClassesExtended::Initialize() {
     if (m_initialized) {
-        Log::Warning("[UE4] Classes already initialized");
+        LOGF("[UE4] Classes already initialized");
         return true;
     }
     
-    Log::Info("[UE4] Initializing extended class registry...");
+    LOGF("[UE4] Initializing extended class registry...");
     
     // Register all class categories
     RegisterActorClasses();
@@ -107,12 +107,12 @@ bool UE4ClassesExtended::Initialize() {
     
     m_initialized = true;
     
-    Log::Info("[UE4] Extended class registry initialized (%zu classes)", m_classes.size());
+    LOGF("[UE4] Extended class registry initialized (%zu classes)", m_classes.size());
     return true;
 }
 
 void UE4ClassesExtended::Shutdown() {
-    Log::Info("[UE4] Shutting down extended class registry...");
+    LOGF("[UE4] Shutting down extended class registry...");
     
     // Clean up properties
     for (auto& [className, entry] : m_classes) {
@@ -126,7 +126,7 @@ void UE4ClassesExtended::Shutdown() {
     m_classes.clear();
     m_initialized = false;
     
-    Log::Info("[UE4] Extended class registry shut down");
+    LOGF("[UE4] Extended class registry shut down");
 }
 
 //=============================================================================
@@ -201,7 +201,7 @@ void RegisterActorClasses() {
     registry.RegisterProperty("AController", "DesiredInputYaw", "float", 0x02E0, 4);
     registry.RegisterProperty("AController", "DesiredInputPitch", "float", 0x02E4, 4);
     
-    Log::Info("[UE4] Registered %zu actor classes", registry.GetClassCount());
+    LOGF("[UE4] Registered %zu actor classes", registry.GetClassCount());
 }
 
 //=============================================================================
@@ -303,7 +303,7 @@ void RegisterComponentClasses() {
     registry.RegisterProperty("UCapsuleComponent", "CapsuleRadius", "float", 0x0380, 4);
     registry.RegisterProperty("UCapsuleComponent", "CapsuleHalfHeight", "float", 0x0384, 4);
     
-    Log::Info("[UE4] Registered %zu component classes", registry.GetClassCount());
+    LOGF("[UE4] Registered %zu component classes", registry.GetClassCount());
 }
 
 //=============================================================================
@@ -373,7 +373,7 @@ void RegisterGameplayClasses() {
     registry.RegisterProperty("APlayerState", "Ping", "int32", 0x02DC, 4);
     registry.RegisterProperty("APlayerState", "Deaths", "int32", 0x02E0, 4);
     
-    Log::Info("[UE4] Registered %zu gameplay classes", registry.GetClassCount());
+    LOGF("[UE4] Registered %zu gameplay classes", registry.GetClassCount());
 }
 
 //=============================================================================
@@ -466,7 +466,7 @@ void RegisterMissionClasses() {
     registry.RegisterProperty("AGTA3_SafeHouse", "ArmorPickupLocation", "FVector", 0x02D4, 12);
     registry.RegisterProperty("AGTA3_SafeHouse", "WeaponStorageLocation", "FVector", 0x02E0, 12);
     
-    Log::Info("[UE4] Registered %zu mission classes", registry.GetClassCount());
+    LOGF("[UE4] Registered %zu mission classes", registry.GetClassCount());
 }
 
 } // namespace Kyty::Libs

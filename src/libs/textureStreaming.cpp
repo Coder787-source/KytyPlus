@@ -5,7 +5,7 @@
 
 namespace Kyty::Libs {
 
-using namespace Kyty::Common;
+using namespace Common;
 
 //=============================================================================
 // TextureStreaming Implementation
@@ -18,11 +18,11 @@ TextureStreaming& TextureStreaming::Instance() {
 
 bool TextureStreaming::Initialize() {
     if (m_initialized) {
-        Log::Warning("[TexStream] Already initialized");
+        LOGF("[TexStream] Already initialized");
         return true;
     }
     
-    Log::Info("[TexStream] Initializing texture streaming system...");
+    LOGF("[TexStream] Initializing texture streaming system...");
     
     // Initialize with default budget
     m_budget = StreamingBudget();
@@ -32,12 +32,12 @@ bool TextureStreaming::Initialize() {
     
     m_initialized = true;
     
-    Log::Info("[TexStream] Texture streaming system initialized");
+    LOGF("[TexStream] Texture streaming system initialized");
     return true;
 }
 
 void TextureStreaming::Shutdown() {
-    Log::Info("[TexStream] Shutting down texture streaming system...");
+    LOGF("[TexStream] Shutting down texture streaming system...");
     
     m_textures.clear();
     m_streamQueue.clear();
@@ -46,7 +46,7 @@ void TextureStreaming::Shutdown() {
     m_currentMemoryMB = 0.0f;
     m_initialized = false;
     
-    Log::Info("[TexStream] Texture streaming system shut down");
+    LOGF("[TexStream] Texture streaming system shut down");
 }
 
 uint32_t TextureStreaming::RegisterTexture(const std::string& name, const std::string& path,
@@ -71,7 +71,7 @@ uint32_t TextureStreaming::RegisterTexture(const std::string& name, const std::s
     uint32_t textureId = texture->textureId;
     m_textures[textureId] = std::move(texture);
     
-    Log::Debug("[TexStream] Registered texture %u: %s (%ux%u, priority=%d)",
+    LOGF("[TexStream] Registered texture %u: %s (%ux%u, priority=%d)",
                textureId, name.c_str(), width, height, static_cast<int>(priority));
     
     return textureId;
@@ -82,7 +82,7 @@ void TextureStreaming::UnregisterTexture(uint32_t textureId) {
     if (it != m_textures.end()) {
         m_currentMemoryMB -= it->second->memorySize / (1024.0f * 1024.0f);
         m_textures.erase(it);
-        Log::Debug("[TexStream] Unregistered texture %u", textureId);
+        LOGF("[TexStream] Unregistered texture %u", textureId);
     }
 }
 
@@ -118,7 +118,7 @@ bool TextureStreaming::RequestLoad(uint32_t textureId, ELODLevel lodLevel) {
     // Add to stream queue
     m_streamQueue.push_back(textureId);
     
-    Log::Debug("[TexStream] Requested load for texture %u (LOD=%d)", textureId, static_cast<int>(lodLevel));
+    LOGF("[TexStream] Requested load for texture %u (LOD=%d)", textureId, static_cast<int>(lodLevel));
     return true;
 }
 
@@ -133,7 +133,7 @@ void TextureStreaming::RequestUnload(uint32_t textureId, bool immediate) {
     if (immediate) {
         texture->state = ETextureStreamState::NotLoaded;
         m_currentMemoryMB -= texture->memorySize / (1024.0f * 1024.0f);
-        Log::Debug("[TexStream] Immediately unloaded texture %u", textureId);
+        LOGF("[TexStream] Immediately unloaded texture %u", textureId);
     } else {
         // Mark for later unload
         texture->state = ETextureStreamState::Loaded; // Will be evicted if needed
@@ -240,14 +240,14 @@ const StreamingBudget& TextureStreaming::GetBudget() const {
 
 void TextureStreaming::SetBudget(const StreamingBudget& budget) {
     m_budget = budget;
-    Log::Info("[TexStream] Streaming budget updated: max=%zuMB, target=%zuMB",
+    LOGF("[TexStream] Streaming budget updated: max=%zuMB, target=%zuMB",
               budget.maxMemoryMB, budget.targetMemoryMB);
 }
 
 void TextureStreaming::SetFixEnabled(bool enabled) {
     if (m_fixEnabled != enabled) {
         m_fixEnabled = enabled;
-        Log::Info("[TexStream] Streaming fixes %s", enabled ? "enabled" : "disabled");
+        LOGF("[TexStream] Streaming fixes %s", enabled ? "enabled" : "disabled");
     }
 }
 
@@ -270,7 +270,7 @@ size_t TextureStreaming::GetStreamingCount() const {
 }
 
 void TextureStreaming::ClearCache(bool keepResident) {
-    Log::Info("[TexStream] Clearing texture cache (keepResident=%d)", keepResident);
+    LOGF("[TexStream] Clearing texture cache (keepResident=%d)", keepResident);
     
     for (auto it = m_textures.begin(); it != m_textures.end();) {
         if (keepResident && it->second->isResident) {
@@ -285,7 +285,7 @@ void TextureStreaming::ClearCache(bool keepResident) {
 }
 
 void TextureStreaming::PreloadArea(const std::string& areaId, ETexturePriority priority) {
-    Log::Info("[TexStream] Preloading area: %s (priority=%d)", areaId.c_str(), static_cast<int>(priority));
+    LOGF("[TexStream] Preloading area: %s (priority=%d)", areaId.c_str(), static_cast<int>(priority));
     
     // In production, this would load textures specific to the area
     // For now, just increase priority of nearby textures
@@ -324,7 +324,7 @@ void TextureStreaming::ProcessStreamQueue() {
                 
                 m_currentMemoryMB += texture->memorySize / (1024.0f * 1024.0f);
                 
-                Log::Debug("[TexStream] Loaded texture %u (%.2f MB)",
+                LOGF("[TexStream] Loaded texture %u (%.2f MB)",
                           textureId, texture->memorySize / (1024.0f * 1024.0f));
                 
                 processed++;
@@ -353,14 +353,14 @@ void TextureStreaming::UpdateLODs() {
         
         if (newLOD != texture->currentLOD) {
             texture->currentLOD = newLOD;
-            Log::Debug("[TexStream] Updated LOD for texture %u to %d",
+            LOGF("[TexStream] Updated LOD for texture %u to %d",
                       id, static_cast<int>(newLOD));
         }
     }
 }
 
 void TextureStreaming::EvictTextures() {
-    Log::Debug("[TexStream] Evicting textures (current=%.2f MB, target=%zu MB)",
+    LOGF("[TexStream] Evicting textures (current=%.2f MB, target=%zu MB)",
               m_currentMemoryMB, m_budget.targetMemoryMB);
     
     // Sort textures by priority and last access time
@@ -388,7 +388,7 @@ void TextureStreaming::EvictTextures() {
             m_currentMemoryMB -= it->second->memorySize / (1024.0f * 1024.0f);
             it->second->state = ETextureStreamState::NotLoaded;
             
-            Log::Debug("[TexStream] Evicted texture %u", id);
+            LOGF("[TexStream] Evicted texture %u", id);
         }
     }
 }
@@ -408,12 +408,12 @@ void TextureStreaming::PreloadTextures() {
 //=============================================================================
 
 void InitializeTextureStreamingFixes() {
-    Log::Info("[TexStream] Initializing texture streaming fixes...");
+    LOGF("[TexStream] Initializing texture streaming fixes...");
     
     ApplyPopInReductionFix();
     OptimizeForNVMe();
     
-    Log::Info("[TexStream] Texture streaming fixes initialized");
+    LOGF("[TexStream] Texture streaming fixes initialized");
 }
 
 void ApplyPopInReductionFix() {
@@ -425,7 +425,7 @@ void ApplyPopInReductionFix() {
     budget.preloadFrameCount = 5; // Increased from 3
     stream.SetBudget(budget);
     
-    Log::Info("[TexStream] Applied pop-in reduction fix");
+    LOGF("[TexStream] Applied pop-in reduction fix");
 }
 
 void OptimizeForNVMe() {
@@ -438,7 +438,7 @@ void OptimizeForNVMe() {
     budget.enableCompression = true;
     stream.SetBudget(budget);
     
-    Log::Info("[TexStream] Optimized for NVMe streaming");
+    LOGF("[TexStream] Optimized for NVMe streaming");
 }
 
 } // namespace Kyty::Libs

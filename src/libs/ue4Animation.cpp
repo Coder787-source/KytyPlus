@@ -6,7 +6,7 @@
 
 namespace Kyty::Libs {
 
-using namespace Kyty::Common;
+using namespace Common;
 
 //=============================================================================
 // AnimationInstance Internal Structure
@@ -39,11 +39,11 @@ UE4Animation& UE4Animation::Instance() {
 
 bool UE4Animation::Initialize() {
     if (m_initialized) {
-        Log::Warning("[UE4Anim] Already initialized");
+        LOGF("[UE4Anim] Already initialized");
         return true;
     }
     
-    Log::Info("[UE4Anim] Initializing animation system...");
+    LOGF("[UE4Anim] Initializing animation system...");
     
     // Register all animation categories
     RegisterGTA3Animations();
@@ -53,12 +53,12 @@ bool UE4Animation::Initialize() {
     
     m_initialized = true;
     
-    Log::Info("[UE4Anim] Animation system initialized (%zu states registered)", m_states.size());
+    LOGF("[UE4Anim] Animation system initialized (%zu states registered)", m_states.size());
     return true;
 }
 
 void UE4Animation::Shutdown() {
-    Log::Info("[UE4Anim] Shutting down animation system...");
+    LOGF("[UE4Anim] Shutting down animation system...");
     
     m_instances.clear();
     m_states.clear();
@@ -66,7 +66,7 @@ void UE4Animation::Shutdown() {
     m_nextInstanceId = 1;
     m_initialized = false;
     
-    Log::Info("[UE4Anim] Animation system shut down");
+    LOGF("[UE4Anim] Animation system shut down");
 }
 
 bool UE4Animation::RegisterAnimation(const std::string& name, float duration, size_t boneCount) {
@@ -95,7 +95,7 @@ bool UE4Animation::RegisterAnimation(const std::string& name, float duration, si
     }
     
     m_states[name] = desc;
-    Log::Debug("[UE4Anim] Registered animation: %s (duration=%.2fs, bones=%zu)", 
+    LOGF("[UE4Anim] Registered animation: %s (duration=%.2fs, bones=%zu)", 
                name.c_str(), duration, boneCount);
     
     return true;
@@ -103,12 +103,12 @@ bool UE4Animation::RegisterAnimation(const std::string& name, float duration, si
 
 bool UE4Animation::RegisterState(const std::string& stateName, const AnimStateDesc& desc) {
     if (m_states.find(stateName) != m_states.end()) {
-        Log::Warning("[UE4Anim] State already registered: %s", stateName.c_str());
+        LOGF("[UE4Anim] State already registered: %s", stateName.c_str());
         return false;
     }
     
     m_states[stateName] = desc;
-    Log::Debug("[UE4Anim] Registered state: %s (type=%d, loop=%d)", 
+    LOGF("[UE4Anim] Registered state: %s (type=%d, loop=%d)", 
                stateName.c_str(), static_cast<int>(desc.stateType), desc.looping);
     
     return true;
@@ -116,7 +116,7 @@ bool UE4Animation::RegisterState(const std::string& stateName, const AnimStateDe
 
 bool UE4Animation::RegisterTransition(const AnimTransitionRule& rule) {
     m_transitions.push_back(rule);
-    Log::Debug("[UE4Anim] Registered transition: %s -> %s (blend=%.2fs)", 
+    LOGF("[UE4Anim] Registered transition: %s -> %s (blend=%.2fs)", 
                rule.fromState.c_str(), rule.toState.c_str(), rule.blendTime);
     
     return true;
@@ -124,7 +124,7 @@ bool UE4Animation::RegisterTransition(const AnimTransitionRule& rule) {
 
 uint32_t UE4Animation::CreateInstance(const std::string& animClass) {
     if (!m_initialized) {
-        Log::Warning("[UE4Anim] Cannot create instance: not initialized");
+        LOGF("[UE4Anim] Cannot create instance: not initialized");
         return 0;
     }
     
@@ -136,7 +136,7 @@ uint32_t UE4Animation::CreateInstance(const std::string& animClass) {
     uint32_t instanceId = m_nextInstanceId++;
     m_instances[std::to_string(instanceId)] = std::move(instance);
     
-    Log::Debug("[UE4Anim] Created animation instance %u (class=%s)", instanceId, animClass.c_str());
+    LOGF("[UE4Anim] Created animation instance %u (class=%s)", instanceId, animClass.c_str());
     return instanceId;
 }
 
@@ -145,7 +145,7 @@ void UE4Animation::DestroyInstance(uint32_t instanceId) {
     auto it = m_instances.find(idStr);
     if (it != m_instances.end()) {
         m_instances.erase(it);
-        Log::Debug("[UE4Anim] Destroyed animation instance %u", instanceId);
+        LOGF("[UE4Anim] Destroyed animation instance %u", instanceId);
     }
 }
 
@@ -211,7 +211,7 @@ bool UE4Animation::PlayMontage(uint32_t instanceId, const std::string& montageNa
     instance->playRate = playRate;
     instance->isMontagePlaying = true;
     
-    Log::Debug("[UE4Anim] Playing montage %u: %s (rate=%.2f)", instanceId, montageName.c_str(), playRate);
+    LOGF("[UE4Anim] Playing montage %u: %s (rate=%.2f)", instanceId, montageName.c_str(), playRate);
     
     // Add montage-specific notifies
     AnimNotifyDesc startNotify;
@@ -244,7 +244,7 @@ void UE4Animation::StopMontage(uint32_t instanceId, float blendOutTime) {
         instance->currentMontage.clear();
         instance->currentMontageTime = 0.0f;
         
-        Log::Debug("[UE4Anim] Stopped montage %u (blend=%.2fs)", instanceId, blendOutTime);
+        LOGF("[UE4Anim] Stopped montage %u (blend=%.2fs)", instanceId, blendOutTime);
     }
 }
 
@@ -295,7 +295,7 @@ void UE4Animation::ProcessNotifies(uint32_t instanceId, float currentTime) {
     auto notifyIt = instance->pendingNotifies.begin();
     while (notifyIt != instance->pendingNotifies.end()) {
         if (currentTime >= notifyIt->time) {
-            Log::Debug("[UE4Anim] Triggering notify: %s (type=%d)", 
+            LOGF("[UE4Anim] Triggering notify: %s (type=%d)", 
                       notifyIt->name.c_str(), static_cast<int>(notifyIt->type));
             
             // Notify processing would go here (sound, particles, etc.)
@@ -312,7 +312,7 @@ void UE4Animation::ProcessNotifies(uint32_t instanceId, float currentTime) {
         for (const auto& notify : stateIt->second.notifies) {
             float notifyTime = std::fmod(currentTime, 1.0f);
             if (std::abs(notifyTime - notify.time) < 0.016f) { // Within one frame
-                Log::Debug("[UE4Anim] State notify: %s", notify.name.c_str());
+                LOGF("[UE4Anim] State notify: %s", notify.name.c_str());
             }
         }
     }
@@ -357,7 +357,7 @@ void RegisterGTA3Animations() {
     anim.RegisterAnimation("Vehicle_Drive_Left", 0.8f, 65);
     anim.RegisterAnimation("Vehicle_Drive_Right", 0.8f, 65);
     
-    Log::Info("[UE4Anim] Registered GTA 3 animations");
+    LOGF("[UE4Anim] Registered GTA 3 animations");
 }
 
 void RegisterCharacterAnimations() {
@@ -460,7 +460,7 @@ void RegisterCharacterAnimations() {
     runToSprint.blendTime = 0.1f;
     anim.RegisterTransition(runToSprint);
     
-    Log::Info("[UE4Anim] Registered character animation states");
+    LOGF("[UE4Anim] Registered character animation states");
 }
 
 void RegisterVehicleAnimations() {
@@ -501,7 +501,7 @@ void RegisterVehicleAnimations() {
     vehiclePassenger.looping = true;
     anim.RegisterState("VehiclePassenger", vehiclePassenger);
     
-    Log::Info("[UE4Anim] Registered vehicle animation states");
+    LOGF("[UE4Anim] Registered vehicle animation states");
 }
 
 void RegisterWeaponAnimations() {
@@ -537,7 +537,7 @@ void RegisterWeaponAnimations() {
     melee.blendOutTime = 0.1f;
     anim.RegisterState("Melee", melee);
     
-    Log::Info("[UE4Anim] Registered weapon animation states");
+    LOGF("[UE4Anim] Registered weapon animation states");
 }
 
 } // namespace Kyty::Libs
