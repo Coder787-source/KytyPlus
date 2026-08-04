@@ -23,6 +23,28 @@
 #include "graphics/shader/shader.h"
 #include "libs/agc.h"
 #include "spirv-tools/libspirv.hpp"
+#include <vulkan/vulkan.h>
+#include <stdexcept>
+
+#ifdef _WIN32
+#include <stdlib.h>
+#endif
+
+void ValidateVulkan()
+{
+    VkInstance instance;
+    VkResult result;
+
+    VkInstanceCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+
+    result = vkCreateInstance(&createInfo, nullptr, &instance);
+    if (result != VK_SUCCESS)
+    {
+        throw std::runtime_error("Vulkan ICD is not usable. Ensure Vulkan drivers are installed.");
+    }
+    vkDestroyInstance(instance, nullptr);
+}
 
 #include <algorithm>
 #include <array>
@@ -359,7 +381,9 @@ void TestResourceDescriptorClassification()
 {
 #ifdef _WIN32
     ValidateVulkan();
-#endif {
+    _putenv("KYTY_SHADER_CACHE_DISABLE=1");
+    _putenv("VK_ICD_FILENAMES=C:\\VulkanSDK\\1.3.275.0\\Bin\\vulkan-1.dll");
+#endif
 	uint32_t raw_texture[8] = {};
 	raw_texture[3]          = 9u << 28u;
 	raw_texture[5]          = 2u << 27u;
