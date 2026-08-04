@@ -382,8 +382,8 @@ void TestResourceDescriptorClassification()
 #ifdef _WIN32
     ValidateVulkan();
     _putenv("KYTY_SHADER_CACHE_DISABLE=1");
-    // Update this path to match your Vulkan SDK installation
-    const char* vulkanIcdPath = "C:\\VulkanSDK\\1.4.350.0\\Bin\\vulkan-1.dll";
+    // Update this path to match your Vulkan installation
+    const char* vulkanIcdPath = "C:\\Windows\\System32\\vulkan-1.dll";
     std::string icdEnv = "VK_ICD_FILENAMES=" + std::string(vulkanIcdPath);
     _putenv(icdEnv.c_str());
     KYTY_LOG("Set VK_ICD_FILENAMES=%s", vulkanIcdPath);
