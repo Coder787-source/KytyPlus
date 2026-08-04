@@ -1,72 +1,438 @@
-name: KytyPS5 Build
+name: Build and Release KytyPS5
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
-        include:
-          - os: windows-latest
-            preset: windows
-          - os: macos-latest
-            preset: macos
-          - os: ubuntu-latest
-            preset: linux
-
-    runs-on: ${{ matrix.os }}
+  windows:
+    name: Build KytyPS5 (Windows)
+    runs-on: windows-2022
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
-      - name: Install Vulkan SDK
+      - name: Setup Visual Studio environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4.0.0
+        with:
+          arch: x64
+
+      # windows-2022 runner has ninja pre-installed; verify it is available.
+      - name: Setup Ninja
+        shell: cmd
+        run: where ninja
+
+      # vcpkg glslang[tools,opt] compiles from source and routinely hangs/times out
+      # on windows-2022. Pull a prebuilt glslangValidator from the Vulkan SDK instead.
+      - name: Install glslangValidator (Vulkan SDK)
         uses: jakoch/install-vulkan-sdk-action@v1.6.0
         with:
-          version: 1.4.350.0
+          vulkan_version: 1.4.350.0
           cache: true
-          stripdown: false  # Install full SDK
+          stripdown: true
+          install_runtime: false
 
-      - name: Install Linux Vulkan runtime deps
-        if: runner.os == 'Linux'
+      - name: Install Qt 6.10.3
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: "6.10.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Verify toolchain
+        shell: cmd
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libvulkan1 libvulkan-dev mesa-vulkan-drivers vulkan-tools
+          git --version
+          cmake --version
+          ninja --version
+          clang-cl --version
+          glslangValidator --version
+          echo Qt6_DIR=%Qt6_DIR%
 
-      - name: Configure CMake (Windows)
-        if: runner.os == 'Windows'
-        run: cmake -B _Build/windows -DCMAKE_VERBOSE_MAKEFILE=ON
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S src -B _Build/windows `
+            -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl `
+            -DCMAKE_CXX_COMPILER=clang-cl `
+            "-DCMAKE_PREFIX_PATH=$env:Qt6_DIR" 2>&1 | Tee-Object configure.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            # Surface the failure in the run summary so it is visible without log access.
+            "### Configure failed (exit $code)" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            Get-Content configure.log -Tail 150 | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            foreach ($f in @('CMakeError.log', 'CMakeConfigureLog.yaml')) {
+              $p = "_Build/windows/CMakeFiles/$f"
+              if (Test-Path $p) {
+                "### $f (tail)" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+                '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+                Get-Content $p -Tail 100 | Out-File $env:GITHUB_STEP_SUMMARY -Append
+                '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+              }
+            }
+          }
+          exit $code
 
-      - name: Configure CMake (macOS)
-        if: runner.os == 'macOS'
-        run: cmake -B _Build/macos -DCMAKE_VERBOSE_MAKEFILE=ON
+      - name: Build
+        shell: cmd
+        run: |
+          cmake --build _Build/windows --target launcher --parallel
 
-      - name: Configure CMake (Linux)
-        if: runner.os == 'Linux'
-        run: cmake -B _Build/linux -DCMAKE_VERBOSE_MAKEFILE=ON
+      - name: Build focused test subsets
+        shell: cmd
+        run: |
+          cmake --build _Build/windows --parallel --target ^
+            pipeline_cache_data_tests ^
+            graphics_audio_semantics_tests ^
+            pm4_ngs2_fuzz_tests ^
+            soft_ignore_evidence_tests ^
+            shader_cfg_tests ^
+            shader_recompiler_compute_tests
 
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        run: cmake --build _Build/windows --config Release
+      - name: Run focused graphics/audio subsets
+        shell: pwsh
+        run: |
+          $failed = 0
+          function Run-Test([string]$Name, [string]$Exe, [string[]]$Args = @()) {
+            Write-Host "==> $Name"
+            & $Exe @Args
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "FAILED $Name exit=$LASTEXITCODE"
+              $script:failed++
+            }
+          }
+          $bin = "_Build/windows"
+          Run-Test "pipeline_cache_data" "$bin/pipeline_cache_data_tests.exe"
+          Run-Test "graphics_audio_semantics" "$bin/graphics_audio_semantics_tests.exe"
+          Run-Test "pm4_ngs2_fuzz" "$bin/pm4_ngs2_fuzz_tests.exe" @("--iterations=4096")
+          Run-Test "soft_ignore_evidence" "$bin/soft_ignore_evidence_tests.exe"
+          Run-Test "shader_cfg" "$bin/shader_cfg_tests.exe"
+          # The SDK supplies tools/headers but hosted runners may not expose a Vulkan ICD.
+          $vulkanInfo = Get-Command vulkaninfo -ErrorAction SilentlyContinue
+          if ($null -ne $vulkanInfo) {
+            & $vulkanInfo.Source --summary *> $null
+          }
+          if ($null -ne $vulkanInfo -and $LASTEXITCODE -eq 0) {
+            Run-Test "htile_clear" "$bin/shader_recompiler_compute_tests.exe" @("--htile-clear-only")
+            Run-Test "layered_image" "$bin/shader_recompiler_compute_tests.exe" @("--layered-image-only")
+            Run-Test "storage_sampled" "$bin/shader_recompiler_compute_tests.exe" @("--storage-sampled-only")
+          } else {
+            Write-Warning "Skipping GPU-backed subsets: no usable Vulkan ICD"
+          }
+          if ($failed -ne 0) { exit 1 }
 
-      - name: Build (macOS)
-        if: runner.os == 'macOS'
-        run: cmake --build _Build/macos --config Release
+      - name: Install
+        shell: cmd
+        run: |
+          cmake --install _Build/windows --prefix _Build/windows/install
 
-      - name: Build (Linux)
-        if: runner.os == 'Linux'
-        run: cmake --build _Build/linux --config Release
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPS5-Windows-x64
+          path: _Build/windows/install/**
+          if-no-files-found: error
 
-      - name: Run shader config tests
+  macos:
+    name: Build KytyPS5 (macOS)
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Select Xcode 26
         shell: bash
         run: |
-          if [ -f _Build/windows/shader_cfg_tests/Release/shader_cfg_tests.exe ]; then
-            _Build/windows/shader_cfg_tests/Release/shader_cfg_tests.exe
-          elif [ -f _Build/macos/shader_cfg_tests/shader_cfg_tests ]; then
-            _Build/macos/shader_cfg_tests/shader_cfg_tests
-          elif [ -f _Build/linux/shader_cfg_tests/shader_cfg_tests ]; then
-            _Build/linux/shader_cfg_tests/shader_cfg_tests
+          xcode_path="$(ls -d /Applications/Xcode_26*.app | tail -n 1)"
+          test -n "$xcode_path"
+          sudo xcode-select --switch "$xcode_path/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install build dependencies
+        shell: bash
+        env:
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: 1
+        run: brew install glslang ninja
+
+      - name: Install Qt 6.10.3
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: "6.10.3"
+          host: mac
+          target: desktop
+          arch: clang_64
+          cache: true
+
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          git --version
+          cmake --version
+          ninja --version
+          clang++ --version
+          glslangValidator --version
+          echo "Host architecture: $(uname -m)"
+          echo "QT_ROOT_DIR=$QT_ROOT_DIR"
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S src -B _Build/macos \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build _Build/macos --target launcher --parallel
+
+      - name: Install
+        shell: bash
+        run: |
+          cmake --install _Build/macos --prefix _Build/macos/install
+
+      - name: Bundle MoltenVK
+        shell: bash
+        env:
+          MOLTENVK_VERSION: v1.4.2
+          MOLTENVK_SHA256: f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e
+        run: |
+          archive="$RUNNER_TEMP/MoltenVK-macos.tar"
+          package="$RUNNER_TEMP/MoltenVK"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            "https://github.com/KhronosGroup/MoltenVK/releases/download/$MOLTENVK_VERSION/MoltenVK-macos.tar"
+          echo "$MOLTENVK_SHA256  $archive" | shasum -a 256 --check
+          tar -xf "$archive" -C "$RUNNER_TEMP"
+          install -m 755 \
+            "$package/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib" \
+            _Build/macos/install/libMoltenVK.dylib
+          install -m 644 "$package/LICENSE" _Build/macos/install/LICENSE.MoltenVK
+          codesign --force --sign - --timestamp=none _Build/macos/install/libMoltenVK.dylib
+
+      - name: Verify artifacts
+        shell: bash
+        run: |
+          file _Build/macos/install/launcher
+          file _Build/macos/install/kyty_emulator
+          file _Build/macos/install/libMoltenVK.dylib
+          lipo _Build/macos/install/launcher -verify_arch x86_64
+          lipo _Build/macos/install/kyty_emulator -verify_arch x86_64
+          lipo _Build/macos/install/libMoltenVK.dylib -verify_arch x86_64
+          codesign --verify --strict _Build/macos/install/kyty_emulator
+          codesign --verify --strict _Build/macos/install/libMoltenVK.dylib
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPS5-macOS-x86_64
+          path: _Build/macos/install/**
+          if-no-files-found: error
+
+  linux:
+    name: Build KytyPS5 (Linux)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            clang \
+            glslang-tools \
+            libasound2-dev \
+            libdbus-1-dev \
+            libgl1-mesa-dev \
+            libpulse-dev \
+            libudev-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            libxss-dev \
+            lld \
+            ninja-build \
+            wayland-protocols
+
+      - name: Install Qt 6.10.3
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: "6.10.3"
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          cache: true
+
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          git --version
+          cmake --version
+          ninja --version
+          clang++ --version
+          ld.lld --version
+          glslangValidator --version
+          echo "Qt6_DIR=$Qt6_DIR"
+
+      - name: Configure
+        shell: bash
+        run: |
+          mkdir -p _Build
+          cmake -S src -B _Build/linux \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_PREFIX_PATH="$Qt6_DIR" 2>&1 | tee _Build/configure.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Verify SDL2 backends
+        shell: bash
+        run: |
+          status=0
+          for feature in SDL_ALSA SDL_PULSEAUDIO SDL_WAYLAND SDL_X11 SDL_LIBUDEV SDL_DBUS; do
+            if grep -qE "^--   ${feature} +\\(Wanted: ON\\): ON" _Build/configure.log; then
+              echo "ok   ${feature}"
+            else
+              echo "FAIL ${feature} is not enabled"
+              status=1
+            fi
+          done
+          exit "$status"
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build _Build/linux \
+            --target launcher page_manager_tests memory_tracker_tests \
+            --parallel
+
+      - name: Test
+        shell: bash
+        run: |
+          ctest --test-dir _Build/linux --output-on-failure \
+            -R '^(page_manager|memory_tracker)$'
+
+      - name: Install
+        shell: bash
+        run: |
+          cmake --install _Build/linux --prefix _Build/linux/install
+
+      - name: Verify artifacts
+        shell: bash
+        run: |
+          file _Build/linux/install/launcher
+          file _Build/linux/install/kyty_emulator
+          file _Build/linux/install/kyty_emulator | grep -q "ELF 64-bit LSB .*x86-64"
+          ldd _Build/linux/install/kyty_emulator > /dev/null
+          readelf -d _Build/linux/install/launcher | grep -q 'RPATH.*\$ORIGIN/lib'
+          while IFS= read -r -d '' binary; do
+            while read -r dependency; do
+              test -e "_Build/linux/install/lib/$dependency"
+            done < <(
+              readelf -d "$binary" |
+                sed -n 's/.*Shared library: \[\(libQt6[^]]*\|libicu[^]]*\)\].*/\1/p'
+            )
+          done < <(
+            find _Build/linux/install/launcher _Build/linux/install/plugins \
+              -type f \( -name launcher -o -name '*.so' \) -print0
+          )
+          _Build/linux/install/kyty_emulator --help > /dev/null
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPS5-Linux-x86_64
+          path: _Build/linux/install/**
+          if-no-files-found: error
+  # KytyPlus: publish cross-platform release assets on v* tags.
+  release:
+    name: Release KytyPlus
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download builds
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Set release name
+        shell: bash
+        run: |
+          echo "RELEASE_NAME=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+
+      - name: Package Windows build
+        shell: bash
+        run: |
+          dir="artifacts/KytyPS5-Windows-x64"
+          test -d "$dir"
+          ( cd "$dir" && zip -r "$GITHUB_WORKSPACE/KytyPlus-${GITHUB_REF_NAME}-windows-x64.zip" . )
+
+      - name: Package macOS build
+        shell: bash
+        run: |
+          dir="artifacts/KytyPS5-macOS-x86_64"
+          test -d "$dir"
+          ( cd "$dir" && zip -r "$GITHUB_WORKSPACE/KytyPlus-${GITHUB_REF_NAME}-macos-x86_64.zip" . )
+
+      - name: Package Linux build
+        shell: bash
+        run: |
+          dir="artifacts/KytyPS5-Linux-x86_64"
+          test -d "$dir"
+          ( cd "$dir" && zip -r "$GITHUB_WORKSPACE/KytyPlus-${GITHUB_REF_NAME}-linux-x86_64.zip" . )
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=(
+            "KytyPlus-${GITHUB_REF_NAME}-windows-x64.zip"
+            "KytyPlus-${GITHUB_REF_NAME}-macos-x86_64.zip"
+            "KytyPlus-${GITHUB_REF_NAME}-linux-x86_64.zip"
+          )
+          if gh release view "$RELEASE_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            for asset in "${assets[@]}"; do
+              gh release upload "$RELEASE_NAME" "$asset" --clobber --repo "$GITHUB_REPOSITORY"
+            done
           else
-            echo "shader_cfg_tests binary not found, skipping run"
+            gh release create "$RELEASE_NAME" "${assets[@]}" \
+              --generate-notes \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_NAME"
           fi
