@@ -23,7 +23,7 @@
 #include "graphics/shader/shader.h"
 #include "libs/agc.h"
 #include "spirv-tools/libspirv.hpp"
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan.hpp>
 #include <stdexcept>
 
 #ifdef _WIN32
@@ -32,18 +32,18 @@
 
 void ValidateVulkan()
 {
-    VkInstance instance;
-    VkResult result;
+    vk::Instance instance;
+    vk::Result result;
 
-    VkInstanceCreateInfo createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    vk::InstanceCreateInfo createInfo = {};
+    createInfo.sType = vk::StructureType::eInstanceCreateInfo;
 
-    result = vkCreateInstance(&createInfo, nullptr, &instance);
-    if (result != VK_SUCCESS)
+    result = vk::createInstance(&createInfo, nullptr, &instance);
+    if (result != vk::Result::eSuccess)
     {
         throw std::runtime_error("Vulkan ICD is not usable. Ensure Vulkan drivers are installed.");
     }
-    vkDestroyInstance(instance, nullptr);
+    instance.destroy();
 }
 
 #include <algorithm>
