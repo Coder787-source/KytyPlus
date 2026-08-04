@@ -17,7 +17,7 @@ jobs:
 
       - name: Install Swiftshader (CI fallback)
         run: |
-          Invoke-WebRequest -Uri "https://github.com/google/swiftshader/releases/download/vulkan-1.3.290.0/swiftshader.zip" -OutFile "$env:RUNNER_TEMP\swiftshader.zip"
+          Invoke-WebRequest -Uri "https://github.com/google/swiftshader/releases/download/vulkan-1.3.290.0/swiftshader-win.zip" -OutFile "$env:RUNNER_TEMP\swiftshader.zip"
           Expand-Archive -Path "$env:RUNNER_TEMP\swiftshader.zip" -DestinationPath "$env:RUNNER_TEMP\swiftshader"
           Copy-Item -Path "$env:RUNNER_TEMP\swiftshader\vulkan-1.dll" -Destination "$env:GITHUB_WORKSPACE"
 
