@@ -86,7 +86,6 @@ This project started on an integrated-GPU machine, so several defaults and alloc
 made **with iGPUs / UMA in mind**. That is a **design intent**, not a verified result.
 
 - KytyPlus has **not yet been confirmed to boot or run on any integrated GPU**.
-- The maintainer does not currently have game titles to self-test on iGPU hardware.
 - An iGPU result would be a meaningful differentiator and is **actively sought**.
 
 If you have an **iGPU system** (e.g. Radeon 780M, Intel Arc iGPU) **and legally obtained game dumps**,
