@@ -10,7 +10,7 @@
 **KytyPlus** is a KytyPS5-based PlayStation 5 emulator for **Windows, macOS, and Linux**. This repository is a
 standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (itself based on
 [Kyty](https://github.com/InoriRus/Kyty)), with additional work aimed at **crash/boot reach**,
-**HLE sysmodules**, and **iGPU-friendly defaults**.
+**HLE sysmodules**, and **iGPU-minded defaults** (intent only — iGPU behavior is **not yet verified**; see [iGPU status](#igpu-status)).
 
 > [!CAUTION]
 > **Early-development software.** Many games still crash, hang, black-screen, or render incorrectly.
@@ -69,7 +69,7 @@ builds on that with focused changes such as:
 - Safer paths around several graphics **EXIT** crash clusters (layered render targets, storage
   texture encoding/swizzle, texture-cache alias retirement, sampled depth cubes, etc.)
 - **HLE** improvements for sysmodule load/unload state (soft-success for unknown IDs where safe)
-- Defaults and allocator tweaks aimed at **integrated GPUs / UMA** (e.g. Radeon 780M-class)
+- Defaults and allocator tweaks **designed with integrated GPUs / UMA in mind** (e.g. Radeon 780M-class). iGPU behavior is **not yet verified** — testing reports on integrated hardware are especially welcome (see [iGPU status](#igpu-status))
 - Present / pipeline-cache / shader-optimization adjustments for smoother local testing
 
 Compatibility is still **early**. A title that no longer hits one known crash will often hit the
@@ -77,6 +77,23 @@ next unimplemented feature. Always test with a **fresh build** and attach logs w
 > Help test KytyPlus: [share your results](https://github.com/Coder787-source/KytyPlus/discussions/2)
 > or [file a compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml).
 > Browse existing results in the [compatibility list](docs/COMPATIBILITY.md).
+
+---
+
+## iGPU status
+
+This project started on an integrated-GPU machine, so several defaults and allocator choices were
+made **with iGPUs / UMA in mind**. That is a **design intent**, not a verified result.
+
+- KytyPlus has **not yet been confirmed to boot or run on any integrated GPU**.
+- The maintainer does not currently have game titles to self-test on iGPU hardware.
+- An iGPU result would be a meaningful differentiator and is **actively sought**.
+
+If you have an **iGPU system** (e.g. Radeon 780M, Intel Arc iGPU) **and legally obtained game dumps**,
+a boot/menu report with logs and a rig description would be extremely valuable. Please share it in
+[discussions](https://github.com/Coder787-source/KytyPlus/discussions/2) or as a
+[compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml).
+Until such a report exists, treat iGPU support as **unproven**, not advertised.
 
 ---
 
@@ -270,7 +287,7 @@ See all options:
 - Keep dumps on a fast local disk; long paths and permission-locked folders cause avoidable pain.
 - For bug reports, enable logging as needed and attach the **full** log, especially the final
   `--- Error ---` block and stack trace.
-- iGPU / UMA systems: prefer recent AMD/Intel drivers; shared memory pressure is normal.
+- iGPU / UMA systems: shared memory pressure is normal. **Note:** KytyPlus has **not yet been verified to boot or run on any integrated GPU** — iGPU-friendly defaults are by design intent, not confirmed behavior (see [iGPU status](#igpu-status)).
 
 ---
 
