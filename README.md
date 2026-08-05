@@ -4,7 +4,7 @@
 [![macOS Build](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml/badge.svg?os=macos)](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml)
 [![Linux Build](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml/badge.svg?os=linux)](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4.svg)](#system-requirements)
-[![Status](https://img.shields.io/badge/status-experimental-orange.svg)](#current-status)
+[![Status](https://img.shields.io/badge/status-Early%20Development-blue.svg)](#current-status)
 [![License](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
 
 **KytyPlus** is a KytyPS5-based PlayStation 5 emulator for **Windows, macOS, and Linux**. This repository is a
@@ -13,7 +13,7 @@ standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (i
 **HLE sysmodules**, and **iGPU-friendly defaults**.
 
 > [!CAUTION]
-> **Experimental software.** Many games still crash, hang, black-screen, or render incorrectly.
+> **Early-development software.** Many games still crash, hang, black-screen, or render incorrectly.
 > “Boots further” is not the same as “playable.” Do not expect AAA titles to run well.
 
 ---
@@ -84,7 +84,21 @@ next unimplemented feature. Always test with a **fresh build** and attach logs w
 
 Video of Dead Cells booting to the main menu on KytyPlus v1.8 (i7-9700K, RTX 4060 Ti, external HDD). Tested and recorded by [@CorpseSlayer](https://github.com/KytyPS5/KytyPS5/issues/127).
 
-[▶ Watch on Streamable](https://streamable.com/7ryvh1)
+[▶ Watch on Google Drive](https://drive.google.com/file/d/1_7IoA9B2iV-H1VUGtYyxEGiN6PYI2vbu/view?pli=1)
+
+---
+
+## Press / Coverage
+
+KytyPlus and the upstream KytyPS5 lineage have been covered by the emulation/homebrew press.
+
+- **GameGaz** (大人のためのゲーム講座, JP) — [GameGaz Daily 2026.8.3](https://gamegaz.com/2026080345888/) —
+  coverage of the KytyPlus v2.0 release.
+- **GameGaz** (大人のためのゲーム講座, JP) — [GameGaz Daily 2026.8.4](https://gamegaz.com/2026080445890/) —
+  coverage of the KytyPS5 2026-08-03-e8752ac release.
+
+> Coverage links are external and not affiliated with this project. They are listed for community
+> reference only.
 
 ---
 
