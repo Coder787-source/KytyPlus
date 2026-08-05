@@ -90,16 +90,21 @@ Video of Dead Cells booting to the main menu on KytyPlus v1.8 (i7-9700K, RTX 406
 
 ## Press / Coverage
 
-KytyPlus and the upstream KytyPS5 lineage have been covered by the emulation/homebrew press.
+### KytyPlus
 
 - **GameGaz** (大人のためのゲーム講座, JP) — [GameGaz Daily 2026.8.3](https://gamegaz.com/2026080345888/) —
   coverage of the KytyPlus v2.0 release.
+
+### Upstream KytyPS5
+
+These links cover the *upstream* KytyPS5 project (the lineage KytyPlus is derived from), not
+KytyPlus itself. Listed for context only.
+
 - **GameGaz** (大人のためのゲーム講座, JP) — [GameGaz Daily 2026.8.4](https://gamegaz.com/2026080445890/) —
   coverage of the KytyPS5 2026-08-03-e8752ac release.
 
 > Coverage links are external and not affiliated with this project. They are listed for community
 > reference only.
-
 ---
 
 ## Screenshots
