@@ -12,7 +12,17 @@
 
 namespace Libs::Graphics::ShaderRecompiler {
 
+enum class IsaFamily : uint8_t {
+	Rdna2 = 0, // PS5 / Prospero / AGC
+	Gcn   = 1, // PS4 / Orbis  / GFX8-GFX9
+};
+
 struct CompileOptions {
+	// Graphics ISA family the shader binary targets. PS5 (Prospero) ships RDNA2 /
+	// AGC shaders; PS4 (Orbis) ships GCN (GFX8/GFX9) shaders. The decoder must know
+	// which family it is parsing because the two share the word-family dispatch shape
+	// but diverge in encoding details and opcode tables.
+	IsaFamily                     isa_family      = IsaFamily::Rdna2;
 	ShaderType                    stage           = ShaderType::Compute;
 	ShaderLaneMaskMode            lane_mask_mode  = ShaderLaneMaskMode::NativeWave;
 	uint32_t                      wave_size       = 64;

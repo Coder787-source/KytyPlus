@@ -269,6 +269,10 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			options.config.screenshot_hotkey = sc;
 		} else if (arg == "--screenshot-folder") {
 			options.config.screenshot_folder = value;
+		} else if (arg == "--shadps4-bin") {
+			options.shadps4_bin = value;
+		} else if (arg == "--ps4-support") {
+			options.ps4_support_enabled = (value == "true" || value == "1");
 		} else {
 			::printf("unknown option: %s\n", arg.c_str());
 			return false;
@@ -277,6 +281,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 
 	return show_help || (!options.app0_dir.empty() && !options.elf.empty());
 }
+
+#include "platformDispatch.h"
 
 int main(int argc, char* argv[]) {
 	auto& slist = *SubsystemsList::Instance();
@@ -314,6 +320,39 @@ int main(int argc, char* argv[]) {
 		PrintUsage();
 		slist.DestroyAll(false);
 		return 0;
+	}
+
+	{
+		// --- Platform dispatch seam ------------------------------------------
+		// Detect whether this eboot is PS4 (Orbis) or PS5 (Prospero) before any
+		// Kyty subsystem is spun up. PS4 titles are delegated to shadPS4, which
+		// implements the full GCN + Orbis runtime; Kyty only runs PS5 natively.
+		const auto eboot_host = Emulator::PlatformDispatch::ResolveEbootHostPath(
+		    options.app0_dir, options.elf);
+		const auto platform = Emulator::PlatformDispatch::DetectPlatform(eboot_host);
+		if (platform == Emulator::PlatformDispatch::GuestPlatform::Ps4 &&
+	    options.ps4_support_enabled) {
+			const auto r = Emulator::PlatformDispatch::DispatchToShadps4(
+			    eboot_host, Emulator::PlatformDispatch::BackendMode::Subprocess,
+			    options.shadps4_bin);
+			if (r.delegated) {
+				slist.DestroyAll(false);
+				return r.exit_code;
+			}
+			// Delegation failed: report and fall through to Kyty (which will likely
+			// fail informatively on the PS4 eboot, surfacing the real reason).
+			::printf("PS4 delegation failed, falling back to native Kyty path: %s\n",
+			         r.message.c_str());
+		} else if (platform == Emulator::PlatformDispatch::GuestPlatform::Ps4 &&
+	           !options.ps4_support_enabled) {
+		::printf("PS4 title detected but PS4 support is disabled. Enable it in the launcher settings (Global settings) to run via shadPS4.\n");
+		slist.DestroyAll(false);
+		return 0;
+		} else if (platform == Emulator::PlatformDispatch::GuestPlatform::Unknown) {
+			::printf("PlatformDispatch: could not detect guest platform from %s,\n",
+			         eboot_host.string().c_str());
+			::printf("  proceeding on the native (PS5) Kyty path.\n");
+		}
 	}
 
 	Run(options);

@@ -58,11 +58,12 @@ constexpr char SAVE_DATA_DIR[]     = "_SaveData";
 
 constexpr int GAME_NAME_COLUMN             = 0;
 constexpr int GAME_SERIAL_COLUMN           = 1;
-constexpr int GAME_VERSION_COLUMN          = 2;
-constexpr int GAME_FIRMWARE_VERSION_COLUMN = 3;
-constexpr int GAME_PATH_COLUMN             = 4;
-constexpr int GAME_STATUS_COLUMN           = 5;
-constexpr int GAME_COMMENT_COLUMN          = 6;
+constexpr int GAME_PLATFORM_COLUMN         = 2;
+constexpr int GAME_VERSION_COLUMN          = 3;
+constexpr int GAME_FIRMWARE_VERSION_COLUMN = 4;
+constexpr int GAME_PATH_COLUMN             = 5;
+constexpr int GAME_STATUS_COLUMN           = 6;
+constexpr int GAME_COMMENT_COLUMN          = 7;
 
 static QString NormalizeGameDirectory(const QString& dir) {
 	const auto trimmed = dir.trimmed();
@@ -243,6 +244,7 @@ ConfigurationListWidget::ConfigurationListWidget(QWidget* parent)
 	m_ui->cfgs_list->setSortingEnabled(true);
 	m_ui->cfgs_list->setColumnWidth(GAME_NAME_COLUMN, 320);
 	m_ui->cfgs_list->setColumnWidth(GAME_SERIAL_COLUMN, 110);
+	m_ui->cfgs_list->setColumnWidth(GAME_PLATFORM_COLUMN, 80);
 	m_ui->cfgs_list->setColumnWidth(GAME_VERSION_COLUMN, 120);
 	m_ui->cfgs_list->setColumnWidth(GAME_FIRMWARE_VERSION_COLUMN, 150);
 	m_ui->cfgs_list->setColumnWidth(GAME_PATH_COLUMN, 320);
@@ -626,6 +628,7 @@ void ConfigurationListWidget::ScanGameDirectory() {
 				}
 
 				SetGameFiles(*info, game_dir.absolutePath(), game_path, metadata);
+				info->platform = DetectGamePlatform(info->basedir, info->elf);
 				const auto* compatibility = m_compatibility->Find(info->title_id);
 				if (compatibility != nullptr) {
 					info->game_status  = compatibility->status;

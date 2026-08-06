@@ -237,6 +237,9 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 		game = QDir(info.basedir).filePath(info.elf);
 	}
 	args << "--game" << game;
+	if (info.ps4_support_enabled) {
+		args << "--ps4-support" << BoolArg(info.ps4_support_enabled);
+	}
 
 	const auto patch_plan = PatchesDialog::PatchPlanPath(info.title_id);
 	if (QFileInfo::exists(patch_plan)) {

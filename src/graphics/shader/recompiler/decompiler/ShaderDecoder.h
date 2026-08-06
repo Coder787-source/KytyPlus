@@ -7,6 +7,10 @@
 #include <span>
 #include <vector>
 
+namespace Libs::Graphics::ShaderRecompiler {
+enum class IsaFamily : uint8_t;
+}
+
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
 
 enum class Family {
@@ -656,9 +660,13 @@ struct Instruction {
 struct Program {
 	std::span<const uint32_t> code;
 	std::vector<Instruction>  instructions;
+	// ISA family this program was decoded as. Set by DecodeProgram so downstream
+	// passes (CFG / SPIR-V emit) can apply platform-specific rules without re-deriving it.
+	ShaderRecompiler::IsaFamily isa_family = ShaderRecompiler::IsaFamily::Rdna2;
 };
 
-bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string* error);
+bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string* error,
+                 ShaderRecompiler::IsaFamily isa_family = ShaderRecompiler::IsaFamily::Rdna2);
 
 bool DecodeScalarSource(uint32_t code, uint32_t pc, Operand& operand, std::string* error);
 bool DecodeScalarDestination(uint32_t code, uint32_t pc, Operand& operand, std::string* error);

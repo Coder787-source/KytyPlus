@@ -691,7 +691,7 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	     static_cast<uint64_t>(code.size()));
 
 	Decoder::Program decoded;
-	if (!Decoder::DecodeProgram(code, decoded, error)) {
+	if (!Decoder::DecodeProgram(code, decoded, error, options.isa_family)) {
 		return false;
 	}
 	LOGF("%s phase end: stage=%s hash=0x%016" PRIx64 " decode instructions=%" PRIu64
@@ -703,7 +703,8 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 	if (options.dump_ir) {
 		decoded_dump = Decoder::ProgramToString(decoded);
 		if (options.early_dump) {
-			LOGF("%s decoded RDNA2 (early):\n%s", GetDumpLabel(options), decoded_dump.c_str());
+			const char* isa_name = options.isa_family == IsaFamily::Gcn ? "GCN" : "RDNA2";
+		LOGF("%s decoded %s (early):\n%s", GetDumpLabel(options), isa_name, decoded_dump.c_str());
 		}
 	}
 

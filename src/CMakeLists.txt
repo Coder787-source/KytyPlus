@@ -145,6 +145,8 @@ config_compiler_and_linker()
 add_subdirectory("${KYTY_THIRD_PARTY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/3rdparty")
 add_subdirectory(common)
 
+add_subdirectory(graphics/shader/recompiler/decompiler/gcn)
+
 file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	libs/*.cpp
 	libs/*.h
@@ -494,9 +496,9 @@ if(BUILD_TESTING)
 endif()
 
 
-add_executable(kyty_emulator main.cpp ${kyty_emulator_src})
+add_executable(kyty_emulator main.cpp platformDispatch.cpp shadps4Embedder.cpp ${kyty_emulator_src})
 
-target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries})
+target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries} gcn_decoder)
 if (WIN32)
 	target_link_libraries(kyty_emulator opengl32)
 	target_link_libraries(kyty_emulator iphlpapi)
@@ -511,6 +513,12 @@ endif()
 # dlopen/dlsym/dladdr for RenderDoc.
 target_link_libraries(kyty_emulator ${CMAKE_DL_LIBS})
 target_include_directories(kyty_emulator PRIVATE ${inc_headers})
+# GcnBridge.cpp bridges into the ported shadPS4 decoder; give it the gcn/
+# include root with precedence over src/ so the ported headers resolve to
+# the local compatibility shims (common/types.h, common/assert.h, ...) and
+# not to Kyty's own src/common headers, which define different macros.
+set_source_files_properties(graphics/shader/recompiler/decompiler/GcnBridge.cpp
+	PROPERTIES COMPILE_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/graphics/shader/recompiler/decompiler/gcn")
 
 clang_tidy_check(kyty_emulator "" "${check_headers}" "${inc_headers}")
 
@@ -543,6 +551,10 @@ if(APPLE)
 endif()
 
 install(TARGETS kyty_emulator DESTINATION .)
+# Bundle a real shadPS4 runtime for PS4 game delegation (opt-in).
+# Build with -DKYTY_BUNDLE_SHADPS4=ON to produce a sibling shadps4 binary
+# that the dispatcher auto-discovers; see platformDispatch.cpp.
+include(${CMAKE_CURRENT_SOURCE_DIR}/shadps4_bundle.cmake)
 if(KYTY_BUILD_LAUNCHER)
 	add_subdirectory(launcher)
 endif()

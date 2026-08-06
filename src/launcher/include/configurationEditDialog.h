@@ -11,6 +11,7 @@ class QGroupBox;
 class QListWidget;
 class QMoveEvent;
 class QToolButton;
+class QCheckBox;
 class QSettings;
 class QWidget;
 
@@ -40,6 +41,7 @@ private:
 	QGroupBox*                   m_game_dirs_group        = nullptr;
 	QListWidget*                 m_game_dirs_list         = nullptr;
 	QToolButton*                 m_remove_game_dir_button = nullptr;
+	QCheckBox*                   m_ps4_support_check      = nullptr;
 	bool                         m_show_game_dirs         = false;
 
 protected:

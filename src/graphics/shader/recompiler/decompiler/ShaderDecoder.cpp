@@ -1,4 +1,6 @@
 #include "graphics/shader/recompiler/decompiler/ShaderDecoder.h"
+#include "graphics/shader/recompiler/decompiler/GcnBridge.h"
+#include "graphics/shader/recompiler/ShaderRecompiler.h"
 
 #include "graphics/shader/recompiler/decompiler/ExportOps.h"
 #include "graphics/shader/recompiler/decompiler/ImageOps.h"
@@ -329,7 +331,8 @@ void SetUnsupported(Instruction& inst, Family family, uint32_t opcode_id, const 
 	inst.unsupported_reason = reason;
 }
 
-bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string* error) {
+bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string* error,
+                 ShaderRecompiler::IsaFamily isa_family) {
 	if (code.empty() || code.size() > UINT32_MAX / sizeof(uint32_t)) {
 		SetError(error, "invalid shader decoder input");
 		return false;
@@ -337,6 +340,19 @@ bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string
 
 	program.instructions.clear();
 	program.code = code;
+
+	// GCN (PS4) and RDNA2 (PS5) share the high-bit word-family dispatch, so the
+	// same outer switch is used for both. Per-family divergence happens inside the
+	// individual Decode* helpers, which read isa_family where encoding differs
+	// (e.g. VOP3 operand encoding, SOPP encoding semantics). The program records the
+	// family so downstream passes (CFG, SPIR-V emit) can apply platform-specific rules.
+	program.isa_family = isa_family;
+	if (isa_family == ShaderRecompiler::IsaFamily::Gcn) {
+		// PS4 (GCN) shaders are decoded by the ported shadPS4 decoder via the
+		// GcnBridge, which converts Shader::Gcn::GcnInst into this project Decoder::Instruction
+		// so the existing CFG / IR / SPIR-V pipeline consumes them unchanged.
+		return DecodeGcnProgram(code, program, error);
+	}
 
 	std::set<uint32_t> branch_targets;
 	for (uint32_t word_index = 0; word_index < code.size();) {

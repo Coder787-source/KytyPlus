@@ -15,6 +15,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/decompiler/ShaderDecoder.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include "common/guestPlatform.h"
 #include "graphics/shader/shaderVertexMetadata.h"
 #include "libs/errno.h"
 #include "spirv-tools/libspirv.h"
@@ -1579,6 +1580,9 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	const auto code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler VS", regs.gs_regs.chksum);
 
 	ShaderRecompiler::CompileOptions options;
+	options.isa_family = Common::GuestPlatformState::Instance().IsPs4()
+		? ShaderRecompiler::IsaFamily::Gcn
+		: ShaderRecompiler::IsaFamily::Rdna2;
 	options.stage                = ShaderType::Vertex;
 	options.lane_mask_mode       = lane_mask_mode;
 	options.shader_hash          = regs.gs_regs.chksum;
@@ -1647,6 +1651,9 @@ bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegis
 	const auto     code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler PS", shader_hash);
 
 	ShaderRecompiler::CompileOptions options;
+	options.isa_family = Common::GuestPlatformState::Instance().IsPs4()
+		? ShaderRecompiler::IsaFamily::Gcn
+		: ShaderRecompiler::IsaFamily::Rdna2;
 	options.stage                = ShaderType::Pixel;
 	options.lane_mask_mode       = lane_mask_mode;
 	options.shader_hash          = shader_hash;
@@ -1711,6 +1718,9 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
 	const auto     code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler CS", shader_addr);
 
 	ShaderRecompiler::CompileOptions options;
+	options.isa_family = Common::GuestPlatformState::Instance().IsPs4()
+		? ShaderRecompiler::IsaFamily::Gcn
+		: ShaderRecompiler::IsaFamily::Rdna2;
 	options.stage                = ShaderType::Compute;
 	options.shader_hash          = shader_addr;
 	options.shader_base          = shader_addr;

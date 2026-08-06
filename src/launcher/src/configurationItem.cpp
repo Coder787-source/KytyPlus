@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QColor>
 #include <QDir>
 #include <QFileInfo>
 #include <QFont>
@@ -24,6 +25,7 @@ namespace {
 enum Column {
 	NameColumn,
 	SerialColumn,
+	PlatformColumn,
 	GameVersionColumn,
 	FirmwareVersionColumn,
 	PathColumn,
@@ -78,6 +80,26 @@ QIcon StandardIcon(QStyle::StandardPixmap icon) {
 
 QString GetPathText(const Configuration& info) {
 	return !info.game_path.isEmpty() ? info.game_path : info.basedir;
+}
+
+// Short label + color for the per-game platform badge. Unknown games (unreadable
+// or non-PS4/PS5 eboot) are shown as a dash so the column stays unobtrusive.
+QString GetPlatformText(GuestPlatform platform) {
+	switch (platform) {
+		case GuestPlatform::Ps4: return QStringLiteral("PS4");
+		case GuestPlatform::Ps5: return QStringLiteral("PS5");
+		case GuestPlatform::Unknown: return QStringLiteral("\u2014");
+	}
+	return QStringLiteral("\u2014");
+}
+
+QColor GetPlatformColor(GuestPlatform platform) {
+	switch (platform) {
+		case GuestPlatform::Ps4: return QColor(0x2f, 0x80, 0xed); // blue
+		case GuestPlatform::Ps5: return QColor(0x2f, 0xb3, 0x44); // green
+		case GuestPlatform::Unknown: return QColor(0x8a, 0x8a, 0x8a); // gray
+	}
+	return QColor(0x8a, 0x8a, 0x8a);
 }
 
 QString GetDisplayText(const Configuration& info) {
@@ -173,6 +195,11 @@ void ConfigurationItem::Update() {
 
 	setText(NameColumn, m_info->name);
 	setText(SerialColumn, m_info->title_id);
+	setText(PlatformColumn, GetPlatformText(m_info->platform));
+	setForeground(PlatformColumn, GetPlatformColor(m_info->platform));
+	QFont pf = font(PlatformColumn);
+	pf.setBold(m_info->platform != GuestPlatform::Unknown);
+	setFont(PlatformColumn, pf);
 	setText(GameVersionColumn,
 	        m_info->gameVersion.isEmpty() ? QStringLiteral("\u2014") : m_info->gameVersion);
 	setText(FirmwareVersionColumn,

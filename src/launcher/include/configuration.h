@@ -12,6 +12,17 @@
 #include <QStringList>
 #include <QVariant>
 
+// Detected guest platform of a game, read from the eboot ELF/SELF header.
+// This mirrors Emulator::PlatformDispatch::GuestPlatform in the emulator core;
+// the launcher keeps its own copy so it can badge games without linking the
+// emulator, and the values are intentionally identical for a future shared enum.
+enum class GuestPlatform : int { Unknown = 0, Ps4 = 1, Ps5 = 2 };
+
+// Resolve a game's platform from its eboot by scanning the SELF/ELF header for
+// EI_ABIVERSION (0 = PS4, 2 = PS5). Defined in platformDetection.cpp; kept out
+// of this header so configuration.h stays include-light.
+GuestPlatform DetectGamePlatform(const QString& game_dir, const QString& elf_name);
+
 #define KYTY_CFG_SET(n) s->setValue(#n, QVariant::fromValue(n).toString());
 #define KYTY_CFG_GET(n) n = s->value(#n).value<decltype(n)>();
 
@@ -131,6 +142,15 @@ public:
 
 	QString elf = QStringLiteral("eboot.bin");
 
+	// Master switch for PS4 (shadPS4 delegation) support. When off, the launcher
+	// hides the Platform column, never badges games as PS4, and never passes
+	// --ps4-support to the emulator; PS4 titles behave as before (fail through the
+	// native path). Persisted as part of GlobalConfiguration in Kyty.ini.
+	bool ps4_support_enabled = false;
+	// Detected platform of this game (cached at scan time so the list does not
+	// re-read every eboot on each paint). Derived via DetectGamePlatform().
+	GuestPlatform platform = GuestPlatform::Unknown;
+
 	void CopyEmulatorSettingsFrom(const Configuration& other) {
 		screen_resolution           = other.screen_resolution;
 		vblank_frequency            = other.vblank_frequency;
@@ -154,6 +174,7 @@ public:
 		renderdoc_enabled           = other.renderdoc_enabled;
 		ngg_rectlist_draw_enabled   = other.ngg_rectlist_draw_enabled;
 		keyboard_button_map         = other.keyboard_button_map;
+		ps4_support_enabled         = other.ps4_support_enabled;
 		controller_button_map      = other.controller_button_map;
 	}
 
@@ -200,6 +221,7 @@ public:
 		KYTY_CFG_SET(keyboard_button_map);
 		KYTY_CFG_SET(controller_button_map);
 		KYTY_CFG_SET(elf);
+		KYTY_CFG_SET(ps4_support_enabled);
 	}
 
 	void ReadSettings(QSettings* s) {
@@ -236,6 +258,7 @@ public:
 		controller_button_map =
 		    s->value("controller_button_map", controller_button_map).toString();
 		elf = s->value("elf", elf).toString();
+	ps4_support_enabled = s->value("ps4_support_enabled", ps4_support_enabled).toBool();
 	}
 };
 

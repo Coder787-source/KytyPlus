@@ -148,6 +148,15 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	                                       Configuration::LogDirection::File);
 	ListInit(m_ui->comboBox_profiler_direction, info.profiler_direction);
 	m_ui->checkBox_spirv_debug_printf->setChecked(info.spirv_debug_printf_enabled);
+
+	// PS4 (shadPS4 delegation) master switch. Built in code (not the .ui) so it
+	// can carry an explanatory tooltip and only appear for global settings.
+	if (m_ps4_support_check == nullptr) {
+		m_ps4_support_check = new QCheckBox(tr("Enable PS4 game support (via shadPS4)"), this);
+		m_ps4_support_check->setToolTip(tr("When enabled, PlayStation 4 titles are run through the bundled shadPS4 runtime, and the game list shows a PS4/PS5 badge per game. Requires a shadps4 binary next to the emulator (bundled when built with KYTY_BUNDLE_SHADPS4=ON)."));
+		m_ui->gridLayout->addWidget(m_ps4_support_check, 2, 0, 1, 1);
+	}
+	m_ps4_support_check->setChecked(info.ps4_support_enabled);
 }
 
 void ConfigurationEditDialog::InitGameDirectories() {
@@ -286,6 +295,9 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui) {
 
 void ConfigurationEditDialog::update_info() {
 	UpdateInfo(m_info, *m_ui);
+	// The PS4-support checkbox is created in code (m_ps4_support_check), not in
+	// the generated Ui, so it is read here in the member, not in UpdateInfo().
+	m_info.ps4_support_enabled = (m_ps4_support_check != nullptr && m_ps4_support_check->isChecked());
 }
 
 void ConfigurationEditDialog::adjust_size() {

@@ -4,6 +4,7 @@
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/guestPlatform.h"
 #include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/magicEnum.h"
@@ -2016,6 +2017,15 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	bool is_shared   = program->elf->IsShared();
 	bool is_next_gen = program->elf->IsNextGen();
 	const Platform platform = program->elf->GetPlatform();
+	{
+		Common::GuestPlatform gp = Common::GuestPlatform::Ps5;
+		switch (platform) {
+			case Platform::Ps4: gp = Common::GuestPlatform::Ps4; break;
+			case Platform::Ps5: gp = Common::GuestPlatform::Ps5; break;
+			default: break;
+		}
+		Common::GuestPlatformState::Instance().Set(gp);
+	}
 
 	// PS4 (Orbis) executables are accepted by the loader and now permitted to
 	// attempt execution (gate lifted). The shared PS4/PS5 HLE (libkernel/libc/
