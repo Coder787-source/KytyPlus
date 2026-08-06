@@ -1,4 +1,4 @@
-name: Build and Release KytyPS5
+name: Build and Release KytyPlus
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   windows:
-    name: Build KytyPS5 (Windows)
+    name: Build KytyPlus (Windows)
     runs-on: windows-2022
 
     steps:
@@ -106,12 +106,12 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Windows-x64
+          name: KytyPlus-Windows-x64
           path: _Build/windows/install/**
           if-no-files-found: error
 
   macos:
-    name: Build KytyPS5 (macOS)
+    name: Build KytyPlus (macOS)
     runs-on: macos-15
 
     steps:
@@ -209,12 +209,12 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-macOS-x86_64
+          name: KytyPlus-macOS-x86_64
           path: _Build/macos/install/**
           if-no-files-found: error
 
   linux:
-    name: Build KytyPS5 (Linux)
+    name: Build KytyPlus (Linux)
     runs-on: ubuntu-24.04
 
     steps:
@@ -336,7 +336,7 @@ jobs:
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Linux-x86_64
+          name: KytyPlus-Linux-x86_64
           path: _Build/linux/install/**
           if-no-files-found: error
   # KytyPlus: publish cross-platform release assets on v* tags.
@@ -362,21 +362,21 @@ jobs:
       - name: Package Windows build
         shell: bash
         run: |
-          dir="artifacts/KytyPS5-Windows-x64"
+          dir="artifacts/KytyPlus-Windows-x64"
           test -d "$dir"
           ( cd "$dir" && zip -r "$GITHUB_WORKSPACE/KytyPlus-${GITHUB_REF_NAME}-windows-x64.zip" . )
 
       - name: Package macOS build
         shell: bash
         run: |
-          dir="artifacts/KytyPS5-macOS-x86_64"
+          dir="artifacts/KytyPlus-macOS-x86_64"
           test -d "$dir"
           ( cd "$dir" && zip -r "$GITHUB_WORKSPACE/KytyPlus-${GITHUB_REF_NAME}-macos-x86_64.zip" . )
 
       - name: Package Linux build
         shell: bash
         run: |
-          dir="artifacts/KytyPS5-Linux-x86_64"
+          dir="artifacts/KytyPlus-Linux-x86_64"
           test -d "$dir"
           ( cd "$dir" && zip -r "$GITHUB_WORKSPACE/KytyPlus-${GITHUB_REF_NAME}-linux-x86_64.zip" . )
 
