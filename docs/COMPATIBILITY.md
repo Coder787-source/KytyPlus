@@ -47,7 +47,7 @@ single most useful contribution you can make here — see
 
 | Title | Title ID | Status | Last tested (version) | Reports |
 |---|---|---|---|---|
-| _No reports yet — be the first to [file one](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)._ | | | | |
+| Dead Cells | | Reaches menu | v1.8 | [#3](https://github.com/Coder787-source/KytyPlus/issues/3) · [footage](https://drive.google.com/file/d/1_7IoA9B2iV-H1VUGtYyxEGiN6PYI2vbu/view?pli=1) (past-menu not tested) |
 
 <!--
 Row template (copy/paste and fill in from the issue). Use a full issue URL, not a relative link:
