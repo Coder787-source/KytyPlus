@@ -15,10 +15,10 @@
 #include <fstream>
 #include <vector>
 
-#include <SDL2/SDL_events.h>
-#include <SDL2/SDL_syswm.h>
-#include <SDL2/SDL_video.h>
-#include <SDL2/SDL.h>
+#include "SDL_events.h"
+#include "SDL_syswm.h"
+#include "SDL_video.h"
+#include "SDL.h"
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #include <windows.h>
