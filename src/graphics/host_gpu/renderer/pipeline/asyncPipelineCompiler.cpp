@@ -121,25 +121,16 @@ void AsyncPipelineCompiler::WorkerLoop() {
 		// thread can fall back to synchronous compile on the next draw (rather than
 		// spinning forever on a never-published pipeline). Remove the in-flight
 		// marker under the lock and publish (or discard).
-		std::exception_ptr eptr;
-		bool produced = false;
-		try {
-			produced = (cached->pipeline != nullptr && cached->pipeline_layout != nullptr);
-		} catch (...) {
-			eptr = std::current_exception();
-		}
+		// CreatePipelineInternal is a non-throwing driver call (the synchronous path
+		// checks the same null pipeline/pipeline_layout with EXIT_NOT_IMPLEMENTED); we
+		// compile with -fno-exceptions, so the null check here is plain and cannot throw.
+		const bool produced = (cached->pipeline != nullptr && cached->pipeline_layout != nullptr);
 
 		{
 			std::scoped_lock lock(m_state_mutex);
 			m_in_flight.erase(req.key);
 		}
 
-		if (eptr) {
-			LOGF("AsyncPipelineCompiler: worker threw while building pipeline VS=0x%08x/0x%08x PS=0x%08x/0x%08x -- leaving for synchronous fallback\n",
-			         static_cast<unsigned>(req.vs_hash0), static_cast<unsigned>(req.vs_crc32),
-			         static_cast<unsigned>(req.ps_hash0), static_cast<unsigned>(req.ps_crc32));
-			continue;
-		}
 
 		if (!produced) {
 			LOGF("AsyncPipelineCompiler: vkCreateGraphicsPipelines did not produce a pipeline VS=0x%08x/0x%08x PS=0x%08x/0x%08x -- leaving for synchronous fallback\n",
