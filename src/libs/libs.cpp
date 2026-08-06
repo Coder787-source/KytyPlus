@@ -79,38 +79,42 @@ LIB_DEFINE(InitVideoOut_1);
 
 
 // --- PS4 modules ported from shadPS4 (GPL-2.0-or-later), full NID coverage ---
-LIB_DEFINE(InitCamera_1);
-LIB_DEFINE(InitDiscMap_1);
-LIB_DEFINE(InitGameLiveStreaming_1);
-LIB_DEFINE(InitGnmDriver_1);
-LIB_DEFINE(InitHmd_1);
-LIB_DEFINE(InitIme_1);
-LIB_DEFINE(InitInvitationDialog_1);
-LIB_DEFINE(InitJpeg_1);
-LIB_DEFINE(InitMove_1);
-LIB_DEFINE(InitNgs2_1);
-LIB_DEFINE(InitRazorCpu_1);
-LIB_DEFINE(InitRemotePlay_1);
-LIB_DEFINE(InitSharePlay_1);
-LIB_DEFINE(InitSigninDialog_1);
-LIB_DEFINE(InitSystemGesture_1);
-LIB_DEFINE(InitUlobjmgr_1);
-LIB_DEFINE(InitUsbd_1);
-LIB_DEFINE(InitVideoRecording_1);
-LIB_DEFINE(InitVoice_1);
-LIB_DEFINE(InitVrTracker_1);
-LIB_DEFINE(InitWebBrowserDialog_1);
-LIB_DEFINE(InitZlib_1);
-LIB_DEFINE(InitCompanionHttpd_1);
-LIB_DEFINE(InitCompanionUtil_1);
-LIB_DEFINE(InitNpAuth_1);
-LIB_DEFINE(InitNpCommon_1);
-LIB_DEFINE(InitNpManager_1);
-LIB_DEFINE(InitNpPartner_1);
-LIB_DEFINE(InitNpParty_1);
-LIB_DEFINE(InitNpSnsFacebookDialog_1);
-LIB_DEFINE(InitNpTrophy_1);
-LIB_DEFINE(InitNpTus_1);
+// Each Init function is defined inside its own inner namespace in the matching
+// lib*.cpp file (e.g. namespace LibCamera { LIB_DEFINE(InitCamera_1); ... }),
+// so the declaration here must be wrapped in the same inner namespace, matching
+// the pre-existing LibMouse/LibUlt/LibRandom/VideoDec2 pattern above.
+namespace LibCamera { LIB_DEFINE(InitCamera_1); }
+namespace LibDiscMap { LIB_DEFINE(InitDiscMap_1); }
+namespace LibGameLiveStreaming { LIB_DEFINE(InitGameLiveStreaming_1); }
+namespace LibGnmDriver { LIB_DEFINE(InitGnmDriver_1); }
+namespace LibHmd { LIB_DEFINE(InitHmd_1); }
+namespace LibIme { LIB_DEFINE(InitIme_1); }
+namespace LibInvitationDialog { LIB_DEFINE(InitInvitationDialog_1); }
+namespace LibJpeg { LIB_DEFINE(InitJpeg_1); }
+namespace LibMove { LIB_DEFINE(InitMove_1); }
+namespace LibNgs2 { LIB_DEFINE(InitNgs2_1); }
+namespace LibRazorCpu { LIB_DEFINE(InitRazorCpu_1); }
+namespace LibRemotePlay { LIB_DEFINE(InitRemotePlay_1); }
+namespace LibSharePlay { LIB_DEFINE(InitSharePlay_1); }
+namespace LibSigninDialog { LIB_DEFINE(InitSigninDialog_1); }
+namespace LibSystemGesture { LIB_DEFINE(InitSystemGesture_1); }
+namespace LibUlobjmgr { LIB_DEFINE(InitUlobjmgr_1); }
+namespace LibUsbd { LIB_DEFINE(InitUsbd_1); }
+namespace LibVideoRecording { LIB_DEFINE(InitVideoRecording_1); }
+namespace LibVoice { LIB_DEFINE(InitVoice_1); }
+namespace LibVrTracker { LIB_DEFINE(InitVrTracker_1); }
+namespace LibWebBrowserDialog { LIB_DEFINE(InitWebBrowserDialog_1); }
+namespace LibZlib { LIB_DEFINE(InitZlib_1); }
+namespace CompanionHttpd { LIB_DEFINE(InitCompanionHttpd_1); }
+namespace CompanionUtil { LIB_DEFINE(InitCompanionUtil_1); }
+namespace NpAuth { LIB_DEFINE(InitNpAuth_1); }
+namespace NpCommon { LIB_DEFINE(InitNpCommon_1); }
+namespace NpManager { LIB_DEFINE(InitNpManager_1); }
+namespace NpPartner { LIB_DEFINE(InitNpPartner_1); }
+namespace NpParty { LIB_DEFINE(InitNpParty_1); }
+namespace NpSnsFacebookDialog { LIB_DEFINE(InitNpSnsFacebookDialog_1); }
+namespace NpTrophy { LIB_DEFINE(InitNpTrophy_1); }
+namespace NpTus { LIB_DEFINE(InitNpTus_1); }
 
 void InitAll(Loader::SymbolDatabase* s) {
 	LIB_LOAD(InitAudio_1);
