@@ -30,7 +30,7 @@ enum class PresentFilter { Nearest, Linear, Cubic };
 enum class PresentMode { Fifo, Mailbox, Immediate };
 
 // How the guest frame is fitted into the window extent.
-enum class AspectRatio { Stretch, Preserve, Crop };
+enum class AspectRatio { Stretch, Fit16x9, Fit4x3, Integer };
 
 enum class OutputDirection { Silent, Console, File };
 

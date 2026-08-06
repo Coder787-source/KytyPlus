@@ -782,7 +782,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 			case Config::AspectRatio::Integer: {
 				// Largest integer scale that still fits, centred. Uses the source
 				// (guest) resolution as the base, so pixel-art stays crisp.
-				const int scale = std::max(1, std::min(m_extent.width / sw, m_extent.height / sh));
+				const int scale = std::max(1, static_cast<int>(std::min(m_extent.width / sw, m_extent.height / sh)));
 				const int fit_w = sw * scale;
 				const int fit_h = sh * scale;
 				dst_x0 = static_cast<int>(m_extent.width / 2u) - fit_w / 2;
