@@ -7,6 +7,7 @@
 // shadPS4's behavior for this non-rendering-path module.
 
 #include "libs/libs.h"
+#include "loader/symbolDatabase.h"
 
 #include <common/abi.h>
 

@@ -10,6 +10,7 @@
 // does for non-essential paths.
 
 #include "libs/libs.h"
+#include "loader/symbolDatabase.h"
 #include "libs/errno.h"
 #include "libs/agc.h"
 

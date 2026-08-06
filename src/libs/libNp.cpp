@@ -7,6 +7,7 @@
 // libKernel.cpp's structure. Entry points are stubbed (return ORBIS_OK).
 
 #include "libs/libs.h"
+#include "loader/symbolDatabase.h"
 #include "libs/errno.h"
 
 #include <common/abi.h>

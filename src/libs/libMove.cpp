@@ -7,6 +7,7 @@
 // adaptation to KytyPlus's Core/Memory infrastructure and is tracked separately.
 
 #include "libs/libs.h"
+#include "loader/symbolDatabase.h"
 #include "libs/errno.h"
 
 #include <common/abi.h>

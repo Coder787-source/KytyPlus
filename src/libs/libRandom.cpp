@@ -9,6 +9,7 @@
 // the kernel PRNG is genuinely cryptographically sourced, not a toy LCG.
 
 #include "libs/libs.h"
+#include "loader/symbolDatabase.h"
 #include "libs/errno.h"
 
 #include <common/abi.h>
