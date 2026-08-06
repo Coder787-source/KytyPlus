@@ -16,6 +16,14 @@ standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (i
 > **Early-development software.** Many games still crash, hang, black-screen, or render incorrectly.
 > “Boots further” is not the same as “playable.” Do not expect AAA titles to run well.
 
+## See it in action
+
+Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX 4060 Ti, external HDD). Tested and recorded by [@CorpseSlayer](https://github.com/KytyPS5/KytyPS5/issues/127).
+
+[▶ Watch on Google Drive](https://drive.google.com/file/d/1_7IoA9B2iV-H1VUGtYyxEGiN6PYI2vbu/view?pli=1)
+
+> First-party footage of a commercial game reaching menu — the project's first confirmed boot-to-menu result. Past-menu state has not been tested. See the [compatibility list](docs/COMPATIBILITY.md) for the full picture.
+
 ---
 
 ## Disclaimers
@@ -93,16 +101,6 @@ a boot/menu report with logs and a rig description would be extremely valuable. 
 [discussions](https://github.com/Coder787-source/KytyPlus/discussions/2) or as a
 [compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml).
 Until such a report exists, treat iGPU support as **unproven**, not advertised.
-
----
-
-## See it in action
-
-Video of Dead Cells booting to the main menu on KytyPlus v1.8 (i7-9700K, RTX 4060 Ti, external HDD). Tested and recorded by [@CorpseSlayer](https://github.com/KytyPS5/KytyPS5/issues/127).
-
-[▶ Watch on Google Drive](https://drive.google.com/file/d/1_7IoA9B2iV-H1VUGtYyxEGiN6PYI2vbu/view?pli=1)
-
----
 
 ## Press / Coverage
 
@@ -191,7 +189,9 @@ playability guarantees.
 
 ### Option B — Build from source
 
-#### Build dependencies
+#### Windows
+
+##### Build dependencies
 
 | Dependency | Notes |
 |------------|--------|
@@ -204,7 +204,7 @@ playability guarantees.
 
 `cl.exe` alone is **not** supported — use **`clang-cl`**.
 
-#### Configure and build
+##### Configure and build
 
 Open an **x64 Native Tools / Developer** shell for VS 2022, then:
 
@@ -240,6 +240,100 @@ A CMake Tools setup lives in [`.vscode`](.vscode):
 2. Set `CMAKE_PREFIX_PATH` in [`.vscode/settings.json`](.vscode/settings.json) to your Qt path.
 3. Set `--game` in [`.vscode/launch.json`](.vscode/launch.json) for debugging.
 4. Configure/build from an x64 VS developer environment.
+
+#### macOS
+
+Built and tested on **macOS 15** with **Xcode 26** and **Qt 6.10.3** (clang_64). macOS uses
+**MoltenVK** to provide Vulkan 1.3; the CI build bundles `libMoltenVK.dylib` next to the binaries.
+
+##### Build dependencies
+
+| Dependency | Notes |
+|------------|--------|
+| Git | Submodules required |
+| CMake 3.12+ | On PATH |
+| Ninja | `brew install ninja` |
+| Xcode 26 (clang++) | Command Line Tools or full Xcode |
+| Qt 6 (clang_64) | Widgets, Network, Concurrent (e.g. `~/Qt/6.10.3/macos`) |
+| glslang | `brew install glslang` (provides `glslangValidator`) |
+| MoltenVK | Optional at build time; required at **runtime**. CI bundles v1.4.2 |
+
+##### Configure and build
+
+```bash
+cd /path/to/KytyPlus
+
+git submodule update --init --recursive
+
+cmake -S src -B _Build/macos -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_PREFIX_PATH="$HOME/Qt/6.10.3/macos"
+
+cmake --build _Build/macos --target launcher
+cmake --install _Build/macos --prefix _Build/macos/install
+```
+
+To run the built binaries, place `libMoltenVK.dylib` next to `kyty_emulator` (or install the
+Vulkan SDK). After a successful install you should have:
+
+```text
+_Build/macos/install/launcher
+_Build/macos/install/kyty_emulator
+```
+
+> [!NOTE]
+> The CI build targets **x86_64** (`-DCMAKE_OSX_ARCHITECTURES=x86_64`). Apple Silicon users can
+> run the x86_64 build under Rosetta 2; a native arm64 build is not yet provided by CI.
+
+#### Linux
+
+Built and tested on **Ubuntu 24.04** with **Clang** and **Qt 6.10.3** (linux_gcc_64). Vulkan 1.3
+is provided by your system Mesa/NVIDIA drivers.
+
+##### Build dependencies
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends --yes \
+  clang lld ninja-build cmake git \
+  glslang-tools \
+  libgl1-mesa-dev libwayland-dev wayland-protocols \
+  libx11-dev libxext-dev libxcursor-dev libxfixes-dev \
+  libxi-dev libxrandr-dev libxkbcommon-dev libxss-dev \
+  libasound2-dev libpulse-dev libudev-dev libdbus-1-dev
+```
+
+Plus **Qt 6** (Widgets, Network, Concurrent), e.g. `~/Qt/6.10.3/gcc_64`.
+
+##### Configure and build
+
+```bash
+cd /path/to/KytyPlus
+
+git submodule update --init --recursive
+
+cmake -S src -B _Build/linux -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_PREFIX_PATH="$HOME/Qt/6.10.3/gcc_64"
+
+cmake --build _Build/linux --target launcher
+cmake --install _Build/linux --prefix _Build/linux/install
+```
+
+After a successful install you should have:
+
+```text
+_Build/linux/install/launcher
+_Build/linux/install/kyty_emulator
+```
+
+Qt plugins and shared libraries are staged under `_Build/linux/install/lib` and found via an
+`$ORIGIN/lib` RPATH, so run the binaries from the install prefix directly.
 
 ---
 
