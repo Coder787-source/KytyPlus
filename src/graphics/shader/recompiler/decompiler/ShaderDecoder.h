@@ -3,6 +3,10 @@
 
 #include "common/common.h"
 #include "common/stringUtils.h"
+// Pulls in the complete definition of IsaFamily (Rdna2/Gcn enumerators).
+// ShaderDecoder.h uses IsaFamily::Rdna2 in default arguments below, which
+// requires the full enum definition, not just the forward declaration.
+#include "graphics/shader/recompiler/ShaderRecompiler.h"
 
 #include <span>
 #include <vector>
