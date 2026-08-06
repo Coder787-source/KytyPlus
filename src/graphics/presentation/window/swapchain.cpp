@@ -27,6 +27,7 @@
 #include "common/threads.h"
 #include "common/timer.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vma.h"
@@ -41,6 +42,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <filesystem>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -50,6 +53,10 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+// stb_image_write is implemented inline here; it only needs the impl in one TU.
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 #include <vulkan/vk_platform.h>
 
 // IWYU pragma: no_include <intrin.h>
@@ -346,6 +353,11 @@ public:
 	void                 Submit(CommandBuffer& command);
 	[[nodiscard]] Status Present();
 
+	// Captures the current swapchain image to a PNG in Config::GetScreenshotFolder().
+	// Safe to call from the present thread after the swapchain image has been recorded
+	// (i.e. after RecordPresentCommands + Submit). Returns the written file path on success.
+	[[nodiscard]] std::string CaptureScreenshot();
+
 	[[nodiscard]] uint32_t ImageCount() const noexcept {
 		return static_cast<uint32_t>(m_images.size());
 	}
@@ -503,7 +515,43 @@ void Swapchain::Create() {
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
 	create_info.preTransform     = transform;
 	create_info.compositeAlpha   = composite;
-	create_info.presentMode      = vk::PresentModeKHR::eFifo;
+	// Resolve the requested present mode against what the surface actually exposes.
+	// vk::PresentModeKHR::eFifo is guaranteed by the Vulkan spec, so it is the safe fallback.
+	const auto& supported = m_window.surface_capabilities.present_modes;
+	vk::PresentModeKHR chosen_mode = vk::PresentModeKHR::eFifo;
+	switch (Config::GetPresentMode()) {
+		case Config::PresentMode::Mailbox: {
+			const auto it = std::find(supported.begin(), supported.end(),
+			                         vk::PresentModeKHR::eMailbox);
+			if (it != supported.end()) {
+				chosen_mode = vk::PresentModeKHR::eMailbox;
+			} else {
+				static std::atomic<uint32_t> mb_logged {0};
+				if (mb_logged.fetch_add(1, std::memory_order_relaxed) == 0) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "Present: mailbox mode not supported by surface; falling back to Fifo\n");
+				}
+			}
+			break;
+		}
+		case Config::PresentMode::Immediate: {
+			const auto it = std::find(supported.begin(), supported.end(),
+			                         vk::PresentModeKHR::eImmediate);
+			if (it != supported.end()) {
+				chosen_mode = vk::PresentModeKHR::eImmediate;
+			} else {
+				static std::atomic<uint32_t> im_logged {0};
+				if (im_logged.fetch_add(1, std::memory_order_relaxed) == 0) {
+					LOGF_COLOR(Log::Color::Yellow,
+					           "Present: immediate mode not supported by surface; falling back to Fifo\n");
+				}
+			}
+			break;
+		}
+		case Config::PresentMode::Fifo:
+		default: chosen_mode = vk::PresentModeKHR::eFifo; break;
+	}
+	create_info.presentMode      = chosen_mode;
 	create_info.clipped          = VK_TRUE;
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
@@ -675,6 +723,16 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
 	                           nullptr, 0, nullptr, 1, &to_transfer);
 
+	// Clear the swapchain image to opaque black before the blit so that letterbox /
+	// pillarbox bars (when an aspect-ratio mode shrinks the blit rectangle) render as
+	// black instead of undefined content.
+	if (Config::GetAspectRatio() != Config::AspectRatio::Stretch) {
+		const vk::ClearColorValue black {};
+		const vk::ImageSubresourceRange clear_range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		vk_command.clearColorImage(m_images[m_image_index],
+		                           vk::ImageLayout::eTransferDstOptimal, &black, 1, &clear_range);
+	}
+
 	vk::ImageBlit region {};
 	region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 	region.srcSubresource.mipLevel       = 0;
@@ -687,12 +745,82 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	region.dstSubresource.mipLevel       = 0;
 	region.dstSubresource.baseArrayLayer = 0;
 	region.dstSubresource.layerCount     = 1;
-	region.dstOffsets[1].x               = static_cast<int>(m_extent.width);
-	region.dstOffsets[1].y               = static_cast<int>(m_extent.height);
+	// Compute the destination rectangle inside the swapchain extent according to the
+	// configured aspect-ratio mode. dstOffsets[0] is the top-left, dstOffsets[1] the
+	// bottom-right (exclusive). Anything outside the rectangle keeps the prior clear
+	// colour, giving letterbox/pillarbox bars or a centred integer-scaled image.
+	int dst_x0 = 0;
+	int dst_y0 = 0;
+	int dst_x1 = static_cast<int>(m_extent.width);
+	int dst_y1 = static_cast<int>(m_extent.height);
+	const auto sw = static_cast<int>(source.extent.width);
+	const auto sh = static_cast<int>(source.extent.height);
+	if (sw > 0 && sh > 0) {
+		switch (Config::GetAspectRatio()) {
+			case Config::AspectRatio::Fit16x9:
+			case Config::AspectRatio::Fit4x3: {
+				const int target_ar_num =
+				    (Config::GetAspectRatio() == Config::AspectRatio::Fit16x9) ? 16 : 4;
+				const int target_ar_den =
+				    (Config::GetAspectRatio() == Config::AspectRatio::Fit16x9) ? 9 : 3;
+				// Scale the source to fit inside the window while preserving its own
+				// aspect ratio (the PS5 source is already the guest's chosen resolution).
+				const int sw_ext = m_extent.width;
+				const int sh_ext = m_extent.height;
+				int fit_w = sw_ext;
+				int fit_h = sw_ext * target_ar_den / target_ar_num;
+				if (fit_h > sh_ext) {
+					fit_h = sh_ext;
+					fit_w = sh_ext * target_ar_num / target_ar_den;
+				}
+				dst_x0 = (sw_ext - fit_w) / 2;
+				dst_y0 = (sh_ext - fit_h) / 2;
+				dst_x1 = dst_x0 + fit_w;
+				dst_y1 = dst_y0 + fit_h;
+				break;
+			}
+			case Config::AspectRatio::Integer: {
+				// Largest integer scale that still fits, centred. Uses the source
+				// (guest) resolution as the base, so pixel-art stays crisp.
+				const int scale = std::max(1, std::min(m_extent.width / sw, m_extent.height / sh));
+				const int fit_w = sw * scale;
+				const int fit_h = sh * scale;
+				dst_x0 = static_cast<int>(m_extent.width / 2u) - fit_w / 2;
+				dst_y0 = static_cast<int>(m_extent.height / 2u) - fit_h / 2;
+				dst_x1 = dst_x0 + fit_w;
+				dst_y1 = dst_y0 + fit_h;
+				break;
+			}
+			case Config::AspectRatio::Stretch:
+			default: break; // leave the full-extent rectangle
+		}
+	}
+	region.dstOffsets[0].x               = dst_x0;
+	region.dstOffsets[0].y               = dst_y0;
+	region.dstOffsets[0].z               = 0;
+	region.dstOffsets[1].x               = dst_x1;
+	region.dstOffsets[1].y               = dst_y1;
 	region.dstOffsets[1].z               = 1;
+	vk::Filter present_filter = vk::Filter::eLinear;
+	switch (Config::GetPresentFilter()) {
+		case Config::PresentFilter::Nearest: present_filter = vk::Filter::eNearest; break;
+		case Config::PresentFilter::Cubic: {
+			present_filter = vk::Filter::eLinear; // cubic requires an enabled extension; fall back
+			static std::atomic<uint32_t> cubic_logged {0};
+			if (cubic_logged.fetch_add(1, std::memory_order_relaxed) == 0) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "Present: cubic filter requested but the cubic-filter extension is not "
+				           "enabled at device creation; falling back to linear\n");
+			}
+			break;
+		}
+		case Config::PresentFilter::Linear:
+		default: present_filter = vk::Filter::eLinear; break;
+	}
+
 	vk_command.blitImage(source.image, vk::ImageLayout::eTransferSrcOptimal,
 	                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1, &region,
-	                     vk::Filter::eLinear);
+	                     present_filter);
 
 	vk::ImageMemoryBarrier to_present {};
 	to_present.sType                           = vk::StructureType::eImageMemoryBarrier;
@@ -754,6 +882,161 @@ Swapchain::Status Swapchain::Present() {
 	}
 	m_frame_index = (m_frame_index + 1u) % static_cast<uint32_t>(m_images.size());
 	return Status::Success;
+}
+
+std::string Swapchain::CaptureScreenshot() {
+	auto& graphics = m_window.graphic_ctx;
+	if (m_handle == nullptr || m_image_index >= m_images.size()) {
+		LOGF("Screenshot: swapchain not ready, skipping\n");
+		return {};
+	}
+	if (m_extent.width == 0 || m_extent.height == 0) {
+		LOGF("Screenshot: zero-sized swapchain, skipping\n");
+		return {};
+	}
+
+	const uint32_t w = m_extent.width;
+	const uint32_t h = m_extent.height;
+	const vk::Format src_format = m_format;
+	// Only the common UNORM swapchain formats are handled. Both are 4 bytes/pixel; flip
+	// channels into RGBA8 for stb_image_write below.
+	if (src_format != vk::Format::eB8G8R8A8Unorm && src_format != vk::Format::eR8G8B8A8Unorm) {
+		LOGF("Screenshot: unsupported swapchain format %d, skipping\n",
+		     static_cast<int>(src_format));
+		return {};
+	}
+
+	// Host-visible staging buffer for the readback.
+	VulkanBuffer staging {};
+	staging.usage = vk::BufferUsageFlagBits::eTransferDst;
+	staging.memory.property =
+	    vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
+	const vk::DeviceSize row_pitch = static_cast<vk::DeviceSize>(w) * 4u;
+	const vk::DeviceSize buf_size  = row_pitch * static_cast<vk::DeviceSize>(h);
+	graphics.CreateBuffer(buf_size, staging);
+	if (staging.buffer == nullptr) {
+		LOGF("Screenshot: failed to allocate staging buffer\n");
+		return {};
+	}
+
+	// One-shot command buffer for the image -> buffer copy.
+	CommandScheduler scheduler(*m_window.render_context, graphics);
+	CommandBuffer   command(scheduler);
+	command.WaitForFenceAndReset();
+	auto vk_command = command.Handle();
+	command.Begin();
+
+	// PresentSrcKHR -> TransferSrcOptimal
+	vk::ImageMemoryBarrier to_src {};
+	to_src.sType                           = vk::StructureType::eImageMemoryBarrier;
+	to_src.srcAccessMask                   = vk::AccessFlagBits::eMemoryRead;
+	to_src.dstAccessMask                   = vk::AccessFlagBits::eTransferRead;
+	to_src.oldLayout                       = vk::ImageLayout::ePresentSrcKHR;
+	to_src.newLayout                       = vk::ImageLayout::eTransferSrcOptimal;
+	to_src.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+	to_src.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+	to_src.image                           = m_images[m_image_index];
+	to_src.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
+	to_src.subresourceRange.baseMipLevel   = 0;
+	to_src.subresourceRange.levelCount     = 1;
+	to_src.subresourceRange.baseArrayLayer = 0;
+	to_src.subresourceRange.layerCount     = 1;
+	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
+	                           nullptr, 0, nullptr, 1, &to_src);
+
+	vk::BufferImageCopy region {};
+	region.bufferOffset                    = 0;
+	region.bufferRowLength                 = w; // tight packing
+	region.bufferImageHeight               = h;
+	region.imageSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
+	region.imageSubresource.mipLevel       = 0;
+	region.imageSubresource.baseArrayLayer = 0;
+	region.imageSubresource.layerCount     = 1;
+	region.imageOffset                     = vk::Offset3D {0, 0, 0};
+	region.imageExtent                     = vk::Extent3D {w, h, 1};
+	vk_command.copyImageToBuffer(m_images[m_image_index],
+	                             vk::ImageLayout::eTransferSrcOptimal, staging.buffer, 1,
+	                             &region);
+
+	// TransferSrcOptimal -> PresentSrcKHR (restore so the next Present works)
+	vk::ImageMemoryBarrier to_present {};
+	to_present.sType                           = vk::StructureType::eImageMemoryBarrier;
+	to_present.srcAccessMask                   = vk::AccessFlagBits::eTransferRead;
+	to_present.dstAccessMask                   = vk::AccessFlagBits::eMemoryRead;
+	to_present.oldLayout                       = vk::ImageLayout::eTransferSrcOptimal;
+	to_present.newLayout                       = vk::ImageLayout::ePresentSrcKHR;
+	to_present.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+	to_present.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+	to_present.image                           = m_images[m_image_index];
+	to_present.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
+	to_present.subresourceRange.baseMipLevel   = 0;
+	to_present.subresourceRange.levelCount     = 1;
+	to_present.subresourceRange.baseArrayLayer = 0;
+	to_present.subresourceRange.layerCount     = 1;
+	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+	                           vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlags {}, 0,
+	                           nullptr, 0, nullptr, 1, &to_present);
+
+	command.End();
+	command.Execute();
+	command.WaitForFenceOnly();
+
+	// Read back and convert to RGBA8.
+	void* mapped = nullptr;
+	graphics.MapMemory(staging.memory, mapped);
+	EXIT_IF(mapped == nullptr);
+
+	std::vector<uint8_t> rgba(static_cast<size_t>(buf_size));
+	std::memcpy(rgba.data(), mapped, static_cast<size_t>(buf_size));
+	graphics.UnmapMemory(staging.memory);
+
+	if (src_format == vk::Format::eB8G8R8A8Unorm) {
+		for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
+			std::swap(rgba[i + 0], rgba[i + 2]); // B -> R, R -> B
+		}
+	}
+
+	graphics.DeleteBuffer(staging);
+
+	// Write the PNG into the configured screenshot folder with a timestamped name.
+	namespace fs = std::filesystem;
+	const fs::path folder = Config::GetScreenshotFolder();
+	std::error_code ec {};
+	fs::create_directories(folder, ec);
+	if (ec) {
+		LOGF("Screenshot: failed to create folder '%s': %s\n", folder.string().c_str(),
+		     ec.message().c_str());
+		return {};
+	}
+
+	const auto now = std::chrono::system_clock::now();
+	const auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(
+		                 now.time_since_epoch()) % 1000;
+	const auto t_c = std::chrono::system_clock::to_time_t(now);
+	std::tm tm {};
+#ifdef _WIN32
+	localtime_s(&tm, &t_c);
+#else
+	localtime_r(&t_c, &tm);
+#endif
+	const auto filename =
+	    fmt::format("kyty_{:04d}{:02d}{:02d}_{:02d}{:02d}{:02d}_{:03d}.png",
+	                tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min,
+	                tm.tm_sec, static_cast<int>(ms.count()));
+	const fs::path full = folder / filename;
+
+	const int ok = stbi_write_png(full.string().c_str(), static_cast<int>(w),
+	                              static_cast<int>(h), 4, rgba.data(),
+	                              static_cast<int>(row_pitch));
+	if (ok == 0) {
+		LOGF("Screenshot: stbi_write_png failed for '%s'\n", full.string().c_str());
+		return {};
+	}
+
+	LOGF_COLOR(Log::Color::Green, "Screenshot saved: %s (%ux%u)\n",
+	           full.string().c_str(), w, h);
+	return full.string();
 }
 
 Presenter::Presenter(WindowContext& window): m_impl(std::make_unique<Impl>(window)) {}
@@ -887,6 +1170,10 @@ void Presenter::Present(Frame& frame, bool reuse) {
 
 void Presenter::Discard(Frame& frame) {
 	m_impl->frames.Release(&frame);
+}
+
+std::string Presenter::CaptureScreenshot() {
+	return m_impl->swapchain.CaptureScreenshot();
 }
 
 WindowContext::WindowContext() = default;

@@ -42,6 +42,14 @@ namespace LibPsml {
 LIB_DEFINE(InitPsml_1);
 } // namespace LibPsml
 
+namespace LibRandom {
+LIB_DEFINE(InitRandom_1);
+} // namespace LibRandom
+
+namespace LibScreenShot {
+LIB_DEFINE(InitScreenShot_1);
+} // namespace LibScreenShot
+
 LIB_DEFINE(InitLibC_1);
 LIB_DEFINE(InitAppContent_1);
 LIB_DEFINE(InitAmpr_1);
@@ -69,6 +77,41 @@ LIB_DEFINE(InitSystemService_1);
 LIB_DEFINE(InitUserService_1);
 LIB_DEFINE(InitVideoOut_1);
 
+
+// --- PS4 modules ported from shadPS4 (GPL-2.0-or-later), full NID coverage ---
+LIB_DEFINE(InitCamera_1);
+LIB_DEFINE(InitDiscMap_1);
+LIB_DEFINE(InitGameLiveStreaming_1);
+LIB_DEFINE(InitGnmDriver_1);
+LIB_DEFINE(InitHmd_1);
+LIB_DEFINE(InitIme_1);
+LIB_DEFINE(InitInvitationDialog_1);
+LIB_DEFINE(InitJpeg_1);
+LIB_DEFINE(InitMove_1);
+LIB_DEFINE(InitNgs2_1);
+LIB_DEFINE(InitRazorCpu_1);
+LIB_DEFINE(InitRemotePlay_1);
+LIB_DEFINE(InitSharePlay_1);
+LIB_DEFINE(InitSigninDialog_1);
+LIB_DEFINE(InitSystemGesture_1);
+LIB_DEFINE(InitUlobjmgr_1);
+LIB_DEFINE(InitUsbd_1);
+LIB_DEFINE(InitVideoRecording_1);
+LIB_DEFINE(InitVoice_1);
+LIB_DEFINE(InitVrTracker_1);
+LIB_DEFINE(InitWebBrowserDialog_1);
+LIB_DEFINE(InitZlib_1);
+LIB_DEFINE(InitCompanionHttpd_1);
+LIB_DEFINE(InitCompanionUtil_1);
+LIB_DEFINE(InitNpAuth_1);
+LIB_DEFINE(InitNpCommon_1);
+LIB_DEFINE(InitNpManager_1);
+LIB_DEFINE(InitNpPartner_1);
+LIB_DEFINE(InitNpParty_1);
+LIB_DEFINE(InitNpSnsFacebookDialog_1);
+LIB_DEFINE(InitNpTrophy_1);
+LIB_DEFINE(InitNpTus_1);
+
 void InitAll(Loader::SymbolDatabase* s) {
 	LIB_LOAD(InitAudio_1);
 	LIB_LOAD(InitAmpr_1);
@@ -91,12 +134,14 @@ void InitAll(Loader::SymbolDatabase* s) {
 	LIB_LOAD(InitNet_1);
 	LIB_LOAD(InitPad_1);
 	LIB_LOAD(InitPlayGo_1);
+	LIB_LOAD(LibRandom::InitRandom_1);
 	LIB_LOAD(LibPsml::InitPsml_1);
 	LIB_LOAD(InitPngDec_1);
 	LIB_LOAD(InitPlatform_1);
 	LIB_LOAD(InitRudp_1);
 	LIB_LOAD(InitRtc_1);
 	LIB_LOAD(InitSaveData_1);
+	LIB_LOAD(LibScreenShot::InitScreenShot_1);
 	LIB_LOAD(InitShare_1);
 	LIB_LOAD(InitSysmodule_1);
 	LIB_LOAD(InitSystemService_1);
@@ -104,6 +149,39 @@ void InitAll(Loader::SymbolDatabase* s) {
 	LIB_LOAD(InitUserService_1);
 	LIB_LOAD(VideoDec2::InitVideoDec2_1);
 	LIB_LOAD(InitVideoOut_1);
+// --- PS4 module loads (shadPS4 port) ---
+	LIB_LOAD(LibCamera::InitCamera_1);
+	LIB_LOAD(LibDiscMap::InitDiscMap_1);
+	LIB_LOAD(LibGameLiveStreaming::InitGameLiveStreaming_1);
+	LIB_LOAD(LibGnmDriver::InitGnmDriver_1);
+	LIB_LOAD(LibHmd::InitHmd_1);
+	LIB_LOAD(LibIme::InitIme_1);
+	LIB_LOAD(LibInvitationDialog::InitInvitationDialog_1);
+	LIB_LOAD(LibJpeg::InitJpeg_1);
+	LIB_LOAD(LibMove::InitMove_1);
+	LIB_LOAD(LibNgs2::InitNgs2_1);
+	LIB_LOAD(LibRazorCpu::InitRazorCpu_1);
+	LIB_LOAD(LibRemotePlay::InitRemotePlay_1);
+	LIB_LOAD(LibSharePlay::InitSharePlay_1);
+	LIB_LOAD(LibSigninDialog::InitSigninDialog_1);
+	LIB_LOAD(LibSystemGesture::InitSystemGesture_1);
+	LIB_LOAD(LibUlobjmgr::InitUlobjmgr_1);
+	LIB_LOAD(LibUsbd::InitUsbd_1);
+	LIB_LOAD(LibVideoRecording::InitVideoRecording_1);
+	LIB_LOAD(LibVoice::InitVoice_1);
+	LIB_LOAD(LibVrTracker::InitVrTracker_1);
+	LIB_LOAD(LibWebBrowserDialog::InitWebBrowserDialog_1);
+	LIB_LOAD(LibZlib::InitZlib_1);
+	LIB_LOAD(CompanionHttpd::InitCompanionHttpd_1);
+	LIB_LOAD(CompanionUtil::InitCompanionUtil_1);
+	LIB_LOAD(NpAuth::InitNpAuth_1);
+	LIB_LOAD(NpCommon::InitNpCommon_1);
+	LIB_LOAD(NpManager::InitNpManager_1);
+	LIB_LOAD(NpPartner::InitNpPartner_1);
+	LIB_LOAD(NpParty::InitNpParty_1);
+	LIB_LOAD(NpSnsFacebookDialog::InitNpSnsFacebookDialog_1);
+	LIB_LOAD(NpTrophy::InitNpTrophy_1);
+	LIB_LOAD(NpTus::InitNpTus_1);
 }
 
 namespace LibContentExport {

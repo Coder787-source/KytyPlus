@@ -101,4 +101,28 @@ bool FullscreenEnabled() {
 	return g_config->fullscreen;
 }
 
+PresentFilter GetPresentFilter() {
+	return g_config->present_filter;
+}
+
+PresentMode GetPresentMode() {
+	return g_config->present_mode;
+}
+
+AspectRatio GetAspectRatio() {
+	return g_config->aspect_ratio;
+}
+
+uint32_t GetScreenshotHotkey() {
+	return g_config->screenshot_hotkey;
+}
+
+std::filesystem::path GetScreenshotFolder() {
+	return g_config->screenshot_folder;
+}
+
+bool AsyncPipelineCompilationEnabled() {
+	return g_config->async_pipeline_compilation;
+}
+
 } // namespace Config

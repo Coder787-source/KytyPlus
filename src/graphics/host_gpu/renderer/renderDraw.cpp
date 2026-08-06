@@ -1091,6 +1091,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	    state.color_info, state.color_count, state.depth_info, state.vs_input_info, buffer,
 	    &state.ps_input_info, topology, state.ps_active, state.vs_shader, state.ps_shader);
 
+	// Async pipeline compilation: when the pipeline is being compiled on a worker
+	// thread, CreateGraphicsPipeline returns a sentinel with a null pipeline handle.
+	// Skip recording this draw entirely (no bindPipeline, no vkCmdDraw) so the frame
+	// keeps flowing; the next frames retry and bind the real pipeline once it lands.
+	// A few skipped draws are far cheaper than blocking the GPU thread on a
+	// multi-100 ms vkCreateGraphicsPipelines call.
+	if (pipeline.pipeline == nullptr) {
+		LogDrawPhase(draw.name, "PipelinePending-SkipDraw");
+		return;
+	}
+
 	// Resource preparation above may synchronously finish and restart the scheduler. From this
 	// point onward, every operation targets the current command buffer and cannot touch guest
 	// memory.

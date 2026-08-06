@@ -194,6 +194,13 @@ private:
 	static const ModuleId*  FindModule(const Program& program, const std::string& id);
 	static const LibraryId* FindLibrary(const Program& program, const std::string& id);
 
+	// PS4 compatibility analyzer (Stage 2 of the PS4 compat layer). Surfaces
+	// the real gap between a PS4 binarys imported libraries/NIDs and the HLE
+	// modules already loaded in this build. Produces a diagnostic report only;
+	// does NOT execute the PS4 binary. (Reference: PS4 SDK / shadPS4 dynamic
+	// import semantics, GPL-2.0-or-later.)
+	void ReportPs4CompatGap(Program* program);
+
 	std::vector<Program*>           m_programs;
 	std::unique_ptr<SymbolDatabase> m_symbols;
 	bool                            m_relocated = false;

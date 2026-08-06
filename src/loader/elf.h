@@ -126,6 +126,35 @@ constexpr Elf64_Word R_X86_64_JUMP_SLOT = 7;
 constexpr Elf64_Word R_X86_64_RELATIVE  = 8;
 constexpr Elf64_Word R_X86_64_DTPMOD64  = 16;
 
+// Guest platform discriminator. Derived from the ELF e_ident[EI_ABIVERSION]
+// field: PS4 (Orbis) binaries use ABIVERSION 0, PS5 (Prospero) binaries use
+// ABIVERSION 2. Kyty's runtime historically routed on IsNextGen() (== PS5);
+// exposing the platform explicitly lets the PS4 compat path distinguish the
+// two stacks cleanly. (SELF program_type semantics per PS4 SDK / shadPS4
+// reference, GPL-2.0-or-later.)
+enum class Platform : uint8_t {
+	Unknown = 0,
+	Ps4     = 1, // Orbis
+	Ps5     = 2, // Prospero
+};
+
+// PS4 SELF "program_type" category (offset 0x03 region semantics, per
+// PS4 SDK / shadPS4 elf.h). Used for diagnostic surfacing only.
+//
+// Derived from the shadPS4 project (https://github.com/shadps4-emu/shadPS4),
+// SPDX-License-Identifier: GPL-2.0-or-later. Compatible with KytyPlus (GPL-2.0).
+enum class SelfProgramType : uint8_t {
+	Fake           = 0x1,
+	NpdrmExec      = 0x4,
+	NpdrmDynlib    = 0x5,
+	SystemExec     = 0x8,
+	SystemDynlib   = 0x9,
+	HostKernel     = 0xc,
+	SecureModule   = 0xe,
+	SecureKernel   = 0xf,
+	Unknown        = 0xff,
+};
+
 constexpr uint8_t STB_LOCAL  = 0;
 constexpr uint8_t STB_GLOBAL = 1;
 constexpr uint8_t STB_WEAK   = 2;
@@ -256,6 +285,14 @@ public:
 	[[nodiscard]] bool IsValid() const;
 	[[nodiscard]] bool IsShared() const;
 	[[nodiscard]] bool IsNextGen() const;
+
+	// Explicit guest-platform discriminator (PS4 / PS5). Returns Unknown if the
+	// ELF header has not been loaded or is invalid.
+	[[nodiscard]] Platform GetPlatform() const;
+
+	// Reports the SELF program_type category (PS4/PS5 SELF header). Returns
+	// Unknown when the file is not a SELF or the field cannot be read.
+	[[nodiscard]] SelfProgramType GetSelfProgramType() const;
 
 	void LoadSegment(uint64_t vaddr, uint64_t file_offset, uint64_t size);
 

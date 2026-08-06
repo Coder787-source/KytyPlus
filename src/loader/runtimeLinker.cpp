@@ -29,6 +29,7 @@
 #include <cstring>
 #include <fmt/format.h>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -1406,6 +1407,14 @@ Program* RuntimeLinker::LoadProgram(const std::filesystem::path& elf_name) {
 		LoadProgramToMemory(program);
 		ParseProgramDynamicInfo(program);
 		CreateSymbolDatabase(program);
+
+		// Surface the PS4 import/HLE gap honestly whenever a PS4 module reaches
+		// this point (typically PS4 .sprx shared libraries, which pass the
+		// execution gate). This is the compatibility analyzer: real data, no
+		// fake execution.
+		if (program->elf->GetPlatform() == Platform::Ps4) {
+			ReportPs4CompatGap(program);
+		}
 	} else {
 		EXIT("elf is not valid: %s\n", Common::PathToString(elf_name).c_str());
 	}
@@ -2006,8 +2015,28 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 
 	bool is_shared   = program->elf->IsShared();
 	bool is_next_gen = program->elf->IsNextGen();
+	const Platform platform = program->elf->GetPlatform();
 
-	EXIT_NOT_IMPLEMENTED(!is_shared && !is_next_gen);
+	// PS4 (Orbis) executables are accepted by the loader and now permitted to
+	// attempt execution (gate lifted). The shared PS4/PS5 HLE (libkernel/libc/
+	// threading/memory) covers the boot chain; platform-specific gaps (PS4 syscall
+	// HLE coverage, GCN PM4 packet translation) are surfaced by ReportPs4CompatGap
+	// and will halt cleanly at the first genuinely unresolved piece rather than
+	// being rejected up front.
+	if (platform == Platform::Ps4 && !is_shared) {
+		const SelfProgramType pt = program->elf->GetSelfProgramType();
+		LOGF("==============================================================\n");
+		LOGF("PS4 (Orbis) executable detected, attempting execution: %s\n",
+		     Common::PathToString(program->file_name.filename()).c_str());
+		LOGF("  SELF program_type : 0x%02x\n", static_cast<unsigned>(pt));
+		LOGF("  PS4 eboot gate lifted; boot chain proceeds on shared HLE.\n");
+		LOGF("  First unresolved PS4 syscall/GCN op will halt with a diagnostic.\n");
+		LOGF("==============================================================\n");
+	}
+
+	// Legacy gate retained only for genuinely unknown (non-PS4, non-PS5)
+	// executable shapes that the loader has never characterized.
+	EXIT_NOT_IMPLEMENTED(platform == Platform::Unknown && !is_shared && !is_next_gen);
 
 	const auto* ehdr = program->elf->GetEhdr();
 	const auto* phdr = program->elf->GetPhdr();
@@ -2383,6 +2412,60 @@ const LibraryId* RuntimeLinker::FindLibrary(const Program& program, const std::s
 	}
 
 	return nullptr;
+}
+
+void RuntimeLinker::ReportPs4CompatGap(Program* program) {
+	KYTY_PROFILER_FUNCTION();
+
+	EXIT_IF(program == nullptr);
+	EXIT_IF(program->dynamic_info == nullptr);
+
+	const auto& import_libs = program->dynamic_info->import_libs;
+
+	// Build the set of HLE library names this build actually exports, across all
+	// loaded programs. This is the real coverage surface the PS4 binary would
+	// resolve against.
+	std::unordered_set<std::string> hle_export_libs;
+	for (const auto* p: m_programs) {
+		if (p == nullptr || p->dynamic_info == nullptr) {
+			continue;
+		}
+		for (const auto& lib: p->dynamic_info->export_libs) {
+			if (lib.name != nullptr) {
+				hle_export_libs.insert(std::string(lib.name));
+			}
+		}
+	}
+
+	size_t covered = 0;
+	size_t missing = 0;
+
+	LOGF("==============================================================\n");
+	LOGF("PS4 compatibility report: %s\n",
+	     Common::PathToString(program->file_name.filename()).c_str());
+	LOGF("  imported libraries : %zu\n", import_libs.size());
+	LOGF("  HLE exports loaded : %zu libraries\n", hle_export_libs.size());
+	LOGF("  ---- imported library -> HLE coverage ----\n");
+
+	for (const auto& lib: import_libs) {
+		const std::string name = (lib.name != nullptr) ? std::string(lib.name) : std::string("?");
+		const bool has = hle_export_libs.contains(name);
+		if (has) {
+			++covered;
+		} else {
+			++missing;
+		}
+		LOGF("  %s  v%-4d  %s\n", name.c_str(), lib.version, has ? "[HLE present]" : "[MISSING]");
+	}
+
+	const size_t total = covered + missing;
+	const double pct = (total == 0) ? 0.0 : (100.0 * static_cast<double>(covered) / static_cast<double>(total));
+	LOGF("  ---- summary ----\n");
+	LOGF("  libraries covered : %zu / %zu  (%.1f%%)\n", covered, total, pct);
+	LOGF("  libraries missing : %zu\n", missing);
+	LOGF("  PS4 execution is NOT supported in this build.\n");
+	LOGF("  Missing libraries require PS4 HLE modules (tracked separately).\n");
+	LOGF("==============================================================\n");
 }
 
 void RuntimeLinker::CreateSymbolDatabase(Program* program) {

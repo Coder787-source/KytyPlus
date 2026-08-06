@@ -49,6 +49,65 @@ enum class ConnectionState : uint32_t {
 };
 
 /**
+ * @brief PSN authentication / sign-in states
+ *
+ * Models the PlayStation Network sign-in lifecycle that real games query via
+ * sceNp* before touching online features. An authentic sign-out must run the
+ * full teardown: invalidate the session token, notify registered listeners,
+ * tear down any active request context, and finally flip the auth state —
+ * not just flip a boolean.
+ */
+enum class SignInState : uint32_t {
+    SignedOut       = 0,  ///< No PSN account is signed in (initial/terminal)
+    SigningIn       = 1,  ///< Auth handshake in progress
+    SignedIn        = 2,  ///< Authenticated; online features are gated on this
+    SigningOut      = 3,  ///< Teardown in progress — requests are being aborted
+    SignInFailed    = 4   ///< Last sign-in attempt failed (network/creds)
+};
+
+/**
+ * @brief PSN account context
+ *
+ * Holds the ephemeral data a real NP session carries. On sign-out every field
+ * is cleared so any lingering reference is observably invalid rather than
+ * silently stale.
+ */
+struct PsnAccount {
+    std::string     user_id;          ///< PSN online ID (online-id)
+    uint64_t        np_env            = 0;  ///< NP environment handle
+    uint64_t        np_context        = 0;  ///< sceNp context handle
+    uint64_t        auth_token         = 0;  ///< Bearer-style auth token (opaque)
+    uint64_t        session_id         = 0;  ///< Active NP session id
+    int32_t         region            = 0;  ///< NP region code
+    bool            is_plus            = false; ///< PS Plus entitlement flag
+
+    /// @brief True when the account holds a live, authenticated session.
+    [[nodiscard]] bool IsAuthenticated() const noexcept {
+        return auth_token != 0 && session_id != 0;
+    }
+
+    /// @brief Wipe all fields to a signed-out baseline.
+    void Clear() noexcept {
+        user_id.clear();
+        np_env = 0;
+        np_context = 0;
+        auth_token = 0;
+        session_id = 0;
+        region = 0;
+        is_plus = false;
+    }
+};
+
+/**
+ * @brief Callback invoked when the PSN sign-in state changes.
+ * @param new_state State the session transitioned to.
+ * @param account   Snapshot of the account at the moment of transition
+ *                  (cleared if transitioning to SignedOut).
+ */
+using SignInStateCallback = std::function<void(SignInState new_state,
+                                               const PsnAccount& account)>;
+
+/**
  * @brief Network error codes (Rockstar-style)
  */
 enum class NetworkError : int32_t {
@@ -129,10 +188,80 @@ public:
     bool IsServiceAvailable(NetworkService service) const;
     
     /**
+     * @brief True if the given service requires an authenticated PSN session.
+     * Story-mode requests do not; everything else does.
+     */
+    static bool RequiresSignIn(NetworkService service) {
+        return service != NetworkService::StoryMode;
+    }
+    
+    /**
      * @brief Get connection state
      * @return Current connection state
      */
     ConnectionState GetConnectionState() const { return connection_state_; }
+
+    /**
+     * @brief Get the current PSN sign-in state.
+     * @return Current SignInState (thread-safe atomic read).
+     */
+    SignInState GetSignInState() const { return sign_in_state_.load(std::memory_order_acquire); }
+
+    /**
+     * @brief Get a snapshot of the current PSN account.
+     * @return Copy of the account under the manager lock.
+     */
+    PsnAccount GetAccount() const;
+
+    /**
+     * @brief True when a PSN account is fully signed in.
+     * Online features must gate on this, not on ConnectionState.
+     */
+    bool IsSignedIn() const {
+        return GetSignInState() == SignInState::SignedIn;
+    }
+
+    /**
+     * @brief Attempt a PSN sign-in.
+     *
+     * Performs the authentic lifecycle: SigningIn -> (SignedIn | SignInFailed).
+     * Story-mode-only builds always reach SignedIn so single-player works;
+     * the account fields are populated with a deterministic local profile so
+     * any guest code reading them gets sane values instead of garbage.
+     *
+     * @param user_id  Optional online-id to sign in as. Empty = default local
+     *                 profile ("KYTY_LOCAL").
+     * @param region   NP region code (0 = default).
+     * @return SignInState reached (SignedIn or SignInFailed).
+     */
+    SignInState SignIn(const std::string& user_id = {}, int32_t region = 0);
+
+    /**
+     * @brief Sign out of PSN and run the full session teardown.
+     *
+     * This is the authentic sign-out path. It:
+     *   1. Flips state to SigningOut (so concurrent requests short-circuit).
+     *   2. Aborts every pending request with NotConnected.
+     *   3. Drops completed-response cache for the torn-down session.
+     *   4. Invalidates the account (token/session/context -> 0).
+     *   5. Notifies registered state-change listeners.
+     *   6. Forces ConnectionState -> Disconnected.
+     *   7. Flips state to SignedOut (terminal).
+     *
+     * Safe to call when already SignedOut (no-op) or mid-SigningIn (aborts the
+     * in-flight sign-in). Re-entrant only via the manager lock.
+     *
+     * @return Final SignInState (always SignedOut on success).
+     */
+    SignInState SignOut();
+
+    /**
+     * @brief Register a callback fired on every sign-in state transition.
+     * @param cb Callback; pass nullptr to unregister. Called under the manager
+     *           lock — do not call back into the manager from the callback.
+     * @return Previous callback (for chaining), or nullptr.
+     */
+    SignInStateCallback SetSignInStateCallback(SignInStateCallback cb);
     
     /**
      * @brief Simulate network connection (for story mode)
@@ -240,6 +369,18 @@ private:
      * @brief Generate error response for blocked services
      */
     NetworkResponse GenerateBlockedResponse(uint64_t request_id, NetworkService service);
+
+    /**
+     * @brief Fire the registered sign-in state callback if set.
+     * Must be called with mutex_ held.
+     */
+    void NotifySignInState(SignInState new_state, const PsnAccount& account);
+
+    /**
+     * @brief Abort all pending requests with the given error.
+     * Must be called with mutex_ held.
+     */
+    void AbortAllPendingRequests(NetworkError error);
     
     mutable std::mutex mutex_;
     std::atomic<bool> initialized_ {false};
@@ -247,7 +388,12 @@ private:
     std::atomic<bool> log_calls_ {true};
     
     std::atomic<ConnectionState> connection_state_ {ConnectionState::Disconnected};
-    
+
+    // PSN session state ------------------------------------------------
+    std::atomic<SignInState> sign_in_state_ {SignInState::SignedOut};
+    PsnAccount                account_;            // guarded by mutex_
+    SignInStateCallback       sign_in_cb_;        // guarded by mutex_
+
     std::unordered_map<uint64_t, NetworkRequest> pending_requests_;
     std::unordered_map<uint64_t, NetworkResponse> completed_responses_;
     

@@ -25,6 +25,12 @@ KYTY_SUBSYSTEM_DEFINE(Graphics);
 
 void GraphicsDbgDumpDcb(const char* type, uint32_t num_dw, uint32_t* cmd_buffer);
 
+// Accessor for the active graphics RenderContext, set by KYTY_SUBSYSTEM_INIT(Graphics).
+// Used by both the PS5 (Gen5/agc) and PS4 (Gnm) driver bridges to reach the shared
+// PM4 command processor + Vulkan renderer. Returns nullptr if graphics not initialized.
+class RenderContext;
+[[nodiscard]] RenderContext* GetActiveRenderer() noexcept;
+
 namespace Gen5 {
 
 struct CommandBuffer;

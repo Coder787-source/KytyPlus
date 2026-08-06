@@ -1131,6 +1131,10 @@ bool FlipQueue::Flip(uint32_t micros) {
 
 	m_presenter.Present(*r.frame);
 
+	if (m_presenter.IsScreenshotRequested()) {
+		(void)m_presenter.CaptureScreenshot();
+	}
+
 	m_mutex.Lock();
 	if (m_requests.empty() || m_requests.front().id != r.id ||
 	    m_requests.front().state != RequestState::Presenting) {

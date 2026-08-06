@@ -5,6 +5,8 @@
 #include <thread>
 #include <random>
 #include <cstring>
+#include <utility>
+#include <vector>
 
 namespace Libs {
 
@@ -36,24 +38,46 @@ void NetworkStubsManager::Initialize(bool allow_story_mode, bool log_calls) {
 }
 
 void NetworkStubsManager::Shutdown() {
-    std::unique_lock lock(mutex_);
-    
-    if (!initialized_.load(std::memory_order_acquire)) {
-        return;
+    std::vector<std::pair<SignInState, PsnAccount>> transitions;
+    {
+        std::unique_lock lock(mutex_);
+        
+        if (!initialized_.load(std::memory_order_acquire)) {
+            return;
+        }
+        
+        LOGF("NetworkStubs: Shutting down\n");
+        
+        // Run the authentic sign-out teardown first so listeners see a clean
+        // transition even when the whole subsystem is going away.
+        if (sign_in_state_.load(std::memory_order_acquire) != SignInState::SignedOut) {
+            sign_in_state_.store(SignInState::SigningOut, std::memory_order_release);
+            transitions.emplace_back(SignInState::SigningOut, account_);
+            AbortAllPendingRequests(NetworkError::NotConnected);
+            account_.Clear();
+            sign_in_state_.store(SignInState::SignedOut, std::memory_order_release);
+            transitions.emplace_back(SignInState::SignedOut, PsnAccount{});
+        }
+        
+        // Cancel all pending requests
+        for (auto& [id, request] : pending_requests_) {
+            LOGF("  Cancelling request %llu: %s\n", id, request.endpoint.c_str());
+        }
+        
+        pending_requests_.clear();
+        completed_responses_.clear();
+        sign_in_cb_ = nullptr;
+        
+        connection_state_.store(ConnectionState::Disconnected, std::memory_order_release);
+        initialized_.store(false, std::memory_order_release);
     }
     
-    LOGF("NetworkStubs: Shutting down\n");
-    
-    // Cancel all pending requests
-    for (auto& [id, request] : pending_requests_) {
-        LOGF("  Cancelling request %llu: %s\n", id, request.endpoint.c_str());
+    // Fire listeners outside the lock. Note: sign_in_cb_ was cleared above, so
+    // these notify a null callback and are effectively no-ops — but we keep the
+    // path for symmetry and so a future "teardown-only" callback hook works.
+    for (auto& [st, acct] : transitions) {
+        NotifySignInState(st, acct);
     }
-    
-    pending_requests_.clear();
-    completed_responses_.clear();
-    
-    connection_state_.store(ConnectionState::Disconnected, std::memory_order_release);
-    initialized_.store(false, std::memory_order_release);
     
     LOGF("NetworkStubs: Shutdown complete (calls=%llu, blocked=%llu)\n",
          GetCallCount(), GetBlockedCount());
@@ -64,9 +88,19 @@ bool NetworkStubsManager::IsServiceAvailable(NetworkService service) const {
         return false;
     }
     
-    // Only story mode services are available
-    return allow_story_mode_.load(std::memory_order_acquire) && 
-           service == NetworkService::StoryMode;
+    // Story mode is always available (single-player must work offline).
+    if (service == NetworkService::StoryMode) {
+        return allow_story_mode_.load(std::memory_order_acquire);
+    }
+    
+    // Everything else requires an authenticated PSN session. Without real PSN
+    // we never reach SignedIn for online services, so they are blocked here
+    // rather than deep in the request path. This is the honest gate.
+    if (RequiresSignIn(service)) {
+        return false;
+    }
+    
+    return allow_story_mode_.load(std::memory_order_acquire);
 }
 
 NetworkError NetworkStubsManager::Connect() {
@@ -102,6 +136,160 @@ void NetworkStubsManager::Disconnect() {
     LOGF("NetworkStubs: Disconnected\n");
 }
 
+PsnAccount NetworkStubsManager::GetAccount() const {
+    std::unique_lock lock(mutex_);
+    return account_;
+}
+
+SignInState NetworkStubsManager::SetSignInStateCallback(SignInStateCallback cb) {
+    std::unique_lock lock(mutex_);
+    SignInStateCallback old = std::move(sign_in_cb_);
+    sign_in_cb_ = std::move(cb);
+    return old ? old : nullptr;
+}
+
+void NetworkStubsManager::NotifySignInState(SignInState new_state,
+                                            const PsnAccount& account) {
+    // mutex_ must be held by the caller.
+    if (sign_in_cb_) {
+        try {
+            sign_in_cb_(new_state, account);
+        } catch (...) {
+            // A listener throwing must not corrupt the session teardown.
+            LOGF_COLOR(Log::Color::Yellow,
+                       "NetworkStubs: sign-in callback threw, ignored\n");
+        }
+    }
+}
+
+void NetworkStubsManager::AbortAllPendingRequests(NetworkError error) {
+    // mutex_ must be held by the caller.
+    if (pending_requests_.empty()) {
+        return;
+    }
+    
+    LOGF("NetworkStubs: Aborting %zu pending request(s) with %s\n",
+         pending_requests_.size(), GetErrorMessage(error).c_str());
+    
+    for (auto& [id, request] : pending_requests_) {
+        NetworkResponse resp;
+        resp.request_id = id;
+        resp.error = error;
+        resp.status_code = 0;
+        resp.is_cached = false;
+        completed_responses_[id] = resp;
+        LOGF("  Aborted request %llu: %s\n", id, request.endpoint.c_str());
+    }
+    pending_requests_.clear();
+}
+
+SignInState NetworkStubsManager::SignIn(const std::string& user_id, int32_t region) {
+    if (!initialized_.load(std::memory_order_acquire)) {
+        return SignInState::SignedOut;
+    }
+    
+    // Collect state transitions here and fire the listener OUTSIDE the lock,
+    // so user callbacks can never run while we hold the manager mutex.
+    std::vector<std::pair<SignInState, PsnAccount>> transitions;
+    SignInState result;
+    {
+        std::unique_lock lock(mutex_);
+        
+        // If a sign-out is racing us, abort it: the caller explicitly wants in.
+        if (sign_in_state_.load(std::memory_order_acquire) == SignInState::SignedIn) {
+            return SignInState::SignedIn;  // idempotent
+        }
+        
+        sign_in_state_.store(SignInState::SigningIn, std::memory_order_release);
+        transitions.emplace_back(SignInState::SigningIn, account_);
+        
+        // Simulate the NP auth handshake. A real implementation would call
+        // sceNpAuth* here; for story-mode we synthesize a deterministic local
+        // profile so guest code reading NP fields gets sane values.
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        
+        account_.user_id   = user_id.empty() ? std::string{"KYTY_LOCAL"} : user_id;
+        account_.np_env     = 0x4E5031ULL;          // "NP1"
+        account_.np_context = next_request_id_.fetch_add(1, std::memory_order_relaxed);
+        account_.auth_token = next_request_id_.fetch_add(1, std::memory_order_relaxed);
+        account_.session_id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
+        account_.region     = region;
+        account_.is_plus    = false;
+        
+        // Story-mode builds always succeed; online services remain blocked
+        // by IsServiceAvailable()/RequiresSignIn() regardless.
+        sign_in_state_.store(SignInState::SignedIn, std::memory_order_release);
+        connection_state_.store(ConnectionState::Connected, std::memory_order_release);
+        result = SignInState::SignedIn;
+        transitions.emplace_back(SignInState::SignedIn, account_);
+    }
+    
+    LOGF("NetworkStubs: Signed in as '%s' (region=%d, token=0x%016llx, session=0x%016llx)\n",
+         transitions.back().second.user_id.c_str(),
+         transitions.back().second.region,
+         static_cast<unsigned long long>(transitions.back().second.auth_token),
+         static_cast<unsigned long long>(transitions.back().second.session_id));
+    for (auto& [st, acct] : transitions) {
+        NotifySignInState(st, acct);
+    }
+    
+    return result;
+}
+
+SignInState NetworkStubsManager::SignOut() {
+    if (!initialized_.load(std::memory_order_acquire)) {
+        return SignInState::SignedOut;
+    }
+    
+    // Collect state transitions and fire the listener OUTSIDE the lock.
+    std::vector<std::pair<SignInState, PsnAccount>> transitions;
+    PsnAccount cleared;
+    {
+        std::unique_lock lock(mutex_);
+        
+        const SignInState cur = sign_in_state_.load(std::memory_order_acquire);
+        if (cur == SignInState::SignedOut) {
+            return SignInState::SignedOut;  // idempotent no-op
+        }
+        
+        // Step 1: enter teardown state. Concurrent requesters must short-circuit.
+        sign_in_state_.store(SignInState::SigningOut, std::memory_order_release);
+        transitions.emplace_back(SignInState::SigningOut, account_);
+        
+        LOGF("NetworkStubs: Signing out '%s' — running session teardown\n",
+             account_.user_id.c_str());
+        
+        // Step 2+3: abort in-flight requests and drop the response cache for
+        // the torn-down session. New responses would reference a dead token.
+        AbortAllPendingRequests(NetworkError::NotConnected);
+        completed_responses_.clear();
+        
+        // Step 4: invalidate the account. Any lingering reference now reads
+        // observably-empty fields (token/session == 0) instead of stale data.
+        PsnAccount snapshot = account_;   // keep a copy for the callback
+        account_.Clear();
+        
+        // Step 6: drop the transport too — a sign-out is a full disconnect.
+        connection_state_.store(ConnectionState::Disconnected, std::memory_order_release);
+        
+        // Step 7: terminal state.
+        sign_in_state_.store(SignInState::SignedOut, std::memory_order_release);
+        
+        LOGF("NetworkStubs: Signed out '%s' (token=0x%016llx invalidated)\n",
+             snapshot.user_id.c_str(),
+             static_cast<unsigned long long>(snapshot.auth_token));
+        // The terminal callback carries the *cleared* account snapshot so the
+        // listener observes the post-teardown state, not the dying one.
+        transitions.emplace_back(SignInState::SignedOut, cleared);
+    }
+    
+    for (auto& [st, acct] : transitions) {
+        NotifySignInState(st, acct);
+    }
+    
+    return SignInState::SignedOut;
+}
+
 uint64_t NetworkStubsManager::CreateRequest(NetworkService service, const std::string& endpoint,
                                              const std::string& method, uint64_t timeout_ms) {
     if (!initialized_.load(std::memory_order_acquire)) {
@@ -113,6 +301,30 @@ uint64_t NetworkStubsManager::CreateRequest(NetworkService service, const std::s
     call_count_.fetch_add(1, std::memory_order_relaxed);
     
     const uint64_t request_id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
+    
+    // Gate online requests on the PSN session state. During SigningOut we refuse
+    // to enqueue so the sign-out is observable as an immediate rejection rather
+    // than a request that silently never completes.
+    const SignInState s = sign_in_state_.load(std::memory_order_acquire);
+    const bool auth_needed = RequiresSignIn(service);
+    if (auth_needed && (s == SignInState::SignedOut || s == SignInState::SigningOut ||
+                        s == SignInState::SignInFailed)) {
+        NetworkResponse resp;
+        resp.request_id     = request_id;
+        resp.error          = (s == SignInState::SigningOut)
+                                  ? NetworkError::NotConnected
+                                  : NetworkError::AuthenticationFailed;
+        resp.status_code    = (resp.error == NetworkError::NotConnected) ? 0 : 401;
+        resp.is_cached      = false;
+        resp.body           = R"({"error":"not_signed_in","message":"PSN session is not authenticated"})";
+        completed_responses_[request_id] = resp;
+        
+        blocked_count_.fetch_add(1, std::memory_order_relaxed);
+        LOGF("NetworkStubs: Request %llu - %s %s [%s] - REJECTED (not signed in, state=%u)\n",
+             request_id, method.c_str(), endpoint.c_str(),
+             GetServiceName(service).c_str(), static_cast<uint32_t>(s));
+        return request_id;
+    }
     
     NetworkRequest request;
     request.request_id = request_id;

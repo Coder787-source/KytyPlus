@@ -209,6 +209,11 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 	args << "--shader-optimization-type" << EnumToText(info.shader_optimization_type);
 	args << "--shader-log-direction" << EnumToText(info.shader_log_direction);
 	args << "--shader-log-folder" << info.shader_log_folder;
+	args << "--present-filter" << EnumToText(info.present_filter);
+	args << "--present-mode" << EnumToText(info.present_mode);
+	args << "--aspect-ratio" << EnumToText(info.aspect_ratio);
+	args << "--screenshot-hotkey" << QString::number(info.screenshot_hotkey);
+	args << "--screenshot-folder" << info.screenshot_folder;
 	args << "--command-buffer-dump" << BoolArg(info.command_buffer_dump_enabled);
 	args << "--command-buffer-dump-folder" << info.command_buffer_dump_folder;
 	args << "--graphics-debug-dump" << BoolArg(info.graphics_debug_dump_enabled);

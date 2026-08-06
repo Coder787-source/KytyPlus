@@ -22,6 +22,7 @@ struct RenderColorInfo;
 struct RenderDepthInfo;
 class RenderCommandBuffer;
 class DescriptorCache;
+class AsyncPipelineCompiler;
 
 namespace HW {
 class Context;
@@ -119,22 +120,6 @@ public:
 	struct ComputePipeline: Pipeline {
 		ShaderId cs_shader_id;
 	};
-
-	GraphicsPipeline&
-	CreateGraphicsPipeline(RenderColorInfo* colors, uint32_t color_count, RenderDepthInfo& depth,
-	                       ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
-	                       ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
-	                       bool ps_active, std::span<const uint32_t> vs_spirv,
-	                       std::span<const uint32_t> ps_spirv);
-	ComputePipeline& CreateComputePipeline(ShaderComputeInputInfo&      input_info,
-	                                       const HW::ComputeShaderInfo& cs_regs,
-	                                       std::span<const uint32_t>    cs_spirv);
-
-private:
-	void LoadDriverCache();
-	void SaveDriverCache() const;
-	void MaybeSaveDriverCache();
-
 	struct GraphicsPipelineKey {
 		PipelineRenderingState   rendering;
 		ShaderId                 vs_shader_id;
@@ -144,14 +129,6 @@ private:
 		bool operator==(const GraphicsPipelineKey& other) const {
 			return rendering == other.rendering && vs_shader_id == other.vs_shader_id &&
 			       ps_shader_id == other.ps_shader_id && static_params == other.static_params;
-		}
-	};
-
-	struct ComputePipelineKey {
-		ShaderId cs_shader_id;
-
-		bool operator==(const ComputePipelineKey& other) const {
-			return cs_shader_id == other.cs_shader_id;
 		}
 	};
 
@@ -198,6 +175,70 @@ private:
 		}
 	};
 
+	struct GraphicsPipelineKeyEqual {
+		bool operator()(const GraphicsPipelineKey& a, const GraphicsPipelineKey& b) const noexcept {
+			return a == b;
+		}
+	};
+
+
+	GraphicsPipeline&
+	CreateGraphicsPipeline(RenderColorInfo* colors, uint32_t color_count, RenderDepthInfo& depth,
+	                       ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
+	                       ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
+	                       bool ps_active, std::span<const uint32_t> vs_spirv,
+	                       std::span<const uint32_t> ps_spirv);
+	ComputePipeline& CreateComputePipeline(ShaderComputeInputInfo&      input_info,
+	                                       const HW::ComputeShaderInfo& cs_regs,
+	                                       std::span<const uint32_t>    cs_spirv);
+
+	// --- Async pipeline compilation (opt-in via Config::AsyncPipelineCompilationEnabled) ---
+	// Result of a non-blocking graphics pipeline lookup.
+	enum class PipelineLookupResult { Ready, Absent, Pending };
+	// Try to acquire a graphics pipeline without blocking. On Ready, out holds a
+	// pointer to the cached pipeline (valid as long as PipelineCache lives). On
+	// Absent, the key is not in the cache and not being compiled -- the caller may
+	// submit an async compile job. On Pending, a worker is compiling it and the
+	// draw should be skipped until it becomes Ready.
+	PipelineLookupResult TryGetGraphicsPipeline(const GraphicsPipelineKey& key,
+	                                            GraphicsPipeline*&        out);
+	// Submit an async compile job (no-op if async compilation is disabled or a
+	// job for this key is already pending). Captures SPIR-V and input info by value.
+	void SubmitAsyncCompile(GraphicsPipelineKey                key,
+	                       PipelineRenderingState            rendering,
+	                       PipelineStaticParameters          static_params,
+	                       const ShaderVertexInputInfo&      vs_input_info,
+	                       const ShaderPixelInputInfo*      ps_input_info,
+	                       std::span<const uint32_t>         vs_spirv,
+	                       std::span<const uint32_t>         ps_spirv,
+	                       uint32_t vs_hash0, uint32_t vs_crc32,
+	                       uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active);
+	// Called by AsyncPipelineCompiler on a worker thread to publish a finished
+	// pipeline. Takes ownership of the unique_ptr.
+	void PublishCompiledPipeline(GraphicsPipelineKey key,
+	                            std::unique_ptr<GraphicsPipeline> pipeline);
+	[[nodiscard]] bool AsyncCompilationEnabled() const noexcept;
+	[[nodiscard]] bool IsAsyncPending(const GraphicsPipelineKey& key) const;
+
+private:
+	void LoadDriverCache();
+	void SaveDriverCache() const;
+	void MaybeSaveDriverCache();
+
+	// Returns a reference to a static sentinel GraphicsPipeline whose pipeline and
+	// pipeline_layout are both null. Used by CreateGraphicsPipeline to signal "pipeline
+	// is being compiled asynchronously" so the draw path can skip recording until the
+	// real pipeline is published.
+	static GraphicsPipeline& AsyncPendingSentinel() noexcept;
+
+	struct ComputePipelineKey {
+		ShaderId cs_shader_id;
+
+		bool operator==(const ComputePipelineKey& other) const {
+			return cs_shader_id == other.cs_shader_id;
+		}
+	};
+
 	struct ComputePipelineKeyHash {
 		std::size_t operator()(const ComputePipelineKey& key) const {
 			std::size_t hash = 0;
@@ -216,6 +257,10 @@ private:
 	vk::PipelineCache m_driver_cache       = nullptr;
 	uint64_t          m_new_pipeline_count = 0;
 	Common::Mutex     m_mutex;
+	// Optional async pipeline compiler. Lazily created on first async submit when
+	// Config::AsyncPipelineCompilationEnabled() is true. Held via unique_ptr because
+	// AsyncPipelineCompiler is forward-declared.
+	std::unique_ptr<AsyncPipelineCompiler> m_async_compiler;
 };
 
 void LogPipelineTrace(const char* phase, uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0,

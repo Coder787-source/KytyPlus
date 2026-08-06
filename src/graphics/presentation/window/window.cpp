@@ -531,6 +531,17 @@ void WindowContext::ProcessEvent(double time_s) {
 			key.mod               = event->key.keysym.mod;
 			key.timestamp_seconds = time_s;
 
+			// Screenshot hotkey: fire on the leading edge only (no auto-repeat) and forward
+			// the request to the presenter, which performs the capture on its own thread
+			// immediately after the next present (so the swapchain image is in a valid state).
+			if (key.down && !key.repeat) {
+				const uint32_t hotkey = Config::GetScreenshotHotkey();
+				if (hotkey != 0 && key.scan_code == static_cast<SDL_Scancode>(hotkey) &&
+				    presenter != nullptr) {
+					presenter->RequestScreenshot();
+				}
+			}
+
 			GameEventKeyboard(game, key);
 
 			break;

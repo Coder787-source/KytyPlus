@@ -1,4 +1,6 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/asyncPipelineCompiler.h"
+#include "common/emulatorConfig.h"
 
 #include "common/assert.h"
 #include "common/file.h"
@@ -54,6 +56,11 @@ PipelineCache::PipelineCache(GraphicContext& graphics, DescriptorCache& descript
 
 PipelineCache::~PipelineCache() {
 	SaveDriverCache();
+
+	// Stop worker threads before destroying any Vulkan handles they might be
+	// compiling into. Shutdown() drains the queue and joins all workers on the
+	// main thread, so no worker outlives the device.
+	m_async_compiler.reset();
 
 	auto destroy = [this](const auto& pipelines) {
 		for (const auto& [key, pipeline]: pipelines) {
@@ -303,6 +310,23 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 		return *iter->second;
 	}
 
+	// --- Async fast path: if async compilation is enabled and this pipeline is not
+	//     already cached or in-flight, hand the (already-built) key/rendering/static
+	//     params + copies of the SPIR-V and input info to the worker pool and return a
+	//     sentinel so the draw path skips recording until the worker publishes the
+	//     finished pipeline. Falls through to the synchronous compile below when async
+	//     is disabled or the job is already pending (rare double-submit guard).
+	if (AsyncCompilationEnabled()) {
+		if (m_async_compiler != nullptr && m_async_compiler->IsPending(key)) {
+			// Still compiling on a worker; skip this draw until it lands.
+			return AsyncPendingSentinel();
+		}
+		SubmitAsyncCompile(key, rendering, static_params, vs_input_info, ps_input_info,
+		                   vs_spirv, ps_spirv, vs_id.hash0, vs_id.crc32, ps_id.hash0,
+		                   ps_id.crc32, ps_active);
+		return AsyncPendingSentinel();
+	}
+
 	if (graphics_debug_dump_enabled()) {
 		ShaderDbgDumpInputInfo(vs_input_info);
 		if (ps_active) {
@@ -371,5 +395,100 @@ PipelineCache::CreateComputePipeline(ShaderComputeInputInfo&      input_info,
 	MaybeSaveDriverCache();
 
 	return *iter->second;
+
+PipelineCache::GraphicsPipeline& PipelineCache::AsyncPendingSentinel() noexcept {
+	static GraphicsPipeline sentinel {};
+	sentinel.pipeline        = nullptr;
+	sentinel.pipeline_layout = nullptr;
+	return sentinel;
+}
+
+bool PipelineCache::AsyncCompilationEnabled() const noexcept {
+	return Config::AsyncPipelineCompilationEnabled();
+}
+
+bool PipelineCache::IsAsyncPending(const GraphicsPipelineKey& key) const {
+	if (!AsyncCompilationEnabled() || m_async_compiler == nullptr) {
+		return false;
+	}
+	return m_async_compiler->IsPending(key);
+}
+
+PipelineCache::PipelineLookupResult
+PipelineCache::TryGetGraphicsPipeline(const GraphicsPipelineKey& key, GraphicsPipeline*& out) {
+	Common::LockGuard lock(m_mutex);
+	if (const auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
+		out = iter->second.get();
+		return PipelineLookupResult::Ready;
+	}
+	if (AsyncCompilationEnabled() && m_async_compiler != nullptr &&
+	    m_async_compiler->IsPending(key)) {
+		out = nullptr;
+		return PipelineLookupResult::Pending;
+	}
+	out = nullptr;
+	return PipelineLookupResult::Absent;
+}
+
+void PipelineCache::PublishCompiledPipeline(GraphicsPipelineKey key,
+                                             std::unique_ptr<GraphicsPipeline> pipeline) {
+	Common::LockGuard lock(m_mutex);
+	// A synchronous CreateGraphicsPipeline call may have raced ahead and inserted
+	// the same key (e.g. if async was disabled mid-flight, or the GPU thread fell
+	// back to sync compile). Drop the duplicate rather than overwrite the live one.
+	if (m_graphics_pipelines.find(key) != m_graphics_pipelines.end()) {
+		// Destroy the losing pipeline immediately on this (worker) thread. The Vulkan
+		// device is alive (Shutdown hasn't run) and device.destroyPipeline is safe to
+		// call from a non-main thread.
+		if (pipeline && pipeline->pipeline != nullptr) {
+			m_graphics.device.destroyPipeline(pipeline->pipeline, nullptr);
+		}
+		if (pipeline && pipeline->pipeline_layout != nullptr) {
+			m_graphics.device.destroyPipelineLayout(pipeline->pipeline_layout, nullptr);
+		}
+		return;
+	}
+	auto [iter, inserted] =
+	    m_graphics_pipelines.emplace(std::move(key), std::move(pipeline));
+	(void)iter;
+	EXIT_IF(!inserted);
+	// Driver cache writes are throttled elsewhere; avoid spamming disk from workers.
+}
+
+void PipelineCache::SubmitAsyncCompile(GraphicsPipelineKey                key,
+                                        PipelineRenderingState            rendering,
+                                        PipelineStaticParameters          static_params,
+                                        const ShaderVertexInputInfo&      vs_input_info,
+                                        const ShaderPixelInputInfo*      ps_input_info,
+                                        std::span<const uint32_t>         vs_spirv,
+                                        std::span<const uint32_t>         ps_spirv,
+                                        uint32_t vs_hash0, uint32_t vs_crc32,
+                                        uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active) {
+	if (!AsyncCompilationEnabled()) {
+		return;
+	}
+	if (m_async_compiler == nullptr) {
+		m_async_compiler = std::make_unique<AsyncPipelineCompiler>(
+		    m_graphics, m_descriptor_cache, m_driver_cache, *this);
+	}
+	AsyncPipelineCompiler::CompileRequest req {};
+	req.key          = key;
+	req.rendering    = rendering;
+	req.static_params = static_params;
+	req.vs_input_info = vs_input_info;
+	if (ps_active && ps_input_info != nullptr) {
+		req.ps_input_info_storage = std::make_unique<ShaderPixelInputInfo>(*ps_input_info);
+	}
+	req.vs_spirv.assign(vs_spirv.begin(), vs_spirv.end());
+	if (ps_active) {
+		req.ps_spirv.assign(ps_spirv.begin(), ps_spirv.end());
+	}
+	req.vs_hash0  = vs_hash0;
+	req.vs_crc32  = vs_crc32;
+	req.ps_hash0  = ps_hash0;
+	req.ps_crc32  = ps_crc32;
+	req.ps_active = ps_active;
+	m_async_compiler->Submit(std::move(req));
+}
 }
 } // namespace Libs::Graphics

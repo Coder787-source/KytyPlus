@@ -130,6 +130,11 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	m_ui->checkBox_ngg_rectlist_draw->setChecked(info.ngg_rectlist_draw_enabled);
 	ListInit(m_ui->comboBox_shader_optimization_type, info.shader_optimization_type);
 	ListInit(m_ui->comboBox_shader_log_direction, info.shader_log_direction);
+	ListInit(m_ui->comboBox_present_filter, info.present_filter);
+	ListInit(m_ui->comboBox_present_mode, info.present_mode);
+	ListInit(m_ui->comboBox_aspect_ratio, info.aspect_ratio);
+	m_ui->lineEdit_screenshot_folder->setText(info.screenshot_folder);
+	m_ui->lineEdit_screenshot_hotkey->setText(QString::number(info.screenshot_hotkey));
 	m_ui->lineEdit_shader_log_folder->setText(info.shader_log_folder);
 	m_ui->lineEdit_shader_log_folder->setEnabled(info.shader_log_direction ==
 	                                             Configuration::ShaderLogDirection::File);
@@ -255,6 +260,18 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui) {
 	    ui.comboBox_shader_optimization_type->currentText());
 	info.shader_log_direction = TextToEnum<Configuration::ShaderLogDirection>(
 	    ui.comboBox_shader_log_direction->currentText());
+	info.present_filter =
+	    TextToEnum<Configuration::PresentFilter>(ui.comboBox_present_filter->currentText());
+	info.present_mode =
+	    TextToEnum<Configuration::PresentMode>(ui.comboBox_present_mode->currentText());
+	info.aspect_ratio =
+	    TextToEnum<Configuration::AspectRatio>(ui.comboBox_aspect_ratio->currentText());
+	info.screenshot_folder = ui.lineEdit_screenshot_folder->text();
+	{
+		bool ok = false;
+		const auto sc = ui.lineEdit_screenshot_hotkey->text().toUInt(&ok, 0);
+		info.screenshot_hotkey = ok ? sc : 0u;
+	}
 	info.shader_log_folder           = ui.lineEdit_shader_log_folder->text();
 	info.command_buffer_dump_enabled = ui.checkBox_cmd_dump->isChecked();
 	info.command_buffer_dump_folder  = ui.lineEdit_cmd_dump_folder->text();

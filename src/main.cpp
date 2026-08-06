@@ -11,6 +11,7 @@
 #include "kytyGitVersion.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 
 using namespace Common;
@@ -64,6 +65,16 @@ static void PrintUsage() {
 	::printf(
 	    "  --readback-linear-images <true|false> Read back writable linear images on submit.\n");
 	::printf("  --fullscreen, -f                     Launch in fullscreen mode.\n");
+	::printf("  --present-filter <value>             Nearest, Linear, or Cubic. "
+	         "Default: Linear.\n");
+	::printf("  --present-mode <value>              Fifo, Mailbox, or Immediate (vsync / latency). "
+	         "Default: Fifo.\n");
+	::printf("  --aspect-ratio <value>              Stretch, Fit16x9, Fit4x3, or Integer. "
+	         "Default: Stretch.\n");
+	::printf("  --screenshot-hotkey <scancode>      SDL scancode (hex ok) that captures a PNG; 0 disables. "
+	         "Default: F12 (0x5b).\n");
+	::printf("  --screenshot-folder <path>          Folder for screenshot PNGs. "
+	         "Default: _Screenshots.\n");
 	::printf("  --rd                                 Enable RenderDoc capture.\n");
 	::printf("  --keyboard-map <list>                Keyboard->pad button map, format "
 	         "\"code:button,...\". Set via the launcher's Input Mapping dialog.\n");
@@ -238,6 +249,26 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
 				return false;
 			}
+		} else if (arg == "--present-filter") {
+			if (!ParseEnum(value, options.config.present_filter)) {
+				::printf("invalid present filter: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--present-mode") {
+			if (!ParseEnum(value, options.config.present_mode)) {
+				::printf("invalid present mode: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--aspect-ratio") {
+			if (!ParseEnum(value, options.config.aspect_ratio)) {
+				::printf("invalid aspect ratio: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--screenshot-hotkey") {
+			const auto sc = static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 0));
+			options.config.screenshot_hotkey = sc;
+		} else if (arg == "--screenshot-folder") {
+			options.config.screenshot_folder = value;
 		} else {
 			::printf("unknown option: %s\n", arg.c_str());
 			return false;

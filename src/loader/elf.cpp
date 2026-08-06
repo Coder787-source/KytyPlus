@@ -310,6 +310,40 @@ bool Elf64::IsNextGen() const {
 	return (m_ehdr->e_ident[EI_ABIVERSION] == 2);
 }
 
+Platform Elf64::GetPlatform() const {
+	if (m_ehdr == nullptr) {
+		return Platform::Unknown;
+	}
+	// PS5 (Prospero) marks the ELF ABI version as 2; PS4 (Orbis) uses 0.
+	switch (m_ehdr->e_ident[EI_ABIVERSION]) {
+		case 0:  return Platform::Ps4;
+		case 2:  return Platform::Ps5;
+		default: return Platform::Unknown;
+	}
+}
+
+SelfProgramType Elf64::GetSelfProgramType() const {
+	if (m_self == nullptr) {
+		return SelfProgramType::Unknown;
+	}
+	// KytyPlus packs the first 12 SELF header bytes into ident[]:
+	//   [0..3] magic, [4] version, [5] mode, [6] endian, [7] attributes,
+	//   [8] category, [9] program_type, [10..11] padding.
+	// (Layout per PS4 SDK / shadPS4 self_header, GPL-2.0-or-later.)
+	const uint8_t pt = m_self->ident[9];
+	switch (pt) {
+		case 0x1:  return SelfProgramType::Fake;
+		case 0x4:  return SelfProgramType::NpdrmExec;
+		case 0x5:  return SelfProgramType::NpdrmDynlib;
+		case 0x8:  return SelfProgramType::SystemExec;
+		case 0x9:  return SelfProgramType::SystemDynlib;
+		case 0xc:  return SelfProgramType::HostKernel;
+		case 0xe:  return SelfProgramType::SecureModule;
+		case 0xf:  return SelfProgramType::SecureKernel;
+		default:   return SelfProgramType::Unknown;
+	}
+}
+
 const char* Elf64::GetSectionName(int index) const {
 	if (m_ehdr == nullptr || m_shdr == nullptr || m_str_table == nullptr || index < 0 ||
 	    index >= m_ehdr->e_shnum) {

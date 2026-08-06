@@ -60,6 +60,15 @@ public:
 	enum class ShaderLogDirection { Silent, Console, File };
 	Q_ENUM(ShaderLogDirection)
 
+	enum class PresentFilter { Nearest, Linear, Cubic };
+	Q_ENUM(PresentFilter)
+
+	enum class PresentMode { Fifo, Mailbox, Immediate };
+	Q_ENUM(PresentMode)
+
+	enum class AspectRatio { Stretch, Fit16x9, Fit4x3, Integer };
+	Q_ENUM(AspectRatio)
+
 	enum class ProfilerDirection { None, Network };
 	Q_ENUM(ProfilerDirection)
 
@@ -91,6 +100,19 @@ public:
 	ShaderOptimizationType shader_optimization_type    = ShaderOptimizationType::Performance;
 	ShaderLogDirection     shader_log_direction        = ShaderLogDirection::Silent;
 	QString                shader_log_folder           = "_Shaders";
+	// Quality of the final guest->swapchain presentation stretch. Nearest = crisp pixels
+	// (good for pixel-art), Linear = bilinear (default), Cubic = smoother (falls back to
+	// Linear when the device lacks the cubic-filter extension).
+	PresentFilter          present_filter              = PresentFilter::Linear;
+	// Vulkan present mode (vsync / latency / tearing). Mailbox/Immediate fall back to
+	// Fifo when the surface does not expose them.
+	PresentMode            present_mode                = PresentMode::Fifo;
+	// How the guest frame is fit into the window. Stretch = fill (default).
+	AspectRatio            aspect_ratio                = AspectRatio::Stretch;
+	// SDL scancode that captures a screenshot PNG; 0 disables. Default F12 (0x5b).
+	quint32                screenshot_hotkey           = 0x5bu;
+	// Folder screenshots are written to.
+	QString                screenshot_folder           = "_Screenshots";
 	bool                   command_buffer_dump_enabled = false;
 	QString                command_buffer_dump_folder  = "_Buffers";
 	bool                   graphics_debug_dump_enabled = false;
@@ -117,6 +139,11 @@ public:
 		shader_optimization_type    = other.shader_optimization_type;
 		shader_log_direction        = other.shader_log_direction;
 		shader_log_folder           = other.shader_log_folder;
+		present_filter              = other.present_filter;
+		present_mode                = other.present_mode;
+		aspect_ratio                = other.aspect_ratio;
+		screenshot_hotkey           = other.screenshot_hotkey;
+		screenshot_folder           = other.screenshot_folder;
 		command_buffer_dump_enabled = other.command_buffer_dump_enabled;
 		command_buffer_dump_folder  = other.command_buffer_dump_folder;
 		graphics_debug_dump_enabled = other.graphics_debug_dump_enabled;
@@ -156,6 +183,11 @@ public:
 		KYTY_CFG_SET(shader_optimization_type);
 		KYTY_CFG_SET(shader_log_direction);
 		KYTY_CFG_SET(shader_log_folder);
+		KYTY_CFG_SET(present_filter);
+	KYTY_CFG_SET(present_mode);
+	KYTY_CFG_SET(aspect_ratio);
+	KYTY_CFG_SET(screenshot_hotkey);
+	KYTY_CFG_SET(screenshot_folder);
 		KYTY_CFG_SET(command_buffer_dump_enabled);
 		KYTY_CFG_SET(command_buffer_dump_folder);
 		KYTY_CFG_SET(graphics_debug_dump_enabled);
@@ -182,6 +214,11 @@ public:
 		KYTY_CFG_GET(shader_optimization_type);
 		KYTY_CFG_GET(shader_log_direction);
 		KYTY_CFG_GET(shader_log_folder);
+		KYTY_CFG_GET(present_filter);
+	KYTY_CFG_GET(present_mode);
+	KYTY_CFG_GET(aspect_ratio);
+	KYTY_CFG_GET(screenshot_hotkey);
+	KYTY_CFG_GET(screenshot_folder);
 		KYTY_CFG_GET(command_buffer_dump_enabled);
 		KYTY_CFG_GET(command_buffer_dump_folder);
 		graphics_debug_dump_enabled =
