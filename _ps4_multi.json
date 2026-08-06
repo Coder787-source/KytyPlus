@@ -1,0 +1,46 @@
+{
+  "companion": [
+    {
+      "ns": "LibCompanionlibSceCompanionHttpd",
+      "initFn": "InitLibCompanionlibSceCompanionHttpd_1"
+    },
+    {
+      "ns": "LibCompanionlibSceCompanionUtil",
+      "initFn": "InitLibCompanionlibSceCompanionUtil_1"
+    }
+  ],
+  "np": [
+    {
+      "ns": "LibNplibSceNpAuth",
+      "initFn": "InitLibNplibSceNpAuth_1"
+    },
+    {
+      "ns": "LibNplibSceNpCommon",
+      "initFn": "InitLibNplibSceNpCommon_1"
+    },
+    {
+      "ns": "LibNplibSceNpManager",
+      "initFn": "InitLibNplibSceNpManager_1"
+    },
+    {
+      "ns": "LibNplibSceNpPartner001",
+      "initFn": "InitLibNplibSceNpPartner001_1"
+    },
+    {
+      "ns": "LibNplibSceNpParty",
+      "initFn": "InitLibNplibSceNpParty_1"
+    },
+    {
+      "ns": "LibNplibSceNpSnsFacebookDialog",
+      "initFn": "InitLibNplibSceNpSnsFacebookDialog_1"
+    },
+    {
+      "ns": "LibNplibSceNpTrophy",
+      "initFn": "InitLibNplibSceNpTrophy_1"
+    },
+    {
+      "ns": "LibNplibSceNpTus",
+      "initFn": "InitLibNplibSceNpTus_1"
+    }
+  ]
+}

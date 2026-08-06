@@ -1,0 +1,4 @@
+AA .github/workflows/build.yml
+AA src/launcher/include/inputMappingDialog.h
+AA src/launcher/src/inputMappingDialog.cpp
+AA src/launcher/src/patchesDialog.cpp

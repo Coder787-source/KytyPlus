@@ -1,0 +1,16 @@
+{
+  "companion": [
+    "CompanionHttpd::InitCompanionHttpd_1",
+    "CompanionUtil::InitCompanionUtil_1"
+  ],
+  "np": [
+    "NpAuth::InitNpAuth_1",
+    "NpCommon::InitNpCommon_1",
+    "NpManager::InitNpManager_1",
+    "NpPartner::InitNpPartner_1",
+    "NpParty::InitNpParty_1",
+    "NpSnsFacebookDialog::InitNpSnsFacebookDialog_1",
+    "NpTrophy::InitNpTrophy_1",
+    "NpTus::InitNpTus_1"
+  ]
+}

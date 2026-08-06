@@ -1,0 +1,7 @@
+﻿gh : run 30865852161 is still in progress; logs will be available when it is complete
+At line:1 char:1
++ gh run view 30865852161 --repo Coder787-source/KytyPlus --log-failed  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (run 30865852161... it is complete:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
