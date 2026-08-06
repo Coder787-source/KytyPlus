@@ -23,6 +23,15 @@ enum class ProfilerDirection { None, Network };
 //   Cubic    -- smoother upscaling where the device exposes the cubic filter extension
 enum class PresentFilter { Nearest, Linear, Cubic };
 
+// Swapchain present mode (maps to vk::PresentModeKHR).
+//   Fifo      -- VSync on, guaranteed by the Vulkan spec (safe default).
+//   Mailbox   -- VSync on, lowest-latency tearing-free (triple-buffered).
+//   Immediate -- VSync off, tearing allowed for lowest latency.
+enum class PresentMode { Fifo, Mailbox, Immediate };
+
+// How the guest frame is fitted into the window extent.
+enum class AspectRatio { Stretch, Preserve, Crop };
+
 enum class OutputDirection { Silent, Console, File };
 
 struct ConfigOptions {
@@ -56,6 +65,8 @@ struct ConfigOptions {
 	// always stretched to the full window extent; this only changes the sampling quality of
 	// that stretch. Default matches the historical fixed behaviour (bilinear).
 	PresentFilter          present_filter              = PresentFilter::Linear;
+	PresentMode            present_mode                = PresentMode::Fifo;
+	AspectRatio            aspect_ratio                = AspectRatio::Stretch;
 	// When true, first-encounter graphics pipelines are compiled on a fixed worker
 	// thread pool instead of inline on the GPU thread, and draws that hit a
 	// not-yet-ready pipeline skip recording instead of blocking. Eliminates the
