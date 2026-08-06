@@ -8,7 +8,15 @@
 #pragma once
 
 #include "common/common.h"
-#include "common/logging/log.h"
+
+// IMPORTANT: include Kyty's REAL logging header explicitly via a relative
+// path that climbs out of the gcn/ shim directory. With gcn/ on the include
+// path BEFORE src/ (see gcn/CMakeLists.txt), the bare #include "common/logging/log.h"
+// would resolve back to THIS shim file (infinite recursion, skipped by #pragma
+// once) and ::Log would never be defined. The explicit relative path forces the
+// real header (which declares namespace Log, Log::Color, Log::IsSilent,
+// Log::Write) to be pulled in unambiguously.
+#include "../../../../../../../common/logging/log.h"
 
 #include <fmt/format.h>
 #include <string>
