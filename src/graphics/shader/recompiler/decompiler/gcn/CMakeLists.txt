@@ -21,7 +21,7 @@ add_library(gcn_decoder STATIC
 	shader_recompiler/frontend/format.cpp
 )
 
-target_include_directories(gcn_decoder PRIVATE
+target_include_directories(gcn_decoder BEFORE PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}
 )
 

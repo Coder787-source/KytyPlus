@@ -79,26 +79,26 @@ public:
 	}
 
 	template <typename T, typename... Tx>
-	void set(Tx... fx) {
-		m_bits |= bits(fx...);
+	void set(T f, Tx... fx) {
+		m_bits |= bits(f, fx...);
 	}
 	void set(Flags flags) {
 		m_bits |= flags.m_bits;
 	}
 	template <typename T, typename... Tx>
-	void clr(Tx... fx) {
-		m_bits &= ~bits(fx...);
+	void clr(T f, Tx... fx) {
+		m_bits &= ~bits(f, fx...);
 	}
 	void clr(Flags flags) {
 		m_bits &= ~flags.m_bits;
 	}
 	template <typename T, typename... Tx>
-	bool any(Tx... fx) const {
-		return (m_bits & bits(fx...)) != 0;
+	bool any(T f, Tx... fx) const {
+		return (m_bits & bits(f, fx...)) != 0;
 	}
 	template <typename T, typename... Tx>
-	bool all(Tx... fx) const {
-		const IntType mask = bits(fx...);
+	bool all(T f, Tx... fx) const {
+		const IntType mask = bits(f, fx...);
 		return (m_bits & mask) == mask;
 	}
 	bool test(Enum f) const {
