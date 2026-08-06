@@ -55,6 +55,13 @@ void submit_acb_bytes(uint32_t queue, const uint32_t* acb, uint32_t size_in_byte
 	                                            size_in_dwords, false);
 }
 
+// Indirect-draw SGPR base offsets per shader stage, indexed by ShaderStages
+// {Cs, Ps, Vs, Gs, Es, Hs, Ls}. Mirrors shadPS4's indirect_sgpr_offsets table
+// (GPL-2.0-or-later); these are the register-offset bases the GPU command
+// processor adds to the caller-supplied vertex/instance SGPR offsets.
+constexpr uint32_t kIndirectSgprOffsets[] = {0u, 0u, 0x4cu, 0u, 0xccu, 0u, 0x14cu};
+constexpr uint32_t kShaderStageMax = 7u; // ShaderStages::Max (Cs..Ls)
+
 } // namespace
 
 static int KYTY_SYSV_ABI sceGnmAddEqEvent() {
@@ -184,9 +191,22 @@ static int KYTY_SYSV_ABI sceGnmDispatchDirect(uint32_t* cmdbuf, uint32_t size, u
 	return OK;
 }
 
-static int KYTY_SYSV_ABI sceGnmDispatchIndirect() {
+static int KYTY_SYSV_ABI sceGnmDispatchIndirect(uint32_t* cmdbuf, uint32_t size, uint32_t data_offset,
+                                                      uint32_t flags) {
 	PRINT_NAME();
-	return OK; // STUBBED
+	// Mirrors shadPS4: IT_DISPATCH_INDIRECT, compute, count=2. Ordered-append
+	// mode = (flags & 0x18) + 1. size==7 = 1 header + 2 payload + 3 NOP + 1 pad.
+	if (cmdbuf == nullptr || size != 7) {
+		return -1;
+	}
+	cmdbuf[0] = KYTY_PM4(4, Pm4::IT_DISPATCH_INDIRECT, 0u); // count=2, compute
+	cmdbuf[1] = data_offset;
+	cmdbuf[2] = (flags & 0x18u) + 1u; // ordered append mode
+	cmdbuf[3] = 0x10000000u; // trailing NOPs + pad
+	cmdbuf[4] = 0x10000000u;
+	cmdbuf[5] = 0x10000000u;
+	cmdbuf[6] = 0x10000000u;
+	return OK;
 }
 
 static int KYTY_SYSV_ABI sceGnmDispatchIndirectOnMec() {
@@ -241,9 +261,30 @@ static int KYTY_SYSV_ABI sceGnmDrawIndexAuto(uint32_t* cmdbuf, uint32_t size, ui
 	return OK;
 }
 
-static int KYTY_SYSV_ABI sceGnmDrawIndexIndirect() {
+static int KYTY_SYSV_ABI sceGnmDrawIndexIndirect(uint32_t* cmdbuf, uint32_t size, uint32_t data_offset,
+                                                            uint32_t shader_stage, uint32_t vertex_sgpr_offset,
+                                                            uint32_t instance_sgpr_offset, uint32_t flags) {
 	PRINT_NAME();
-	return OK; // STUBBED
+	// Mirrors shadPS4 (GPL-2.0-or-later): IT_DRAW_INDEX_INDIRECT, graphics, count=4.
+	// size==9 = 1 header + 4 payload + 3 NOP + 1 pad. Shader stage < Max (7),
+	// vertex/instance SGPR offsets each < 0x10. draw_initiator carries flag bits
+	// (Neo-mode gate omitted: base PS4 path uses 0 initiator, matching shadPS4's
+	// non-Neo branch).
+	if (cmdbuf == nullptr || size != 9 || shader_stage >= kShaderStageMax ||
+	    vertex_sgpr_offset >= 0x10u || instance_sgpr_offset >= 0x10u) {
+		return -1;
+	}
+	const uint32_t sgpr_offset = kIndirectSgprOffsets[shader_stage];
+	cmdbuf[0] = KYTY_PM4(6, Pm4::IT_DRAW_INDEX_INDIRECT, 0u); // count=4, graphics
+	cmdbuf[1] = data_offset;
+	cmdbuf[2] = vertex_sgpr_offset == 0 ? 0u : (vertex_sgpr_offset & 0xffffu) + sgpr_offset;
+	cmdbuf[3] = instance_sgpr_offset == 0 ? 0u : (instance_sgpr_offset & 0xffffu) + sgpr_offset;
+	cmdbuf[4] = 0u; // draw_initiator (base PS4 path)
+	cmdbuf[5] = 0x10000000u; // trailing NOPs + pad
+	cmdbuf[6] = 0x10000000u;
+	cmdbuf[7] = 0x10000000u;
+	cmdbuf[8] = 0x10000000u;
+	return OK;
 }
 
 static int KYTY_SYSV_ABI sceGnmDrawIndexIndirectCountMulti() {
@@ -282,9 +323,27 @@ static int KYTY_SYSV_ABI sceGnmDrawIndexOffset(uint32_t* cmdbuf, uint32_t size, 
 	return OK;
 }
 
-static int KYTY_SYSV_ABI sceGnmDrawIndirect() {
+static int KYTY_SYSV_ABI sceGnmDrawIndirect(uint32_t* cmdbuf, uint32_t size, uint32_t data_offset,
+                                                    uint32_t shader_stage, uint32_t vertex_sgpr_offset,
+                                                    uint32_t instance_sgpr_offset, uint32_t flags) {
 	PRINT_NAME();
-	return OK; // STUBBED
+	// Mirrors shadPS4: IT_DRAW_INDIRECT, graphics, count=4. Auto-index source
+	// (draw_initiator |= 2) on the base PS4 path.
+	if (cmdbuf == nullptr || size != 9 || shader_stage >= kShaderStageMax ||
+	    vertex_sgpr_offset >= 0x10u || instance_sgpr_offset >= 0x10u) {
+		return -1;
+	}
+	const uint32_t sgpr_offset = kIndirectSgprOffsets[shader_stage];
+	cmdbuf[0] = KYTY_PM4(6, Pm4::IT_DRAW_INDIRECT, 0u); // count=4, graphics
+	cmdbuf[1] = data_offset;
+	cmdbuf[2] = vertex_sgpr_offset == 0 ? 0u : (vertex_sgpr_offset & 0xffffu) + sgpr_offset;
+	cmdbuf[3] = instance_sgpr_offset == 0 ? 0u : (instance_sgpr_offset & 0xffffu) + sgpr_offset;
+	cmdbuf[4] = 2u; // draw_initiator: source = auto-index (base PS4 path)
+	cmdbuf[5] = 0x10000000u; // trailing NOPs + pad
+	cmdbuf[6] = 0x10000000u;
+	cmdbuf[7] = 0x10000000u;
+	cmdbuf[8] = 0x10000000u;
+	return OK;
 }
 
 static int KYTY_SYSV_ABI sceGnmDrawIndirectCountMulti() {

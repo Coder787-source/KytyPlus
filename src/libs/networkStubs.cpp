@@ -141,24 +141,20 @@ PsnAccount NetworkStubsManager::GetAccount() const {
     return account_;
 }
 
-SignInState NetworkStubsManager::SetSignInStateCallback(SignInStateCallback cb) {
+SignInStateCallback NetworkStubsManager::SetSignInStateCallback(SignInStateCallback cb) {
     std::unique_lock lock(mutex_);
     SignInStateCallback old = std::move(sign_in_cb_);
     sign_in_cb_ = std::move(cb);
-    return old ? old : nullptr;
+    return old;
 }
 
 void NetworkStubsManager::NotifySignInState(SignInState new_state,
                                             const PsnAccount& account) {
     // mutex_ must be held by the caller.
     if (sign_in_cb_) {
-        try {
-            sign_in_cb_(new_state, account);
-        } catch (...) {
-            // A listener throwing must not corrupt the session teardown.
-            LOGF_COLOR(Log::Color::Yellow,
-                       "NetworkStubs: sign-in callback threw, ignored\n");
-        }
+        // Exceptions are disabled project-wide (-fno-exceptions): invoke the
+        // listener directly. Listeners must not throw.
+        sign_in_cb_(new_state, account);
     }
 }
 
