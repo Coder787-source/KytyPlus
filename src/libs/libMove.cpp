@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibMove {
+LIB_VERSION("libSceMove", 1, "libSceMove", 1, 1);
 
 static int KYTY_SYSV_ABI sceMoveInit() {
 	PRINT_NAME();
@@ -70,9 +71,7 @@ static int KYTY_SYSV_ABI sceMoveTerm() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceMove", 1, "libSceMove", 1, 1);
 
-} // namespace LibMove
 
 LIB_DEFINE(InitMove_1) {
 	LIB_FUNC("j1ITE-EoJmE", LibMove::sceMoveInit);
@@ -88,4 +87,5 @@ LIB_DEFINE(InitMove_1) {
 	LIB_FUNC("tsZi60H4ypY", LibMove::sceMoveTerm);
 }
 
+} // namespace LibMove
 } // namespace Libs

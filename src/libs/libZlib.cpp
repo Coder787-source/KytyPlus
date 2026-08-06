@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibZlib {
+LIB_VERSION("libSceZlib", 1, "libSceZlib", 1, 1);
 
 static int KYTY_SYSV_ABI sceZlibInitialize() {
 	PRINT_NAME();
@@ -40,9 +41,7 @@ static int KYTY_SYSV_ABI sceZlibGetResult() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceZlib", 1, "libSceZlib", 1, 1);
 
-} // namespace LibZlib
 
 LIB_DEFINE(InitZlib_1) {
 	LIB_FUNC("m1YErdIXCp4", LibZlib::sceZlibInitialize);
@@ -52,4 +51,5 @@ LIB_DEFINE(InitZlib_1) {
 	LIB_FUNC("2eDcGHC0YaM", LibZlib::sceZlibGetResult);
 }
 
+} // namespace LibZlib
 } // namespace Libs

@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibJpeg {
+LIB_VERSION("libSceJpegEnc", 1, "libSceJpegEnc", 1, 1);
 
 static int KYTY_SYSV_ABI sceJpegEncCreate() {
 	PRINT_NAME();
@@ -35,9 +36,7 @@ static int KYTY_SYSV_ABI sceJpegEncQueryMemorySize() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceJpegEnc", 1, "libSceJpegEnc", 1, 1);
 
-} // namespace LibJpeg
 
 LIB_DEFINE(InitJpeg_1) {
 	LIB_FUNC("K+rocojkr-I", LibJpeg::sceJpegEncCreate);
@@ -46,4 +45,5 @@ LIB_DEFINE(InitJpeg_1) {
 	LIB_FUNC("o6ZgXfFdWXQ", LibJpeg::sceJpegEncQueryMemorySize);
 }
 
+} // namespace LibJpeg
 } // namespace Libs

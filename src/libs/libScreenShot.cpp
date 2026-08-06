@@ -88,7 +88,6 @@ static int KYTY_SYSV_ABI sceScreenShotSetDrcParam() {
 	return 0;
 }
 
-} // namespace LibScreenShot
 
 LIB_DEFINE(InitScreenShot_1) {
 	LIB_FUNC("AS45QoYHjc4",    LibScreenShot::ScreenShotDummy);
@@ -107,4 +106,5 @@ LIB_DEFINE(InitScreenShot_1) {
 	LIB_FUNC("itlWFWV3Tzc",    LibScreenShot::sceScreenShotSetDrcParam);
 }
 
+} // namespace LibScreenShot
 } // namespace Libs

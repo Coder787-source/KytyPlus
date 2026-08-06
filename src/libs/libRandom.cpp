@@ -63,9 +63,9 @@ static bool GetOsRandomBytes(uint8_t* buf, size_t size) {
 #endif
 }
 
-} // namespace LibRandom
 
 LIB_DEFINE(InitRandom_1) {
 }
 
+} // namespace LibRandom
 } // namespace Libs

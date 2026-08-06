@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibSharePlay {
+LIB_VERSION("libSceSharePlay", 1, "libSceSharePlay", 1, 1);
 
 static int KYTY_SYSV_ABI sceSharePlayCrashDaemon() {
 	PRINT_NAME();
@@ -125,9 +126,7 @@ static int KYTY_SYSV_ABI Func_F3DD6199DA15ED44() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceSharePlay", 1, "libSceSharePlay", 1, 1);
 
-} // namespace LibSharePlay
 
 LIB_DEFINE(InitSharePlay_1) {
 	LIB_FUNC("ggnCfalLU-8", LibSharePlay::sceSharePlayCrashDaemon);
@@ -154,4 +153,5 @@ LIB_DEFINE(InitSharePlay_1) {
 	LIB_FUNC("891hmdoV7UQ", LibSharePlay::Func_F3DD6199DA15ED44);
 }
 
+} // namespace LibSharePlay
 } // namespace Libs

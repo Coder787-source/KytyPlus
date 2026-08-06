@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibVoice {
+LIB_VERSION("libSceVoice", 1, "libSceVoice", 1, 1);
 
 static int KYTY_SYSV_ABI sceVoiceGetMuteFlag() {
 	PRINT_NAME();
@@ -85,9 +86,7 @@ static int KYTY_SYSV_ABI sceVoiceVADSetVersion() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceVoice", 1, "libSceVoice", 1, 1);
 
-} // namespace LibVoice
 
 LIB_DEFINE(InitVoice_1) {
 	LIB_FUNC("Pc4z1QjForU", LibVoice::sceVoiceGetMuteFlag);
@@ -106,4 +105,5 @@ LIB_DEFINE(InitVoice_1) {
 	LIB_FUNC("wFeAxEeEi-8", LibVoice::sceVoiceVADSetVersion);
 }
 
+} // namespace LibVoice
 } // namespace Libs

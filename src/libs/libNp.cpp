@@ -14,8 +14,8 @@
 namespace Libs {
 
 namespace NpAuth {
-
 LIB_VERSION("libSceNpAuth", 1, "libSceNpAuth", 1, 1);
+
 
 static int KYTY_SYSV_ABI sceNpAuthGetAuthorizationCode() {
 	PRINT_NAME();
@@ -42,7 +42,6 @@ static int KYTY_SYSV_ABI sceNpAuthSetTimeout() {
 	return OK;
 }
 
-} // namespace NpAuth
 
 LIB_DEFINE(InitNpAuth_1) {
 	LIB_FUNC("KxGkOrQJTqY", NpAuth::sceNpAuthGetAuthorizationCode);
@@ -52,6 +51,7 @@ LIB_DEFINE(InitNpAuth_1) {
 	LIB_FUNC("PM3IZCw-7m0", NpAuth::sceNpAuthSetTimeout);
 }
 
+} // namespace NpAuth
 namespace NpCommon {
 
 LIB_VERSION("libSceNpCommon", 1, "libSceNpCommon", 1, 1);
@@ -196,7 +196,6 @@ static int KYTY_SYSV_ABI sceNpGetSdkVersion() {
 	return OK;
 }
 
-} // namespace NpCommon
 
 LIB_DEFINE(InitNpCommon_1) {
 	LIB_FUNC("i8UmXTSq7N4", NpCommon::sceNpCmpNpId);
@@ -229,6 +228,7 @@ LIB_DEFINE(InitNpCommon_1) {
 	LIB_FUNC("Pglk7zFj0DI", NpCommon::sceNpGetSdkVersion);
 }
 
+} // namespace NpCommon
 namespace NpManager {
 
 LIB_VERSION("libSceNpManager", 1, "libSceNpManager", 1, 1);
@@ -368,7 +368,6 @@ static int KYTY_SYSV_ABI sceNpUnregisterStateCallbackForToolkit() {
 	return OK;
 }
 
-} // namespace NpManager
 
 LIB_DEFINE(InitNpManager_1) {
 	LIB_FUNC("8Z2Jc5GvGDI", NpManager::sceNpCheckNpAvailabilityA);
@@ -400,6 +399,7 @@ LIB_DEFINE(InitNpManager_1) {
 	LIB_FUNC("YIvqqvJyjEc", NpManager::sceNpUnregisterStateCallbackForToolkit);
 }
 
+} // namespace NpManager
 namespace NpPartner {
 
 LIB_VERSION("libSceNpPartner001", 1, "libSceNpPartner001", 1, 1);
@@ -424,7 +424,6 @@ static int KYTY_SYSV_ABI sceNpHasEAAccessSubscription() {
 	return OK;
 }
 
-} // namespace NpPartner
 
 LIB_DEFINE(InitNpPartner_1) {
 	LIB_FUNC("pMxXhNozUX8", NpPartner::sceNpEAAccessTerminate);
@@ -433,6 +432,7 @@ LIB_DEFINE(InitNpPartner_1) {
 	LIB_FUNC("+OnbUs1CV0M", NpPartner::sceNpHasEAAccessSubscription);
 }
 
+} // namespace NpPartner
 namespace NpParty {
 
 LIB_VERSION("libSceNpParty", 1, "libSceNpParty", 1, 1);
@@ -567,7 +567,6 @@ static int KYTY_SYSV_ABI sceNpPartyUnregisterPrivateHandler() {
 	return OK;
 }
 
-} // namespace NpParty
 
 LIB_DEFINE(InitNpParty_1) {
 	LIB_FUNC("3e4k2mzLkmc", NpParty::sceNpPartyCheckCallback);
@@ -598,6 +597,7 @@ LIB_DEFINE(InitNpParty_1) {
 	LIB_FUNC("zQ7gIvt11Pc", NpParty::sceNpPartyUnregisterPrivateHandler);
 }
 
+} // namespace NpParty
 namespace NpSnsFacebookDialog {
 
 LIB_VERSION("libSceNpSnsFacebookDialog", 1, "libSceNpSnsFacebookDialog", 1, 1);
@@ -607,12 +607,12 @@ static int KYTY_SYSV_ABI sceNpSnsFacebookDialogUpdateStatus() {
 	return OK;
 }
 
-} // namespace NpSnsFacebookDialog
 
 LIB_DEFINE(InitNpSnsFacebookDialog_1) {
 	LIB_FUNC("fjV7C8H0Y8k", NpSnsFacebookDialog::sceNpSnsFacebookDialogUpdateStatus);
 }
 
+} // namespace NpSnsFacebookDialog
 namespace NpTrophy {
 
 LIB_VERSION("libSceNpTrophy", 1, "libSceNpTrophy", 1, 1);
@@ -1052,7 +1052,6 @@ static int KYTY_SYSV_ABI Func_FA7A2DD770447552() {
 	return OK;
 }
 
-} // namespace NpTrophy
 
 LIB_DEFINE(InitNpTrophy_1) {
 	LIB_FUNC("aTnHs7W-9Uk", NpTrophy::sceNpTrophyAbortHandle);
@@ -1144,6 +1143,7 @@ LIB_DEFINE(InitNpTrophy_1) {
 	LIB_FUNC("+not13BEdVI", NpTrophy::Func_FA7A2DD770447552);
 }
 
+} // namespace NpTrophy
 namespace NpTus {
 
 LIB_VERSION("libSceNpTus", 1, "libSceNpTus", 1, 1);
@@ -1858,7 +1858,6 @@ static int KYTY_SYSV_ABI sceNpTusWaitAsync() {
 	return OK;
 }
 
-} // namespace NpTus
 
 LIB_DEFINE(InitNpTus_1) {
 	LIB_FUNC("sRVb2Cf0GHg", NpTus::sceNpTssCreateNpTitleCtx);
@@ -2005,4 +2004,5 @@ LIB_DEFINE(InitNpTus_1) {
 	LIB_FUNC("hYPJFWzFPjA", NpTus::sceNpTusWaitAsync);
 }
 
+} // namespace NpTus
 } // namespace Libs

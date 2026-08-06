@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibRemotePlay {
+LIB_VERSION("libSceRemoteplay", 1, "libSceRemoteplay", 1, 1);
 
 static int KYTY_SYSV_ABI sceRemoteplayApprove() {
 	PRINT_NAME();
@@ -210,9 +211,7 @@ static int KYTY_SYSV_ABI Func_1D5EE365ED5FADB3() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceRemoteplay", 1, "libSceRemoteplay", 1, 1);
 
-} // namespace LibRemotePlay
 
 LIB_DEFINE(InitRemotePlay_1) {
 	LIB_FUNC("xQeIryTX7dY", LibRemotePlay::sceRemoteplayApprove);
@@ -256,4 +255,5 @@ LIB_DEFINE(InitRemotePlay_1) {
 	LIB_FUNC("HV7jZe1frbM", LibRemotePlay::Func_1D5EE365ED5FADB3);
 }
 
+} // namespace LibRemotePlay
 } // namespace Libs

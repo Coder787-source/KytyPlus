@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibCamera {
+LIB_VERSION("libSceCamera", 1, "libSceCamera", 1, 1);
 
 static int KYTY_SYSV_ABI sceCameraAccGetData() {
 	PRINT_NAME();
@@ -395,9 +396,7 @@ static int KYTY_SYSV_ABI sceCameraStopByHandle() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceCamera", 1, "libSceCamera", 1, 1);
 
-} // namespace LibCamera
 
 LIB_DEFINE(InitCamera_1) {
 	LIB_FUNC("QhjrPkRPUZQ", LibCamera::sceCameraAccGetData);
@@ -478,4 +477,5 @@ LIB_DEFINE(InitCamera_1) {
 	LIB_FUNC("+X1Kgnn3bzg", LibCamera::sceCameraStopByHandle);
 }
 
+} // namespace LibCamera
 } // namespace Libs

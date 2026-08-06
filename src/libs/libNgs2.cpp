@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibNgs2 {
+LIB_VERSION("libSceNgs2", 1, "libSceNgs2", 1, 1);
 
 static int KYTY_SYSV_ABI sceNgs2CustomRackGetModuleInfo() {
 	PRINT_NAME();
@@ -215,9 +216,7 @@ static int KYTY_SYSV_ABI sceNgs2VoiceQueryInfo() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceNgs2", 1, "libSceNgs2", 1, 1);
 
-} // namespace LibNgs2
 
 LIB_DEFINE(InitNgs2_1) {
 	LIB_FUNC("6qN1zaEZuN0", LibNgs2::sceNgs2CustomRackGetModuleInfo);
@@ -262,4 +261,5 @@ LIB_DEFINE(InitNgs2_1) {
 	LIB_FUNC("9eic4AmjGVI", LibNgs2::sceNgs2VoiceQueryInfo);
 }
 
+} // namespace LibNgs2
 } // namespace Libs

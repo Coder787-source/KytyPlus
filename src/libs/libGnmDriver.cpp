@@ -24,6 +24,7 @@
 namespace Libs {
 
 namespace LibGnmDriver {
+LIB_VERSION("libSceGnmDriver", 1, "libSceGnmDriver", 1, 1);
 
 using namespace Libs::Graphics;
 
@@ -1581,9 +1582,7 @@ static int KYTY_SYSV_ABI Func_F916890425496553() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceGnmDriver", 1, "libSceGnmDriver", 1, 1);
 
-} // namespace LibGnmDriver
 
 LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("b0xyllnVY-I", LibGnmDriver::sceGnmAddEqEvent);
@@ -1839,4 +1838,5 @@ LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("+RaJBCVJZVM", LibGnmDriver::Func_F916890425496553);
 }
 
+} // namespace LibGnmDriver
 } // namespace Libs

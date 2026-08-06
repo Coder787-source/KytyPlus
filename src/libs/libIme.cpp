@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibIme {
+LIB_VERSION("libSceIme", 1, "libSceIme", 1, 1);
 
 static int KYTY_SYSV_ABI FinalizeImeModule() {
 	PRINT_NAME();
@@ -255,9 +256,7 @@ static int KYTY_SYSV_ABI sceImeVshUpdateContext2() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceIme", 1, "libSceIme", 1, 1);
 
-} // namespace LibIme
 
 LIB_DEFINE(InitIme_1) {
 	LIB_FUNC("mN+ZoSN-8hQ", LibIme::FinalizeImeModule);
@@ -310,4 +309,5 @@ LIB_DEFINE(InitIme_1) {
 	LIB_FUNC("fwcPR7+7Rks", LibIme::sceImeVshUpdateContext2);
 }
 
+} // namespace LibIme
 } // namespace Libs

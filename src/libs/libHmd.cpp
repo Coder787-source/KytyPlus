@@ -14,6 +14,7 @@
 namespace Libs {
 
 namespace LibHmd {
+LIB_VERSION("libSceHmd", 1, "libSceHmd", 1, 1);
 
 static int KYTY_SYSV_ABI sceHmdClose() {
 	PRINT_NAME();
@@ -700,9 +701,7 @@ static int KYTY_SYSV_ABI Func_FF2E0E53015FE231() {
 	return OK; // STUBBED
 }
 
-LIB_VERSION("libSceHmd", 1, "libSceHmd", 1, 1);
 
-} // namespace LibHmd
 
 LIB_DEFINE(InitHmd_1) {
 	LIB_FUNC("6biw1XHTSqQ", LibHmd::sceHmdClose);
@@ -844,4 +843,5 @@ LIB_DEFINE(InitHmd_1) {
 	LIB_FUNC("-y4OUwFf4jE", LibHmd::Func_FF2E0E53015FE231);
 }
 
+} // namespace LibHmd
 } // namespace Libs
