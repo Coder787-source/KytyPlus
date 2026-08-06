@@ -339,6 +339,216 @@ jobs:
           name: KytyPS5-Linux-x86_64
           path: _Build/linux/install/**
           if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Native ARM64 builds (experimental).
+  #
+  # These jobs attempt to compile KytyPS5 for ARM64 hosts: Apple Silicon
+  # (macOS arm64) and Windows on ARM (arm64). They are expected to FAIL today
+  # and are gated with continue-on-error so they never break the main build or
+  # block releases. They exist to surface the real compile errors in CI and to
+  # track the native ARM64 port publicly.
+  #
+  # Known blockers (see tracking issue for the full breakdown):
+  #   1. src/core/Avx512Emitter.hpp includes <immintrin.h> unconditionally.
+  #      <immintrin.h> does not exist on ARM64, so the file fails to compile
+  #      before any JIT code is reached.
+  #   2. The CPU JIT (src/loader/jit.h) emits raw x86-64 machine code with no
+  #      ARM64 backend and no interpreter fallback.
+  #   3. Fiber context switching (libKernel.cpp, runtimeLinker.cpp) is x86-64
+  #      inline asm only; the non-x86 path calls EXIT().
+  #
+  # When the ARM64 port lands (ARM64 JIT/interpreter, ARM64 fiber switch, and
+  # an AVX-512 stub/guard), remove continue-on-error and add these jobs to the
+  # release `needs` list.
+  # ---------------------------------------------------------------------------
+
+  macos-arm64:
+    name: Build KytyPS5 (macOS Apple Silicon, experimental)
+    runs-on: macos-15
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Select Xcode 26
+        shell: bash
+        run: |
+          xcode_path="$(ls -d /Applications/Xcode_26*.app | tail -n 1)"
+          test -n "$xcode_path"
+          sudo xcode-select --switch "$xcode_path/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install build dependencies
+        shell: bash
+        env:
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: 1
+        run: brew install glslang ninja
+
+      - name: Install Qt 6.10.3
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: "6.10.3"
+          host: mac
+          target: desktop
+          arch: clang_64
+          cache: true
+
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          git --version
+          cmake --version
+          ninja --version
+          clang++ --version
+          glslangValidator --version
+          echo "Host architecture: $(uname -m)"
+          echo "QT_ROOT_DIR=$QT_ROOT_DIR"
+
+      - name: Configure (native arm64)
+        shell: bash
+        run: |
+          cmake -S src -B _Build/macos-arm64 \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build _Build/macos-arm64 --target launcher --parallel
+
+      - name: Install
+        shell: bash
+        run: |
+          cmake --install _Build/macos-arm64 --prefix _Build/macos-arm64/install
+
+      - name: Bundle MoltenVK
+        shell: bash
+        env:
+          MOLTENVK_VERSION: v1.4.2
+          MOLTENVK_SHA256: f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e
+        run: |
+          archive="$RUNNER_TEMP/MoltenVK-macos.tar"
+          package="$RUNNER_TEMP/MoltenVK"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            "https://github.com/KhronosGroup/MoltenVK/releases/download/$MOLTENVK_VERSION/MoltenVK-macos.tar"
+          echo "$MOLTENVK_SHA256  $archive" | shasum -a 256 --check
+          tar -xf "$archive" -C "$RUNNER_TEMP"
+          install -m 755 \
+            "$package/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib" \
+            _Build/macos-arm64/install/libMoltenVK.dylib
+          install -m 644 "$package/LICENSE" _Build/macos-arm64/install/LICENSE.MoltenVK
+          codesign --force --sign - --timestamp=none _Build/macos-arm64/install/libMoltenVK.dylib
+
+      - name: Verify artifacts
+        shell: bash
+        run: |
+          file _Build/macos-arm64/install/launcher
+          file _Build/macos-arm64/install/kyty_emulator
+          file _Build/macos-arm64/install/libMoltenVK.dylib
+          lipo _Build/macos-arm64/install/launcher -verify_arch arm64
+          lipo _Build/macos-arm64/install/kyty_emulator -verify_arch arm64
+          lipo _Build/macos-arm64/install/libMoltenVK.dylib -verify_arch arm64
+          codesign --verify --strict _Build/macos-arm64/install/kyty_emulator
+          codesign --verify --strict _Build/macos-arm64/install/libMoltenVK.dylib
+
+      - name: Upload macOS arm64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPS5-macOS-arm64
+          path: _Build/macos-arm64/install/**
+          if-no-files-found: warn
+
+  windows-arm:
+    name: Build KytyPS5 (Windows on ARM, experimental)
+    runs-on: windows-11-arm
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Setup Visual Studio environment (arm64)
+        uses: TheMrMilchmann/setup-msvc-dev@v4.0.0
+        with:
+          arch: arm64
+
+      - name: Setup Ninja
+        shell: cmd
+        run: where ninja
+
+      - name: Install glslangValidator (Vulkan SDK)
+        uses: jakoch/install-vulkan-sdk-action@v1.6.0
+        with:
+          vulkan_version: 1.4.350.0
+          cache: true
+          stripdown: true
+          install_runtime: false
+
+      - name: Install Qt 6.10.3
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: "6.10.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_arm64
+          cache: true
+
+      - name: Verify toolchain
+        shell: cmd
+        run: |
+          git --version
+          cmake --version
+          ninja --version
+          clang-cl --version
+          glslangValidator --version
+          echo Qt6_DIR=%Qt6_DIR%
+
+      - name: Configure (native arm64)
+        shell: pwsh
+        run: |
+          cmake -S src -B _Build/windows-arm `
+            -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl `
+            -DCMAKE_CXX_COMPILER=clang-cl `
+            "-DCMAKE_PREFIX_PATH=$env:Qt6_DIR" 2>&1 | Tee-Object configure.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            "### Configure failed (exit $code)" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            Get-Content configure.log -Tail 150 | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
+          exit $code
+
+      - name: Build
+        shell: cmd
+        run: |
+          cmake --build _Build/windows-arm --target launcher --parallel
+
+      - name: Install
+        shell: cmd
+        run: |
+          cmake --install _Build/windows-arm --prefix _Build/windows-arm/install
+
+      - name: Upload Windows arm64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPS5-Windows-arm64
+          path: _Build/windows-arm/install/**
+          if-no-files-found: warn
+
   # KytyPlus: publish cross-platform release assets on v* tags.
   release:
     name: Release KytyPlus
