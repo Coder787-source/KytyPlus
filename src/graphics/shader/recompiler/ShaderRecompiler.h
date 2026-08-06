@@ -12,10 +12,10 @@
 
 namespace Libs::Graphics::ShaderRecompiler {
 
-enum class IsaFamily : uint8_t {
-	Rdna2 = 0, // PS5 / Prospero / AGC
-	Gcn   = 1, // PS4 / Orbis  / GFX8-GFX9
-};
+// IsaFamily is fully defined in ShaderDecoder.h (reached transitively via
+// ResourceMaterialization.h -> SrtWalker.h -> ShaderIR.h -> ShaderCFG.h).
+// Keeping the enum definition there avoids a circular include between this
+// upper-layer header and the decoder leaf.
 
 struct CompileOptions {
 	// Graphics ISA family the shader binary targets. PS5 (Prospero) ships RDNA2 /

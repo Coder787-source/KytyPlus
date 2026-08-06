@@ -3,16 +3,22 @@
 
 #include "common/common.h"
 #include "common/stringUtils.h"
-// Pulls in the complete definition of IsaFamily (Rdna2/Gcn enumerators).
-// ShaderDecoder.h uses IsaFamily::Rdna2 in default arguments below, which
-// requires the full enum definition, not just the forward declaration.
-#include "graphics/shader/recompiler/ShaderRecompiler.h"
 
 #include <span>
 #include <vector>
 
 namespace Libs::Graphics::ShaderRecompiler {
-enum class IsaFamily : uint8_t;
+
+// IsaFamily is defined here (in this leaf header of the recompiler include
+// graph) so the complete enum is visible everywhere it is used, including the
+// Rdna2 enumerators in the default arguments below and in ShaderRecompiler.h
+// / CompileOptions, which reach this header transitively via
+// ResourceMaterialization.h -> SrtWalker.h -> ShaderIR.h -> ShaderCFG.h.
+enum class IsaFamily : uint8_t {
+	Rdna2 = 0, // PS5 / Prospero / AGC
+	Gcn   = 1, // PS4 / Orbis  / GFX8-GFX9
+};
+
 }
 
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
