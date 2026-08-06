@@ -2431,8 +2431,8 @@ void RuntimeLinker::ReportPs4CompatGap(Program* program) {
 			continue;
 		}
 		for (const auto& lib: p->dynamic_info->export_libs) {
-			if (lib.name != nullptr) {
-				hle_export_libs.insert(std::string(lib.name));
+			if (!lib.name.empty()) {
+				hle_export_libs.insert(lib.name);
 			}
 		}
 	}
@@ -2448,7 +2448,7 @@ void RuntimeLinker::ReportPs4CompatGap(Program* program) {
 	LOGF("  ---- imported library -> HLE coverage ----\n");
 
 	for (const auto& lib: import_libs) {
-		const std::string name = (lib.name != nullptr) ? std::string(lib.name) : std::string("?");
+		const std::string name = lib.name.empty() ? std::string("?") : lib.name;
 		const bool has = hle_export_libs.contains(name);
 		if (has) {
 			++covered;
