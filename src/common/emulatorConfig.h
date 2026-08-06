@@ -73,6 +73,10 @@ struct ConfigOptions {
 	// multi-100 ms first-encounter stutter at the cost of a few skipped frames.
 	// Matches the async-compilation strategy used by mature emulators (RPCS3/shadPS4).
 	bool                   async_pipeline_compilation  = true;
+	// SDL scancode (0x5b = F12) that captures a screenshot PNG; 0 disables.
+	uint32_t               screenshot_hotkey           = 0x5b;
+	// Folder screenshot PNGs are written to.
+	std::filesystem::path  screenshot_folder           = "_Screenshots";
 };
 
 void Load(const ConfigOptions& cfg);
