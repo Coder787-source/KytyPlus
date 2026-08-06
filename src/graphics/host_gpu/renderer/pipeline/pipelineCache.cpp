@@ -395,6 +395,7 @@ PipelineCache::CreateComputePipeline(ShaderComputeInputInfo&      input_info,
 	MaybeSaveDriverCache();
 
 	return *iter->second;
+}
 
 PipelineCache::GraphicsPipeline& PipelineCache::AsyncPendingSentinel() noexcept {
 	static GraphicsPipeline sentinel {};
@@ -489,6 +490,5 @@ void PipelineCache::SubmitAsyncCompile(GraphicsPipelineKey                key,
 	req.ps_crc32  = ps_crc32;
 	req.ps_active = ps_active;
 	m_async_compiler->Submit(std::move(req));
-}
 }
 } // namespace Libs::Graphics
