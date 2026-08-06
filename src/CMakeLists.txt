@@ -101,7 +101,7 @@ include_directories(
 	${KYTY_THIRD_PARTY_DIR}/gtest/include
 	${KYTY_THIRD_PARTY_DIR}/gtest
 	${KYTY_THIRD_PARTY_DIR}/fmt/include
-	${KYTY_THIRD_PARTY_DIR}/magic_enum/include/magic_enum
+	${KYTY_THIRD_PARTY_DIR}/magic_enum/include
 	${PROJECT_BINARY_DIR}
 	${CMAKE_CURRENT_SOURCE_DIR}
 )

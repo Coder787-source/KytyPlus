@@ -6,7 +6,7 @@
 #include "common/logging/log.h"
 
 #include <fmt/format.h>
-#include <magic_enum.hpp>
+#include <magic_enum/magic_enum.hpp>
 
 // Ported shadPS4 GCN decoder. The gcn/ include root is private to this
 // translation unit via the gcn_decoder target's include path; here we reach

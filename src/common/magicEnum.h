@@ -3,7 +3,7 @@
 
 #include "common/common.h"
 #include "common/stringUtils.h"
-#include "magic_enum.hpp" // IWYU pragma: export
+#include <magic_enum/magic_enum.hpp> // IWYU pragma: export
 
 namespace Common {
 
