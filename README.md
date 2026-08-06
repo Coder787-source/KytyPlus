@@ -1,8 +1,5 @@
 # KytyPlus
 
-[![Windows Build](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml/badge.svg)](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml)
-[![macOS Build](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml/badge.svg?os=macos)](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml)
-[![Linux Build](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml/badge.svg?os=linux)](https://github.com/Coder787-source/KytyPlus/actions/workflows/build.yml)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4.svg)](#system-requirements)
 [![Status](https://img.shields.io/badge/status-Early%20Development-blue.svg)](#current-status)
 [![License](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
