@@ -10,7 +10,7 @@
 
 namespace Kyty::Libs::LibKernel {
 
-using FileSystem = Libs::LibKernel::FileSystem;
+using FileSystem = ::Libs::LibKernel::FileSystem;
 
 void SyscallDispatcher::Register(GuestPlatform platform, uint64_t number, SyscallHandler handler) {
 	const std::lock_guard lock(m_mutex);
@@ -31,7 +31,7 @@ int64_t SyscallDispatcher::Dispatch(GuestPlatform platform, uint64_t number,
 			++m_unresolved[{platform, number}];
 			LOGF("[Syscall] UNRESOLVED: platform=%u number=%llu",
 			     static_cast<unsigned>(platform), number);
-			return LibKernel::KERNEL_ERROR_ENOSYS;
+			return ::Libs::LibKernel::KERNEL_ERROR_ENOSYS;
 		}
 		handler = it->second;
 	}
@@ -180,7 +180,7 @@ void RegisterKernelSyscalls(SyscallDispatcher& dispatcher) {
 
 	// sys_gettimeofday: a0 = timeval, a1 = timezone (ignored)
 	register_both(116, [](uint64_t a0, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {
-		if (a0 == 0) return ToInt(LibKernel::KERNEL_ERROR_EFAULT);
+		if (a0 == 0) return ToInt(::Libs::LibKernel::KERNEL_ERROR_EFAULT);
 		auto* tv = reinterpret_cast<int64_t*>(a0);
 		using namespace std::chrono;
 		const auto now = system_clock::now().time_since_epoch();
