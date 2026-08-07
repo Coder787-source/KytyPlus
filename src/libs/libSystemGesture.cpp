@@ -17,9 +17,9 @@ namespace LibSystemGesture {
 
 LIB_VERSION("libSceSystemGesture", 1, "libSceSystemGesture", 1, 1);
 
-} // namespace LibSystemGesture
-
 LIB_DEFINE(InitSystemGesture_1) {
 }
+
+} // namespace LibSystemGesture
 
 } // namespace Libs

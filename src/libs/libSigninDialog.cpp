@@ -17,9 +17,9 @@ namespace LibSigninDialog {
 
 LIB_VERSION("libSceSigninDialog", 1, "libSceSigninDialog", 1, 1);
 
-} // namespace LibSigninDialog
-
 LIB_DEFINE(InitSigninDialog_1) {
 }
+
+} // namespace LibSigninDialog
 
 } // namespace Libs
