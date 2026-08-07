@@ -10,7 +10,7 @@
 
 namespace Kyty::Libs::LibKernel {
 
-using FileSystem = ::Libs::LibKernel::FileSystem;
+namespace FileSystem = ::Libs::LibKernel::FileSystem;
 
 void SyscallDispatcher::Register(GuestPlatform platform, uint64_t number, SyscallHandler handler) {
 	const std::lock_guard lock(m_mutex);
