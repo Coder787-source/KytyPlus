@@ -1,10 +1,11 @@
-#ifndef EMULATOR_SRC_GRAPHICS_PRESENTATION_PRESENTER_H_
+﻿#ifndef EMULATOR_SRC_GRAPHICS_PRESENTATION_PRESENTER_H_
 #define EMULATOR_SRC_GRAPHICS_PRESENTATION_PRESENTER_H_
 
 #include "common/common.h"
 
 #include <atomic>
 #include <memory>
+#include <string>
 
 namespace Libs::Graphics {
 
