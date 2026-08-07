@@ -5,8 +5,8 @@
 
 #include <magic_enum/magic_enum.hpp>
 
-#include "common/enum.h"
-#include "common/types.h"
+#include "../../common/enum.h"
+#include "../../common/types.h"
 
 namespace Shader::Gcn {
 

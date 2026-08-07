@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "common/assert.h"
+#include "../../common/assert.h"
 #include "shader_recompiler/frontend/opcodes.h"
 
 namespace Shader::Gcn {

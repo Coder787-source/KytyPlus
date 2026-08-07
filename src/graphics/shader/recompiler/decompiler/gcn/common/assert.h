@@ -16,8 +16,11 @@
 // All message-bearing macros use brace-style fmt args ({}, {:#x}, ...).
 #pragma once
 
-#include "common/common.h"
-#include "common/logging/log.h"
+// Use explicit relative paths so this shim is order-independent: it must
+// pull Kyty's REAL common.h (no shim exists for it) and the shim log.h
+// (which defines the LOG_* macros and in turn pulls Kyty's real ::Log).
+#include "../../../../../../common/common.h"
+#include "logging/log.h"
 
 #include <fmt/format.h>
 #include <cstdlib>

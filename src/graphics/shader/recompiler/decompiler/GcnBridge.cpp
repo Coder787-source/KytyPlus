@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+﻿// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "graphics/shader/recompiler/decompiler/GcnBridge.h"
@@ -21,10 +21,10 @@
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
 namespace {
 
-using GcnInst = Shader::Gcn::GcnInst;
-using GcnEncoding = Shader::Gcn::InstEncoding;
-using GcnField = Shader::Gcn::OperandField;
-using GcnOpcode = Shader::Gcn::Opcode;
+using GcnInst = ::Shader::Gcn::GcnInst;
+using GcnEncoding = ::Shader::Gcn::InstEncoding;
+using GcnField = ::Shader::Gcn::OperandField;
+using GcnOpcode = ::Shader::Gcn::Opcode;
 
 // Map a GCN instruction encoding to Kyty's Family enum.
 Family MapFamily(GcnEncoding enc) {
@@ -51,7 +51,7 @@ Family MapFamily(GcnEncoding enc) {
 }
 
 // Map a GCN operand (field + code) to Kyty's Operand form.
-Operand MapOperand(const Shader::Gcn::InstOperand& src) {
+Operand MapOperand(const ::Shader::Gcn::InstOperand& src) {
 	Operand op{};
 	const auto field = src.field;
 	const u32 code = src.code;
@@ -165,7 +165,7 @@ Operand MapOperand(const Shader::Gcn::InstOperand& src) {
 	op.op_sel_hi = src.op_sel.op_sel_hi;
 	if (src.dpp.has_value()) {
 		op.dpp = true;
-		op.dpp_ctrl = src.dpp->op;
+		op.dpp_ctrl = static_cast<u32>(src.dpp->op);
 		op.dpp_row_mask = src.dpp->row_mask;
 		op.dpp_bank_mask = src.dpp->bank_mask;
 		op.dpp_bound_ctrl = src.dpp->bc;
@@ -655,12 +655,10 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::S_CBRANCH_CDBGUSER: break;
 		case GcnOpcode::S_CBRANCH_CDBGSYS_OR_USER: break;
 		case GcnOpcode::S_CBRANCH_CDBGSYS_AND_USER: break;
-		case GcnOpcode::V_CMP_T_F32: break;
 		case GcnOpcode::V_CMPX_F_F32: break;
 		case GcnOpcode::V_CMPX_O_F32: break;
 		case GcnOpcode::V_CMPX_U_F32: break;
 		case GcnOpcode::V_CMPX_TRU_F32: break;
-		case GcnOpcode::V_CMPX_T_F32: break;
 		case GcnOpcode::V_CMP_F_F64: break;
 		case GcnOpcode::V_CMP_LT_F64: break;
 		case GcnOpcode::V_CMP_EQ_F64: break;
@@ -677,7 +675,6 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::V_CMP_NEQ_F64: break;
 		case GcnOpcode::V_CMP_NLT_F64: break;
 		case GcnOpcode::V_CMP_TRU_F64: break;
-		case GcnOpcode::V_CMP_T_F64: break;
 		case GcnOpcode::V_CMPX_F_F64: break;
 		case GcnOpcode::V_CMPX_LT_F64: break;
 		case GcnOpcode::V_CMPX_EQ_F64: break;
@@ -694,7 +691,6 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::V_CMPX_NEQ_F64: break;
 		case GcnOpcode::V_CMPX_NLT_F64: break;
 		case GcnOpcode::V_CMPX_TRU_F64: break;
-		case GcnOpcode::V_CMPX_T_F64: break;
 		case GcnOpcode::V_CMPS_F_F32: break;
 		case GcnOpcode::V_CMPS_LT_F32: break;
 		case GcnOpcode::V_CMPS_EQ_F32: break;
@@ -711,7 +707,6 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::V_CMPS_NEQ_F32: break;
 		case GcnOpcode::V_CMPS_NLT_F32: break;
 		case GcnOpcode::V_CMPS_TRU_F32: break;
-		case GcnOpcode::V_CMPS_T_F32: break;
 		case GcnOpcode::V_CMPSX_F_F32: break;
 		case GcnOpcode::V_CMPSX_LT_F32: break;
 		case GcnOpcode::V_CMPSX_EQ_F32: break;
@@ -728,7 +723,6 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::V_CMPSX_NEQ_F32: break;
 		case GcnOpcode::V_CMPSX_NLT_F32: break;
 		case GcnOpcode::V_CMPSX_TRU_F32: break;
-		case GcnOpcode::V_CMPSX_T_F32: break;
 		case GcnOpcode::V_CMPS_F_F64: break;
 		case GcnOpcode::V_CMPS_LT_F64: break;
 		case GcnOpcode::V_CMPS_EQ_F64: break;
@@ -745,7 +739,6 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::V_CMPS_NEQ_F64: break;
 		case GcnOpcode::V_CMPS_NLT_F64: break;
 		case GcnOpcode::V_CMPS_TRU_F64: break;
-		case GcnOpcode::V_CMPS_T_F64: break;
 		case GcnOpcode::V_CMPSX_F_F64: break;
 		case GcnOpcode::V_CMPSX_LT_F64: break;
 		case GcnOpcode::V_CMPSX_EQ_F64: break;
@@ -762,12 +755,8 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::V_CMPSX_NEQ_F64: break;
 		case GcnOpcode::V_CMPSX_NLT_F64: break;
 		case GcnOpcode::V_CMPSX_TRU_F64: break;
-		case GcnOpcode::V_CMPSX_T_F64: break;
-		case GcnOpcode::V_CMP_TRU_I32: break;
 		case GcnOpcode::V_CMPX_F_I32: break;
-		case GcnOpcode::V_CMPX_LG_I32: break;
 		case GcnOpcode::V_CMPX_TRU_I32: break;
-		case GcnOpcode::V_CMPX_T_I32: break;
 		case GcnOpcode::V_CMPX_CLASS_F32: break;
 		case GcnOpcode::V_CMP_F_I64: break;
 		case GcnOpcode::V_CMP_LT_I64: break;
@@ -775,10 +764,8 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::V_CMP_LE_I64: break;
 		case GcnOpcode::V_CMP_GT_I64: break;
 		case GcnOpcode::V_CMP_LG_I64: break;
-		case GcnOpcode::V_CMP_NE_I64: break;
 		case GcnOpcode::V_CMP_GE_I64: break;
 		case GcnOpcode::V_CMP_TRU_I64: break;
-		case GcnOpcode::V_CMP_T_I64: break;
 		case GcnOpcode::V_CMP_CLASS_F64: break;
 		case GcnOpcode::V_CMPX_F_I64: break;
 		case GcnOpcode::V_CMPX_LT_I64: break;
@@ -786,36 +773,27 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::V_CMPX_LE_I64: break;
 		case GcnOpcode::V_CMPX_GT_I64: break;
 		case GcnOpcode::V_CMPX_LG_I64: break;
-		case GcnOpcode::V_CMPX_NE_I64: break;
 		case GcnOpcode::V_CMPX_GE_I64: break;
 		case GcnOpcode::V_CMPX_TRU_I64: break;
-		case GcnOpcode::V_CMPX_T_I64: break;
 		case GcnOpcode::V_CMPX_CLASS_F64: break;
-		case GcnOpcode::V_CMP_TRU_U32: break;
 		case GcnOpcode::V_CMP_F_F16: break;
 		case GcnOpcode::V_CMP_O_F16: break;
 		case GcnOpcode::V_CMPX_F_U32: break;
-		case GcnOpcode::V_CMPX_TRU_U32: break;
-		case GcnOpcode::V_CMPX_T_U32: break;
 		case GcnOpcode::V_CMP_F_U64: break;
 		case GcnOpcode::V_CMP_LT_U64: break;
 		case GcnOpcode::V_CMP_EQ_U64: break;
 		case GcnOpcode::V_CMP_LE_U64: break;
 		case GcnOpcode::V_CMP_GT_U64: break;
-		case GcnOpcode::V_CMP_LG_U64: break;
 		case GcnOpcode::V_CMP_GE_U64: break;
 		case GcnOpcode::V_CMP_TRU_U64: break;
-		case GcnOpcode::V_CMP_T_U64: break;
 		case GcnOpcode::V_CMPX_F_U64: break;
 		case GcnOpcode::V_CMPX_LT_U64: break;
 		case GcnOpcode::V_CMPX_EQ_U64: break;
 		case GcnOpcode::V_CMPX_LE_U64: break;
 		case GcnOpcode::V_CMPX_GT_U64: break;
 		case GcnOpcode::V_CMPX_LG_U64: break;
-		case GcnOpcode::V_CMPX_NE_U64: break;
 		case GcnOpcode::V_CMPX_GE_U64: break;
 		case GcnOpcode::V_CMPX_TRU_U64: break;
-		case GcnOpcode::V_CMPX_T_U64: break;
 		case GcnOpcode::V_MAC_LEGACY_F32: break;
 		case GcnOpcode::V_MUL_LEGACY_F32: break;
 		case GcnOpcode::V_MUL_HI_I32_I24: break;
@@ -883,9 +861,7 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::V_DIV_FMAS_F64: break;
 		case GcnOpcode::V_MSAD_U8: break;
 		case GcnOpcode::V_QSAD_U8: break;
-		case GcnOpcode::V_QSAD_PK_U16_U8: break;
 		case GcnOpcode::V_MQSAD_U8: break;
-		case GcnOpcode::V_MQSAD_PK_U16_U8: break;
 		case GcnOpcode::V_TRIG_PREOP_F64: break;
 		case GcnOpcode::V_MQSAD_U32_U8: break;
 		case GcnOpcode::V_MAD_I64_I32: break;
@@ -1152,8 +1128,8 @@ bool DecodeGcnProgram(std::span<const uint32_t> code, Program& program,
 	program.code = code;
 	program.isa_family = ShaderRecompiler::IsaFamily::Gcn;
 
-	Shader::Gcn::GcnDecodeContext ctx;
-	Shader::Gcn::GcnCodeSlice slice(code.data(), code.data() + code.size());
+	::Shader::Gcn::GcnDecodeContext ctx;
+	::Shader::Gcn::GcnCodeSlice slice(code.data(), code.data() + code.size());
 
 	uint32_t word_index = 0;
 	while (!slice.atEnd()) {
