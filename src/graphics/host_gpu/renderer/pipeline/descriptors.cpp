@@ -571,7 +571,7 @@ static TextureCache::ImageDesc FallbackStorageDesc(
     Prospero::ImageType type) {
 	TextureCache::ImageDesc desc {};
 	desc.info.data            = {address, size_bytes};
-	desc.info.pixel_format    = Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt);
+	desc.info.pixel_format    = static_cast<vk::Format>(Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt));
 	desc.info.guest_format    = Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt);
 	desc.info.type            = (type == Prospero::ImageType::kColor3D)
 	                                ? Prospero::ImageType::kColor3D
