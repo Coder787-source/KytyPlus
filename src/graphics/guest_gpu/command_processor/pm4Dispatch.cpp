@@ -253,6 +253,18 @@ constexpr auto MakeOpcodeDispatchTable() {
 	g_cp_op_func[Pm4::IT_WAIT_ON_DE_COUNTER_DIFF]   = CpOpWaitOnDeCounterDiff;
 	g_cp_op_func[Pm4::IT_GET_LOD_STATS]             = CpOpGetLodStats;
 
+	// ── Soft-ignore entries for PM4 opcodes used by GTA V / RAGE engine ──────
+	g_cp_op_func[Pm4::IT_CONTEXT_CONTROL]      = CpOpContextControl;
+	g_cp_op_func[Pm4::IT_INDIRECT_BUFFER_CNST] = CpOpIndirectBufferCnst;
+	g_cp_op_func[Pm4::IT_MEM_SEMAPHORE]        = CpOpMemSemaphore;
+	g_cp_op_func[Pm4::IT_CP_DMA]               = CpOpCpDma;
+	g_cp_op_func[Pm4::IT_SURFACE_SYNC]          = CpOpSurfaceSync;
+	g_cp_op_func[Pm4::IT_RELEASE_MEM]          = CpOpItReleaseMem;
+	g_cp_op_func[Pm4::IT_REWIND]               = CpOpRewind;
+	g_cp_op_func[Pm4::IT_SET_CONFIG_REG]       = CpOpSetConfigReg;
+	g_cp_op_func[Pm4::IT_SET_QUEUE_REG]        = CpOpSetQueueReg;
+	g_cp_op_func[Pm4::IT_DISPATCH_DRAW]        = CpOpDispatchDraw;
+
 	return g_cp_op_func;
 }
 

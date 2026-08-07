@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/cache/samplerCache.h"
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -127,6 +128,9 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r) {
 	sampler_info.addressModeW = to_vk_address_mode(r.ClampZ());
 	sampler_info.mipLodBias =
 	    static_cast<float>(static_cast<int16_t>((r.LodBias() ^ 0x2000u) - 0x2000u)) / 256.0f;
+	// iGPU optimization: add LOD bias to skip high-resolution mip levels,
+	// reducing memory bandwidth. Each unit of bias skips one mip level.
+	sampler_info.mipLodBias += static_cast<float>(Config::GetTextureLodBias());
 	sampler_info.anisotropyEnable        = (aniso ? VK_TRUE : VK_FALSE);
 	sampler_info.maxAnisotropy           = aniso_ratio;
 	sampler_info.compareEnable           = (r.DepthCompareFunc() != 0 ? VK_TRUE : VK_FALSE);

@@ -125,4 +125,55 @@ bool AsyncPipelineCompilationEnabled() {
 	return g_config->async_pipeline_compilation;
 }
 
+// --- iGPU optimization accessors ---
+
+bool ForceIgpuMode() {
+	return g_config->force_igpu_mode;
+}
+
+ResolutionScale GetResolutionScale() {
+	return g_config->resolution_scale;
+}
+
+int32_t GetTextureLodBias() {
+	return g_config->texture_lod_bias;
+}
+
+bool UmaStagingBypass() {
+	return g_config->uma_staging_bypass;
+}
+
+float GetResolutionScaleFactor() {
+	switch (g_config->resolution_scale) {
+		case ResolutionScale::Native:  return 1.0f;
+		case ResolutionScale::Half:    return 0.5f;
+		case ResolutionScale::Quarter: return 0.25f;
+	}
+	return 1.0f;
+}
+
+// --- Upscaler accessors ---
+
+UpscalerMethod GetUpscalerMethod() {
+	return g_config->upscaler_method;
+}
+
+UpscalerQuality GetUpscalerQuality() {
+	return g_config->upscaler_quality;
+}
+
+float GetUpscalerSharpness() {
+	return std::clamp(g_config->upscaler_sharpness, 0.0f, 1.0f);
+}
+
+float GetUpscalerRenderScale() {
+	switch (g_config->upscaler_quality) {
+		case UpscalerQuality::UltraQuality: return 0.77f;
+		case UpscalerQuality::Quality:      return 0.67f;
+		case UpscalerQuality::Balanced:     return 0.59f;
+		case UpscalerQuality::Performance:  return 0.50f;
+	}
+	return 0.67f;
+}
+
 } // namespace Config

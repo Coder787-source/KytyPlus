@@ -212,6 +212,9 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 	args << "--present-filter" << EnumToText(info.present_filter);
 	args << "--present-mode" << EnumToText(info.present_mode);
 	args << "--aspect-ratio" << EnumToText(info.aspect_ratio);
+	args << "--upscaler-method" << EnumToText(info.upscaler_method);
+	args << "--upscaler-quality" << EnumToText(info.upscaler_quality);
+	args << "--upscaler-sharpness" << QString::number(info.upscaler_sharpness, 'f', 2);
 	args << "--screenshot-hotkey" << QString::number(info.screenshot_hotkey);
 	args << "--screenshot-folder" << info.screenshot_folder;
 	args << "--command-buffer-dump" << BoolArg(info.command_buffer_dump_enabled);

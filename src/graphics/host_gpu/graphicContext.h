@@ -68,6 +68,10 @@ struct VulkanImage {
 	uint32_t               layers      = 1;
 	uint32_t               mip_levels  = 1;
 	uint32_t               samples     = 1;
+	// iGPU resolution scaling: 1.0 = native, 0.5 = half, 0.25 = quarter.
+	// When < 1.0, backing.extent is scaled down from info.extent to reduce
+	// fill rate and bandwidth.  Presentation must blit-upscale to window size.
+	float                  resolution_scale = 1.0f;
 	vk::ImageUsageFlags    usage       = {};
 	vk::ImageCreateFlags   flags       = {};
 	vk::Image              image       = nullptr;

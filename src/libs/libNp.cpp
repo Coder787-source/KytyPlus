@@ -14,28 +14,32 @@
 
 namespace Libs {
 
+// PSN is not available in the emulator. Network-requiring stubs return this
+// error so games do not proceed as if online services are connected.
+constexpr int NP_NOT_SIGNED_IN = static_cast<int>(0x80550005u);
+
 namespace NpAuth {
 LIB_VERSION("libSceNpAuth", 1, "libSceNpAuth", 1, 1);
 
 
 static int KYTY_SYSV_ABI sceNpAuthGetAuthorizationCode() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpAuthGetAuthorizationCodeA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpAuthGetIdToken() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpAuthGetIdTokenA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpAuthSetTimeout() {
@@ -301,12 +305,12 @@ static int KYTY_SYSV_ABI sceNpGetGamePresenceStatusA() {
 
 static int KYTY_SYSV_ABI sceNpSetGamePresenceOnline() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpSetGamePresenceOnlineA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpRegisterGamePresenceCallbackA() {
@@ -321,7 +325,7 @@ static int KYTY_SYSV_ABI sceNpUnregisterGamePresenceCallbackA() {
 
 static int KYTY_SYSV_ABI sceNpIsPlusMember() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpUnregisterPlusEventCallback() {
@@ -440,132 +444,132 @@ LIB_VERSION("libSceNpParty", 1, "libSceNpParty", 1, 1);
 
 static int KYTY_SYSV_ABI sceNpPartyCheckCallback() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyCreate() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyCreateA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetId() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetMemberInfo() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetMemberInfoA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetMembers() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetMembersA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetMemberSessionInfo() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetMemberVoiceInfo() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetState() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetStateAsUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetStateAsUserA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyGetVoiceChatPriority() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyInitialize() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyJoin() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyLeave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyRegisterHandler() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyRegisterHandlerA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyRegisterPrivateHandler() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartySendBinaryMessage() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartySetVoiceChatPriority() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyShowInvitationList() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyShowInvitationListA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyTerminate() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpPartyUnregisterPrivateHandler() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 
@@ -795,7 +799,7 @@ static int KYTY_SYSV_ABI sceNpTrophyNumInfoGetTotal() {
 
 static int KYTY_SYSV_ABI sceNpTrophyRegisterContext() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTrophySetInfoGetTrophyFlagArray() {
@@ -985,12 +989,12 @@ static int KYTY_SYSV_ABI sceNpTrophySystemIsServerAvailable() {
 
 static int KYTY_SYSV_ABI sceNpTrophySystemNetSyncTitle() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTrophySystemNetSyncTitles() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTrophySystemOpenStorage() {
@@ -1030,7 +1034,7 @@ static int KYTY_SYSV_ABI sceNpTrophySystemSetDbgParamInt() {
 
 static int KYTY_SYSV_ABI sceNpTrophyUnlockTrophy() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI Func_149656DA81D41C59() {
@@ -1151,712 +1155,712 @@ LIB_VERSION("libSceNpTus", 1, "libSceNpTus", 1, 1);
 
 static int KYTY_SYSV_ABI sceNpTssCreateNpTitleCtx() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariable() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusCreateNpTitleCtx() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotData() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotDataAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotVariable() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotVariableAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetData() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsDataStatus() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsDataStatusAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsVariable() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsVariableAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatus() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariable() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatus() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariable() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetData() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetDataAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetDataVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetDataVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetMultiSlotVariable() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetMultiSlotVariableAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariable() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTssCreateNpTitleCtxA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTssGetData() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTssGetDataAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTssGetSmallStorage() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTssGetSmallStorageAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTssGetStorage() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTssGetStorageAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAbortRequest() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableAVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableAVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableForCrossSave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableForCrossSaveAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableForCrossSaveVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusAddAndGetVariableForCrossSaveVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusChangeModeForOtherSaveDataOwners() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusCreateNpTitleCtxA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusCreateRequest() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusCreateTitleCtx() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotDataA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotDataAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotDataVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotDataVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotVariableA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotVariableAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotVariableVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteMultiSlotVariableVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteNpTitleCtx() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusDeleteRequest() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataAVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataAVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataForCrossSave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataForCrossSaveAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataForCrossSaveVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetDataForCrossSaveVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsDataStatusA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsDataStatusAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsDataStatusForCrossSave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsDataStatusForCrossSaveAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsVariableA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsVariableAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsVariableForCrossSave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetFriendsVariableForCrossSaveAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusAVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusAVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusForCrossSave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusForCrossSaveAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusForCrossSaveVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotDataStatusForCrossSaveVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableAVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableAVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableForCrossSave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableForCrossSaveAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableForCrossSaveVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiSlotVariableForCrossSaveVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusAVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusAVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusForCrossSave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusForCrossSaveAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusForCrossSaveVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserDataStatusForCrossSaveVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableAVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableAVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableForCrossSave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableForCrossSaveAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableForCrossSaveVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusGetMultiUserVariableForCrossSaveVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusPollAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetDataA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetDataAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetDataAVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetDataAVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetMultiSlotVariableA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetMultiSlotVariableAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetMultiSlotVariableVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetMultiSlotVariableVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetThreadParam() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusSetTimeout() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableA() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableAAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableAVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableAVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableForCrossSave() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableForCrossSaveAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableForCrossSaveVUser() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusTryAndSetVariableForCrossSaveVUserAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 static int KYTY_SYSV_ABI sceNpTusWaitAsync() {
 	PRINT_NAME();
-	return OK;
+	return NP_NOT_SIGNED_IN;
 }
 
 

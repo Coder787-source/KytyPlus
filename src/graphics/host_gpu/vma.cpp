@@ -15,6 +15,7 @@
 #endif
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -83,9 +84,14 @@ bool GraphicContext::CreateAllocator() {
 	info.pVulkanFunctions = &functions;
 	info.vulkanApiVersion = VULKAN_TARGET_API_VERSION;
 	info.flags = memory_budget_for_vma ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0;
-	// Larger blocks cut allocation/map overhead when many guest textures are resident. 512 MiB is
-	// cheap on a 32 GiB Mini PC / discrete card; keep the VMA default (256 MiB) only as a floor.
-	info.preferredLargeHeapBlockSize = 512ull * 1024ull * 1024ull;
+	// iGPU tuning: smaller heap blocks to avoid over-committing shared system RAM.
+	// Discrete GPUs get 512 MiB blocks (cheap on 32 GiB cards); iGPUs get 128 MiB
+	// to reduce fragmentation in the shared memory pool and avoid evicting OS pages.
+	if (integrated_gpu || Config::ForceIgpuMode()) {
+		info.preferredLargeHeapBlockSize = 128ull * 1024ull * 1024ull;
+	} else {
+		info.preferredLargeHeapBlockSize = 512ull * 1024ull * 1024ull;
+	}
 
 	const auto result = static_cast<vk::Result>(vmaCreateAllocator(&info, &allocator));
 	if (result != vk::Result::eSuccess) {

@@ -4036,6 +4036,20 @@ uint64_t KYTY_SYSV_ABI KernelGetProcessTimeCounterFrequency() {
 	return KernelGetTscFrequencyNative();
 }
 
+// Report PS5 CPU topology (8 cores / 16 threads, AMD Zen 2 @ 3.5 GHz).
+// Guest engines query this for thread pool sizing and hardware fingerprinting.
+int KYTY_SYSV_ABI KernelGetCpuCount() {
+	return 16; // PS5: 8 physical cores, 16 logical threads (SMT)
+}
+
+int KYTY_SYSV_ABI KernelGetCpuCoreCount() {
+	return 8; // PS5: 8 physical cores
+}
+
+uint32_t KYTY_SYSV_ABI KernelGetCpuFrequencyMhz() {
+	return 3500; // PS5 Zen 2 base clock: 3.5 GHz (variable, up to 3.5)
+}
+
 void KYTY_SYSV_ABI KernelSetThreadDtors(thread_dtors_func_t dtors) {
 	PRINT_NAME();
 

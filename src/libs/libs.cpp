@@ -105,6 +105,7 @@ namespace LibVoice { LIB_DEFINE(InitVoice_1); }
 namespace LibVrTracker { LIB_DEFINE(InitVrTracker_1); }
 namespace LibWebBrowserDialog { LIB_DEFINE(InitWebBrowserDialog_1); }
 namespace LibZlib { LIB_DEFINE(InitZlib_1); }
+namespace RageEngine { LIB_DEFINE(InitRageEngine_1); }
 namespace CompanionHttpd { LIB_DEFINE(InitCompanionHttpd_1); }
 namespace CompanionUtil { LIB_DEFINE(InitCompanionUtil_1); }
 namespace NpAuth { LIB_DEFINE(InitNpAuth_1); }
@@ -153,6 +154,8 @@ void InitAll(Loader::SymbolDatabase* s) {
 	LIB_LOAD(InitUserService_1);
 	LIB_LOAD(VideoDec2::InitVideoDec2_1);
 	LIB_LOAD(InitVideoOut_1);
+// --- RAGE engine HLE bridge ---
+	LIB_LOAD(RageEngine::InitRageEngine_1);
 // --- PS4 module loads (shadPS4 port) ---
 	LIB_LOAD(LibCamera::InitCamera_1);
 	LIB_LOAD(LibDiscMap::InitDiscMap_1);

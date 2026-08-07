@@ -71,6 +71,12 @@ static void PrintUsage() {
 	         "Default: Fifo.\n");
 	::printf("  --aspect-ratio <value>              Stretch, Fit16x9, Fit4x3, or Integer. "
 	         "Default: Stretch.\n");
+	::printf("  --upscaler-method <value>           Off or Fsr31 (edge-adaptive spatial upscaler, "
+	         "all Vulkan GPUs). Default: Off.\n");
+	::printf("  --upscaler-quality <value>          UltraQuality, Quality, Balanced, or Performance "
+	         "(internal render scale). Default: Quality.\n");
+	::printf("  --upscaler-sharpness <value>        RCAS sharpening strength 0.0–1.0. "
+	         "Default: 0.5.\n");
 	::printf("  --screenshot-hotkey <scancode>      SDL scancode (hex ok) that captures a PNG; 0 disables. "
 	         "Default: F12 (0x5b).\n");
 	::printf("  --screenshot-folder <path>          Folder for screenshot PNGs. "
@@ -264,6 +270,24 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid aspect ratio: %s\n", value.c_str());
 				return false;
 			}
+		} else if (arg == "--upscaler-method") {
+			if (!ParseEnum(value, options.config.upscaler_method)) {
+				::printf("invalid upscaler method: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--upscaler-quality") {
+			if (!ParseEnum(value, options.config.upscaler_quality)) {
+				::printf("invalid upscaler quality: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--upscaler-sharpness") {
+			char* end = nullptr;
+			double v = std::strtod(value.c_str(), &end);
+			if (end == value.c_str() || v < 0.0 || v > 1.0) {
+				::printf("invalid upscaler sharpness (must be 0.0–1.0): %s\n", value.c_str());
+				return false;
+			}
+			options.config.upscaler_sharpness = static_cast<float>(v);
 		} else if (arg == "--screenshot-hotkey") {
 			const auto sc = static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 0));
 			options.config.screenshot_hotkey = sc;

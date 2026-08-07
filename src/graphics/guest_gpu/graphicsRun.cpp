@@ -930,6 +930,7 @@ void CommandProcessor::DrawIndex(uint32_t index_count, const void* index_addr, u
                                  uint32_t render_target_slice_offset, int32_t vertex_offset_add,
                                  uint32_t first_instance) {
 	CheckBuffer();
+	m_memory_barrier_coalesced = false; // barrier needed before next barrier request
 
 	if (instance_count == 0) {
 		instance_count = m_num_instances;
@@ -1160,6 +1161,7 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 
 	{
 		CheckBuffer();
+		m_memory_barrier_coalesced = false;
 		frame_num = m_renderer.GetGpu().GetFrameNum();
 		if (GraphicsRunDebugDumpEnabled()) {
 			static std::atomic<uint32_t> log_count {0};
@@ -1240,6 +1242,7 @@ void CommandProcessor::DrawIndexAuto(uint32_t index_count, uint32_t flags,
                                      uint32_t render_target_slice_offset, uint32_t instance_count,
                                      uint32_t first_vertex, uint32_t first_instance) {
 	CheckBuffer();
+	m_memory_barrier_coalesced = false;
 
 	m_renderer.GetRenderExecutor().DrawAuto(
 	    m_submit_id, CurrentBuffer(), index_count, flags, render_target_slice_offset,
@@ -1510,6 +1513,14 @@ void CommandProcessor::WriteAtEndOfPipe64(uint32_t cache_policy, uint32_t event_
 
 void CommandProcessor::EmitGlobalBarrier() {
 	CheckBuffer();
+
+	// iGPU optimization: coalesce consecutive barriers with no intervening
+	// draw/dispatch.  On iGPU the unified cache makes redundant full barriers
+	// especially expensive because each stalls the single shared pipeline.
+	if (m_memory_barrier_coalesced) {
+		return;
+	}
+	m_memory_barrier_coalesced = true;
 
 	Common::LockGuard lock(m_renderer.GetMutex());
 

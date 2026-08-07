@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/profiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
@@ -32,6 +33,13 @@ constexpr size_t WATCHES_RESERVE_CHUNK   = 0x1000;
 }
 
 [[nodiscard]] VmaMemoryUsage AllocationUsage(MemoryUsage usage) {
+	// On UMA (iGPU), all memory is both device-local and host-visible.
+	// Use AUTO_PREFER_DEVICE for everything so staging buffers land in the same
+	// pool as textures/buffers — the staging copy becomes a no-op memcpy.
+	const bool uma = Config::UmaStagingBypass();
+	if (uma) {
+		return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+	}
 	switch (usage) {
 		case MemoryUsage::DeviceLocal:
 		case MemoryUsage::Stream: return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;

@@ -153,6 +153,7 @@ static int KYTY_SYSV_ABI Graphics5UnknownDb(uint64_t arg0, uint64_t arg1, uint64
 LIB_DEFINE(InitGraphicsDriver_1) {
 	PRINT_NAME_ENABLE(true);
 
+	LIB_FUNC("AGC5GetGpuDevInfo", Gen5::GraphicsGetGpuDeviceInfo); // PS5 GPU hardware query
 	LIB_FUNC("23LRUSvYu1M", Gen5::GraphicsInit);
 	LIB_FUNC("2JtWUUiYBXs", Gen5::GraphicsGetRegisterDefaults2);
 	LIB_FUNC("wRbq6ZjNop4", Gen5::GraphicsGetRegisterDefaults2Internal);

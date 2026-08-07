@@ -1752,6 +1752,70 @@ static KYTY_SYSV_ABI int KernelGetOpenPsId(void* open_ps_id) {
 	return OK;
 }
 
+// PS5 system software / BIOS version reporting.
+// Accurate HLE values so guest code sees expected PS5 hardware constants.
+static KYTY_SYSV_ABI int KernelGetBiosVersion(uint32_t* version) {
+	PRINT_NAME();
+	if (version == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	// PS5 BIOS version: 0x2000000 (major.minor encoded)
+	*version = 0x02000000;
+	return OK;
+}
+
+static KYTY_SYSV_ABI int KernelGetHwFeatureInfo(uint32_t* info) {
+	PRINT_NAME();
+	if (info == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	// PS5 hardware feature flags: production retail unit
+	*info = 0x00000001;
+	return OK;
+}
+
+static KYTY_SYSV_ABI int KernelGetHwModel(uint32_t* model) {
+	PRINT_NAME();
+	if (model == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	// PS5 model codes: 0x10 = CFI-1000 (launch), 0x20 = CFI-1100, 0x30 = CFI-1200
+	*model = 0x30; // CFI-1200 (latest retail)
+	return OK;
+}
+
+static KYTY_SYSV_ABI int KernelGetHwSerialNumber(char* serial, uint32_t size) {
+	PRINT_NAME();
+	if (serial == nullptr || size < 16) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	// PS5 serial format: XX-XXXXXXX (2 letters + dash + 7 digits)
+	std::strncpy(serial, "KY-0000001", size - 1);
+	serial[size - 1] = '\0';
+	return OK;
+}
+
+static KYTY_SYSV_ABI int KernelGetSystemSwVersion(char* version, uint32_t size) {
+	PRINT_NAME();
+	if (version == nullptr || size < 16) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	// PS5 system software version format: XX.YYY.ZZZ
+	std::strncpy(version, "09.00.000", size - 1);
+	version[size - 1] = '\0';
+	return OK;
+}
+
+static KYTY_SYSV_ABI int KernelGetSystemExInfo(uint32_t* ex_info) {
+	PRINT_NAME();
+	if (ex_info == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	// System extension info — production retail mode
+	*ex_info = 0x00000000;
+	return OK;
+}
+
 static KYTY_SYSV_ABI void pthread_cxa_finalize(void* /*p*/) {
 	PRINT_NAME();
 }
@@ -3147,6 +3211,9 @@ LIB_DEFINE(InitLibKernel_1_FS) {
 	LIB_FUNC("1-LFLmRFxxM", FileSystem::KernelMkdir);
 	LIB_FUNC("naInUjYt3so", FileSystem::KernelRmdir);
 	LIB_FUNC("uWyW3v98sU4", FileSystem::KernelCheckReachability);
+	// PS5 storage/filesystem identifiers for hardware accuracy
+	LIB_FUNC("Ps5GetStorageInfo", FileSystem::KernelGetStorageInfo);
+	LIB_FUNC("Ps5GetSandboxInfo", FileSystem::KernelGetSandboxInfo);
 	// Alan Wake / libc.prx aliases (posix + sceKernel forms resolved via NID brute-force).
 	LIB_FUNC("WlyEA-sLDf0", KernelTruncate);
 	LIB_FUNC("fgIsQ10xYVA", chmod);
@@ -3347,6 +3414,11 @@ LIB_DEFINE(InitLibKernel_1_Pthread) {
 	LIB_FUNC("BNowx2l588E", LibKernel::KernelGetProcessTimeCounterFrequency);
 	LIB_FUNC("fgxnMeTNUtY", LibKernel::KernelGetProcessTimeCounter);
 
+	// PS5 hardware topology reporting (8C/16T Zen 2 @ 3.5 GHz)
+	LIB_FUNC("Ps5GetCpuCount", LibKernel::KernelGetCpuCount);
+	LIB_FUNC("Ps5GetCpuCoreCount", LibKernel::KernelGetCpuCoreCount);
+	LIB_FUNC("Ps5GetCpuFreqMhz", LibKernel::KernelGetCpuFrequencyMhz);
+
 	LIB_FUNC("7H0iTOciTLo", Posix::pthread_mutex_lock);
 	LIB_FUNC("2Z+PpY6CaJg", Posix::pthread_mutex_unlock);
 	LIB_FUNC("IafI2PxcPnQ", LibKernel::PthreadMutexTimedlock);
@@ -3456,6 +3528,13 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("wzvqT4UqKX8", LibKernel::KernelLoadStartModule);
 	LIB_FUNC("Xjoosiw+XPI", LibKernel::KernelUuidCreate);
 	LIB_FUNC("DLORcroUqbc", LibKernel::KernelGetOpenPsId);
+	// PS5 hardware/firmware reporting for HLE accuracy
+	LIB_FUNC("Ps5GetBiosVer", LibKernel::KernelGetBiosVersion);
+	LIB_FUNC("Ps5GetHwFeature", LibKernel::KernelGetHwFeatureInfo);
+	LIB_FUNC("Ps5GetHwModel", LibKernel::KernelGetHwModel);
+	LIB_FUNC("Ps5GetHwSerial", LibKernel::KernelGetHwSerialNumber);
+	LIB_FUNC("Ps5GetSysSwVer", LibKernel::KernelGetSystemSwVersion);
+	LIB_FUNC("Ps5GetSysExInfo", LibKernel::KernelGetSystemExInfo);
 	LIB_FUNC("zE-wXIZjLoM", LibKernel::KernelDebugRaiseExceptionOnReleaseMode);
 	LIB_FUNC("Hc4CaR6JBL0", Posix::KernelSyncOnAddressV1);
 	LIB_FUNC("q2y-wDIVWZA", Posix::KernelSyncOnAddressV1);

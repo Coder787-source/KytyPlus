@@ -18,6 +18,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
+#include "graphics/presentation/fsrUpscaler.h"
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -368,6 +369,7 @@ private:
 	void RefreshSurfaceSize();
 
 	WindowContext&             m_window;
+	FsrUpscaler              m_fsr;
 	vk::SwapchainKHR           m_handle = nullptr;
 	vk::Format                 m_format = vk::Format::eUndefined;
 	vk::Extent2D               m_extent {};
@@ -512,6 +514,10 @@ void Swapchain::Create() {
 	create_info.imageArrayLayers = 1;
 	create_info.imageUsage =
 	    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
+	// FSR RCAS pass writes to the swapchain image via imageStore (storage).
+	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr31) {
+		create_info.imageUsage |= vk::ImageUsageFlagBits::eStorage;
+	}
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
 	create_info.preTransform     = transform;
 	create_info.compositeAlpha   = composite;
@@ -596,6 +602,14 @@ void Swapchain::Create() {
 	}
 	m_image_index = static_cast<uint32_t>(-1);
 	m_frame_index = 0;
+
+	// Initialize FSR upscaler if enabled.
+	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr31) {
+		if (!m_fsr.Create(graphics)) {
+			LOGF_COLOR(Log::Color::Yellow,
+			           "FSR: failed to initialise upscaler pipelines; falling back to blit\n");
+		}
+	}
 }
 
 Swapchain::~Swapchain() {
@@ -608,6 +622,9 @@ void Swapchain::Destroy() {
 		return;
 	}
 	auto& graphics = m_window.graphic_ctx;
+
+	// Destroy FSR resources before the device goes away.
+	m_fsr.Destroy();
 
 	{
 		Common::LockGuard queue_lock(graphics.queue_mutex);
@@ -723,6 +740,14 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
 	                           nullptr, 0, nullptr, 1, &to_transfer);
 
+	if (m_fsr.IsReady()) {
+		// FSR two-pass compute upscaler: EASU → RCAS.
+		// Dispatch() handles all image transitions internally (source, intermediate, dest).
+		m_fsr.Dispatch(vk_command, source, m_images[m_image_index], m_format,
+		               source.extent.width, source.extent.height,
+		               m_extent.width, m_extent.height,
+		               Config::GetUpscalerSharpness());
+	} else {
 	// Clear the swapchain image to opaque black before the blit so that letterbox /
 	// pillarbox bars (when an aspect-ratio mode shrinks the blit rectangle) render as
 	// black instead of undefined content.
@@ -840,6 +865,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	                           vk::PipelineStageFlagBits::eAllCommands,
 	                           vk::DependencyFlagBits::eByRegion, 0,
 	                           nullptr, 0, nullptr, 1, &to_present);
+	} // end blit fallback
 	command.End();
 }
 

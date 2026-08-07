@@ -1282,4 +1282,56 @@ int KYTY_SYSV_ABI KernelCheckReachability(const char* path) {
 	return KERNEL_ERROR_ENOENT;
 }
 
+// PS5 storage device info — guest queries filesystem hardware identifiers.
+struct Ps5StorageInfo {
+	uint32_t device_type;       // 0 = internal SSD
+	uint32_t capacity_gb;       // 825 GB (PS5 launch) or 1000 GB (slim/pro)
+	uint32_t free_gb;           // reported free space
+	uint32_t block_size;        // 4096 (standard SSD page)
+	uint32_t sector_size;       // 512
+	char     serial[16];        // disk serial
+	char     model[32];         // disk model
+	uint32_t reserved[4];
+};
+
+int KYTY_SYSV_ABI KernelGetStorageInfo(Ps5StorageInfo* info) {
+	PRINT_NAME();
+	if (info == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	std::memset(info, 0, sizeof(*info));
+	info->device_type = 0;      // internal SSD
+	info->capacity_gb = 825;    // PS5 launch model
+	info->free_gb     = 667;    // typical usable space
+	info->block_size  = 4096;
+	info->sector_size = 512;
+	std::strncpy(info->serial, "KYTYP5SSD001", sizeof(info->serial) - 1);
+	std::strncpy(info->model, "Sony PS5 NVMe SSD", sizeof(info->model) - 1);
+	return OK;
+}
+
+// PS5 sandbox mount info — reports PS5 filesystem layout.
+struct Ps5SandboxInfo {
+	char     mount_point[32];   // e.g., "/app0", "/savedata0"
+	char     fs_type[16];       // e.g., "pfs"
+	uint64_t total_size;        // bytes
+	uint64_t free_size;         // bytes
+	uint32_t flags;             // mount flags
+	uint32_t reserved[3];
+};
+
+int KYTY_SYSV_ABI KernelGetSandboxInfo(const char* path, Ps5SandboxInfo* info) {
+	PRINT_NAME();
+	if (path == nullptr || info == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	std::memset(info, 0, sizeof(*info));
+	std::strncpy(info->mount_point, path, sizeof(info->mount_point) - 1);
+	std::strncpy(info->fs_type, "pfs", sizeof(info->fs_type) - 1); // PS5 uses PFS
+	info->total_size = 825ull * 1024 * 1024 * 1024; // 825 GB
+	info->free_size  = 667ull * 1024 * 1024 * 1024;
+	info->flags      = 0;
+	return OK;
+}
+
 } // namespace Libs::LibKernel::FileSystem

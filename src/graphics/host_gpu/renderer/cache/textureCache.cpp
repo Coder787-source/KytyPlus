@@ -199,7 +199,39 @@ void TextureCache::RegisterImage(ImageId id) {
 	std::vector<ImageOwnerIndex::ByteRange> ranges;
 	ranges.push_back({image.info.data.address, image.info.data.size});
 	if (!m_image_owner_index.Register(id, ranges)) {
-		EXIT("TextureCache: duplicate or invalid image registration\n");
+		// Render-target aliasing: a previous image at the same address was
+		// not reclaimed by FindImage (different format / size / tiling).
+		// Retire the stale image so the new registration can proceed.
+		const auto addr = image.info.data.address;
+		const auto size = image.info.data.size;
+		auto stale_ids  = m_image_owner_index.Query(addr, size);
+		bool retired    = false;
+		for (const auto stale_id: stale_ids) {
+			if (stale_id == id) {
+				continue;
+			}
+			auto stale_owner = ResolveOwner(stale_id);
+			if (stale_owner == nullptr) {
+				continue;
+			}
+			static std::atomic<uint32_t> soft_logs {0};
+			if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 64) {
+				LOGF_COLOR(Log::Color::Yellow,
+				           "TextureCache: alias-resolve retiring stale image "
+				           "addr=0x%016" PRIx64 " size=0x%" PRIx64 "\n",
+				           stale_owner->info.data.address,
+				           stale_owner->info.data.size);
+			}
+			if (stale_owner->IsGpuModified()) {
+				DownloadImage(stale_id);
+				ClearGpuModified(stale_id);
+			}
+			DeleteImage(stale_id);
+			retired = true;
+		}
+		if (!retired || !m_image_owner_index.Register(id, ranges)) {
+			EXIT("TextureCache: duplicate or invalid image registration\n");
+		}
 	}
 	image.registered = true;
 	image.lru_id     = m_lru_cache.Insert(id, m_gc_tick);
@@ -1729,15 +1761,20 @@ bool TextureCache::SynchronizeImageToBuffer(uint64_t address, uint64_t size) {
 	}
 	CacheLock lock(*this, m_lock);
 	ImageId   selected {};
+	uint64_t  best_size = 0;
 	for (const auto id: FindImagesInRegion(address, size, true)) {
 		auto owner = ResolveOwner(id);
 		if (owner == nullptr || !owner->GpuOverlaps(address, size)) {
 			continue;
 		}
-		if (selected) {
-			EXIT("TextureCache: ambiguous image-to-buffer synchronization\n");
+		// When multiple images alias the same buffer region (common with
+		// GTA V's render-target reuse), pick the image with the largest
+		// backing size rather than crashing on ambiguity.
+		const auto image_size = owner->info.data.size;
+		if (!selected || image_size > best_size) {
+			selected  = id;
+			best_size = image_size;
 		}
-		selected = id;
 	}
 	if (!selected) {
 		return false;

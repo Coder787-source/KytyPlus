@@ -306,7 +306,17 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	key.ps_shader_id  = p.ps_shader_id;
 	key.static_params = static_params;
 
+	// Last-pipeline cache: consecutive draws frequently reuse the same pipeline.
+	// Compute the hash and compare against the last-used key to skip the map lookup.
+	const std::size_t key_hash = GraphicsPipelineKeyHash {}(key);
+	if (key_hash == m_last_gfx_hash && key == m_last_gfx_key && m_last_gfx_pipeline != nullptr) {
+		return *m_last_gfx_pipeline;
+	}
+
 	if (auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
+		m_last_gfx_hash     = key_hash;
+		m_last_gfx_key      = key;
+		m_last_gfx_pipeline = iter->second.get();
 		return *iter->second;
 	}
 
@@ -350,9 +360,15 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 
+	// Cache the newly created pipeline for fast consecutive-draw lookup.
+	const std::size_t new_hash = GraphicsPipelineKeyHash {}(key);
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
 	MaybeSaveDriverCache();
+
+	m_last_gfx_hash     = new_hash;
+	m_last_gfx_key      = iter->first;
+	m_last_gfx_pipeline = iter->second.get();
 
 	return *iter->second;
 }

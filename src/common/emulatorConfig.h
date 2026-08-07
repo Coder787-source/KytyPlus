@@ -32,6 +32,24 @@ enum class PresentMode { Fifo, Mailbox, Immediate };
 // How the guest frame is fitted into the window extent.
 enum class AspectRatio { Stretch, Fit16x9, Fit4x3, Integer };
 
+// Internal resolution scale for iGPU optimization.
+//   Native  -- 100% (1280x720 or guest resolution)
+//   Half    -- 50% (640x360) — major bandwidth/fill-rate savings
+//   Quarter -- 25% (320x180) — extreme mode for very weak iGPUs
+enum class ResolutionScale { Native, Half, Quarter };
+
+// Upscaling method applied during the final guest->swapchain presentation.
+//   Off   -- plain vkBlitImage (Nearest/Linear per PresentFilter)
+//   Fsr31 -- AMD FSR-inspired spatial upscaler (EASU + RCAS), works on all Vulkan GPUs
+enum class UpscalerMethod { Off, Fsr31 };
+
+// Quality preset for the upscaler. Controls the internal render scale:
+//   UltraQuality -- 77% (barely visible, minimal perf gain)
+//   Quality      -- 67% (good balance)
+//   Balanced     -- 59% (noticeable perf, slight quality loss)
+//   Performance  -- 50% (maximum perf, visible softness)
+enum class UpscalerQuality { UltraQuality, Quality, Balanced, Performance };
+
 enum class OutputDirection { Silent, Console, File };
 
 struct ConfigOptions {
@@ -77,6 +95,26 @@ struct ConfigOptions {
 	uint32_t               screenshot_hotkey           = 0x5b;
 	// Folder screenshot PNGs are written to.
 	std::filesystem::path  screenshot_folder           = "_Screenshots";
+	// --- iGPU optimization options ---
+	// Force iGPU optimization mode even if a discrete GPU is detected.
+	bool                   force_igpu_mode             = false;
+	// Internal resolution scale for iGPU: reduces render target size to save
+	// fill rate and memory bandwidth. The presenter upscales back to window size.
+	ResolutionScale        resolution_scale            = ResolutionScale::Native;
+	// Texture LOD bias: positive values skip high-resolution mip levels,
+	// reducing memory bandwidth. 0 = no bias, 1 = skip one mip level, etc.
+	int32_t                texture_lod_bias            = 0;
+	// Skip GPU staging buffer copies on UMA (unified memory architecture).
+	// On iGPUs, CPU and GPU share the same physical memory so staging copies
+	// are redundant. Auto-detected; this override forces the behavior.
+	bool                   uma_staging_bypass          = false;
+	// --- Upscaler options ---
+	// Upscaling method for the guest->swapchain presentation blit.
+	UpscalerMethod         upscaler_method             = UpscalerMethod::Off;
+	// Quality preset controlling the internal render scale.
+	UpscalerQuality        upscaler_quality            = UpscalerQuality::Quality;
+	// RCAS sharpening strength (0.0 = no sharpening, 1.0 = maximum).
+	float                  upscaler_sharpness          = 0.5f;
 };
 
 void Load(const ConfigOptions& cfg);
@@ -125,6 +163,24 @@ std::filesystem::path GetScreenshotFolder();
 
 // Async graphics pipeline compilation: worker-thread compile + draw-skip fallback.
 bool AsyncPipelineCompilationEnabled();
+
+// --- iGPU optimization accessors ---
+bool             ForceIgpuMode();
+ResolutionScale  GetResolutionScale();
+int32_t          GetTextureLodBias();
+bool             UmaStagingBypass();
+
+// Returns the scale factor for the selected resolution scale (1.0, 0.5, or 0.25).
+float GetResolutionScaleFactor();
+
+// --- Upscaler accessors ---
+UpscalerMethod  GetUpscalerMethod();
+UpscalerQuality GetUpscalerQuality();
+float           GetUpscalerSharpness();
+
+// Returns the render scale factor for the selected upscaler quality
+// (e.g. Quality = 0.67, meaning render at 67% then upscale to full).
+float GetUpscalerRenderScale();
 
 } // namespace Config
 

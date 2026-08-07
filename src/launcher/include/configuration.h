@@ -80,6 +80,12 @@ public:
 	enum class AspectRatio { Stretch, Fit16x9, Fit4x3, Integer };
 	Q_ENUM(AspectRatio)
 
+	enum class UpscalerMethod { Off, Fsr31 };
+	Q_ENUM(UpscalerMethod)
+
+	enum class UpscalerQuality { UltraQuality, Quality, Balanced, Performance };
+	Q_ENUM(UpscalerQuality)
+
 	enum class ProfilerDirection { None, Network };
 	Q_ENUM(ProfilerDirection)
 
@@ -120,6 +126,12 @@ public:
 	PresentMode            present_mode                = PresentMode::Fifo;
 	// How the guest frame is fit into the window. Stretch = fill (default).
 	AspectRatio            aspect_ratio                = AspectRatio::Stretch;
+	// FSR-inspired spatial upscaler (works on all Vulkan GPUs). Off = plain blit.
+	UpscalerMethod         upscaler_method             = UpscalerMethod::Off;
+	// Quality preset controlling internal render scale for the upscaler.
+	UpscalerQuality        upscaler_quality            = UpscalerQuality::Quality;
+	// RCAS sharpening strength (0.0 = none, 1.0 = maximum).
+	double                 upscaler_sharpness          = 0.5;
 	// SDL scancode that captures a screenshot PNG; 0 disables. Default F12 (0x5b).
 	quint32                screenshot_hotkey           = 0x5bu;
 	// Folder screenshots are written to.
@@ -162,6 +174,9 @@ public:
 		present_filter              = other.present_filter;
 		present_mode                = other.present_mode;
 		aspect_ratio                = other.aspect_ratio;
+		upscaler_method             = other.upscaler_method;
+		upscaler_quality            = other.upscaler_quality;
+		upscaler_sharpness          = other.upscaler_sharpness;
 		screenshot_hotkey           = other.screenshot_hotkey;
 		screenshot_folder           = other.screenshot_folder;
 		command_buffer_dump_enabled = other.command_buffer_dump_enabled;
@@ -207,6 +222,9 @@ public:
 		KYTY_CFG_SET(present_filter);
 	KYTY_CFG_SET(present_mode);
 	KYTY_CFG_SET(aspect_ratio);
+	KYTY_CFG_SET(upscaler_method);
+	KYTY_CFG_SET(upscaler_quality);
+	KYTY_CFG_SET(upscaler_sharpness);
 	KYTY_CFG_SET(screenshot_hotkey);
 	KYTY_CFG_SET(screenshot_folder);
 		KYTY_CFG_SET(command_buffer_dump_enabled);
@@ -239,6 +257,9 @@ public:
 		KYTY_CFG_GET(present_filter);
 	KYTY_CFG_GET(present_mode);
 	KYTY_CFG_GET(aspect_ratio);
+	KYTY_CFG_GET(upscaler_method);
+	KYTY_CFG_GET(upscaler_quality);
+	upscaler_sharpness = s->value("upscaler_sharpness", upscaler_sharpness).toDouble();
 	KYTY_CFG_GET(screenshot_hotkey);
 	KYTY_CFG_GET(screenshot_folder);
 		KYTY_CFG_GET(command_buffer_dump_enabled);

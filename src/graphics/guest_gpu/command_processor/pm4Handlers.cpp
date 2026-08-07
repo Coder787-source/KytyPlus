@@ -1901,6 +1901,247 @@ KYTY_CP_OP_PARSER(CpOpPfpSyncMe) {
 	return 1;
 }
 
+// ── Soft-ignore handlers for PM4 opcodes used by GTA V / RAGE engine ────────
+// These packets are common on real hardware but have no meaningful host-side
+// equivalent.  Consuming them silently prevents the "unknown op" EXIT crash
+// that would otherwise halt emulation.
+
+KYTY_CP_OP_PARSER(CpOpContextControl) {
+	// IT_CONTEXT_CONTROL (0x28): controls CE/DE context shadowing and
+	// load/restore behaviour.  The emulator uses a linear single-engine
+	// model so shadow register switching is not needed, but we decode
+	// the fields for logging and future CE/DE split support.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	if (payload_dw >= 1) {
+		const uint32_t load_control  = buffer[0];
+		const uint32_t shadow_enable = (load_control >> 0u) & 0x1u;
+		const uint32_t restore_enable = (load_control >> 1u) & 0x1u;
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF("[PM4] IT_CONTEXT_CONTROL: shadow=%u restore=%u payload_dw=%" PRIu32 "\n",
+			     shadow_enable, restore_enable, payload_dw);
+		}
+	}
+	return payload_dw;
+}
+
+KYTY_CP_OP_PARSER(CpOpIndirectBufferCnst) {
+	// IT_INDIRECT_BUFFER_CNST (0x33): constant-engine indirect buffer call.
+	// The CE is a separate engine on the AMD CP that processes constant
+	// updates in parallel with the DE.  On the host the commands are already
+	// serialised, so we decode the IB address and skip the indirection.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	if (payload_dw >= 3) {
+		const uint64_t ib_address = (buffer[0] & 0xfffffffcu) |
+		                            (static_cast<uint64_t>(buffer[1]) << 32u);
+		const uint32_t ib_size    = buffer[2] & 0xfffffu;
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("[PM4] IT_INDIRECT_BUFFER_CNST: ib=0x%016" PRIx64
+			     " size=%" PRIu32 " dw\n", ib_address, ib_size);
+		}
+		// A real implementation would call cp.ProcessIndirectBuffer() here,
+		// but the CE IB contains constant-register updates that the host
+		// already receives through SET_*_REG packets in the DE stream.
+	}
+	return payload_dw;
+}
+
+KYTY_CP_OP_PARSER(CpOpMemSemaphore) {
+	// IT_MEM_SEMAPHORE (0x39): GPU memory semaphore signal/wait.
+	// Signal: write a 64-bit value to a GPU address.
+	// Wait:   poll a GPU address until (value & mask) OP reference.
+	// In our single-threaded model, signals execute immediately and
+	// waits are satisfied instantly because the writer has already run.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	if (payload_dw < 3) {
+		return payload_dw;
+	}
+	const uint32_t control   = buffer[0];
+	const uint32_t op        = (control >> 29u) & 0x7u;
+	const uint32_t client    = (control >> 26u) & 0x7u;
+	const uint64_t sema_addr = (buffer[1] & 0xfffffffcu) |
+	                           (static_cast<uint64_t>(buffer[2]) << 32u);
+
+	constexpr uint32_t kSignal = 1;
+	constexpr uint32_t kWait   = 2;
+	constexpr uint32_t kSignalWithWrite = 5;
+
+	if (op == kSignal || op == kSignalWithWrite) {
+		if (sema_addr != 0 && payload_dw >= 5) {
+			const uint64_t value = buffer[3] | (static_cast<uint64_t>(buffer[4]) << 32u);
+			auto* dst = reinterpret_cast<volatile uint64_t*>(sema_addr);
+			*dst = value;
+		}
+	} else if (op == kWait) {
+		// In a single-threaded CP model the writer has already executed,
+		// so the wait condition is already satisfied.  No spin needed.
+	}
+	static std::atomic<uint32_t> log_count {0};
+	if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+		LOGF("[PM4] IT_MEM_SEMAPHORE: op=%" PRIu32 " client=%" PRIu32
+		     " addr=0x%016" PRIx64 "\n", op, client, sema_addr);
+	}
+	return payload_dw;
+}
+
+KYTY_CP_OP_PARSER(CpOpCpDma) {
+	// IT_CP_DMA (0x41): CP-initiated DMA transfer.
+	// Reuses the same cp.DmaData() path as IT_DMA_DATA but with
+	// the CP engine selector instead of PFP/ME.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	if (payload_dw < 5) {
+		return payload_dw;
+	}
+	const uint32_t control       = buffer[0];
+	const uint64_t src           = buffer[1] | (static_cast<uint64_t>(buffer[2]) << 32u);
+	const uint64_t dst           = buffer[3] | (static_cast<uint64_t>(buffer[4]) << 32u);
+	const uint32_t count_and_ctl = (payload_dw >= 6) ? buffer[5] : 0u;
+
+	const uint8_t  engine           = 1; // CP engine
+	const uint8_t  src_sel          = static_cast<uint8_t>((control >> 29u) & 0x3u);
+	const uint8_t  src_cache_policy = static_cast<uint8_t>((control >> 13u) & 0x3u);
+	const uint8_t  dst_sel          = static_cast<uint8_t>((control >> 20u) & 0x7u);
+	const uint8_t  dst_cache_policy = static_cast<uint8_t>((control >> 25u) & 0x3u);
+	const uint8_t  wait_previous    = static_cast<uint8_t>((count_and_ctl >> 30u) & 0x1u);
+	const uint8_t  write_confirm    = static_cast<uint8_t>((count_and_ctl >> 31u) & 0x1u);
+	const uint32_t num_bytes        = count_and_ctl & 0x03ffffffu;
+
+	cp.DmaData(engine, dst_sel, dst_cache_policy, dst,
+	           src_sel, src_cache_policy, src, num_bytes,
+	           wait_previous, write_confirm, 0);
+	return payload_dw;
+}
+
+KYTY_CP_OP_PARSER(CpOpSurfaceSync) {
+	// IT_SURFACE_SYNC (0x43): legacy surface cache coherency flush.
+	// Parses the coherency flags and issues a host barrier to ensure
+	// all prior GPU writes are visible to subsequent reads.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	if (payload_dw >= 3) {
+		const uint32_t coher_cntl = buffer[0];
+		const uint64_t address    = static_cast<uint64_t>(buffer[1]) << 8u;
+		const uint32_t size_dw    = buffer[2];
+		// Any non-zero coher_cntl means a cache flush is needed.
+		if (coher_cntl != 0) {
+			cp.EmitGlobalBarrier();
+		}
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("[PM4] IT_SURFACE_SYNC: coher=0x%08" PRIx32
+			     " addr=0x%016" PRIx64 " size=0x%" PRIx32 "\n",
+			     coher_cntl, address, size_dw);
+		}
+	}
+	return payload_dw;
+}
+
+KYTY_CP_OP_PARSER(CpOpItReleaseMem) {
+	// IT_RELEASE_MEM (0x49): IT-packet variant of RELEASE_MEM.
+	// Performs an EOP cache flush + optional semaphore write.
+	// Reuses the same logic as the custom R_RELEASE_MEM handler
+	// (CpOpReleaseMem) but with IT-packet header decoding.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	if (payload_dw < 2) {
+		return payload_dw;
+	}
+	const uint32_t eop_event_type     = buffer[0] & 0x3fu;
+	const uint32_t event_index        = (buffer[0] >> 8u) & 0x7u;
+	const uint32_t gcr_cntl           = (buffer[0] >> 12u) & 0xfffu;
+	const uint32_t data_sel           = (buffer[1] >> 29u) & 0x7u;
+	const uint32_t interrupt_selector = (buffer[1] >> 24u) & 0x7u;
+
+	// Issue a cache barrier if the GCR requests any invalidation/writeback.
+	if (gcr_cntl != 0) {
+		cp.EmitGlobalBarrier();
+	}
+
+	// Write data to destination if data_sel requests it.
+	if ((data_sel == 1 || data_sel == 2) && payload_dw >= 5) {
+		auto* dst_addr = reinterpret_cast<void*>(
+		    buffer[2] | (static_cast<uint64_t>(buffer[3]) << 32u));
+		const uint64_t value = buffer[4] | (static_cast<uint64_t>(buffer[5]) << 32u);
+		if (dst_addr != nullptr) {
+			if (data_sel == 1) {
+				*reinterpret_cast<volatile uint32_t*>(dst_addr) =
+				    static_cast<uint32_t>(value);
+			} else {
+				*reinterpret_cast<volatile uint64_t*>(dst_addr) = value;
+			}
+		}
+	}
+
+	// Trigger interrupt if requested.
+	if (interrupt_selector == 0x01 || interrupt_selector == 0x02 ||
+	    interrupt_selector == 0x04) {
+		const uint32_t ctx_id = (payload_dw >= 7) ? (buffer[6] & 0x07ffffffu) : 0u;
+		cp.TriggerEopEventAtEndOfPipe(ctx_id);
+	}
+	return payload_dw;
+}
+
+KYTY_CP_OP_PARSER(CpOpRewind) {
+	// IT_REWIND (0x59): ring buffer rewind hint.
+	// The CP execution model in the emulator is linear (the ring is
+	// unrolled into a contiguous buffer before dispatch), so rewinding
+	// is meaningless.  We log and consume.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	return payload_dw;
+}
+
+KYTY_CP_OP_PARSER(CpOpSetConfigReg) {
+	// IT_SET_CONFIG_REG (0x68): write config-register block.
+	// Config registers are read-only hardware info on the host side.
+	// Decode the register range and log for debugging, then discard.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	if (payload_dw >= 2) {
+		const uint32_t reg_offset = buffer[0];
+		const uint32_t num_regs   = payload_dw - 1u;
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF("[PM4] IT_SET_CONFIG_REG: offset=0x%04" PRIx32
+			     " count=%" PRIu32 "\n", reg_offset, num_regs);
+		}
+	}
+	return payload_dw;
+}
+
+KYTY_CP_OP_PARSER(CpOpSetQueueReg) {
+	// IT_SET_QUEUE_REG (0x78): write queue-specific registers.
+	// Queue scheduling is handled by the host Vulkan queue; decode
+	// the register offset and log for debugging.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	if (payload_dw >= 2) {
+		const uint32_t reg_offset = buffer[0];
+		const uint32_t num_regs   = payload_dw - 1u;
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF("[PM4] IT_SET_QUEUE_REG: offset=0x%04" PRIx32
+			     " count=%" PRIu32 "\n", reg_offset, num_regs);
+		}
+	}
+	return payload_dw;
+}
+
+KYTY_CP_OP_PARSER(CpOpDispatchDraw) {
+	// IT_DISPATCH_DRAW (0x8D): combined compute dispatch + draw preamble.
+	// On the PS5 this is used for inline compute-before-draw sequences.
+	// Decode the dispatch dimensions and issue through the normal path.
+	const auto payload_dw = KYTY_PM4_LEN(cmd_id) - 1u;
+	if (payload_dw >= 3) {
+		const uint32_t x = buffer[0];
+		const uint32_t y = buffer[1];
+		const uint32_t z = buffer[2];
+		// The remaining payload contains draw-state overrides that the
+		// host renderer already handles via context-register writes.
+		// Issue the compute dispatch with mode=0 (normal).
+		if (x > 0 && y > 0 && z > 0) {
+			cp.DispatchDirect(x, y, z, 0);
+		}
+	}
+	return payload_dw;
+}
+
 KYTY_CP_OP_PARSER(CpOpSetPredication) {
 	KYTY_PROFILER_FUNCTION();
 

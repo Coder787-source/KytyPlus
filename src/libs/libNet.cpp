@@ -1486,11 +1486,8 @@ struct NpEntitlementAccessAddcontEntitlementInfo {
 	uint32_t                  download_status;
 };
 
-static constexpr NpEntitlementAccessAddcontEntitlementInfo NP_ENTITLEMENT_ACCESS_ADDON_LIST[] = {
-    {{{"85y-je"}, {}}, 3, 4}, // GTA V hash 0xf4315381
-    {{{"5d5c48"}, {}}, 3, 4}, // GTA V hash 0x961c34b0
-    {{{"_mtqu6"}, {}}, 3, 4}, // GTA V hash 0x9cd1bcad
-};
+// No hardcoded DLC entitlements — the emulator cannot verify ownership of
+// specific add-on content. Games querying entitlements will see an empty list.
 
 static int KYTY_SYSV_ABI NpEntitlementAccessInitialize(
     const NpEntitlementAccessInitParam* init_param, NpEntitlementAccessBootParam* boot_param) {
@@ -1530,16 +1527,10 @@ static int KYTY_SYSV_ABI NpEntitlementAccessGetAddcontEntitlementInfoList(
 		return NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
 	}
 
-	*hit_num = static_cast<uint32_t>(sizeof(NP_ENTITLEMENT_ACCESS_ADDON_LIST) /
-	                                 sizeof(NP_ENTITLEMENT_ACCESS_ADDON_LIST[0]));
+	*hit_num = 0;
 
 	if (list != nullptr && list_num != 0) {
 		memset(list, 0, sizeof(*list) * list_num);
-
-		const auto copy_num = (list_num < *hit_num ? list_num : *hit_num);
-		for (uint32_t i = 0; i < copy_num; i++) {
-			list[i] = NP_ENTITLEMENT_ACCESS_ADDON_LIST[i];
-		}
 	}
 
 	return 0;
@@ -1560,14 +1551,6 @@ static int KYTY_SYSV_ABI NpEntitlementAccessGetAddcontEntitlementInfo(
 	}
 
 	memset(info, 0, sizeof(*info));
-
-	for (const auto& entitlement: NP_ENTITLEMENT_ACCESS_ADDON_LIST) {
-		if (strncmp(entitlement_label->data, entitlement.entitlement_label.data,
-		            sizeof(entitlement_label->data)) == 0) {
-			*info = entitlement;
-			return 0;
-		}
-	}
 
 	return NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }

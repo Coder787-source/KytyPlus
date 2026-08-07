@@ -435,33 +435,34 @@ bool ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
 		return true;
 	}
-	if (!format_ok) {
-		EXIT("storage texture numeric class mismatch: kind=%u format=%u addr=0x%016" PRIx64 "\n",
-		     static_cast<uint32_t>(resource.kind), format, descriptor.Base40());
+	// Soft-fail: log the unsupported storage texture details once and return
+	// false so the caller can substitute a null texture instead of hard-crashing.
+	// This is critical for RAGE-engine titles (GTA V, RDR2) that bind many
+	// storage-image encodings (kind 10/11) the emulator does not yet model.
+	static std::atomic<uint32_t> soft_logs {0};
+	if (soft_logs.fetch_add(1, std::memory_order_relaxed) < 64) {
+		LOGF_COLOR(Log::Color::Yellow,
+"ValidateStorageTexture: soft-fail (resource=%d descriptor=%d encoding=%d format=%d "
+			           "kind=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
+			           "base_level=%u last_level=%u max_mip=%u min_lod=%u base_array=%u bc=%u msaa=%d "
+			           "addr=0x%016" PRIx64 " size=0x%016" PRIx64
+			           " extent=%ux%ux%u type=%u format=%u tile=%u read=%d written=%d)\n",
+			           resource_ok, descriptor_ok, encoding_ok, format_ok,
+			           static_cast<uint32_t>(resource.kind),
+			           static_cast<uint32_t>(resource.dimension),
+			           static_cast<uint32_t>(resource.mip_mode),
+			           resource.atomic, resource.depth_compare,
+			           descriptor.BaseLevel(), descriptor.LastLevel(),
+			           descriptor.MaxMip(), descriptor.MinLod(), descriptor.BaseArray5(),
+			           descriptor.BCSwizzle(), descriptor.MsaaDepth(),
+			           descriptor.Base40(), size,
+			           static_cast<uint32_t>(descriptor.Width5()) + 1u,
+			           static_cast<uint32_t>(descriptor.Height5()) + 1u,
+			           static_cast<uint32_t>(descriptor.Depth()) + 1u,
+			           descriptor.Type(), format, descriptor.TileMode(),
+			           resource.read, resource.written);
 	}
-	if (size == 0) {
-		EXIT("storage texture size is zero: kind=%u format=%u addr=0x%016" PRIx64 "\n",
-		     static_cast<uint32_t>(resource.kind), format, descriptor.Base40());
-	}
-	EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
-	     "kind=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
-	     "base_level=%u last_level=%u max_mip=%u min_lod=%u base_array=%u bc=%u msaa=%d "
-	     "depth_tile_bpe=%u swizzle_ok=%d "
-	     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-	     " extent=%ux%ux%u type=%u format=%u tile=%u swizzle=0x%03x read=%d written=%d "
-	     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
-	     resource_ok, descriptor_ok, encoding_ok, format_ok, static_cast<uint32_t>(resource.kind),
-	     static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
-	     resource.atomic, resource.depth_compare, descriptor.BaseLevel(), descriptor.LastLevel(),
-	     descriptor.MaxMip(), descriptor.MinLod(), descriptor.BaseArray5(), descriptor.BCSwizzle(),
-	     descriptor.MsaaDepth(), Prospero::RenderTargetBytesPerElement(format),
-	     IsValidImageSwizzle(descriptor.DstSelXYZW()), descriptor.Base40(), size,
-	     static_cast<uint32_t>(descriptor.Width5()) + 1u,
-	     static_cast<uint32_t>(descriptor.Height5()) + 1u,
-	     static_cast<uint32_t>(descriptor.Depth()) + 1u, descriptor.Type(), format,
-	     descriptor.TileMode(), descriptor.DstSelXYZW(), resource.read, resource.written,
-	     descriptor.fields[0], descriptor.fields[1], descriptor.fields[2], descriptor.fields[3],
-	     descriptor.fields[4], descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
+	return false;
 }
 
 [[nodiscard]] bool IsSupportedStorageTextureTile(const ShaderRecompiler::IR::ImageResource& resource,
@@ -555,6 +556,43 @@ static TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::Image
 	                                ? vk::ImageUsageFlagBits::eStorage
 	                                : vk::ImageUsageFlagBits::eSampled;
 	desc.type                 = binding;
+	return desc;
+}
+
+// Create a fallback storage descriptor that preserves the real dimensions
+// and address but uses R32_UINT (always supported for storage images).
+// This prevents the shader from binding a 1×1 null texture and instead
+// gives it a properly-sized write target.
+static TextureCache::ImageDesc FallbackStorageDesc(
+    const ShaderRecompiler::IR::ImageResource& resource,
+    uint64_t address, uint64_t size_bytes,
+    uint32_t width, uint32_t height, uint32_t depth,
+    uint32_t levels, uint32_t image_layers,
+    Prospero::ImageType type) {
+	TextureCache::ImageDesc desc {};
+	desc.info.data            = {address, size_bytes};
+	desc.info.pixel_format    = Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt);
+	desc.info.guest_format    = Prospero::GpuEnumValue(Prospero::BufferFormat::k32UInt);
+	desc.info.type            = (type == Prospero::ImageType::kColor3D)
+	                                ? Prospero::ImageType::kColor3D
+	                                : Prospero::ImageType::kColor2D;
+	desc.info.extent          = {std::max(1u, width), std::max(1u, height),
+	                             (desc.info.type == Prospero::ImageType::kColor3D)
+	                                 ? std::max(1u, depth) : 1u};
+	desc.info.resources       = {std::max(1u, levels), image_layers};
+	desc.info.bytes_per_block = 4;
+	desc.info.samples         = 1;
+	desc.info.tile_mode       = Prospero::GpuEnumValue(Prospero::TileMode::kLinear);
+	desc.info.mip_layout[0]   = {0, size_bytes, width, height};
+	desc.view_info.format     = vk::Format::eR32Uint;
+	desc.view_info.type       = (desc.info.type == Prospero::ImageType::kColor3D)
+	                                ? vk::ImageViewType::e3D
+	                                : vk::ImageViewType::e2D;
+	desc.view_info.aspect     = vk::ImageAspectFlagBits::eColor;
+	desc.view_info.base_level = 0;
+	desc.view_info.level_count = 1;
+	desc.view_info.usage      = vk::ImageUsageFlagBits::eStorage;
+	desc.type                 = TextureCache::BindingType::Storage;
 	return desc;
 }
 
@@ -741,11 +779,22 @@ RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   reso
 				           static_cast<uint32_t>(resource.kind), descriptor.Format(),
 				           descriptor.TileMode(), address);
 			}
-			auto       desc = NullTextureDesc(resource, TextureCache::BindingType::Storage);
+			auto       desc = FallbackStorageDesc(resource, address, size.size,
+			                                      width, height, volume ? depth : 1u,
+			                                      levels, image_layers, type);
 			const auto id   = texture_cache.FindImage(desc);
 			return {id, nullptr, std::move(desc)};
 		}
-		(void)ValidateStorageTexture(resource, descriptor, size.size);
+		if (!ValidateStorageTexture(resource, descriptor, size.size)) {
+			// Storage texture failed validation — substitute a properly-sized
+			// R32_UINT fallback so the shader has a valid write target with
+			// correct dimensions instead of a 1×1 null texture.
+			auto       desc = FallbackStorageDesc(resource, address, size.size,
+			                                      width, height, volume ? depth : 1u,
+			                                      levels, image_layers, type);
+			const auto id   = texture_cache.FindImage(desc);
+			return {id, nullptr, std::move(desc)};
+		}
 		m_context.GetBufferCache().ValidateGpuAccess(address, size.size, resource.read,
 		                                             resource.written);
 	}

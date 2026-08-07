@@ -11,6 +11,8 @@ uint32_t RenderTargetBytesPerElement(uint32_t format);
 bool     IsSupportedTextureFormat(uint32_t format);
 bool     IsUintTextureFormat(uint32_t format);
 bool     IsFmaskTextureFormat(uint32_t format);
+bool     IsBlockCompressedFormat(uint32_t format);
+bool     IsASTCTextureFormat(uint32_t format);
 
 } // namespace Libs::Graphics::Prospero
 

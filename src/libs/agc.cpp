@@ -97,6 +97,35 @@ namespace Gen5 {
 
 LIB_NAME("Graphics5", "Graphics5");
 
+// Report PS5 GPU hardware (AMD Oberon, RDNA 2) to the guest.
+// This ensures games that query GPU capabilities see real PS5 specs
+// instead of the host GPU, which is critical for accurate hardware emulation.
+int KYTY_SYSV_ABI GraphicsGetGpuDeviceInfo(GpuDeviceInfo* info) {
+	PRINT_NAME();
+
+	if (info == nullptr) {
+		return -1;
+	}
+
+	std::memset(info, 0, sizeof(*info));
+	info->vendor_id          = 0x1002; // AMD
+	info->device_id          = 0x163F; // PS5 Oberon (custom RDNA 2)
+	info->revision           = 0x00;
+	info->num_shader_engines = 2;
+	info->num_cu_per_se      = 18; // 36 CU total
+	info->num_simd_per_cu    = 4;
+	info->wavefront_size     = 64;
+	info->max_wave_per_simd  = 32;
+	info->clock_mhz          = 2233; // 2.233 GHz
+	info->memory_size_mb     = 16384; // 16 GB
+	info->memory_bus_width   = 256;
+	info->bandwidth_mbps     = 448000; // 448 GB/s
+	info->l2_cache_size_kb   = 4096;
+	info->cu_count           = 36;
+
+	return OK;
+}
+
 struct RegisterDefaults {
 	ShaderRegister** tbl0                = nullptr;
 	ShaderRegister** tbl1                = nullptr;

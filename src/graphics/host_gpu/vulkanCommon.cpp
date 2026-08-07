@@ -75,10 +75,38 @@ constexpr FormatMapping kFormatMappings[] = {
     {Prospero::BufferFormat::kBc6SFloat, vk::Format::eBc6HSfloatBlock},
     {Prospero::BufferFormat::kBc7UNorm, vk::Format::eBc7UnormBlock},
     {Prospero::BufferFormat::kBc7Srgb, vk::Format::eBc7SrgbBlock},
+    {Prospero::BufferFormat::kAstc4x4UNorm, vk::Format::eAstc4x4UnormBlock},
+    {Prospero::BufferFormat::kAstc4x4Srgb, vk::Format::eAstc4x4SrgbBlock},
+    {Prospero::BufferFormat::kAstc5x4UNorm, vk::Format::eAstc5x4UnormBlock},
+    {Prospero::BufferFormat::kAstc5x4Srgb, vk::Format::eAstc5x4SrgbBlock},
+    {Prospero::BufferFormat::kAstc5x5UNorm, vk::Format::eAstc5x5UnormBlock},
+    {Prospero::BufferFormat::kAstc5x5Srgb, vk::Format::eAstc5x5SrgbBlock},
+    {Prospero::BufferFormat::kAstc6x5UNorm, vk::Format::eAstc6x5UnormBlock},
+    {Prospero::BufferFormat::kAstc6x5Srgb, vk::Format::eAstc6x5SrgbBlock},
+    {Prospero::BufferFormat::kAstc6x6UNorm, vk::Format::eAstc6x6UnormBlock},
+    {Prospero::BufferFormat::kAstc6x6Srgb, vk::Format::eAstc6x6SrgbBlock},
+    {Prospero::BufferFormat::kAstc8x5UNorm, vk::Format::eAstc8x5UnormBlock},
+    {Prospero::BufferFormat::kAstc8x5Srgb, vk::Format::eAstc8x5SrgbBlock},
+    {Prospero::BufferFormat::kAstc8x6UNorm, vk::Format::eAstc8x6UnormBlock},
+    {Prospero::BufferFormat::kAstc8x6Srgb, vk::Format::eAstc8x6SrgbBlock},
+    {Prospero::BufferFormat::kAstc8x8UNorm, vk::Format::eAstc8x8UnormBlock},
+    {Prospero::BufferFormat::kAstc8x8Srgb, vk::Format::eAstc8x8SrgbBlock},
+    {Prospero::BufferFormat::kAstc10x5UNorm, vk::Format::eAstc10x5UnormBlock},
+    {Prospero::BufferFormat::kAstc10x5Srgb, vk::Format::eAstc10x5SrgbBlock},
+    {Prospero::BufferFormat::kAstc10x6UNorm, vk::Format::eAstc10x6UnormBlock},
+    {Prospero::BufferFormat::kAstc10x6Srgb, vk::Format::eAstc10x6SrgbBlock},
+    {Prospero::BufferFormat::kAstc10x8UNorm, vk::Format::eAstc10x8UnormBlock},
+    {Prospero::BufferFormat::kAstc10x8Srgb, vk::Format::eAstc10x8SrgbBlock},
+    {Prospero::BufferFormat::kAstc10x10UNorm, vk::Format::eAstc10x10UnormBlock},
+    {Prospero::BufferFormat::kAstc10x10Srgb, vk::Format::eAstc10x10SrgbBlock},
+    {Prospero::BufferFormat::kAstc12x10UNorm, vk::Format::eAstc12x10UnormBlock},
+    {Prospero::BufferFormat::kAstc12x10Srgb, vk::Format::eAstc12x10SrgbBlock},
+    {Prospero::BufferFormat::kAstc12x12UNorm, vk::Format::eAstc12x12UnormBlock},
+    {Prospero::BufferFormat::kAstc12x12Srgb, vk::Format::eAstc12x12SrgbBlock},
 };
 
 constexpr auto MakeFormatLookup() {
-	constexpr auto kMaxFormat = Prospero::GpuEnumValue(Prospero::BufferFormat::kBc7Srgb);
+	constexpr auto kMaxFormat = Prospero::GpuEnumValue(Prospero::BufferFormat::kAstc12x12Srgb);
 	std::array<vk::Format, kMaxFormat + 1> lookup {};
 	lookup.fill(vk::Format::eUndefined);
 	for (const auto& mapping: kFormatMappings) {

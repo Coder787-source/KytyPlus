@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -82,6 +83,12 @@ ConfigurationEditDialog::ConfigurationEditDialog(Configuration& info, QWidget* p
 		        auto log = TextToEnum<Configuration::LogDirection>(text);
 		        m_ui->lineEdit_printf_file->setEnabled(log == Configuration::LogDirection::File);
 	        });
+	connect(m_ui->comboBox_upscaler_method, &QComboBox::currentTextChanged, this,
+	        [this](const QString& text) {
+		        bool fsr_on = (text == QStringLiteral("Fsr31"));
+		        m_ui->comboBox_upscaler_quality->setEnabled(fsr_on);
+		        m_ui->doubleSpinBox_upscaler_sharpness->setEnabled(fsr_on);
+	        });
 
 	layout()->setSizeConstraint(QLayout::SetFixedSize);
 
@@ -133,6 +140,13 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	ListInit(m_ui->comboBox_present_filter, info.present_filter);
 	ListInit(m_ui->comboBox_present_mode, info.present_mode);
 	ListInit(m_ui->comboBox_aspect_ratio, info.aspect_ratio);
+	ListInit(m_ui->comboBox_upscaler_method, info.upscaler_method);
+	ListInit(m_ui->comboBox_upscaler_quality, info.upscaler_quality);
+	m_ui->doubleSpinBox_upscaler_sharpness->setValue(info.upscaler_sharpness);
+	// Enable/disable quality + sharpness based on upscaler method.
+	bool fsr_on = (info.upscaler_method == Configuration::UpscalerMethod::Fsr31);
+	m_ui->comboBox_upscaler_quality->setEnabled(fsr_on);
+	m_ui->doubleSpinBox_upscaler_sharpness->setEnabled(fsr_on);
 	m_ui->lineEdit_screenshot_folder->setText(info.screenshot_folder);
 	m_ui->lineEdit_screenshot_hotkey->setText(QString::number(info.screenshot_hotkey));
 	m_ui->lineEdit_shader_log_folder->setText(info.shader_log_folder);
@@ -275,6 +289,11 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui) {
 	    TextToEnum<Configuration::PresentMode>(ui.comboBox_present_mode->currentText());
 	info.aspect_ratio =
 	    TextToEnum<Configuration::AspectRatio>(ui.comboBox_aspect_ratio->currentText());
+	info.upscaler_method =
+	    TextToEnum<Configuration::UpscalerMethod>(ui.comboBox_upscaler_method->currentText());
+	info.upscaler_quality =
+	    TextToEnum<Configuration::UpscalerQuality>(ui.comboBox_upscaler_quality->currentText());
+	info.upscaler_sharpness = ui.doubleSpinBox_upscaler_sharpness->value();
 	info.screenshot_folder = ui.lineEdit_screenshot_folder->text();
 	{
 		bool ok = false;

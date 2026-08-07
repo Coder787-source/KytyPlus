@@ -148,8 +148,18 @@ public:
 		}
 
 		static void MixStaticParams(std::size_t& hash, const PipelineStaticParameters& params) {
+			// Hash as 64-bit words instead of bytes (~8x fewer Mix calls).
+			// PipelineStaticParameters is zero-initialized, so padding bytes are
+			// deterministically zero and safe to include in the hash.
+			constexpr std::size_t total     = sizeof(params);
+			constexpr std::size_t word_size = sizeof(uint64_t);
+			constexpr std::size_t words     = total / word_size;
+			const auto*           u64_ptr   = reinterpret_cast<const uint64_t*>(&params);
+			for (std::size_t i = 0; i < words; i++) {
+				Mix(hash, u64_ptr[i]);
+			}
 			const auto* bytes = reinterpret_cast<const uint8_t*>(&params);
-			for (std::size_t i = 0; i < sizeof(params); i++) {
+			for (std::size_t i = words * word_size; i < total; i++) {
 				Mix(hash, bytes[i]);
 			}
 		}
@@ -257,6 +267,11 @@ private:
 	vk::PipelineCache m_driver_cache       = nullptr;
 	uint64_t          m_new_pipeline_count = 0;
 	Common::Mutex     m_mutex;
+	// Last-used graphics pipeline cache: avoids hash computation and map lookup
+	// for consecutive draws that reuse the same pipeline (very common in games).
+	std::size_t              m_last_gfx_hash     = 0;
+	GraphicsPipeline*        m_last_gfx_pipeline = nullptr;
+	GraphicsPipelineKey      m_last_gfx_key {};
 	// Optional async pipeline compiler. Lazily created on first async submit when
 	// Config::AsyncPipelineCompilationEnabled() is true. Held via unique_ptr because
 	// AsyncPipelineCompiler is forward-declared.

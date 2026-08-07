@@ -2812,8 +2812,15 @@ int KYTY_SYSV_ABI KernelMapDirectMemory(void** addr, size_t len, int prot, int f
 	};
 
 	if (fixed) {
-		EXIT_NOT_IMPLEMENTED(in_addr == 0);
-		EXIT_NOT_IMPLEMENTED(alignment != 0 && (in_addr & (alignment - 1)) != 0);
+		// A fixed map at address 0 or with misaligned address is EINVAL on
+		// real hardware, not an unimplemented emulator feature. GTA V's
+		// allocator probes address ranges and may pass 0 or misaligned values.
+		if (in_addr == 0) {
+			return KERNEL_ERROR_EINVAL;
+		}
+		if (alignment != 0 && (in_addr & (alignment - 1)) != 0) {
+			return KERNEL_ERROR_EINVAL;
+		}
 		if (no_overwrite && g_virtual_ranges->HasOverlap(in_addr, len)) {
 			return KERNEL_ERROR_ENOMEM;
 		}
@@ -3564,7 +3571,9 @@ int KYTY_SYSV_ABI KernelAvailableFlexibleMemorySize(size_t* size) {
 
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
 
-	EXIT_NOT_IMPLEMENTED(size == nullptr);
+	if (size == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
 
 	*size = g_flexible_memory->Available();
 

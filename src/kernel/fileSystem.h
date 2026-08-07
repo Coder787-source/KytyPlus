@@ -56,6 +56,11 @@ int KYTY_SYSV_ABI     KernelMkdir(const char* path, uint16_t mode);
 int KYTY_SYSV_ABI     KernelRmdir(const char* path);
 int KYTY_SYSV_ABI     KernelCheckReachability(const char* path);
 
+struct Ps5StorageInfo;
+struct Ps5SandboxInfo;
+int KYTY_SYSV_ABI     KernelGetStorageInfo(Ps5StorageInfo* info);
+int KYTY_SYSV_ABI     KernelGetSandboxInfo(const char* path, Ps5SandboxInfo* info);
+
 } // namespace Libs::LibKernel::FileSystem
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_KERNEL_FILESYSTEM_H_ */

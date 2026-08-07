@@ -1,0 +1,67 @@
+// SPDX-FileCopyrightText: Copyright 2024 AMD (algorithm), KytyPlus (GLSL implementation)
+// SPDX-License-Identifier: MIT
+//
+// RCAS — Robust Contrast Adaptive Sharpening (FSR 1.0 algorithm, GLSL port).
+// Post-upscale sharpening pass. Uses a 5-tap cross kernel with adaptive
+// negative weight based on local contrast. Works on any Vulkan GPU.
+
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src_sampler;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D dst_image;
+
+layout(set = 0, binding = 2, std140) uniform RcasParams {
+    vec2  src_size;
+    vec2  src_pixel;     // 1.0 / src_size
+    float sharpness;     // 0.0 = no sharpen, 1.0 = maximum
+    float pad0;
+    float pad1;
+    float pad2;
+} params;
+
+void main() {
+    uvec2 pixel = gl_GlobalInvocationID.xy;
+    if (pixel.x >= uint(params.src_size.x) || pixel.y >= uint(params.src_size.y)) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) * params.src_pixel;
+    float dx = params.src_pixel.x;
+    float dy = params.src_pixel.y;
+
+    // 5-tap cross pattern.
+    vec4 cC = textureLod(src_sampler, uv,                   0.0);
+    vec4 cN = textureLod(src_sampler, uv + vec2(0,  -dy),   0.0);
+    vec4 cS = textureLod(src_sampler, uv + vec2(0,   dy),   0.0);
+    vec4 cE = textureLod(src_sampler, uv + vec2( dx,  0),   0.0);
+    vec4 cW = textureLod(src_sampler, uv + vec2(-dx,  0),   0.0);
+
+    // Luma values (BT.709).
+    float lC = dot(cC.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float lN = dot(cN.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float lS = dot(cS.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float lE = dot(cE.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float lW = dot(cW.rgb, vec3(0.2126, 0.7152, 0.0722));
+
+    // Min/max of neighbours (excluding centre) for contrast measurement.
+    float min_l = min(min(lN, lS), min(lE, lW));
+    float max_l = max(max(lN, lS), max(lE, lW));
+
+    // RCAS sharpening weight: negative lobe proportional to inverse contrast.
+    // In flat areas (low contrast), the weight is near zero (no sharpening).
+    // In detailed areas (high contrast), the weight is more negative (sharper).
+    float contrast = max_l - min_l;
+    float sharpness_param = mix(0.0, -0.125, params.sharpness);
+    // Scale negative weight inversely with local contrast for stability.
+    float w = sharpness_param * (1.0 - smoothstep(0.0, 0.5, contrast));
+
+    // Apply the 5-tap sharpening filter.
+    // output = (centre + w*(N+S+E+W)) / (1 + 4*w)
+    float inv_denom = 1.0 / (1.0 + 4.0 * w);
+    vec4 result = (cC + w * (cN + cS + cE + cW)) * inv_denom;
+
+    // Clamp to prevent negative values or overshoot.
+    result = max(result, vec4(0.0));
+
+    imageStore(dst_image, ivec2(pixel), result);
+}

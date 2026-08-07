@@ -36,6 +36,30 @@ namespace Gen5 {
 struct CommandBuffer;
 struct Label;
 
+// PS5 GPU (AMD Oberon, RDNA 2) hardware info — reported to guest for
+// accurate PS5 hardware emulation rather than exposing the host GPU.
+struct GpuDeviceInfo {
+	uint32_t vendor_id;          // 0x1002 (AMD)
+	uint32_t device_id;          // 0x163F (Oberon)
+	uint32_t revision;           // 0x00
+	uint32_t num_shader_engines; // 2
+	uint32_t num_cu_per_se;      // 18  (36 CU total)
+	uint32_t num_simd_per_cu;    // 4
+	uint32_t wavefront_size;     // 64
+	uint32_t max_wave_per_simd;  // 32
+	uint32_t clock_mhz;          // 2233 MHz
+	uint32_t memory_size_mb;     // 16384 MB (16 GB GDDR6)
+	uint32_t memory_bus_width;   // 256-bit
+	uint32_t bandwidth_mbps;     // 448000 (448 GB/s)
+	uint32_t l2_cache_size_kb;   // 4096
+	uint32_t cu_count;           // 36
+	uint32_t reserved[5];
+};
+
+static_assert(sizeof(GpuDeviceInfo) == 0x4C);
+
+int KYTY_SYSV_ABI   GraphicsGetGpuDeviceInfo(GpuDeviceInfo* info);
+
 int KYTY_SYSV_ABI   GraphicsInit(uint32_t* state, uint32_t ver);
 void* KYTY_SYSV_ABI GraphicsGetRegisterDefaults2(uint32_t ver);
 void* KYTY_SYSV_ABI GraphicsGetRegisterDefaults2Internal(uint32_t ver);

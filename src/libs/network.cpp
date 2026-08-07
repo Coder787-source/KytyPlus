@@ -1326,14 +1326,13 @@ const char* KYTY_SYSV_ABI NetInetNtop(int af, const void* src, char* dst, uint32
 int KYTY_SYSV_ABI NetEtherNtostr(const NetEtherAddr* n, char* str, size_t len) {
 	PRINT_NAME();
 
-	NetEtherAddr zero {};
-
 	EXIT_NOT_IMPLEMENTED(len != 18);
 	EXIT_NOT_IMPLEMENTED(n == nullptr);
 	EXIT_NOT_IMPLEMENTED(str == nullptr);
-	EXIT_NOT_IMPLEMENTED(memcmp(n->data, zero.data, sizeof(zero.data)) != 0);
 
-	strcpy(str, "00:00:00:00:00:00"); // NOLINT
+	std::snprintf(str, len, "%02X:%02X:%02X:%02X:%02X:%02X",
+	              n->data[0], n->data[1], n->data[2],
+	              n->data[3], n->data[4], n->data[5]);
 
 	return OK;
 }
@@ -1344,7 +1343,10 @@ int KYTY_SYSV_ABI NetGetMacAddress(NetEtherAddr* addr, int flags) {
 	EXIT_NOT_IMPLEMENTED(addr == nullptr);
 	EXIT_NOT_IMPLEMENTED(flags != 0);
 
-	memset(addr->data, 0, sizeof(addr->data));
+	// Locally-administered MAC (bit 1 of first octet set). The emulator
+	// cannot use a real Sony OUI as that would impersonate Sony hardware.
+	static constexpr uint8_t emu_mac[6] = {0x02, 0x00, 0x00, 0x50, 0x53, 0x01};
+	std::memcpy(addr->data, emu_mac, sizeof(emu_mac));
 
 	return OK;
 }
@@ -3639,7 +3641,7 @@ int KYTY_SYSV_ABI NpCheckNpAvailability(int req_id, const char* user, void* resu
 		return np_error_request_not_found;
 	}
 
-	// return OK;
+	// User is not signed in to PSN in emulation — return signed-out status.
 	return np_complete_signed_out_locked(request);
 }
 
@@ -3730,12 +3732,7 @@ int KYTY_SYSV_ABI NpCheckPremium(int req_id, const NpCheckPremiumParameter* para
 	}
 
 	std::memset(result, 0, sizeof(*result));
-	// result->authorized = true;
-
-	// request->state  = NpRequestState::Complete;
-	// request->result = OK;
-
-	// return OK;
+	// Premium check requires PSN auth — not available in emulation.
 	return np_complete_signed_out_locked(request);
 }
 
@@ -3746,7 +3743,7 @@ int KYTY_SYSV_ABI NpGetState(int user_id, uint32_t* state) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	*state = 1; // Signed out
+	*state = 1; // Signed out — emulation does not provide PSN authentication
 
 	return OK;
 }
@@ -3760,7 +3757,7 @@ int KYTY_SYSV_ABI NpGetNpReachabilityState(int user_id, uint32_t* state) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	// *state = 2; // SCE_NP_REACHABILITY_STATE_REACHABLE
+	// NP reachability not available — emulation has no PSN connection.
 	*state = 0; // SCE_NP_REACHABILITY_STATE_UNAVAILABLE
 
 	return OK;
@@ -3775,7 +3772,7 @@ int KYTY_SYSV_ABI NpHasSignedUp(int user_id, bool* has_signed_up) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	*has_signed_up = false;
+	*has_signed_up = false; // No PSN signup in emulation
 
 	return OK;
 }
