@@ -2018,13 +2018,13 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	bool is_next_gen = program->elf->IsNextGen();
 	const Platform platform = program->elf->GetPlatform();
 	{
-		Common::GuestPlatform gp = Common::GuestPlatform::Ps5;
+		Kyty::Common::GuestPlatform gp = Kyty::Common::GuestPlatform::Ps5;
 		switch (platform) {
-			case Platform::Ps4: gp = Common::GuestPlatform::Ps4; break;
-			case Platform::Ps5: gp = Common::GuestPlatform::Ps5; break;
+			case Platform::Ps4: gp = Kyty::Common::GuestPlatform::Ps4; break;
+			case Platform::Ps5: gp = Kyty::Common::GuestPlatform::Ps5; break;
 			default: break;
 		}
-		Common::GuestPlatformState::Instance().Set(gp);
+		Kyty::Common::GuestPlatformState::Instance().Set(gp);
 	}
 
 	// PS4 (Orbis) executables are accepted by the loader and now permitted to

@@ -1580,7 +1580,7 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	const auto code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler VS", regs.gs_regs.chksum);
 
 	ShaderRecompiler::CompileOptions options;
-	options.isa_family = Common::GuestPlatformState::Instance().IsPs4()
+	options.isa_family = Kyty::Common::GuestPlatformState::Instance().IsPs4()
 		? ShaderRecompiler::IsaFamily::Gcn
 		: ShaderRecompiler::IsaFamily::Rdna2;
 	options.stage                = ShaderType::Vertex;
@@ -1651,7 +1651,7 @@ bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegis
 	const auto     code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler PS", shader_hash);
 
 	ShaderRecompiler::CompileOptions options;
-	options.isa_family = Common::GuestPlatformState::Instance().IsPs4()
+	options.isa_family = Kyty::Common::GuestPlatformState::Instance().IsPs4()
 		? ShaderRecompiler::IsaFamily::Gcn
 		: ShaderRecompiler::IsaFamily::Rdna2;
 	options.stage                = ShaderType::Pixel;
@@ -1718,7 +1718,7 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
 	const auto     code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler CS", shader_addr);
 
 	ShaderRecompiler::CompileOptions options;
-	options.isa_family = Common::GuestPlatformState::Instance().IsPs4()
+	options.isa_family = Kyty::Common::GuestPlatformState::Instance().IsPs4()
 		? ShaderRecompiler::IsaFamily::Gcn
 		: ShaderRecompiler::IsaFamily::Rdna2;
 	options.stage                = ShaderType::Compute;
