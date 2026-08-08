@@ -49,8 +49,10 @@ vk::AccelerationStructureKHR RayTracingEngine::CreateAccelerationStructure(
 
 	vk::AccelerationStructureKHR accelerationStructure {};
 	if (m_fn.vkCreateAccelerationStructureKHR) {
-		m_fn.vkCreateAccelerationStructureKHR(m_device, &createInfo, nullptr,
-		                                      reinterpret_cast<VkAccelerationStructureKHR*>(&accelerationStructure));
+		m_fn.vkCreateAccelerationStructureKHR(m_device,
+		    reinterpret_cast<const VkAccelerationStructureCreateInfoKHR*>(&createInfo),
+		    nullptr,
+		    reinterpret_cast<VkAccelerationStructureKHR*>(&accelerationStructure));
 	}
 	m_accelerationStructures.push_back(accelerationStructure);
 	return accelerationStructure;
@@ -79,9 +81,11 @@ bool RayTracingEngine::CreateRayTracingPipeline(vk::Pipeline& pipeline, vk::Pipe
 	pipelineInfo.setLayout(layout);
 
 	vk::Pipeline result {};
-	auto         res = m_fn.vkCreateRayTracingPipelinesKHR(
-                m_device, nullptr, nullptr, 1, &pipelineInfo, nullptr,
-                reinterpret_cast<VkPipeline*>(&result));
+	auto res = m_fn.vkCreateRayTracingPipelinesKHR(
+	    m_device, nullptr, nullptr, 1,
+	    reinterpret_cast<const VkRayTracingPipelineCreateInfoKHR*>(&pipelineInfo),
+	    nullptr,
+	    reinterpret_cast<VkPipeline*>(&result));
 	if (res == VK_SUCCESS) {
 		pipeline = result;
 		return true;
