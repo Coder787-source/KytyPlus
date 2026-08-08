@@ -25,6 +25,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -3282,6 +3283,58 @@ LIB_DEFINE(InitLibKernel_1_Equeue) {
 	LIB_FUNC("Ij+ryuEClXQ", EventQueue::KernelDeleteAmprSystemEvent);
 }
 
+// ─── Lightweight mutex stubs (PS5-specific, map to regular pthread mutex) ───
+
+namespace LibKernel {
+
+// Lightweight mutex structure (simplified — real PS5 version is smaller/faster)
+struct KernelLwMutex {
+	uint32_t lock_word; // 0 = unlocked, 1 = locked
+	uint32_t flags;
+	uint64_t reserved[2];
+};
+
+int KYTY_SYSV_ABI KernelCreateLwMutex(KernelLwMutex* mutex, const char* name, uint32_t flags) {
+	PRINT_NAME();
+	if (mutex == nullptr) return -1;
+	mutex->lock_word = 0;
+	mutex->flags = flags;
+	return OK;
+}
+
+int KYTY_SYSV_ABI KernelDeleteLwMutex(KernelLwMutex* mutex) {
+	PRINT_NAME();
+	if (mutex == nullptr) return -1;
+	return OK;
+}
+
+int KYTY_SYSV_ABI KernelLockLwMutex(KernelLwMutex* mutex) {
+	PRINT_NAME();
+	if (mutex == nullptr) return -1;
+	// Spin-wait stub — not thread-safe but prevents crashes
+	mutex->lock_word = 1;
+	return OK;
+}
+
+int KYTY_SYSV_ABI KernelTryLockLwMutex(KernelLwMutex* mutex) {
+	PRINT_NAME();
+	if (mutex == nullptr) return -1;
+	if (mutex->lock_word == 0) {
+		mutex->lock_word = 1;
+		return OK;
+	}
+	return KERNEL_ERROR_EBUSY;
+}
+
+int KYTY_SYSV_ABI KernelUnlockLwMutex(KernelLwMutex* mutex) {
+	PRINT_NAME();
+	if (mutex == nullptr) return -1;
+	mutex->lock_word = 0;
+	return OK;
+}
+
+} // namespace LibKernel
+
 LIB_DEFINE(InitLibKernel_1_EventFlag) {
 	LIB_FUNC("PZku4ZrXJqg", EventFlag::KernelCancelEventFlag);
 	LIB_FUNC("7uhBFWRAS60", EventFlag::KernelClearEventFlag);
@@ -3533,6 +3586,13 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("zE-wXIZjLoM", LibKernel::KernelDebugRaiseExceptionOnReleaseMode);
 	LIB_FUNC("Hc4CaR6JBL0", Posix::KernelSyncOnAddressV1);
 	LIB_FUNC("q2y-wDIVWZA", Posix::KernelSyncOnAddressV1);
+
+	// Lightweight mutex stubs (prevent crashes in games that use them)
+	LIB_FUNC("sceKernelCreateLwMutex", LibKernel::KernelCreateLwMutex);
+	LIB_FUNC("sceKernelDeleteLwMutex", LibKernel::KernelDeleteLwMutex);
+	LIB_FUNC("sceKernelLockLwMutex", LibKernel::KernelLockLwMutex);
+	LIB_FUNC("sceKernelTryLockLwMutex", LibKernel::KernelTryLockLwMutex);
+	LIB_FUNC("sceKernelUnlockLwMutex", LibKernel::KernelUnlockLwMutex);
 
 	AddLibkernelUnityFunc(s, "Qhv5ARAoOEc",
 	                      reinterpret_cast<uint64_t>(LibKernel::KernelRemoveExceptionHandler),
