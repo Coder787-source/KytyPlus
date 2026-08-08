@@ -41,10 +41,14 @@ Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX
 
 ### Firmware / modules
 
-- KytyPlus follows an **HLE-first** approach: many titles do **not** require external low-level
-  firmware SPRX modules to start.
-- That does **not** mean every API is implemented. Missing libraries, incomplete HLE, and GPU gaps
-  are still common failure points.
+- KytyPlus uses an **HLE-first** approach: many titles do **not** require external low-level
+  firmware modules to start.
+- **Optional LLE support**: KytyPlus can parse official PS5 firmware update files (`.pup`) for
+  Low-Level Emulation, significantly improving compatibility for complex titles.
+- Firmware is **not included** with the emulator. Download it directly from Sony:
+  **https://www.playstation.com/en-us/support/hardware/ps5/system-software/**
+- To install: **Settings > Firmware > Install PS5 Firmware** and select the downloaded `.pup` file.
+- KytyPlus does **not** distribute, include, or link to any Sony copyrighted material.
 
 ### No warranty
 

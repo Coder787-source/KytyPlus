@@ -144,6 +144,7 @@ config_compiler_and_linker()
   
 add_subdirectory("${KYTY_THIRD_PARTY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/3rdparty")
 add_subdirectory(common)
+add_subdirectory(firmware)
 
 add_subdirectory(graphics/shader/recompiler/decompiler/gcn)
 
@@ -526,7 +527,7 @@ endif()
 
 add_executable(kyty_emulator main.cpp platformDispatch.cpp shadps4Embedder.cpp ${kyty_emulator_src})
 
-target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries} gcn_decoder)
+target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries} gcn_decoder firmware)
 target_compile_definitions(kyty_emulator PRIVATE ${kyty_emulator_compile_definitions})
 if (WIN32)
 	target_link_libraries(kyty_emulator opengl32)
