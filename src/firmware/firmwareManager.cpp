@@ -114,10 +114,11 @@ bool FirmwareManager::HasModule(const std::string& module_name) const {
 bool FirmwareManager::ExtractModules(const PupParseResult& result) {
     const auto fw_dir = GetFirmwareDir();
     uint32_t extracted = 0;
+    uint32_t failed = 0;
 
     for (const auto& module: result.modules) {
-        if (!module.is_prx) {
-            continue; // Skip non-PRX files
+        if (!module.is_prx && !module.is_valid) {
+            continue; // Skip invalid files
         }
 
         // Write module to disk
@@ -126,6 +127,7 @@ bool FirmwareManager::ExtractModules(const PupParseResult& result) {
         if (!out.is_open()) {
             LOGF("[Firmware] ERROR: Failed to write module: %s\n",
                  module.name.c_str());
+            failed++;
             continue;
         }
 
@@ -133,15 +135,27 @@ bool FirmwareManager::ExtractModules(const PupParseResult& result) {
                   static_cast<std::streamsize>(module.data.size()));
         out.close();
 
-        if (out.good()) {
-            extracted++;
-            LOGF("[Firmware] INFO: Extracted %s (%llu bytes)\n",
-                 module.name.c_str(),
-                 static_cast<unsigned long long>(module.data.size()));
-        } else {
-            LOGF("[Firmware] ERROR: Failed to write module data: %s\n",
-                 module.name.c_str());
+        // Verify the file was written correctly
+        if (!std::filesystem::exists(module_path)) {
+            LOGF("[Firmware] ERROR: Module file not created: %s\n", module.name.c_str());
+            failed++;
+            continue;
         }
+
+        const auto actual_size = std::filesystem::file_size(module_path);
+        if (actual_size != module.data.size()) {
+            LOGF("[Firmware] ERROR: Module size mismatch: %s (expected %llu, got %llu)\n",
+                 module.name.c_str(),
+                 static_cast<unsigned long long>(module.data.size()),
+                 static_cast<unsigned long long>(actual_size));
+            failed++;
+            continue;
+        }
+
+        extracted++;
+        LOGF("[Firmware] INFO: Extracted %s (%llu bytes)\n",
+             module.name.c_str(),
+             static_cast<unsigned long long>(module.data.size()));
     }
 
     // Write version file if available
@@ -158,6 +172,9 @@ bool FirmwareManager::ExtractModules(const PupParseResult& result) {
             break;
         }
     }
+
+    LOGF("[Firmware] INFO: Extraction complete: %u succeeded, %u failed\n",
+         extracted, failed);
 
     return extracted > 0;
 }

@@ -12,6 +12,7 @@
 #include "common/subsystems.h"
 #include "common/systemInfo.h"
 #include "common/threads.h"
+#include "firmware/firmwareManager.h"
 #include "graphics/presentation/window.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
@@ -127,6 +128,14 @@ static void Init(const Config::ConfigOptions& cfg) {
 	slist->InitAll(true);
 
 	Config::Load(cfg);
+
+	// Initialize firmware manager (LLE support)
+	Libs::Firmware::FirmwareManager::Instance().Initialize();
+	if (Libs::Firmware::FirmwareManager::Instance().IsInstalled()) {
+		LOGF("[Emulator] INFO: PS5 firmware installed (LLE enabled)\n");
+	} else {
+		LOGF("[Emulator] INFO: No PS5 firmware installed (HLE-only mode)\n");
+	}
 
 	// Applies the Qt launcher's Input Mapping dialog settings (if any) before the window/input
 	// backend starts processing events. An empty string leaves the emulator's built-in default

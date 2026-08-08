@@ -12,6 +12,8 @@ class QListWidget;
 class QMoveEvent;
 class QToolButton;
 class QCheckBox;
+class QPushButton;
+class QLabel;
 class QSettings;
 class QWidget;
 
@@ -42,6 +44,8 @@ private:
 	QListWidget*                 m_game_dirs_list         = nullptr;
 	QToolButton*                 m_remove_game_dir_button = nullptr;
 	QCheckBox*                   m_ps4_support_check      = nullptr;
+	QPushButton*                 m_firmware_install_btn   = nullptr;
+	QLabel*                      m_firmware_status_label  = nullptr;
 	bool                         m_show_game_dirs         = false;
 
 protected:
@@ -63,6 +67,7 @@ protected:
 	void add_game_directory();
 	void remove_selected_game_directories();
 	void update_game_directory_buttons();
+	void install_firmware();
 };
 
 #endif // CONFIGURATION_EDIT_DIALOG_H

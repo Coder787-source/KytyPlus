@@ -9,6 +9,7 @@
 namespace Libs::Firmware {
 
 // Known PS5 firmware file IDs (partial list from reverse engineering)
+// NOTE: These are educated guesses based on PS4 patterns. Real PS5 IDs may differ.
 struct KnownFileId {
     uint64_t id;
     const char* name;
@@ -85,18 +86,48 @@ PupParseResult PupParser::Parse(const std::string& pup_path) {
          static_cast<double>(file_size) / (1024.0 * 1024.0));
 
     // Read and validate header
-    PupHeader header {};
-    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    // Try to autodetect PS4 vs PS5 format by reading raw bytes first
+    std::vector<uint8_t> raw_header(64);
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char*>(raw_header.data()), raw_header.size());
     if (!file.good()) {
         result.ok = false;
         result.error = "Failed to read PUP header";
         return result;
     }
 
+    // Check magic number (first 4 bytes)
+    const uint32_t magic = *reinterpret_cast<const uint32_t*>(raw_header.data());
+    LOGF("[Firmware] DEBUG: Raw magic=0x%08X\n", magic);
+
+    // PS5 might use a different magic or header layout
+    // For now, accept the standard magic but log if different
+    if (magic != 0x70757000) {
+        LOGF("[Firmware] WARN: Unexpected magic 0x%08X (expected 0x70757000)\n", magic);
+        LOGF("[Firmware] INFO: This may be a PS5-specific format variation\n");
+    }
+
+    // Parse as standard header (will adjust if PS5 format differs)
+    PupHeader header {};
+    std::memcpy(&header, raw_header.data(), sizeof(header));
+
+    // Debug: print raw header for format discovery
+    LOGF("[Firmware] DEBUG: PUP magic=0x%08X\n", header.magic);
+    LOGF("[Firmware] DEBUG: PUP version=%u\n", header.version);
+    LOGF("[Firmware] DEBUG: PUP file_size=%llu (actual=%llu)\n",
+         static_cast<unsigned long long>(header.file_size),
+         static_cast<unsigned long long>(file_size));
+    LOGF("[Firmware] DEBUG: PUP num_files=%u\n", header.num_files);
+    LOGF("[Firmware] DEBUG: PUP flags=0x%08X\n", header.flags);
+    LOGF("[Firmware] DEBUG: PUP header_hash_offset=0x%llX\n",
+         static_cast<unsigned long long>(header.header_hash_offset));
+    LOGF("[Firmware] DEBUG: PUP data_hash_offset=0x%llX\n",
+         static_cast<unsigned long long>(header.data_hash_offset));
+
     if (!ValidateHeader(header, file_size)) {
         result.ok = false;
         result.error = "Invalid PUP header (magic=" +
-                       std::to_string(header.magic) + ")";
+                       std::to_string(header.magic) + ", expected 0x70757000)";
         return result;
     }
 
@@ -109,13 +140,31 @@ PupParseResult PupParser::Parse(const std::string& pup_path) {
     const uint64_t entries_offset = sizeof(PupHeader);
     file.seekg(entries_offset, std::ios::beg);
 
+    uint32_t prx_count = 0;
+    uint32_t elf_count = 0;
+
     for (uint32_t i = 0; i < header.num_files; i++) {
-        PupFileEntry entry {};
-        file.read(reinterpret_cast<char*>(&entry), sizeof(entry));
+        // Read entry - PS5 might use different size than PS4
+        // Standard entry is 112 bytes, but log if it differs
+        std::vector<uint8_t> raw_entry(sizeof(PupFileEntry));
+        file.read(reinterpret_cast<char*>(raw_entry.data()), raw_entry.size());
         if (!file.good()) {
             result.ok = false;
             result.error = "Failed to read file entry " + std::to_string(i);
             return result;
+        }
+
+        PupFileEntry entry {};
+        std::memcpy(&entry, raw_entry.data(), sizeof(entry));
+
+        // Debug: print first 20 entries for format discovery
+        if (i < 20 || IsPrxModule(entry.file_id)) {
+            LOGF("[Firmware] DEBUG: Entry %u: ID=0x%08llX, Offset=0x%llX, Size=%llu bytes, Flags=0x%llX\n",
+                 i,
+                 static_cast<unsigned long long>(entry.file_id),
+                 static_cast<unsigned long long>(entry.offset),
+                 static_cast<unsigned long long>(entry.size),
+                 static_cast<unsigned long long>(entry.flags));
         }
 
         result.entries.push_back(entry);
@@ -130,31 +179,47 @@ PupParseResult PupParser::Parse(const std::string& pup_path) {
             return result;
         }
 
+        // Verify data integrity (check ELF magic)
+        const bool has_elf_magic = (data.size() >= 4 &&
+                                   data[0] == 0x7F && data[1] == 'E' &&
+                                   data[2] == 'L' && data[3] == 'F');
+
         // Check if this is a PRX module
         const bool is_prx = IsPrxData(data);
+
+        if (has_elf_magic && !is_prx) {
+            LOGF("[Firmware] WARN: Entry 0x%08llX has ELF magic but failed PRX validation\n",
+                 static_cast<unsigned long long>(entry.file_id));
+        }
 
         FirmwareModule module {};
         module.file_id = entry.file_id;
         module.data = std::move(data);
         module.is_prx = is_prx;
-        module.is_valid = true;
+        module.is_valid = is_prx || has_elf_magic; // Accept any valid ELF
         module.name = ExtractModuleName("", entry.file_id);
         module.path = ""; // Will be set during extraction
 
-        result.modules.push_back(std::move(module));
-
         if (is_prx) {
+            prx_count++;
             LOGF("[Firmware] INFO: Found PRX module: %s (0x%08llX, %llu bytes)\n",
                  module.name.c_str(),
                  static_cast<unsigned long long>(entry.file_id),
-                 static_cast<unsigned long long>(entry.size));
+                 static_cast<unsigned long long>(module.data.size()));
+        } else if (has_elf_magic) {
+            elf_count++;
+            LOGF("[Firmware] INFO: Found ELF file (non-PRX): 0x%08llX (%llu bytes)\n",
+                 static_cast<unsigned long long>(entry.file_id),
+                 static_cast<unsigned long long>(module.data.size()));
         }
+
+        result.modules.push_back(std::move(module));
     }
 
     result.ok = true;
-    LOGF("[Firmware] INFO: Parsed %u files, %u PRX modules\n",
+    LOGF("[Firmware] INFO: Parsed %u files, %u PRX modules, %u other ELF files\n",
          static_cast<uint32_t>(result.entries.size()),
-         static_cast<uint32_t>(result.modules.size()));
+         prx_count, elf_count);
 
     return result;
 }
@@ -224,12 +289,20 @@ bool PupParser::IsPrxData(const std::vector<uint8_t>& data) {
     const auto* elf_hdr = reinterpret_cast<const PrxHeader*>(data.data());
 
     // PS5 PRX modules use ET_SCE_DYNEXEC (0xFE00) or ET_SCE_DYNAMIC (0xFE10)
-    const bool is_sce_exec = (elf_hdr->type == 0xFE00 || elf_hdr->type == 0xFE10);
+    // Accept a wider range to handle format variations
+    const uint16_t type = elf_hdr->type;
+    const bool is_sce_type = (type == 0xFE00 || type == 0xFE10 ||
+                             type == 0xFE0C || type == 0xFE18 ||
+                             type == 0xFEE0 || type == 0xFEC0);
+
+    if (!is_sce_type) {
+        LOGF("[Firmware] DEBUG: ELF type=0x%04X (not SCE PRX type)\n", type);
+    }
 
     // Must be x86_64
     const bool is_x86_64 = (elf_hdr->machine == 0x3E);
 
-    return is_sce_exec && is_x86_64;
+    return is_sce_type && is_x86_64;
 }
 
 std::string PupParser::ExtractModuleName(const std::string& path, uint64_t file_id) {

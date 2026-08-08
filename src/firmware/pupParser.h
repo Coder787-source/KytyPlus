@@ -21,14 +21,28 @@ namespace Libs::Firmware {
 #pragma pack(push, 1)
 
 // PUP file header (32 bytes)
+// NOTE: PS5 may use a different header layout than PS4/PS3.
+// The parser attempts autodetection based on magic number.
 struct PupHeader {
-    uint32_t magic;              // 0x70757000 ("pup")
+    uint32_t magic;              // 0x70757000 ("pup") or PS5 variant
     uint32_t version;            // Format version
     uint64_t file_size;          // Total file size in bytes
     uint32_t num_files;          // Number of contained files
     uint32_t flags;              // Update flags
     uint64_t header_hash_offset; // Offset to header hash
     uint64_t data_hash_offset;   // Offset to data hash
+    uint8_t  reserved[8];        // Padding
+};
+
+// Alternative PS5 header layout (if different from PS4)
+struct PupHeaderPS5 {
+    uint32_t magic;              // 0x70757000 or different
+    uint32_t version;            // PS5 format version
+    uint64_t file_size;          // Total file size
+    uint32_t num_files;          // Number of files
+    uint32_t flags;              // PS5-specific flags
+    uint64_t metadata_offset;    // PS5 metadata section
+    uint64_t payload_offset;     // PS5 payload section
     uint8_t  reserved[8];        // Padding
 };
 

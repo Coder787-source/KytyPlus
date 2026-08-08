@@ -159,6 +159,8 @@ public:
 	// --ps4-support to the emulator; PS4 titles behave as before (fail through the
 	// native path). Persisted as part of GlobalConfiguration in Kyty.ini.
 	bool ps4_support_enabled = false;
+	// Path to installed PS5 firmware (.pup extracted modules). Empty means HLE-only.
+	QString firmware_path;
 	// Detected platform of this game (cached at scan time so the list does not
 	// re-read every eboot on each paint). Derived via DetectGamePlatform().
 	GuestPlatform platform = GuestPlatform::Unknown;
@@ -190,6 +192,7 @@ public:
 		ngg_rectlist_draw_enabled   = other.ngg_rectlist_draw_enabled;
 		keyboard_button_map         = other.keyboard_button_map;
 		ps4_support_enabled         = other.ps4_support_enabled;
+		firmware_path               = other.firmware_path;
 		controller_button_map      = other.controller_button_map;
 	}
 
@@ -240,6 +243,7 @@ public:
 		KYTY_CFG_SET(controller_button_map);
 		KYTY_CFG_SET(elf);
 		KYTY_CFG_SET(ps4_support_enabled);
+		KYTY_CFG_SET(firmware_path);
 	}
 
 	void ReadSettings(QSettings* s) {
@@ -279,7 +283,8 @@ public:
 		controller_button_map =
 		    s->value("controller_button_map", controller_button_map).toString();
 		elf = s->value("elf", elf).toString();
-	ps4_support_enabled = s->value("ps4_support_enabled", ps4_support_enabled).toBool();
+		ps4_support_enabled = s->value("ps4_support_enabled", ps4_support_enabled).toBool();
+		firmware_path = s->value("firmware_path", firmware_path).toString();
 	}
 };
 

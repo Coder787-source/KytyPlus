@@ -1,6 +1,7 @@
 #include "configurationEditDialog.h"
 
 #include "configuration.h"
+#include "firmware/firmwareManager.h"
 #include "inputMappingDialog.h"
 #include "mandatoryLineEdit.h"
 
@@ -11,8 +12,10 @@
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLayout>
 #include <QListView>
 #include <QListWidget>
@@ -171,6 +174,42 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 		m_ui->gridLayout->addWidget(m_ps4_support_check, 2, 0, 1, 1);
 	}
 	m_ps4_support_check->setChecked(info.ps4_support_enabled);
+
+	// PS5 Firmware installation (LLE support)
+	if (m_firmware_install_btn == nullptr) {
+		auto* fw_frame = new QFrame(this);
+		auto* fw_layout = new QHBoxLayout(fw_frame);
+		fw_layout->setContentsMargins(0, 0, 0, 0);
+		fw_layout->setSpacing(8);
+
+		m_firmware_install_btn = new QPushButton(tr("Install PS5 Firmware..."), this);
+		m_firmware_install_btn->setToolTip(tr("Install official PS5 firmware (.pup) for Low-Level Emulation. "
+		                                        "Download from: https://www.playstation.com/en-us/support/hardware/ps5/system-software/"));
+		fw_layout->addWidget(m_firmware_install_btn);
+
+		m_firmware_status_label = new QLabel(tr("No firmware installed (HLE-only)"), this);
+		m_firmware_status_label->setStyleSheet("color: gray;");
+		fw_layout->addWidget(m_firmware_status_label);
+
+		m_ui->gridLayout->addWidget(fw_frame, 3, 0, 1, 2);
+
+		connect(m_firmware_install_btn, &QPushButton::clicked, this, &ConfigurationEditDialog::install_firmware);
+	}
+
+	// Update firmware status display
+	const bool firmware_installed = Libs::Firmware::FirmwareManager::Instance().IsInstalled();
+	const auto modules = Libs::Firmware::FirmwareManager::Instance().GetModules();
+
+	if (firmware_installed || !info.firmware_path.isEmpty()) {
+		m_firmware_status_label->setText(
+		    tr("Firmware installed (%1 modules)").arg(modules.size()));
+		m_firmware_status_label->setStyleSheet("color: green;");
+		m_firmware_install_btn->setText(tr("Update PS5 Firmware..."));
+	} else {
+		m_firmware_status_label->setText(tr("No firmware installed (HLE-only)"));
+		m_firmware_status_label->setStyleSheet("color: gray;");
+		m_firmware_install_btn->setText(tr("Install PS5 Firmware..."));
+	}
 }
 
 void ConfigurationEditDialog::InitGameDirectories() {
@@ -390,4 +429,61 @@ void ConfigurationEditDialog::remove_selected_game_directories() {
 
 void ConfigurationEditDialog::update_game_directory_buttons() {
 	m_remove_game_dir_button->setEnabled(!m_game_dirs_list->selectedItems().isEmpty());
+}
+
+void ConfigurationEditDialog::install_firmware() {
+	// Open file dialog to select .pup file
+	const QString pup_path = QFileDialog::getOpenFileName(
+	    this,
+	    tr("Select PS5 Firmware File (.pup)"),
+	    QDir::homePath(),
+	    tr("PS5 Firmware Files (*.pup *.PUP);;All Files (*)"));
+
+	if (pup_path.isEmpty()) {
+		return; // User cancelled
+	}
+
+	// Show progress dialog
+	QProgressDialog progress(tr("Parsing PS5 firmware..."), tr("Cancel"), 0, 100, this);
+	progress.setWindowTitle(tr("Firmware Installation"));
+	progress.setWindowModality(Qt::WindowModal);
+	progress.setValue(10);
+	progress.show();
+
+	// Call actual firmware installation
+	const auto result = Libs::Firmware::FirmwareManager::Instance().InstallFromPup(
+	    pup_path.toStdString());
+
+	progress.setValue(100);
+
+	if (!result.ok) {
+		// Installation failed
+		QMessageBox::critical(
+		    this,
+		    tr("Firmware Installation Failed"),
+		    tr("Failed to install firmware:\n%1\n\n"
+		       "Please ensure you downloaded the official PS5 system software from:\n"
+		       "https://www.playstation.com/en-us/support/hardware/ps5/system-software/")
+		        .arg(QString::fromStdString(result.error)));
+		return;
+	}
+
+	// Installation succeeded
+	m_info.firmware_path = pup_path;
+
+	QMessageBox::information(
+	    this,
+	    tr("Firmware Installation Successful"),
+	    tr("Firmware installed successfully!\n\n"
+	       "Version: %1\n"
+	       "Modules extracted: %2\n\n"
+	       "The emulator will now use Low-Level Emulation (LLE) for available system modules.\n"
+	       "Restart the emulator to apply changes.")
+	        .arg(QString::fromStdString(result.version))
+	        .arg(result.modules_installed));
+
+	// Update UI
+	m_firmware_status_label->setText(tr("Firmware installed (%1 modules)").arg(result.modules_installed));
+	m_firmware_status_label->setStyleSheet("color: green;");
+	m_firmware_install_btn->setText(tr("Update PS5 Firmware..."));
 }
