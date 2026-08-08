@@ -10,7 +10,7 @@ file(GLOB firmware_src CONFIGURE_DEPENDS
 
 add_library(firmware STATIC ${firmware_src})
 
-target_include_directories(firmware PRIVATE
+target_include_directories(firmware PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )

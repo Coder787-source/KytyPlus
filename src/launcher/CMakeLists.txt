@@ -19,7 +19,7 @@ add_executable(launcher WIN32
 )
 
 
-target_link_libraries(launcher Qt6::Concurrent Qt6::Network Qt6::Widgets)
+target_link_libraries(launcher Qt6::Concurrent Qt6::Network Qt6::Widgets firmware)
 if(WIN32)
 target_link_libraries(launcher setupapi)
 endif()
