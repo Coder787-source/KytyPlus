@@ -20,6 +20,7 @@
 #include <QListView>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QSettings>
 #include <QSpinBox>
