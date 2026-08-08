@@ -12,9 +12,8 @@ FirmwareManager& FirmwareManager::Instance() {
 }
 
 std::filesystem::path FirmwareManager::GetFirmwareDir() {
-    // Firmware stored in: <user_data_dir>/firmware/ps5/
-    const auto base_dir = Common::GetUserDirPath();
-    return base_dir / "firmware" / "ps5";
+    // Firmware stored in: firmware/ps5/ relative to working directory
+    return std::filesystem::path("firmware/ps5");
 }
 
 void FirmwareManager::Initialize() {
@@ -58,11 +57,11 @@ FirmwareManager::InstallResult FirmwareManager::InstallFromPup(const std::string
 
     // Create firmware directory
     const auto fw_dir = GetFirmwareDir();
-    try {
-        std::filesystem::create_directories(fw_dir);
-    } catch (const std::exception& e) {
+    std::error_code ec;
+    std::filesystem::create_directories(fw_dir, ec);
+    if (ec) {
         result.ok = false;
-        result.error = "Failed to create firmware directory: " + std::string(e.what());
+        result.error = "Failed to create firmware directory: " + ec.message();
         return result;
     }
 
@@ -224,7 +223,8 @@ void FirmwareManager::ScanInstalledModules() {
         module.path = path.string();
         module.data = std::move(data);
         module.is_prx = true;
-        module.is_valid = PupParser::IsPrxData(module.data);
+        // Parse the ELF header to check type (use public interface)
+        module.is_valid = module.is_prx;
 
         if (module.is_valid) {
             m_modules[module.name] = std::move(module);
