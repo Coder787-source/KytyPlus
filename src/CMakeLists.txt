@@ -288,16 +288,18 @@ endif()
 
 set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL2-static xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9)
 
+# zlib is required by rpfArchiveReader on all platforms.
+find_package(ZLIB)
+if(ZLIB_FOUND)
+	list(APPEND kyty_emulator_link_libraries ZLIB::ZLIB)
+endif()
+
 # Linux system libraries required by the static FFmpeg archive.
 if(LINUX)
 	find_package(Threads REQUIRED)
 	list(APPEND kyty_emulator_link_libraries m ${CMAKE_DL_LIBS} Threads::Threads)
 
 	# Optional FFmpeg dependencies.
-	find_package(ZLIB)
-	if(ZLIB_FOUND)
-		list(APPEND kyty_emulator_link_libraries ZLIB::ZLIB)
-	endif()
 	find_library(KYTY_BZ2_LIBRARY bz2)
 	if(KYTY_BZ2_LIBRARY)
 		list(APPEND kyty_emulator_link_libraries ${KYTY_BZ2_LIBRARY})
