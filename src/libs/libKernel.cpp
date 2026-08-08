@@ -3414,11 +3414,6 @@ LIB_DEFINE(InitLibKernel_1_Pthread) {
 	LIB_FUNC("BNowx2l588E", LibKernel::KernelGetProcessTimeCounterFrequency);
 	LIB_FUNC("fgxnMeTNUtY", LibKernel::KernelGetProcessTimeCounter);
 
-	// PS5 hardware topology reporting (8C/16T Zen 2 @ 3.5 GHz)
-	LIB_FUNC("Ps5GetCpuCount", LibKernel::KernelGetCpuCount);
-	LIB_FUNC("Ps5GetCpuCoreCount", LibKernel::KernelGetCpuCoreCount);
-	LIB_FUNC("Ps5GetCpuFreqMhz", LibKernel::KernelGetCpuFrequencyMhz);
-
 	LIB_FUNC("7H0iTOciTLo", Posix::pthread_mutex_lock);
 	LIB_FUNC("2Z+PpY6CaJg", Posix::pthread_mutex_unlock);
 	LIB_FUNC("IafI2PxcPnQ", LibKernel::PthreadMutexTimedlock);
