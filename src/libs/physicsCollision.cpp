@@ -163,8 +163,8 @@ uint32_t CreateWorld(const Vec3& gravity) {
 	g_worlds[world.world_id] = std::move(world);
 
 	LOGF("[Physics] INFO: Created collision world %u (gravity: %.1f, %.1f, %.1f)\n",
-	     g_worlds.rbegin()->second.world_id, gravity.x, gravity.y, gravity.z);
-	return g_worlds.rbegin()->second.world_id;
+	     world.world_id, gravity.x, gravity.y, gravity.z);
+	return world.world_id;
 }
 
 void DestroyWorld(uint32_t world_id) {
