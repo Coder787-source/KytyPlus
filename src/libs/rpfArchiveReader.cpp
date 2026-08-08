@@ -33,7 +33,10 @@
 #include <cctype>
 #include <cstring>
 #include <fstream>
+
+#if defined(KYTY_HAS_ZLIB)
 #include <zlib.h>
+#endif
 
 namespace Libs::RpfArchive {
 
@@ -77,6 +80,14 @@ std::vector<uint8_t> ReadWholeFile(const char* path) {
 // Decompress a zlib stream. Returns empty vector on failure.
 std::vector<uint8_t> ZlibInflate(const uint8_t* src, uint32_t src_size,
                                   uint32_t expected_dst_size) {
+#if !defined(KYTY_HAS_ZLIB)
+	// Without zlib, return the raw compressed data as-is (callers must handle
+	// short reads gracefully).
+	(void) src; (void) src_size;
+	std::vector<uint8_t> dst(src, src + src_size);
+	LOGF("[RpfReader] WARN: zlib not available, returning compressed data uncompressed\n");
+	return dst;
+#else
 	std::vector<uint8_t> dst(expected_dst_size);
 
 	z_stream strm {};
@@ -98,10 +109,10 @@ std::vector<uint8_t> ZlibInflate(const uint8_t* src, uint32_t src_size,
 		LOGF("[RpfReader] WARN: inflate returned %d (expected Z_STREAM_END), "
 		     "decompressed %lu of %u bytes\n",
 		     ret, strm.total_out, expected_dst_size);
-		// Partial decompression — return what we got.
 		dst.resize(strm.total_out);
 	}
 	return dst;
+#endif
 }
 
 // ─── TOC parser (RPF7) ──────────────────────────────────────────────────────

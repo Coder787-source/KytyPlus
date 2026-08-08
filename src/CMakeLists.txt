@@ -292,6 +292,7 @@ set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-to
 find_package(ZLIB)
 if(ZLIB_FOUND)
 	list(APPEND kyty_emulator_link_libraries ZLIB::ZLIB)
+	list(APPEND kyty_emulator_compile_definitions KYTY_HAS_ZLIB=1)
 endif()
 
 # Linux system libraries required by the static FFmpeg archive.
@@ -526,6 +527,7 @@ endif()
 add_executable(kyty_emulator main.cpp platformDispatch.cpp shadps4Embedder.cpp ${kyty_emulator_src})
 
 target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries} gcn_decoder)
+target_compile_definitions(kyty_emulator PRIVATE ${kyty_emulator_compile_definitions})
 if (WIN32)
 	target_link_libraries(kyty_emulator opengl32)
 	target_link_libraries(kyty_emulator iphlpapi)
