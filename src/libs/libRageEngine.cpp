@@ -71,7 +71,7 @@ static int KYTY_SYSV_ABI rageScriptLoadProgram(const void* bytecode, uint32_t si
 	PRINT_NAME();
 	uint32_t handle = RageScripting::LoadProgram(
 	    static_cast<const uint8_t*>(bytecode), size, name);
-	return (handle != 0) ? static_cast<int>(handle) : KYTY_ERR_NO_MEMORY;
+	return (handle != 0) ? static_cast<int>(handle) : -1;
 }
 
 // rageScriptStartThread — start a new script thread.
@@ -80,7 +80,7 @@ static int KYTY_SYSV_ABI rageScriptStartThread(uint32_t program, const char* nam
                                                 uint32_t stack_size) {
 	PRINT_NAME();
 	uint32_t tid = RageScripting::StartThread(program, name, stack_size);
-	return (tid != 0) ? static_cast<int>(tid) : KYTY_ERR_NO_MEMORY;
+	return (tid != 0) ? static_cast<int>(tid) : -1;
 }
 
 // rageScriptKillThread — kill a running script thread.
@@ -118,7 +118,7 @@ static int KYTY_SYSV_ABI rageScriptRegisterNative(uint64_t hash, const char* nam
 static int KYTY_SYSV_ABI rageOpenArchive(const char* path) {
 	PRINT_NAME();
 	auto* archive = RpfArchive::OpenArchive(path);
-	if (!archive) return KYTY_ERR_NOT_FOUND;
+	if (!archive) return -1;
 	// Return the pointer as an opaque handle (cast to int).
 	// In practice, the guest uses a 64-bit handle.
 	return static_cast<int>(reinterpret_cast<intptr_t>(archive));
@@ -134,7 +134,7 @@ static int KYTY_SYSV_ABI rageReadFile(int archive_handle, const char* name,
 	auto file_data = RpfArchive::ReadFile(archive, name);
 	if (!file_data.ok) {
 		if (bytes_read) *bytes_read = 0;
-		return KYTY_ERR_NOT_FOUND;
+		return -1;
 	}
 	uint32_t copy_size = std::min(buf_size, static_cast<uint32_t>(file_data.data.size()));
 	if (out_buf && copy_size > 0) {
