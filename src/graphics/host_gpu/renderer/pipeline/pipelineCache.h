@@ -22,6 +22,7 @@ struct RenderColorInfo;
 struct RenderDepthInfo;
 class RenderCommandBuffer;
 class DescriptorCache;
+class AsyncPipelineCompiler;
 
 namespace HW {
 class Context;
@@ -55,6 +56,10 @@ struct PipelineStaticParameters {
 	bool                       cull_front                                         = false;
 	bool                       cull_back                                          = false;
 	bool                       face                                               = false;
+	bool                       depth_bias_enable                                  = false;
+	float                      depth_bias_constant                                = 0.0f;
+	float                      depth_bias_clamp                                   = 0.0f;
+	float                      depth_bias_slope                                   = 0.0f;
 	uint8_t                    color_srcblend[RENDER_COLOR_ATTACHMENTS_MAX]       = {};
 	uint8_t                    color_comb_fcn[RENDER_COLOR_ATTACHMENTS_MAX]       = {};
 	uint8_t                    color_destblend[RENDER_COLOR_ATTACHMENTS_MAX]      = {};
@@ -83,6 +88,7 @@ static_assert(sizeof(PipelineStaticParameters) ==
                   sizeof(vk::CompareOp) + sizeof(bool) + sizeof(float) * 2 + sizeof(bool) +
                   sizeof(PipelineStencilStaticState) * 2 + sizeof(uint32_t) +
                   sizeof(uint32_t[RENDER_COLOR_ATTACHMENTS_MAX]) + sizeof(bool) * 3 +
+	              sizeof(bool) + sizeof(float) * 3 +
                   sizeof(uint8_t[RENDER_COLOR_ATTACHMENTS_MAX]) * 6 +
                   sizeof(bool[RENDER_COLOR_ATTACHMENTS_MAX]) * 3 + sizeof(float) * 4);
 
@@ -97,10 +103,7 @@ struct PipelineRenderingState {
 
 class PipelineCache {
 public:
-	PipelineCache(GraphicContext& graphics, DescriptorCache& descriptor_cache)
-	    : m_graphics(graphics), m_descriptor_cache(descriptor_cache) {
-		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-	}
+	PipelineCache(GraphicContext& graphics, DescriptorCache& descriptor_cache);
 	~PipelineCache();
 	KYTY_CLASS_NO_COPY(PipelineCache);
 
@@ -128,7 +131,6 @@ public:
 	                                       const HW::ComputeShaderInfo& cs_regs,
 	                                       std::span<const uint32_t>    cs_spirv);
 
-private:
 	struct GraphicsPipelineKey {
 		PipelineRenderingState   rendering;
 		ShaderId                 vs_shader_id;
@@ -192,6 +194,12 @@ private:
 		}
 	};
 
+	struct GraphicsPipelineKeyEqual {
+		bool operator()(const GraphicsPipelineKey& a, const GraphicsPipelineKey& b) const noexcept {
+			return a == b;
+		}
+	};
+
 	struct ComputePipelineKeyHash {
 		std::size_t operator()(const ComputePipelineKey& key) const {
 			std::size_t hash = 0;
@@ -200,6 +208,29 @@ private:
 		}
 	};
 
+	enum class PipelineLookupResult { Ready, Absent, Pending };
+	PipelineLookupResult TryGetGraphicsPipeline(const GraphicsPipelineKey& key,
+	                                            GraphicsPipeline*& out);
+	void SubmitAsyncCompile(GraphicsPipelineKey                key,
+	                       PipelineRenderingState            rendering,
+	                       PipelineStaticParameters          static_params,
+	                       const ShaderVertexInputInfo&      vs_input_info,
+	                       const ShaderPixelInputInfo*       ps_input_info,
+	                       std::span<const uint32_t>          vs_spirv,
+	                       std::span<const uint32_t>          ps_spirv,
+	                       uint32_t vs_hash0, uint32_t vs_crc32,
+	                       uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active);
+	void PublishCompiledPipeline(GraphicsPipelineKey key,
+	                            std::unique_ptr<GraphicsPipeline> pipeline);
+	[[nodiscard]] bool AsyncCompilationEnabled() const noexcept;
+	[[nodiscard]] bool IsAsyncPending(const GraphicsPipelineKey& key) const;
+
+private:
+	void LoadDriverCache();
+	void SaveDriverCache() const;
+	void MaybeSaveDriverCache();
+	static GraphicsPipeline& AsyncPendingSentinel() noexcept;
+
 	GraphicContext&  m_graphics;
 	DescriptorCache& m_descriptor_cache;
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>,
@@ -207,20 +238,28 @@ private:
 	    m_graphics_pipelines;
 	std::unordered_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>, ComputePipelineKeyHash>
 	              m_compute_pipelines;
-	Common::Mutex m_mutex;
+	vk::PipelineCache m_driver_cache       = nullptr;
+	uint64_t          m_new_pipeline_count = 0;
+	Common::Mutex     m_mutex;
+	std::size_t       m_last_gfx_hash      = 0;
+	GraphicsPipeline* m_last_gfx_pipeline  = nullptr;
+	GraphicsPipelineKey m_last_gfx_key {};
+	std::unique_ptr<AsyncPipelineCompiler> m_async_compiler;
 };
 
 void LogPipelineTrace(const char* phase, uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0,
                       uint32_t ps_crc32);
 void CreatePipelineInternal(
     GraphicContext& graphics, DescriptorCache& descriptor_cache,
-    PipelineCache::GraphicsPipeline& pipeline, const PipelineRenderingState& rendering,
+    PipelineCache::GraphicsPipeline& pipeline, vk::PipelineCache driver_cache,
+    const PipelineRenderingState& rendering,
     const ShaderVertexInputInfo& vs_input_info, std::span<const uint32_t> vs_shader,
     const ShaderPixelInputInfo* ps_input_info, std::span<const uint32_t> ps_shader,
     const PipelineStaticParameters& static_params, uint32_t vs_hash0, uint32_t vs_crc32,
     uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active);
 void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descriptor_cache,
                             PipelineCache::ComputePipeline& pipeline,
+                            vk::PipelineCache               driver_cache,
                             const ShaderComputeInputInfo&   input_info,
                             std::span<const uint32_t>       cs_shader);
 

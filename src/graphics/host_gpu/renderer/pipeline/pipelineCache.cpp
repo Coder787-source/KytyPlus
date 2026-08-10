@@ -1,6 +1,9 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/asyncPipelineCompiler.h"
+#include "common/emulatorConfig.h"
 
 #include "common/assert.h"
+#include "common/file.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/hardwareContext.h"
@@ -8,17 +11,26 @@
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/pipelineCacheData.h"
+#include "graphics/host_gpu/renderer/polyOffsetBias.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <limits>
 #include <span>
 #include <utility>
+#include <vector>
 
 namespace Libs::Graphics {
 
 namespace {
+
+constexpr auto   kDriverCachePath    = "_Cache/vulkan_pipeline_cache.bin";
+constexpr size_t kMaxDriverCacheSize = 64u * 1024u * 1024u;
 
 void NormalizeStaticParamsForDynamicState(PipelineStaticParameters& static_params) {
 	static_params.viewport_scale[0]  = 0.5f;
@@ -36,7 +48,20 @@ void NormalizeStaticParamsForDynamicState(PipelineStaticParameters& static_param
 
 } // namespace
 
+PipelineCache::PipelineCache(GraphicContext& graphics, DescriptorCache& descriptor_cache)
+    : m_graphics(graphics), m_descriptor_cache(descriptor_cache) {
+	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+	LoadDriverCache();
+}
+
 PipelineCache::~PipelineCache() {
+	SaveDriverCache();
+
+	// Stop worker threads before destroying any Vulkan handles they might be
+	// compiling into. Shutdown() drains the queue and joins all workers on the
+	// main thread, so no worker outlives the device.
+	m_async_compiler.reset();
+
 	auto destroy = [this](const auto& pipelines) {
 		for (const auto& [key, pipeline]: pipelines) {
 			(void)key;
@@ -46,6 +71,88 @@ PipelineCache::~PipelineCache() {
 	};
 	destroy(m_graphics_pipelines);
 	destroy(m_compute_pipelines);
+
+	if (m_driver_cache != nullptr) {
+		m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
+		m_driver_cache = nullptr;
+	}
+}
+
+void PipelineCache::LoadDriverCache() {
+	std::vector<uint8_t> initial_data;
+	if (Common::File::IsFileExisting(kDriverCachePath)) {
+		Common::File file(kDriverCachePath, Common::File::Mode::Read);
+		if (!file.IsInvalid() && file.Size() <= kMaxDriverCacheSize) {
+			auto buffer = file.ReadWholeBuffer();
+			initial_data.resize(buffer.Size());
+			if (!initial_data.empty()) {
+				std::memcpy(initial_data.data(), buffer.GetDataConst(), buffer.Size());
+			}
+			if (!PipelineCacheDataIsCompatible(initial_data,
+			                                   m_graphics.GetPhysicalDeviceProperties())) {
+				LOGF("PipelineCache: ignoring incompatible driver cache\n");
+				initial_data.clear();
+			}
+		}
+	}
+
+	vk::PipelineCacheCreateInfo create_info {};
+	create_info.initialDataSize = initial_data.size();
+	create_info.pInitialData    = initial_data.empty() ? nullptr : initial_data.data();
+
+	auto result = m_graphics.device.createPipelineCache(&create_info, nullptr, &m_driver_cache);
+	if (result != vk::Result::eSuccess && !initial_data.empty()) {
+		LOGF("PipelineCache: cached data rejected (%s), retrying empty\n",
+		     VulkanToString(result).c_str());
+		create_info.initialDataSize = 0;
+		create_info.pInitialData    = nullptr;
+		result = m_graphics.device.createPipelineCache(&create_info, nullptr, &m_driver_cache);
+	}
+	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess || m_driver_cache == nullptr);
+}
+
+void PipelineCache::SaveDriverCache() const {
+	if (m_driver_cache == nullptr) {
+		return;
+	}
+
+	size_t size   = 0;
+	auto   result = m_graphics.device.getPipelineCacheData(m_driver_cache, &size, nullptr);
+	if (result != vk::Result::eSuccess || size == 0 || size > kMaxDriverCacheSize ||
+	    size > std::numeric_limits<uint32_t>::max()) {
+		LOGF("PipelineCache: could not query driver cache (%s, size=%" PRIu64 ")\n",
+		     VulkanToString(result).c_str(), static_cast<uint64_t>(size));
+		return;
+	}
+
+	std::vector<uint8_t> data(size);
+	result = m_graphics.device.getPipelineCacheData(m_driver_cache, &size, data.data());
+	if (result != vk::Result::eSuccess || size == 0) {
+		LOGF("PipelineCache: could not read driver cache (%s)\n", VulkanToString(result).c_str());
+		return;
+	}
+	data.resize(size);
+
+	const auto path = std::filesystem::path(kDriverCachePath);
+	if (!Common::File::CreateDirectories(path.parent_path())) {
+		LOGF("PipelineCache: could not create cache directory\n");
+		return;
+	}
+	Common::File file(path, Common::File::Mode::Write);
+	if (file.IsInvalid()) {
+		LOGF("PipelineCache: could not open cache file for writing\n");
+		return;
+	}
+	file.Write(data.data(), static_cast<uint32_t>(data.size()));
+}
+
+void PipelineCache::MaybeSaveDriverCache() {
+	m_new_pipeline_count++;
+	// Persist at 1, 2, 4, 8... new pipelines. This survives quick_exit without adding disk I/O
+	// to every pipeline compilation.
+	if ((m_new_pipeline_count & (m_new_pipeline_count - 1u)) == 0) {
+		SaveDriverCache();
+	}
 }
 
 bool PipelineStaticParameters::operator==(const PipelineStaticParameters& other) const noexcept {
@@ -79,6 +186,7 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 		                        : 0);
 	}
 	const HW::ModeControl& mc = ctx.GetModeControl();
+	const HW::PolyOffset& po = ctx.GetPolyOffset();
 
 	auto     vs_id = ShaderGetIdVS(vertex_info, vs_input_info, true);
 	ShaderId ps_id {};
@@ -151,12 +259,25 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	static_params.stencil_test_enable      = depth.stencil_test_enable;
 	static_params.stencil_front            = depth.stencil_static_front;
 	static_params.stencil_back             = depth.stencil_static_back;
+	PolyOffsetBias bias {};
+	switch (ResolvePolyOffsetBias(mc, po, bias)) {
+		case PolyOffsetBiasResult::UnsupportedPerFace:
+			EXIT("per-face polygon offset cannot be represented by Vulkan core depth bias\n");
+		case PolyOffsetBiasResult::NonFinite:
+			EXIT("polygon offset contains a non-finite value\n");
+		case PolyOffsetBiasResult::Enabled:
+			static_params.depth_bias_enable   = true;
+			static_params.depth_bias_constant = bias.constant;
+			static_params.depth_bias_clamp    = bias.clamp;
+			static_params.depth_bias_slope    = bias.slope;
+			break;
+		case PolyOffsetBiasResult::Disabled: break;
+	}
 	for (uint32_t i = 0; i < RENDER_COLOR_ATTACHMENTS_MAX; i++) {
 		static_params.color_mask[i] = color_mask[i];
 	}
-	const bool rect_list     = topology == vk::PrimitiveTopology::ePatchList;
-	static_params.cull_back  = !rect_list && mc.cull_back;
-	static_params.cull_front = !rect_list && mc.cull_front;
+	static_params.cull_back  = mc.cull_back;
+	static_params.cull_front = mc.cull_front;
 	static_params.face       = mc.face;
 
 	for (uint32_t i = 0; i < color_count; i++) {
@@ -185,8 +306,35 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	key.ps_shader_id  = p.ps_shader_id;
 	key.static_params = static_params;
 
+	// Last-pipeline cache: consecutive draws frequently reuse the same pipeline.
+	// Compute the hash and compare against the last-used key to skip the map lookup.
+	const std::size_t key_hash = GraphicsPipelineKeyHash {}(key);
+	if (key_hash == m_last_gfx_hash && key == m_last_gfx_key && m_last_gfx_pipeline != nullptr) {
+		return *m_last_gfx_pipeline;
+	}
+
 	if (auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
+		m_last_gfx_hash     = key_hash;
+		m_last_gfx_key      = key;
+		m_last_gfx_pipeline = iter->second.get();
 		return *iter->second;
+	}
+
+	// --- Async fast path: if async compilation is enabled and this pipeline is not
+	//     already cached or in-flight, hand the (already-built) key/rendering/static
+	//     params + copies of the SPIR-V and input info to the worker pool and return a
+	//     sentinel so the draw path skips recording until the worker publishes the
+	//     finished pipeline. Falls through to the synchronous compile below when async
+	//     is disabled or the job is already pending (rare double-submit guard).
+	if (AsyncCompilationEnabled()) {
+		if (m_async_compiler != nullptr && m_async_compiler->IsPending(key)) {
+			// Still compiling on a worker; skip this draw until it lands.
+			return AsyncPendingSentinel();
+		}
+		SubmitAsyncCompile(key, rendering, static_params, vs_input_info, ps_input_info,
+		                   vs_spirv, ps_spirv, vs_id.hash0, vs_id.crc32, ps_id.hash0,
+		                   ps_id.crc32, ps_active);
+		return AsyncPendingSentinel();
 	}
 
 	if (graphics_debug_dump_enabled()) {
@@ -203,17 +351,24 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	auto cached = std::make_unique<GraphicsPipeline>(p);
 	LogPipelineTrace("CreatePipelineInternal begin", vs_id.hash0, vs_id.crc32, ps_id.hash0,
 	                 ps_id.crc32);
-	CreatePipelineInternal(m_graphics, m_descriptor_cache, *cached, rendering, vs_input_info,
-	                       vs_spirv, ps_input_info, ps_spirv, static_params, vs_id.hash0,
-	                       vs_id.crc32, ps_id.hash0, ps_id.crc32, ps_active);
+	CreatePipelineInternal(m_graphics, m_descriptor_cache, *cached, m_driver_cache, rendering,
+	                       vs_input_info, vs_spirv, ps_input_info, ps_spirv, static_params,
+	                       vs_id.hash0, vs_id.crc32, ps_id.hash0, ps_id.crc32, ps_active);
 	LogPipelineTrace("CreatePipelineInternal done", vs_id.hash0, vs_id.crc32, ps_id.hash0,
 	                 ps_id.crc32);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 
+	// Cache the newly created pipeline for fast consecutive-draw lookup.
+	const std::size_t new_hash = GraphicsPipelineKeyHash {}(key);
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
+	MaybeSaveDriverCache();
+
+	m_last_gfx_hash     = new_hash;
+	m_last_gfx_key      = iter->first;
+	m_last_gfx_pipeline = iter->second.get();
 
 	return *iter->second;
 }
@@ -245,14 +400,111 @@ PipelineCache::CreateComputePipeline(ShaderComputeInputInfo&      input_info,
 	}
 
 	auto cached = std::make_unique<ComputePipeline>(p);
-	CreatePipelineInternal(m_graphics, m_descriptor_cache, *cached, input_info, cs_spirv);
+	CreatePipelineInternal(m_graphics, m_descriptor_cache, *cached, m_driver_cache, input_info,
+	                       cs_spirv);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 
 	auto [iter, inserted] = m_compute_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
+	MaybeSaveDriverCache();
 
 	return *iter->second;
+}
+
+PipelineCache::GraphicsPipeline& PipelineCache::AsyncPendingSentinel() noexcept {
+	static GraphicsPipeline sentinel {};
+	sentinel.pipeline        = nullptr;
+	sentinel.pipeline_layout = nullptr;
+	return sentinel;
+}
+
+bool PipelineCache::AsyncCompilationEnabled() const noexcept {
+	return Config::AsyncPipelineCompilationEnabled();
+}
+
+bool PipelineCache::IsAsyncPending(const GraphicsPipelineKey& key) const {
+	if (!AsyncCompilationEnabled() || m_async_compiler == nullptr) {
+		return false;
+	}
+	return m_async_compiler->IsPending(key);
+}
+
+PipelineCache::PipelineLookupResult
+PipelineCache::TryGetGraphicsPipeline(const GraphicsPipelineKey& key, GraphicsPipeline*& out) {
+	Common::LockGuard lock(m_mutex);
+	if (const auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
+		out = iter->second.get();
+		return PipelineLookupResult::Ready;
+	}
+	if (AsyncCompilationEnabled() && m_async_compiler != nullptr &&
+	    m_async_compiler->IsPending(key)) {
+		out = nullptr;
+		return PipelineLookupResult::Pending;
+	}
+	out = nullptr;
+	return PipelineLookupResult::Absent;
+}
+
+void PipelineCache::PublishCompiledPipeline(GraphicsPipelineKey key,
+                                             std::unique_ptr<GraphicsPipeline> pipeline) {
+	Common::LockGuard lock(m_mutex);
+	// A synchronous CreateGraphicsPipeline call may have raced ahead and inserted
+	// the same key (e.g. if async was disabled mid-flight, or the GPU thread fell
+	// back to sync compile). Drop the duplicate rather than overwrite the live one.
+	if (m_graphics_pipelines.find(key) != m_graphics_pipelines.end()) {
+		// Destroy the losing pipeline immediately on this (worker) thread. The Vulkan
+		// device is alive (Shutdown hasn't run) and device.destroyPipeline is safe to
+		// call from a non-main thread.
+		if (pipeline && pipeline->pipeline != nullptr) {
+			m_graphics.device.destroyPipeline(pipeline->pipeline, nullptr);
+		}
+		if (pipeline && pipeline->pipeline_layout != nullptr) {
+			m_graphics.device.destroyPipelineLayout(pipeline->pipeline_layout, nullptr);
+		}
+		return;
+	}
+	auto [iter, inserted] =
+	    m_graphics_pipelines.emplace(std::move(key), std::move(pipeline));
+	(void)iter;
+	EXIT_IF(!inserted);
+	// Driver cache writes are throttled elsewhere; avoid spamming disk from workers.
+}
+
+void PipelineCache::SubmitAsyncCompile(GraphicsPipelineKey                key,
+                                        PipelineRenderingState            rendering,
+                                        PipelineStaticParameters          static_params,
+                                        const ShaderVertexInputInfo&      vs_input_info,
+                                        const ShaderPixelInputInfo*      ps_input_info,
+                                        std::span<const uint32_t>         vs_spirv,
+                                        std::span<const uint32_t>         ps_spirv,
+                                        uint32_t vs_hash0, uint32_t vs_crc32,
+                                        uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active) {
+	if (!AsyncCompilationEnabled()) {
+		return;
+	}
+	if (m_async_compiler == nullptr) {
+		m_async_compiler = std::make_unique<AsyncPipelineCompiler>(
+		    m_graphics, m_descriptor_cache, m_driver_cache, *this);
+	}
+	AsyncPipelineCompiler::CompileRequest req {};
+	req.key          = key;
+	req.rendering    = rendering;
+	req.static_params = static_params;
+	req.vs_input_info = vs_input_info;
+	if (ps_active && ps_input_info != nullptr) {
+		req.ps_input_info_storage = std::make_unique<ShaderPixelInputInfo>(*ps_input_info);
+	}
+	req.vs_spirv.assign(vs_spirv.begin(), vs_spirv.end());
+	if (ps_active) {
+		req.ps_spirv.assign(ps_spirv.begin(), ps_spirv.end());
+	}
+	req.vs_hash0  = vs_hash0;
+	req.vs_crc32  = vs_crc32;
+	req.ps_hash0  = ps_hash0;
+	req.ps_crc32  = ps_crc32;
+	req.ps_active = ps_active;
+	m_async_compiler->Submit(std::move(req));
 }
 } // namespace Libs::Graphics

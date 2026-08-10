@@ -8,10 +8,10 @@
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptorCache.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
-#include "graphics/host_gpu/renderer/pipeline/shaderSubgroup.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderSubgroup.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/rectListShader.h"
@@ -457,11 +457,11 @@ static void ConfigureSubgroupSize(const GraphicContext& graphics, vk::ShaderStag
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(
     GraphicContext& graphics, DescriptorCache& descriptor_cache,
-    PipelineCache::GraphicsPipeline& pipeline, const PipelineRenderingState& rendering,
-    const ShaderVertexInputInfo& vs_input_info, std::span<const uint32_t> vs_shader,
-    const ShaderPixelInputInfo* ps_input_info, std::span<const uint32_t> ps_shader,
-    const PipelineStaticParameters& static_params, uint32_t vs_hash0, uint32_t vs_crc32,
-    uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active) {
+    PipelineCache::GraphicsPipeline& pipeline, vk::PipelineCache driver_cache,
+    const PipelineRenderingState& rendering, const ShaderVertexInputInfo& vs_input_info,
+    std::span<const uint32_t> vs_shader, const ShaderPixelInputInfo* ps_input_info,
+    std::span<const uint32_t> ps_shader, const PipelineStaticParameters& static_params,
+    uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active) {
 	EXIT_IF(ps_active && ps_input_info == nullptr);
 
 	const bool rect_list = static_params.topology == vk::PrimitiveTopology::ePatchList;
@@ -771,13 +771,13 @@ void CreatePipelineInternal(
 	clip_ext.depthClipEnable = static_params.depth_clip_enable ? VK_TRUE : VK_FALSE;
 
 	vk::PipelineRasterizationStateCreateInfo rasterizer {};
-	rasterizer.sType = vk::StructureType::ePipelineRasterizationStateCreateInfo;
+	rasterizer.sType                   = vk::StructureType::ePipelineRasterizationStateCreateInfo;
 	// MoltenVK lacks VK_EXT_depth_clip_enable; omit the depth-clip struct on macOS and accept
 	// Vulkan's default depth clipping (enabled) instead of the PS5's clamp behavior.
 #if defined(__APPLE__)
-	rasterizer.pNext = nullptr;
+	rasterizer.pNext                   = nullptr;
 #else
-	rasterizer.pNext = &clip_ext;
+	rasterizer.pNext                   = &clip_ext;
 #endif
 	rasterizer.flags                   = {};
 	rasterizer.depthClampEnable        = VK_FALSE;
@@ -785,10 +785,10 @@ void CreatePipelineInternal(
 	rasterizer.polygonMode             = vk::PolygonMode::eFill;
 	rasterizer.cullMode                = cull_mode;
 	rasterizer.frontFace               = front_face;
-	rasterizer.depthBiasEnable         = VK_FALSE;
-	rasterizer.depthBiasConstantFactor = 0.0f;
-	rasterizer.depthBiasClamp          = 0.0f;
-	rasterizer.depthBiasSlopeFactor    = 0.0f;
+	rasterizer.depthBiasEnable = static_params.depth_bias_enable ? VK_TRUE : VK_FALSE;
+	rasterizer.depthBiasConstantFactor = static_params.depth_bias_constant;
+	rasterizer.depthBiasClamp          = static_params.depth_bias_clamp;
+	rasterizer.depthBiasSlopeFactor    = static_params.depth_bias_slope;
 	rasterizer.lineWidth               = 1.0f;
 
 	vk::PipelineMultisampleStateCreateInfo multisampling {};
@@ -855,13 +855,13 @@ void CreatePipelineInternal(
 	color_write.pColorWriteEnables = color_write_enable;
 
 	vk::PipelineColorBlendStateCreateInfo color_blending {};
-	color_blending.sType = vk::StructureType::ePipelineColorBlendStateCreateInfo;
+	color_blending.sType             = vk::StructureType::ePipelineColorBlendStateCreateInfo;
 	// MoltenVK lacks VK_EXT_color_write_enable; drop the dynamic color-write struct on macOS
 	// and rely on each attachment's static colorWriteMask (all channels enabled by default).
 #if defined(__APPLE__)
-	color_blending.pNext = nullptr;
+	color_blending.pNext             = nullptr;
 #else
-	color_blending.pNext = &color_write;
+	color_blending.pNext             = &color_write;
 #endif
 	color_blending.flags             = {};
 	color_blending.logicOpEnable     = VK_FALSE;
@@ -953,7 +953,6 @@ void CreatePipelineInternal(
 	    vk::DynamicState::eStencilReference,
 	    vk::DynamicState::eStencilWriteMask,
 #if !defined(__APPLE__)
-	    // Keep last so depth-only pipelines can omit this dynamic state.
 	    vk::DynamicState::eColorWriteEnableEXT, // unsupported by MoltenVK; static mask instead
 #endif
 	};
@@ -984,15 +983,15 @@ void CreatePipelineInternal(
 	pipeline_info.flags                    = {};
 	pipeline_info.stageCount               = shader_stage_count;
 	pipeline_info.pStages                  = shader_stages;
-	pipeline_info.pVertexInputState        = &vertex_input_info;
-	pipeline_info.pInputAssemblyState      = &input_assembly;
+	pipeline_info.pVertexInputState    = &vertex_input_info;
+	pipeline_info.pInputAssemblyState  = &input_assembly;
 	vk::PipelineTessellationStateCreateInfo tessellation_state {};
 	tessellation_state.sType              = vk::StructureType::ePipelineTessellationStateCreateInfo;
 	tessellation_state.patchControlPoints = 3;
 	pipeline_info.pTessellationState      = (rect_list ? &tessellation_state : nullptr);
-	pipeline_info.pViewportState          = &viewport_state;
-	pipeline_info.pRasterizationState     = &rasterizer;
-	pipeline_info.pMultisampleState       = &multisampling;
+	pipeline_info.pViewportState           = &viewport_state;
+	pipeline_info.pRasterizationState      = &rasterizer;
+	pipeline_info.pMultisampleState        = &multisampling;
 	pipeline_info.pDepthStencilState = (static_params.with_depth ? &depth_stencil_info : nullptr);
 	pipeline_info.pColorBlendState   = &color_blending;
 	pipeline_info.pDynamicState      = &dynamic_state;
@@ -1015,7 +1014,7 @@ void CreatePipelineInternal(
 		     viewport.y, viewport.width, viewport.height, scissor.offset.x, scissor.offset.y,
 		     scissor.extent.width, scissor.extent.height);
 	}
-	result = graphics.device.createGraphicsPipelines(nullptr, 1, &pipeline_info, nullptr,
+	result = graphics.device.createGraphicsPipelines(driver_cache, 1, &pipeline_info, nullptr,
 	                                                 &pipeline.pipeline);
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
@@ -1040,6 +1039,7 @@ void CreatePipelineInternal(
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descriptor_cache,
                             PipelineCache::ComputePipeline& pipeline,
+                            vk::PipelineCache               driver_cache,
                             const ShaderComputeInputInfo&   input_info,
                             std::span<const uint32_t>       cs_shader) {
 	vk::ShaderModule comp_shader_module = nullptr;
@@ -1119,7 +1119,8 @@ void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descripto
 
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
-	result = graphics.device.createComputePipelines(nullptr, 1, &info, nullptr, &pipeline.pipeline);
+	result =
+	    graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr, &pipeline.pipeline);
 	LOGF("PipelineTrace: vkCreateComputePipelines done result=%s pipeline=%p\n",
 	     VulkanToString(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);

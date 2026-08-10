@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -588,6 +589,10 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		attachment.image_layout = layout;
 		attachment.clear_value  = target.color_clear_value.uint32;
 		attachment.is_clear     = target.color_clear_enable;
+		if (target.color_clear_enable && target.metadata_addr != 0 &&
+		    !cache.TouchMeta(target.metadata_addr, target.base_array_layer, false)) {
+			EXIT("failed to consume color metadata clear state\n");
+		}
 	}
 	if (depth.image_id) {
 		const auto owner = cache.ResolveOwner(depth.image_id);
@@ -692,9 +697,11 @@ static bool ConsumeMetadataColorOperation(const RenderCommandBuffer& buffer) {
 }
 
 struct DrawEmitInfo {
-	bool     indexed       = false;
-	int32_t  vertex_offset = 0;
-	uint32_t first_vertex  = 0;
+	bool     indexed           = false;
+	bool     draw_prim7_as_ngg = false;
+	uint32_t draw_vertex_count = 0;
+	int32_t  vertex_offset     = 0;
+	uint32_t first_vertex      = 0;
 };
 
 struct DrawIndexBufferSource {
@@ -707,10 +714,12 @@ struct DrawIndexBufferSource {
 
 struct PreparedIndexBuffer {
 	std::shared_ptr<void> owner;
-	vk::Buffer            buffer = nullptr;
-	uint64_t              size   = 0;
-	vk::DeviceSize        offset = 0;
-	vk::IndexType         type   = vk::IndexType::eUint16;
+	vk::Buffer            buffer   = nullptr;
+	uint64_t              address  = 0;
+	uint64_t              size     = 0;
+	vk::DeviceSize        offset   = 0;
+	vk::IndexType         type     = vk::IndexType::eUint16;
+	bool                  streamed = false;
 };
 
 static uint64_t VertexBufferDescriptorSize(const ShaderVertexInputBuffer& buffer) {
@@ -727,24 +736,11 @@ struct VertexBufferRange {
 	[[nodiscard]] uint64_t RequestedSize() const { return requested_end - base_address; }
 };
 
-struct PreparedVertexBuffers {
-	static constexpr uint32_t MaxBuffers = ShaderVertexInputInfo::RES_MAX;
-
-	std::array<vk::Buffer, MaxBuffers>            buffers {};
-	std::array<vk::DeviceSize, MaxBuffers>        offsets {};
-	std::array<std::shared_ptr<void>, MaxBuffers> owners {};
-	uint32_t                                      count       = 0;
-	uint32_t                                      owner_count = 0;
-};
-
-static PreparedVertexBuffers AcquireVertexBuffers(RenderCommandBuffer&         buffer,
-                                                  const ShaderVertexInputInfo& vs_input_info) {
-	EXIT_IF(vs_input_info.buffers_num < 0 ||
-	        vs_input_info.buffers_num > ShaderVertexInputInfo::RES_MAX);
-
+static std::vector<BufferBinding> AcquireVertexBuffers(RenderCommandBuffer&         buffer,
+                                                       const ShaderVertexInputInfo& vs_input_info) {
 	// Collect the non-empty guest vertex ranges.
-	std::array<VertexBufferRange, ShaderVertexInputInfo::RES_MAX> ranges {};
-	uint32_t                                                      range_count = 0;
+	std::vector<VertexBufferRange> ranges;
+	ranges.reserve(vs_input_info.buffers_num);
 	for (int i = 0; i < vs_input_info.buffers_num; i++) {
 		const auto& vertex = vs_input_info.buffers[i];
 		const auto  size   = VertexBufferDescriptorSize(vertex);
@@ -755,31 +751,27 @@ static PreparedVertexBuffers AcquireVertexBuffers(RenderCommandBuffer&         b
 			EXIT("invalid vertex buffer range: addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
 			     vertex.addr, size);
 		}
-		ranges[range_count++] = {vertex.addr, vertex.addr + size};
+		ranges.push_back({vertex.addr, vertex.addr + size});
 	}
 
-	std::sort(ranges.begin(), ranges.begin() + range_count,
-	          [](const VertexBufferRange& left, const VertexBufferRange& right) {
-		          return left.base_address < right.base_address;
-	          });
+	std::ranges::sort(ranges, [](const VertexBufferRange& left, const VertexBufferRange& right) {
+		return left.base_address < right.base_address;
+	});
 
 	// Merge overlapping or touching ranges before acquiring host buffers.
-	std::array<VertexBufferRange, ShaderVertexInputInfo::RES_MAX> merged_ranges {};
-	uint32_t                                                      merged_count = 0;
-	for (uint32_t i = 0; i < range_count; i++) {
-		const auto& range = ranges[i];
-		if (merged_count != 0 &&
-		    merged_ranges[merged_count - 1].requested_end >= range.base_address) {
-			merged_ranges[merged_count - 1].requested_end =
-			    std::max(merged_ranges[merged_count - 1].requested_end, range.requested_end);
+	std::vector<VertexBufferRange> merged_ranges;
+	merged_ranges.reserve(ranges.size());
+	for (const auto& range: ranges) {
+		if (!merged_ranges.empty() && merged_ranges.back().requested_end >= range.base_address) {
+			merged_ranges.back().requested_end =
+			    std::max(merged_ranges.back().requested_end, range.requested_end);
 			continue;
 		}
-		merged_ranges[merged_count++] = {range.base_address, range.requested_end};
+		merged_ranges.push_back(range);
 	}
 
 	auto& cache = buffer.GetContext().GetBufferCache();
-	for (uint32_t i = 0; i < merged_count; i++) {
-		auto& range = merged_ranges[i];
+	for (auto& range: merged_ranges) {
 		// PPSA20298
 		const auto size =
 		    Libs::LibKernel::Memory::ClampRangeSize(range.base_address, range.RequestedSize());
@@ -788,47 +780,30 @@ static PreparedVertexBuffers AcquireVertexBuffers(RenderCommandBuffer&         b
 	}
 
 	// Rebuild slot bindings, offsetting non-empty slots into their acquired merged range.
-	PreparedVertexBuffers prepared;
-	prepared.count = static_cast<uint32_t>(vs_input_info.buffers_num);
-	std::shared_ptr<Buffer> null_owner;
-	vk::Buffer              null_buffer = nullptr;
+	std::vector<BufferBinding> bindings;
+	bindings.reserve(vs_input_info.buffers_num);
 	for (int i = 0; i < vs_input_info.buffers_num; i++) {
 		const auto& vertex = vs_input_info.buffers[i];
 		const auto  size   = VertexBufferDescriptorSize(vertex);
 		if (size == 0) {
-			if (null_owner == nullptr) {
-				null_owner  = cache.ObtainNullBuffer();
-				null_buffer = null_owner->Handle();
-			}
-			prepared.buffers[i] = null_buffer;
-			prepared.offsets[i] = 0;
+			auto owner = cache.ObtainNullBuffer();
+			bindings.push_back({owner, owner->Handle(), 0});
 			continue;
 		}
 
-		const auto range = std::find_if(merged_ranges.begin(), merged_ranges.begin() + merged_count,
-		                                [&](const VertexBufferRange& value) {
-			                                return vertex.addr >= value.base_address &&
-			                                       vertex.addr < value.acquired_end;
-		                                });
-		if (range == merged_ranges.begin() + merged_count) {
+		const auto range = std::ranges::find_if(merged_ranges, [&](const VertexBufferRange& value) {
+			return vertex.addr >= value.base_address && vertex.addr < value.acquired_end;
+		});
+		if (range == merged_ranges.end()) {
 			EXIT("vertex buffer address is outside the acquired range: addr=0x%016" PRIx64 "\n",
 			     vertex.addr);
 		}
 
-		prepared.buffers[i] = range->binding.buffer;
-		prepared.offsets[i] = range->binding.offset + vertex.addr - range->base_address;
+		auto binding = range->binding;
+		binding.offset += vertex.addr - range->base_address;
+		bindings.push_back(std::move(binding));
 	}
-
-	if (null_owner != nullptr) {
-		prepared.owners[prepared.owner_count++] = std::move(null_owner);
-	}
-	for (uint32_t i = 0; i < merged_count; i++) {
-		if (merged_ranges[i].binding.owner != nullptr) {
-			EXIT_IF(prepared.owner_count >= PreparedVertexBuffers::MaxBuffers);
-			prepared.owners[prepared.owner_count++] = std::move(merged_ranges[i].binding.owner);
-		}
-	}
-	return prepared;
+	return bindings;
 }
 
 static void SetDrawDebugPhase(RenderCommandBuffer& buffer, uint64_t submit_id,
@@ -839,7 +814,7 @@ static void SetDrawDebugPhase(RenderCommandBuffer& buffer, uint64_t submit_id,
 	                    draw.flags, draw.instance_count, draw.first_instance);
 }
 
-static bool GetDrawTopology(const HW::UserConfig& ucfg, bool auto_draw,
+static bool GetDrawTopology(const HW::UserConfig& ucfg, bool auto_draw, bool use_ngg_rectlist_draw,
                             vk::PrimitiveTopology& topology) {
 
 	topology = vk::PrimitiveTopology::ePointList;
@@ -863,7 +838,8 @@ static bool GetDrawTopology(const HW::UserConfig& ucfg, bool auto_draw,
 			topology = vk::PrimitiveTopology::eTriangleStrip;
 			break;
 		case Prospero::PrimitiveType::kRectList:
-			topology = vk::PrimitiveTopology::ePatchList;
+			topology = (auto_draw && use_ngg_rectlist_draw ? vk::PrimitiveTopology::eTriangleStrip
+			                                               : vk::PrimitiveTopology::eTriangleList);
 			break;
 		case Prospero::PrimitiveType::kRectListLegacy:
 			if (!auto_draw) {
@@ -920,7 +896,7 @@ bool RenderExecutor::PrepareDrawRenderState(uint64_t submit_id, RenderCommandBuf
 	return true;
 }
 
-static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
+static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
                            DrawRenderState& state) {
 	EXIT_IF(draw.name == nullptr);
 	auto& ctx    = buffer.GetRegisters();
@@ -949,7 +925,7 @@ static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	}
 
 	if (!state.ps_active) {
-		return;
+		return true;
 	}
 	if (log_phases) {
 		LogDrawPhase(draw.name, "ShaderCompileInfoPS");
@@ -958,16 +934,24 @@ static void RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	                         target_export_mapping, state.ps_input_info, state.ps_shader)) {
 		EXIT("ShaderCompileInfoPS failed for draw %s\n", draw.name);
 	}
+	return true;
 }
 
-static PreparedVertexBuffers PrepareVertexBuffers(uint64_t submit_id, RenderCommandBuffer& buffer,
-                                                  const DrawCallInfo&          draw,
-                                                  const ShaderVertexInputInfo& vs_input_info) {
+static std::vector<BufferBinding> PrepareVertexBuffers(uint64_t                     submit_id,
+                                                       RenderCommandBuffer&         buffer,
+                                                       const DrawCallInfo&          draw,
+                                                       const ShaderVertexInputInfo& vs_input_info) {
 	EXIT_IF(draw.name == nullptr);
 	(void)submit_id;
 
 	LogDrawPhase(draw.name, "PrepareVertexBuffers");
 	return AcquireVertexBuffers(buffer, vs_input_info);
+}
+
+static void RebindVertexBuffers(RenderCommandBuffer&         buffer,
+                                const ShaderVertexInputInfo& vs_input_info,
+                                std::vector<BufferBinding>&  bindings) {
+	bindings = AcquireVertexBuffers(buffer, vs_input_info);
 }
 
 static PreparedIndexBuffer PrepareIndexBuffer(RenderCommandBuffer&         buffer,
@@ -977,14 +961,16 @@ static PreparedIndexBuffer PrepareIndexBuffer(RenderCommandBuffer&         buffe
 		return prepared;
 	}
 	EXIT_IF(source.size == 0);
-	prepared.size = source.size;
-	prepared.type = source.type;
+	prepared.address = source.address;
+	prepared.size    = source.size;
+	prepared.type    = source.type;
 	if (source.host_data != nullptr) {
 		auto binding =
 		    buffer.GetContext().GetBufferCache().UploadTransient(source.host_data, source.size, 16);
-		prepared.owner  = std::move(binding.owner);
-		prepared.buffer = binding.buffer;
-		prepared.offset = binding.offset;
+		prepared.owner    = std::move(binding.owner);
+		prepared.buffer   = binding.buffer;
+		prepared.offset   = binding.offset;
+		prepared.streamed = true;
 	} else {
 		auto binding =
 		    buffer.GetContext().GetBufferCache().ObtainBuffer(buffer, source.address, source.size);
@@ -995,29 +981,36 @@ static PreparedIndexBuffer PrepareIndexBuffer(RenderCommandBuffer&         buffe
 	return prepared;
 }
 
+static void RebindIndexBuffer(RenderCommandBuffer& buffer, PreparedIndexBuffer& prepared) {
+	if (prepared.size == 0 || prepared.streamed) {
+		return;
+	}
+	auto binding =
+	    buffer.GetContext().GetBufferCache().ObtainBuffer(buffer, prepared.address, prepared.size);
+	prepared.owner  = std::move(binding.owner);
+	prepared.buffer = binding.buffer;
+	prepared.offset = binding.offset;
+}
+
 static void CommitVertexBuffers(RenderCommandBuffer& buffer, vk::CommandBuffer vk_buffer,
-                                PreparedVertexBuffers& prepared) {
-	for (uint32_t i = 0; i < prepared.owner_count; i++) {
-		if (prepared.owners[i] != nullptr) {
-			buffer.RetainResourceUntilFence(std::move(prepared.owners[i]));
+                                std::vector<BufferBinding>& bindings) {
+	for (uint32_t slot = 0; slot < bindings.size(); slot++) {
+		auto& binding = bindings[slot];
+		if (binding.owner != nullptr) {
+			buffer.RetainResourceUntilFence(binding.owner);
 		}
-	}
-	for (uint32_t i = 0; i < prepared.count; i++) {
-		EXIT_IF(prepared.buffers[i] == nullptr);
-	}
-	if (prepared.count != 0) {
-		vk_buffer.bindVertexBuffers(0, prepared.count, prepared.buffers.data(),
-		                            prepared.offsets.data());
+		EXIT_IF(binding.buffer == nullptr);
+		vk_buffer.bindVertexBuffers(slot, 1, &binding.buffer, &binding.offset);
 	}
 }
 
 static void CommitIndexBuffer(RenderCommandBuffer& buffer, vk::CommandBuffer vk_buffer,
-                              PreparedIndexBuffer& prepared) {
+                              const PreparedIndexBuffer& prepared) {
 	if (prepared.size == 0) {
 		return;
 	}
 	if (prepared.owner != nullptr) {
-		buffer.RetainResourceUntilFence(std::move(prepared.owner));
+		buffer.RetainResourceUntilFence(prepared.owner);
 	}
 	EXIT_IF(prepared.buffer == nullptr);
 	vk_buffer.bindIndexBuffer(prepared.buffer, prepared.offset, prepared.type);
@@ -1046,6 +1039,20 @@ static void LogDrawStateIfNeeded(const RenderCommandBuffer& buffer, const DrawCa
 	// LogDrawTextureState(draw.name, state.color_info[0], state.ps_input_info);
 }
 
+static bool IsHostExpandedRectListDrawSupported(const ShaderVertexInputInfo& vs_input_info,
+                                                const DrawCallInfo&          draw,
+                                                const DrawEmitInfo&          emit) {
+	if (!emit.draw_prim7_as_ngg) {
+		return true;
+	}
+
+	if (vs_input_info.buffers_num != 0) {
+		return false;
+	}
+
+	return draw.index_count == 3 || draw.index_count == emit.draw_vertex_count;
+}
+
 static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_buffer,
                                const ShaderVertexInputInfo& vs_input_info, const DrawCallInfo& draw,
                                const DrawEmitInfo& emit) {
@@ -1058,12 +1065,22 @@ static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_
 		case Prospero::PrimitiveType::kTriList:
 		case Prospero::PrimitiveType::kTriFan:
 		case Prospero::PrimitiveType::kTriStrip:
-		case Prospero::PrimitiveType::kRectList:
 			if (emit.indexed) {
 				vk_buffer.drawIndexed(draw.index_count, draw.instance_count, 0, emit.vertex_offset,
 				                      draw.first_instance);
 			} else {
 				vk_buffer.draw(draw.index_count, draw.instance_count, emit.first_vertex,
+				               draw.first_instance);
+			}
+			break;
+		case Prospero::PrimitiveType::kRectList:
+			if (emit.indexed) {
+				vk_buffer.drawIndexed(draw.index_count, draw.instance_count, 0, emit.vertex_offset,
+				                      draw.first_instance);
+			} else {
+				EXIT_NOT_IMPLEMENTED(
+				    !IsHostExpandedRectListDrawSupported(vs_input_info, draw, emit));
+				vk_buffer.draw(emit.draw_vertex_count, draw.instance_count, emit.first_vertex,
 				               draw.first_instance);
 			}
 			break;
@@ -1105,6 +1122,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	                                               state.ps_input_info.stage, state.ps_active);
 	auto vertex_bindings = PrepareVertexBuffers(submit_id, buffer, draw, state.vs_input_info);
 	auto index_binding   = PrepareIndexBuffer(buffer, index_source);
+	RebindVertexBuffers(buffer, state.vs_input_info, vertex_bindings);
+	RebindIndexBuffer(buffer, index_binding);
 	state.rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info);
 
@@ -1114,6 +1133,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	auto& pipeline = m_context.GetPipelineCache().CreateGraphicsPipeline(
 	    state.color_info, state.color_count, state.depth_info, state.vs_input_info, buffer,
 	    &state.ps_input_info, topology, state.ps_active, state.vs_shader, state.ps_shader);
+
+	// Async pipeline compilation: when the pipeline is being compiled on a worker
+	// thread, CreateGraphicsPipeline returns a sentinel with a null pipeline handle.
+	// Skip recording this draw entirely (no bindPipeline, no vkCmdDraw) so the frame
+	// keeps flowing; the next frames retry and bind the real pipeline once it lands.
+	// A few skipped draws are far cheaper than blocking the GPU thread on a
+	// multi-100 ms vkCreateGraphicsPipelines call.
+	if (pipeline.pipeline == nullptr) {
+		LogDrawPhase(draw.name, "PipelinePending-SkipDraw");
+		return;
+	}
 
 	// Resource preparation above may synchronously finish and restart the scheduler. From this
 	// point onward, every operation targets the current command buffer and cannot touch guest
@@ -1188,7 +1218,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 	                    reinterpret_cast<uint64_t>(index_addr));
 
 	Common::LockGuard lock(m_context.GetMutex());
-	if (index_count == 0 || instance_count == 0) {
+	if (index_count == 0) {
 		return;
 	}
 
@@ -1230,7 +1260,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 	hw_check(buffer);
 
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
-	if (!GetDrawTopology(ucfg, false, topology)) {
+	if (!GetDrawTopology(ucfg, false, false, topology)) {
 		return;
 	}
 
@@ -1286,7 +1316,10 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 		return;
 	}
 
-	RefreshShaders(buffer, draw, true, state);
+	if (!RefreshShaders(buffer, draw, true, state)) {
+		ResetBindings();
+		return;
+	}
 
 	LogDrawStateIfNeeded(buffer, draw, state, true, false, index_type_and_size, index_addr);
 
@@ -1317,7 +1350,7 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer, u
 	                    index_count, flags, first_vertex, instance_count, first_instance);
 
 	Common::LockGuard lock(m_context.GetMutex());
-	if (index_count == 0 || instance_count == 0) {
+	if (index_count == 0) {
 		return;
 	}
 
@@ -1366,15 +1399,23 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer, u
 		return;
 	}
 
-	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
-	if (!GetDrawTopology(ucfg, true, topology)) {
+	vk::PrimitiveTopology topology              = vk::PrimitiveTopology::ePointList;
+	const bool            use_ngg_rectlist_draw = Config::NggRectlistDrawEnabled();
+
+	if (!GetDrawTopology(ucfg, true, use_ngg_rectlist_draw, topology)) {
 		ResetBindings();
 		return;
 	}
-	RefreshShaders(buffer, draw, false, state);
+	const bool draw_prim7_as_ngg =
+	    (use_ngg_rectlist_draw &&
+	     ucfg.GetPrimType() == Prospero::GpuEnumValue(Prospero::PrimitiveType::kRectList));
 
-	const bool rect_list = topology == vk::PrimitiveTopology::ePatchList;
-	if (rect_list && state.vs_input_info.buffers_num == 0 &&
+	if (!RefreshShaders(buffer, draw, false, state)) {
+		ResetBindings();
+		return;
+	}
+
+	if (draw_prim7_as_ngg && state.vs_input_info.buffers_num == 0 &&
 	    state.vs_input_info.param_export_mask == 0 && state.ps_input_info.input_num != 0) {
 		if (graphics_debug_dump_enabled()) {
 			LOGF("DrawIndexAuto: skipping rect-list draw with no VS param exports and PS inputs: "
@@ -1391,10 +1432,13 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer, u
 	                         Prospero::GpuEnumValue(Prospero::PrimitiveType::kRectListLegacy),
 	                     0, nullptr);
 
-	const auto   vertex_offset = ResolveVertexOffset(ucfg.GetIndexOffset(), state.vs_input_info) +
-	                             static_cast<int32_t>(first_vertex);
-	DrawEmitInfo emit {};
-	emit.first_vertex = static_cast<uint32_t>(vertex_offset);
+	const uint32_t draw_vertex_count = (draw_prim7_as_ngg ? 4u : index_count);
+	const auto     vertex_offset = ResolveVertexOffset(ucfg.GetIndexOffset(), state.vs_input_info) +
+	                               static_cast<int32_t>(first_vertex);
+	DrawEmitInfo   emit {};
+	emit.draw_prim7_as_ngg = draw_prim7_as_ngg;
+	emit.draw_vertex_count = draw_vertex_count;
+	emit.first_vertex      = static_cast<uint32_t>(vertex_offset);
 
 	DrawIndexBufferSource index_source {};
 	ExecutePreparedDraw(submit_id, buffer, draw, state, topology, emit, index_source, false, false,

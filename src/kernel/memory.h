@@ -19,6 +19,14 @@ using callback_func_t = void (*)(uintptr_t addr, size_t size);
 
 constexpr uint32_t KERNEL_MAXIMUM_NAME_LENGTH = 32;
 
+// Address range reserved for pthread guest-thread stacks (see CreateGuestStack() in
+// kernel/pthread.cpp). This is claimed as a placeholder during Memory subsystem init so that
+// later subsystems (Graphics, Audio, ...) can never place an unrelated allocation on top of it;
+// otherwise a fixed-address VirtualAlloc() for a guest stack can fail with
+// ERROR_INVALID_ADDRESS once something else already occupies the address (see GitHub issue #104).
+constexpr uint64_t GUEST_STACK_REGION_TOP  = 0x7efff8000ull;
+constexpr uint64_t GUEST_STACK_REGION_SIZE = 0x100000000ull; // 4 GiB of address space (reserve-only)
+
 struct VirtualQueryInfo {
 	uintptr_t start;
 	uintptr_t end;
@@ -144,6 +152,7 @@ int KYTY_SYSV_ABI KernelVirtualQuery(const void* addr, int flags, VirtualQueryIn
 int KYTY_SYSV_ABI KernelIsStack(void* addr, void** start, void** end);
 int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, size_t alignment);
 bool              KernelHandleReservedRangeAccessViolation(uint64_t vaddr);
+void              KernelLogFaultRange(uint64_t vaddr);
 int KYTY_SYSV_ABI KernelAvailableFlexibleMemorySize(size_t* size);
 int KYTY_SYSV_ABI KernelConfiguredFlexibleMemorySize(size_t* size);
 int KYTY_SYSV_ABI KernelMprotect(const void* addr, size_t len, int prot);

@@ -1,6 +1,7 @@
 #include "common/emulatorConfig.h"
 
 #include "common/assert.h"
+#include "common/logging/log.h"
 
 #include <algorithm>
 #include <memory>
@@ -23,6 +24,32 @@ void Load(const ConfigOptions& cfg) {
 	EXIT_IF(g_config == nullptr);
 
 	*g_config = cfg;
+}
+
+void ApplyIgpuDefaults(bool integrated_gpu) {
+	EXIT_IF(g_config == nullptr);
+
+	if (!integrated_gpu) {
+		return;
+	}
+
+	// Performance-floor defaults for integrated-GPU machines (Steam Deck / 780M class):
+	// FSR 3.1 presentation upscaling and a texture LOD bias that skips the highest mip
+	// levels, reducing texture bandwidth. Applied only when the value is still at its
+	// built-in default, so an explicit user choice always wins.
+	bool changed = false;
+	if (g_config->upscaler_method == UpscalerMethod::Off) {
+		g_config->upscaler_method = UpscalerMethod::Fsr31;
+		changed                   = true;
+	}
+	if (g_config->texture_lod_bias == 0) {
+		g_config->texture_lod_bias = 1;
+		changed                    = true;
+	}
+	if (changed) {
+		LOGF("Config: integrated GPU detected — applied floor defaults: "
+		     "FSR 3.1 upscaler, texture LOD bias 1\n");
+	}
 }
 
 uint32_t GetScreenWidth() {
@@ -109,6 +136,81 @@ bool RedZoneProtectionEnabled() {
 
 const Keymap& GetKeymap() {
 	return g_config->keymap;
+}
+
+PresentFilter GetPresentFilter() {
+	return g_config->present_filter;
+}
+
+PresentMode GetPresentMode() {
+	return g_config->present_mode;
+}
+
+AspectRatio GetAspectRatio() {
+	return g_config->aspect_ratio;
+}
+
+uint32_t GetScreenshotHotkey() {
+	return g_config->screenshot_hotkey;
+}
+
+std::filesystem::path GetScreenshotFolder() {
+	return g_config->screenshot_folder;
+}
+
+bool AsyncPipelineCompilationEnabled() {
+	return g_config->async_pipeline_compilation;
+}
+
+// --- iGPU optimization accessors ---
+
+bool ForceIgpuMode() {
+	return g_config->force_igpu_mode;
+}
+
+ResolutionScale GetResolutionScale() {
+	return g_config->resolution_scale;
+}
+
+int32_t GetTextureLodBias() {
+	return g_config->texture_lod_bias;
+}
+
+bool UmaStagingBypass() {
+	return g_config->uma_staging_bypass;
+}
+
+float GetResolutionScaleFactor() {
+	switch (g_config->resolution_scale) {
+		case ResolutionScale::Native:  return 1.0f;
+		case ResolutionScale::Half:    return 0.5f;
+		case ResolutionScale::Quarter: return 0.25f;
+	}
+	return 1.0f;
+}
+
+// --- Upscaler accessors ---
+
+UpscalerMethod GetUpscalerMethod() {
+	return g_config->upscaler_method;
+}
+
+UpscalerQuality GetUpscalerQuality() {
+	return g_config->upscaler_quality;
+}
+
+float GetUpscalerSharpness() {
+	return std::clamp(g_config->upscaler_sharpness, 0.0f, 1.0f);
+}
+
+float GetUpscalerRenderScale() {
+	switch (g_config->upscaler_quality) {
+		case UpscalerQuality::UltraQuality: return 0.77f;
+		case UpscalerQuality::Quality:      return 0.67f;
+		case UpscalerQuality::Balanced:     return 0.59f;
+		case UpscalerQuality::Performance:  return 0.50f;
+	}
+	return 0.67f;
 }
 
 } // namespace Config
