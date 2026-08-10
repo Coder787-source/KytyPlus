@@ -304,14 +304,34 @@ foreach(shader_source IN LISTS fsr_shader_sources)
 	)
 	list(APPEND fsr_shader_headers "${shader_header}")
 endforeach()
+
+# Generate the FSR headers at configure time as well, so they already exist on disk
+# before ninja schedules any kyty_emulator translation unit. fsrUpscaler.cpp is collected
+# via file(GLOB) and its #include of the generated header can otherwise be compiled before
+# the add_custom_command OUTPUT is produced (a build-order race that the order-only
+# dependency on the fsr_shaders custom target does not always win under parallel load).
+foreach(shader_source IN LISTS fsr_shader_sources)
+	get_filename_component(shader_name "${shader_source}" NAME_WE)
+	set(shader_spv "${fsr_generated_dir}/${shader_name}.spv")
+	set(shader_header "${fsr_generated_dir}/${shader_name}_spv.h")
+	string(TOUPPER "${shader_name}_SPV" shader_symbol)
+	execute_process(
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${fsr_generated_dir}"
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
+		        "-I${gpu_tiler_shader_dir}" -o "${shader_spv}" "${shader_source}"
+		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
+		        -DSYMBOL=${shader_symbol} -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
+		RESULT_VARIABLE fsr_gen_result
+	)
+	if(NOT fsr_gen_result EQUAL 0)
+		message(FATAL_ERROR "Failed to generate FSR shader header ${shader_header} at configure time")
+	endif()
+endforeach()
 list(APPEND kyty_emulator_src ${fsr_shader_headers})
 
-# fsrUpscaler.cpp #includes the generated fsr_*_spv.h headers. Unlike the gpu_tiler/gpu_blit
-# shaders above, fsrUpscaler.cpp is collected via file(GLOB) and can be scheduled before the
-# custom commands produce their OUTPUT headers, so ninja reports them missing. Wrap the
-# custom-command outputs in an always-built custom target; add_dependencies(kyty_emulator
-# fsr_shaders) is wired after add_executable below so the headers exist before any
-# kyty_emulator source compiles.
+# fsrUpscaler.cpp #includes the generated fsr_*_spv.h headers. They are generated at
+# configure time above, so they already exist before any kyty_emulator source compiles.
+# Keep the custom target too so a clean rebuild re-runs the per-file generation.
 add_custom_target(fsr_shaders DEPENDS ${fsr_shader_headers})
 
 list(APPEND kyty_emulator_src
