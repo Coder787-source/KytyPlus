@@ -80,10 +80,39 @@ constexpr FormatInfo kFormatInfo[] = {
     {GpuEnumValue(BufferFormat::kBc6SFloat), 0, 16, 0, true, false},
     {GpuEnumValue(BufferFormat::kBc7UNorm), 0, 16, 0, true, false},
     {GpuEnumValue(BufferFormat::kBc7Srgb), 0, 16, 0, true, false},
+    // ASTC formats: 16 bytes per block regardless of block footprint.
+    {GpuEnumValue(BufferFormat::kAstc4x4UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc4x4Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc5x4UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc5x4Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc5x5UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc5x5Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc6x5UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc6x5Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc6x6UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc6x6Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc8x5UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc8x5Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc8x6UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc8x6Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc8x8UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc8x8Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc10x5UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc10x5Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc10x6UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc10x6Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc10x8UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc10x8Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc10x10UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc10x10Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc12x10UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc12x10Srgb), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc12x12UNorm), 0, 16, 0, true, false},
+    {GpuEnumValue(BufferFormat::kAstc12x12Srgb), 0, 16, 0, true, false},
 };
 
 constexpr auto MakeFormatInfoLookup() {
-	constexpr uint32_t                            kMaxFormat = GpuEnumValue(BufferFormat::kBc7Srgb);
+	constexpr uint32_t                            kMaxFormat = GpuEnumValue(BufferFormat::kAstc12x12Srgb);
 	std::array<const FormatInfo*, kMaxFormat + 1> lookup {};
 	for (const auto& info: kFormatInfo) {
 		lookup[info.format] = &info;
@@ -126,6 +155,45 @@ bool IsUintTextureFormat(uint32_t format) {
 
 bool IsFmaskTextureFormat(uint32_t format) {
 	return format == GpuEnumValue(BufferFormat::kFmask8_S4_F4);
+}
+
+bool IsBlockCompressedFormat(uint32_t format) {
+	return BlockCompressedBytesPerBlock(format) != 0 && !IsASTCTextureFormat(format);
+}
+
+bool IsASTCTextureFormat(uint32_t format) {
+	switch (format) {
+		case GpuEnumValue(BufferFormat::kAstc4x4UNorm):
+		case GpuEnumValue(BufferFormat::kAstc4x4Srgb):
+		case GpuEnumValue(BufferFormat::kAstc5x4UNorm):
+		case GpuEnumValue(BufferFormat::kAstc5x4Srgb):
+		case GpuEnumValue(BufferFormat::kAstc5x5UNorm):
+		case GpuEnumValue(BufferFormat::kAstc5x5Srgb):
+		case GpuEnumValue(BufferFormat::kAstc6x5UNorm):
+		case GpuEnumValue(BufferFormat::kAstc6x5Srgb):
+		case GpuEnumValue(BufferFormat::kAstc6x6UNorm):
+		case GpuEnumValue(BufferFormat::kAstc6x6Srgb):
+		case GpuEnumValue(BufferFormat::kAstc8x5UNorm):
+		case GpuEnumValue(BufferFormat::kAstc8x5Srgb):
+		case GpuEnumValue(BufferFormat::kAstc8x6UNorm):
+		case GpuEnumValue(BufferFormat::kAstc8x6Srgb):
+		case GpuEnumValue(BufferFormat::kAstc8x8UNorm):
+		case GpuEnumValue(BufferFormat::kAstc8x8Srgb):
+		case GpuEnumValue(BufferFormat::kAstc10x5UNorm):
+		case GpuEnumValue(BufferFormat::kAstc10x5Srgb):
+		case GpuEnumValue(BufferFormat::kAstc10x6UNorm):
+		case GpuEnumValue(BufferFormat::kAstc10x6Srgb):
+		case GpuEnumValue(BufferFormat::kAstc10x8UNorm):
+		case GpuEnumValue(BufferFormat::kAstc10x8Srgb):
+		case GpuEnumValue(BufferFormat::kAstc10x10UNorm):
+		case GpuEnumValue(BufferFormat::kAstc10x10Srgb):
+		case GpuEnumValue(BufferFormat::kAstc12x10UNorm):
+		case GpuEnumValue(BufferFormat::kAstc12x10Srgb):
+		case GpuEnumValue(BufferFormat::kAstc12x12UNorm):
+		case GpuEnumValue(BufferFormat::kAstc12x12Srgb):
+			return true;
+		default: return false;
+	}
 }
 
 } // namespace Libs::Graphics::Prospero
