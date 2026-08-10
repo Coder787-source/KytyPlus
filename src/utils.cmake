@@ -1,3 +1,10 @@
+# This file is included both from the repository-root CMakeLists.txt and when
+# CI configures src/ directly. In the latter mode the root has not initialized
+# KYTY_SOURCE_DIR, so derive it from this helper file before any function uses it.
+if(NOT DEFINED KYTY_SOURCE_DIR OR KYTY_SOURCE_DIR STREQUAL "")
+	set(KYTY_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+endif()
+
 # Keep the existing Linux IWYU warnings non-fatal.
 set(KYTY_IWYU_COMMON "-Xiwyu;--cxx17ns;-Qunused-arguments")
 if (LINUX)
@@ -143,3 +150,44 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${KYTY_C_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${KYTY_CPP_FLAGS}")
 
 endmacro()
+
+# Build a minimal test executable that links the same way the emulator does.
+# Lifted out of CMakeLists.txt so all subdirectories see one canonical definition
+# (the merged tree had it declared in both top-level and src/CMakeLists.txt).
+function(add_kyty_full_emulator_test target source)
+	add_executable(${target} EXCLUDE_FROM_ALL ${source} ${kyty_emulator_src})
+	target_link_libraries(${target} ${kyty_emulator_link_libraries})
+	target_include_directories(${target} PRIVATE ${inc_headers})
+	if (WIN32)
+		target_link_libraries(${target} iphlpapi)
+	endif()
+	if (KYTY_CLANG_CL)
+		target_link_libraries(${target} onecore)
+		add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${KYTY_THIRD_PARTY_DIR}/winpthread/bin/libwinpthread-1.dll" $<TARGET_FILE_DIR:${target}>/libwinpthread-1.dll)
+	endif()
+	# The macOS x86_64 guest address space needs its .zerofill segments anchored by
+	# linker flags, or the kernel kills the binary on load (posix_spawn EIO).
+	if (COMMAND configure_macos_guest_address_space)
+		configure_macos_guest_address_space(${target})
+	endif()
+endfunction()
+
+# Anchor the .zerofill segments of an x86_64 macOS-guest emulator binary so the
+# loader does not abort with posix_spawn EIO. Lifted to utils.cmake so that
+# test executables (which use add_kyty_full_emulator_test) and the main emulator
+# can share the same configuration.
+function(configure_macos_guest_address_space target)
+	if(APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
+			(NOT CMAKE_OSX_ARCHITECTURES AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")))
+		set(kyty_macos_guest_address_space_source
+			"${KYTY_SOURCE_DIR}/kernel/macosGuestAddressSpace.cpp")
+		if(NOT EXISTS "${kyty_macos_guest_address_space_source}")
+			message(FATAL_ERROR
+				"macOS guest address-space source not found: ${kyty_macos_guest_address_space_source}")
+		endif()
+		target_sources(${target} PRIVATE "${kyty_macos_guest_address_space_source}")
+		target_compile_definitions(${target} PRIVATE KYTY_LINKED_GUEST_ADDRESS_SPACE=1)
+		target_link_options(${target} PRIVATE
+			-Wl,-ld_classic,-no_pie,-no_fixup_chains,-no_huge,-pagezero_size,0x40000,-segaddr,SYSTEM_MANAGED,0x40000,-segaddr,SYSTEM_RESERVED,0x7ffffc000,-segaddr,USER_AREA,0x7000000000,-image_base,0x7000000000)
+	endif()
+endfunction()

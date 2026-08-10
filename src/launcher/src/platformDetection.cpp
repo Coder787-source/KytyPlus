@@ -13,6 +13,9 @@
 // executes anything, so a wrong guess here is cosmetic, not fatal.
 
 #include "configuration.h"
+#include "common/guestPlatform.h"
+
+using Kyty::Common::GuestPlatform;
 
 #include <QByteArray>
 #include <QDir>

@@ -10,6 +10,7 @@ namespace Libs::Graphics {
 
 struct Shader;
 struct ShaderRegister;
+class RenderContext;
 
 struct SizeAlign {
 	uint64_t m_size;
@@ -22,6 +23,12 @@ struct MemoryRange {
 };
 
 KYTY_SUBSYSTEM_DEFINE(Graphics);
+
+// Returns the active host renderer (RenderContext) established during
+// Graphics subsystem init, or nullptr before init / after destroy. Other
+// libs (e.g. libGnmDriver) route PS4 display/compute command buffers through
+// this accessor instead of holding their own copy of the renderer pointer.
+[[nodiscard]] RenderContext* GetActiveRenderer() noexcept;
 
 void GraphicsDbgDumpDcb(const char* type, uint32_t num_dw, uint32_t* cmd_buffer);
 

@@ -7,6 +7,18 @@
 #include <span>
 #include <vector>
 
+namespace Libs::Graphics::ShaderRecompiler {
+
+// Instruction-set architecture family of the input shader binary. The GCN
+// bridge (DecodeGcnProgram) records this on the decoded Program so downstream
+// passes can branch on the source ISA.
+enum class IsaFamily {
+	Unknown,
+	Gcn,
+};
+
+} // namespace Libs::Graphics::ShaderRecompiler
+
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
 
 enum class Family {
@@ -662,6 +674,7 @@ struct Instruction {
 struct Program {
 	std::span<const uint32_t> code;
 	std::vector<Instruction>  instructions;
+	ShaderRecompiler::IsaFamily isa_family = ShaderRecompiler::IsaFamily::Unknown;
 };
 
 bool DecodeProgram(std::span<const uint32_t> code, Program& program, std::string* error);

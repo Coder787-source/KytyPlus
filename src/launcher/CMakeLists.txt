@@ -28,7 +28,7 @@ if (CLANG AND NOT KYTY_CLANG_CL)
 target_compile_options(launcher PRIVATE -frtti)
 target_link_libraries(launcher pthread)
 endif()
-target_include_directories(launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${KYTY_SOURCE_DIR}")
 set_target_properties(launcher PROPERTIES AUTOUIC ON AUTOMOC ON AUTORCC ON)
 
 if(WIN32 AND NOT KYTY_CLANG_CL)

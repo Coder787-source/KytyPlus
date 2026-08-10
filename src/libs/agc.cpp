@@ -43,6 +43,10 @@ namespace Libs::Graphics {
 
 static RenderContext* g_renderer = nullptr;
 
+RenderContext* GetActiveRenderer() noexcept {
+	return g_renderer;
+}
+
 KYTY_SUBSYSTEM_INIT(Graphics) {
 	// Some games lock up if this is not called first
 	if (Config::RenderDocEnabled()) {

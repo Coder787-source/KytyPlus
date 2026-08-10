@@ -315,16 +315,26 @@ foreach(shader_source IN LISTS fsr_shader_sources)
 	set(shader_spv "${fsr_generated_dir}/${shader_name}.spv")
 	set(shader_header "${fsr_generated_dir}/${shader_name}_spv.h")
 	string(TOUPPER "${shader_name}_SPV" shader_symbol)
+	execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory "${fsr_generated_dir}"
+		RESULT_VARIABLE fsr_mkdir_result)
+	if(NOT fsr_mkdir_result EQUAL 0)
+		message(FATAL_ERROR "Failed to create FSR shader output dir ${fsr_generated_dir}")
+	endif()
 	execute_process(
-		COMMAND ${CMAKE_COMMAND} -E make_directory "${fsr_generated_dir}"
 		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
 		        "-I${gpu_tiler_shader_dir}" -o "${shader_spv}" "${shader_source}"
+		RESULT_VARIABLE fsr_compile_result
+		OUTPUT_VARIABLE fsr_compile_out
+		ERROR_VARIABLE fsr_compile_err)
+	if(NOT fsr_compile_result EQUAL 0)
+		message(FATAL_ERROR "glslangValidator failed for ${shader_source}\n${fsr_compile_out}\n${fsr_compile_err}")
+	endif()
+	execute_process(
 		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
 		        -DSYMBOL=${shader_symbol} -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
-		RESULT_VARIABLE fsr_gen_result
-	)
-	if(NOT fsr_gen_result EQUAL 0)
-		message(FATAL_ERROR "Failed to generate FSR shader header ${shader_header} at configure time")
+		RESULT_VARIABLE fsr_embed_result)
+	if(NOT fsr_embed_result EQUAL 0)
+		message(FATAL_ERROR "embed_spirv.cmake failed for ${shader_spv} -> ${shader_header}")
 	endif()
 endforeach()
 list(APPEND kyty_emulator_src ${fsr_shader_headers})
@@ -344,7 +354,7 @@ if (KYTY_CLANG_CL)
 	set_source_files_properties(${kyty_emulator_src} PROPERTIES COMPILE_FLAGS "-Wno-pragma-pack -Wno-deprecated-declarations -D_TIMESPEC_DEFINED")
 endif()
 
-set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL2-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9)
+set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL2-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak)
 
 # zlib is required by rpfArchiveReader on all platforms.
 find_package(ZLIB)

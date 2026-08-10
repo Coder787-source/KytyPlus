@@ -124,6 +124,10 @@ bool RenderDocEnabled() {
 	return g_config->renderdoc_enabled;
 }
 
+bool NggRectlistDrawEnabled() {
+	return g_config->ngg_rectlist_draw_enabled;
+}
+
 bool ReadbackLinearImagesEnabled() {
 	return g_config->readback_linear_images;
 }
