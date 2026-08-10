@@ -1,0 +1,87 @@
+name: Update compatibility table
+
+# A maintainer closing a "Compatibility report" issue as completed is treated as
+# the review step (see docs/COMPATIBILITY.md "How this list is maintained").
+# This job then does the mechanical part: parse the issue form and update the
+# table instead of a maintainer hand-editing markdown.
+#
+# Alt path: Actions → this workflow → Run workflow → enter an issue number.
+# That bypasses the close/label gate when a report needs a force refresh.
+on:
+  issues:
+    # 'labeled' covers issues that were closed before the 'compatibility' label
+    # was attached (e.g. filed without going through the template picker).
+    types: [closed, labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Compatibility report issue number to apply
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  update-from-issue-event:
+    if: >
+      github.event_name == 'issues' &&
+      github.event.issue.state == 'closed' &&
+      github.event.issue.state_reason == 'completed' &&
+      contains(github.event.issue.labels.*.name, 'compatibility')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update docs/COMPATIBILITY.md
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        run: python3 .github/scripts/update_compat_table.py
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/COMPATIBILITY.md
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "docs: update compatibility table from #${{ github.event.issue.number }}"
+            git push origin HEAD:main
+          fi
+
+  update-from-dispatch:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Fetch issue and update table
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          BODY=$(gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}" --jq .body)
+          URL=$(gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}" --jq .html_url)
+          export ISSUE_BODY="$BODY"
+          export ISSUE_URL="$URL"
+          python3 .github/scripts/update_compat_table.py
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/COMPATIBILITY.md
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "docs: update compatibility table from #${{ inputs.issue_number }}"
+            git push origin HEAD:main
+          fi

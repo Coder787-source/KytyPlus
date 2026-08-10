@@ -1,0 +1,134 @@
+﻿// SPDX-FileCopyrightText: Copyright 2024 AMD (algorithm), KytyPlus (GLSL implementation)
+// SPDX-License-Identifier: MIT
+//
+// EASU — Edge-Adaptive Spatial Upscaler (FSR 1.0 algorithm, GLSL port).
+// Produces a high-quality upscaled image from a lower-resolution source using
+// directional analysis and an anisotropic 12-tap filter. Works on any Vulkan GPU.
+
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src_sampler;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D dst_image;
+
+layout(set = 0, binding = 2, std140) uniform EasuParams {
+    vec2  src_size;      // source image dimensions (e.g. 854x480)
+    vec2  dst_size;      // destination image dimensions (e.g. 1280x720)
+    vec2  src_pixel;     // 1.0 / src_size
+    vec2  dst_pixel;     // 1.0 / dst_size
+    vec2  scale;         // src_size / dst_size
+    vec2  pad0;
+} params;
+
+vec4 FetchSource(vec2 uv) {
+    return textureLod(src_sampler, uv, 0.0);
+}
+
+float Luma(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// sinc(x) * lanczos_window(x) — normalised sinc with a 2-lobe window.
+float SincLanczos(float x) {
+    const float PI = 3.14159265;
+    if (abs(x) < 1e-6) return 1.0;
+    if (abs(x) >= 2.0) return 0.0;
+    float pix = PI * x;
+    return sin(pix) * sin(pix * 0.5) / (pix * pix * 0.5);
+}
+
+// Compute dominant edge direction from a 3x3 Sobel neighbourhood.
+// Returns a unit vector along the detected edge.
+vec2 AnalyseDirection(ivec2 centre) {
+    vec2 uv = (vec2(centre) + 0.5) * params.src_pixel;
+    float dx = params.src_pixel.x;
+    float dy = params.src_pixel.y;
+
+    float l00 = Luma(FetchSource(uv + vec2(-dx, -dy)).rgb);
+    float l10 = Luma(FetchSource(uv + vec2(  0, -dy)).rgb);
+    float l20 = Luma(FetchSource(uv + vec2( dx, -dy)).rgb);
+    float l01 = Luma(FetchSource(uv + vec2(-dx,   0)).rgb);
+    float l21 = Luma(FetchSource(uv + vec2( dx,   0)).rgb);
+    float l02 = Luma(FetchSource(uv + vec2(-dx,  dy)).rgb);
+    float l12 = Luma(FetchSource(uv + vec2(  0,  dy)).rgb);
+    float l22 = Luma(FetchSource(uv + vec2( dx,  dy)).rgb);
+
+    float gx = (-l00 + l20 - 2.0 * l01 + 2.0 * l21 - l02 + l22);
+    float gy = (-l00 - 2.0 * l10 - l20 + l02 + 2.0 * l12 + l22);
+
+    float len = max(length(vec2(gx, gy)), 1e-6);
+    return vec2(-gy, gx) / len;
+}
+
+// 4-tap directional Lanczos-2 filter along a given axis.
+vec4 DirectionalFilter(vec2 centre_uv, vec2 axis, float stretch) {
+    vec2 step = axis * params.src_pixel * stretch;
+    vec4 s0 = FetchSource(centre_uv - step * 1.5);
+    vec4 s1 = FetchSource(centre_uv - step * 0.5);
+    vec4 s2 = FetchSource(centre_uv + step * 0.5);
+    vec4 s3 = FetchSource(centre_uv + step * 1.5);
+
+    float f = fract(dot(centre_uv / params.src_pixel, axis) + 0.5);
+
+    float w0 = SincLanczos(f + 1.0);
+    float w1 = SincLanczos(f);
+    float w2 = SincLanczos(f - 1.0);
+    float w3 = SincLanczos(f - 2.0);
+
+    float wsum = w0 + w1 + w2 + w3;
+    if (wsum > 0.0) {
+        w0 /= wsum; w1 /= wsum; w2 /= wsum; w3 /= wsum;
+    }
+    return s0 * w0 + s1 * w1 + s2 * w2 + s3 * w3;
+}
+
+void main() {
+    uvec2 pixel = gl_GlobalInvocationID.xy;
+    if (pixel.x >= uint(params.dst_size.x) || pixel.y >= uint(params.dst_size.y)) return;
+
+    vec2 dst_uv = (vec2(pixel) + 0.5) * params.dst_pixel;
+    vec2 src_uv = dst_uv;
+    vec2 src_pos = src_uv * params.src_size - 0.5;
+    ivec2 src_centre = ivec2(floor(src_pos));
+
+    // Edge direction at nearest source pixel.
+    vec2 dir = AnalyseDirection(src_centre);
+
+    // Centre colour and cardinal neighbours (full RGBA for clamping).
+    vec2 centre_uv = (vec2(src_centre) + 0.5) * params.src_pixel;
+    vec4 c0 = FetchSource(centre_uv);
+    vec4 cN = FetchSource(centre_uv + vec2(0, -params.src_pixel.y));
+    vec4 cS = FetchSource(centre_uv + vec2(0,  params.src_pixel.y));
+    vec4 cE = FetchSource(centre_uv + vec2( params.src_pixel.x, 0));
+    vec4 cW = FetchSource(centre_uv + vec2(-params.src_pixel.x, 0));
+
+    // Local contrast from cardinal luminance differences.
+    float l0 = Luma(c0.rgb);
+    float local_contrast = max(
+        max(abs(Luma(cN.rgb) - l0), abs(Luma(cS.rgb) - l0)),
+        max(abs(Luma(cE.rgb) - l0), abs(Luma(cW.rgb) - l0)));
+
+    // Stretch factor: stronger edges → more anisotropic filtering.
+    float stretch = 1.0 + smoothstep(0.05, 0.3, local_contrast);
+
+    // Bilinear base and directional edge filter.
+    vec4 bilinear = FetchSource(src_uv);
+    vec4 directional = DirectionalFilter(src_uv, dir, stretch);
+
+    // Blend based on edge strength.
+    float edge_strength = smoothstep(0.02, 0.15, local_contrast);
+    vec4 result = mix(bilinear, directional, edge_strength);
+
+    // Neighbourhood clamp to prevent Lanczos ringing.
+    vec4 min_c = min(min(cN, cS), min(cE, cW));
+    min_c = min(min_c, c0);
+    vec4 max_c = max(max(cN, cS), max(cE, cW));
+    max_c = max(max_c, c0);
+    vec4 range = max_c - min_c;
+    min_c = min_c - range * 0.15;
+    max_c = max_c + range * 0.15;
+    result = clamp(result, min_c, max_c);
+
+    imageStore(dst_image, ivec2(pixel), result);
+}
