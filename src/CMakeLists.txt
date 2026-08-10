@@ -306,14 +306,13 @@ foreach(shader_source IN LISTS fsr_shader_sources)
 endforeach()
 list(APPEND kyty_emulator_src ${fsr_shader_headers})
 
-# fsrUpscaler.cpp #includes the generated fsr_*_spv.h headers at compile time, but
-# it is collected by the file(GLOB ...) below rather than listed inline, so ninja has
-# no implicit dependency edge from the .cpp to the custom-command outputs. Declare the
-# dependency explicitly so the headers are generated before fsrUpscaler.cpp compiles.
-set_source_files_properties(
-	"${CMAKE_CURRENT_SOURCE_DIR}/graphics/presentation/fsrUpscaler.cpp"
-	PROPERTIES OBJECT_DEPENDS "${fsr_shader_headers}"
-)
+# fsrUpscaler.cpp #includes the generated fsr_*_spv.h headers. Unlike the gpu_tiler/gpu_blit
+# shaders above, fsrUpscaler.cpp is collected via file(GLOB) and can be scheduled before the
+# custom commands produce their OUTPUT headers, so ninja reports them missing. Wrap the
+# custom-command outputs in an always-built custom target; add_dependencies(kyty_emulator
+# fsr_shaders) is wired after add_executable below so the headers exist before any
+# kyty_emulator source compiles.
+add_custom_target(fsr_shaders DEPENDS ${fsr_shader_headers})
 
 list(APPEND kyty_emulator_src
 	emulator.h
@@ -554,6 +553,9 @@ endif()
 
 
 add_executable(kyty_emulator main.cpp platformDispatch.cpp shadps4Embedder.cpp ${kyty_emulator_src})
+# Build the generated FSR shader headers before any kyty_emulator source compiles
+# (fsrUpscaler.cpp #includes them and is GLOB-collected, so it needs an explicit edge).
+add_dependencies(kyty_emulator fsr_shaders)
 
 # Anchorx86_64 macOS-guest .zerofill segments; selected by configure_macos_guest_address_space.
 configure_macos_guest_address_space(kyty_emulator)
