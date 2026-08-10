@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.12...4.3)
+cmake_minimum_required(VERSION 3.12...4.3)
 
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.0)
 	set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum policy version for bundled dependencies")
@@ -305,6 +305,15 @@ foreach(shader_source IN LISTS fsr_shader_sources)
 	list(APPEND fsr_shader_headers "${shader_header}")
 endforeach()
 list(APPEND kyty_emulator_src ${fsr_shader_headers})
+
+# fsrUpscaler.cpp #includes the generated fsr_*_spv.h headers at compile time, but
+# it is collected by the file(GLOB ...) below rather than listed inline, so ninja has
+# no implicit dependency edge from the .cpp to the custom-command outputs. Declare the
+# dependency explicitly so the headers are generated before fsrUpscaler.cpp compiles.
+set_source_files_properties(
+	"${CMAKE_CURRENT_SOURCE_DIR}/graphics/presentation/fsrUpscaler.cpp"
+	PROPERTIES OBJECT_DEPENDS "${fsr_shader_headers}"
+)
 
 list(APPEND kyty_emulator_src
 	emulator.h

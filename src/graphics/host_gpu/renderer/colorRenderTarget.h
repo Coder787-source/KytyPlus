@@ -4,6 +4,7 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
+#include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <cstdint>
@@ -26,8 +27,10 @@ struct RenderColorInfo {
 	vk::Extent2D                    extent           = {};
 	uint32_t                        base_mip_level   = 0;
 	uint32_t                        base_array_layer = 0;
+	uint32_t                        layer_count      = 1;
 	uint64_t                        base_addr        = 0;
 	uint64_t                        buffer_size      = 0;
+	uint64_t                        metadata_addr    = 0;
 	uint32_t                        target_slot      = 0;
 	uint32_t                        samples          = 1;
 	Prospero::ColorComponentMapping export_mapping;
