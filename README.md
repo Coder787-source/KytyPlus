@@ -85,7 +85,7 @@ Compatibility is still **early**. A title that no longer hits one known crash wi
 next unimplemented feature. Always test with a **fresh build** and attach logs when reporting.
 > Help test KytyPlus: [share your results](https://github.com/Coder787-source/KytyPlus/discussions/2)
 > or [file a compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml).
-> Browse existing results in the [compatibility list](docs/COMPATIBILITY.md).
+> Browse existing results in the [compatibility list](COMPATIBILITY.md).
 
 ---
 
