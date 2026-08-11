@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/emulatorConfig.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
@@ -128,8 +129,16 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r) {
 	sampler_info.addressModeU = to_vk_address_mode(r.ClampX());
 	sampler_info.addressModeV = to_vk_address_mode(r.ClampY());
 	sampler_info.addressModeW = to_vk_address_mode(r.ClampZ());
-	sampler_info.mipLodBias =
+	float guest_lod_bias =
 	    static_cast<float>(static_cast<int16_t>((r.LodBias() ^ 0x2000u) - 0x2000u)) / 256.0f;
+	// iGPU bandwidth optimization: shift effective LOD toward coarser mip levels so
+	// high-resolution mips are skipped on bandwidth-limited integrated GPUs.
+	const int32_t igpu_lod_bias = Config::GetTextureLodBias();
+	if (igpu_lod_bias > 0 &&
+	    static_cast<Prospero::SamplerMipFilter>(mip_filter) != Prospero::SamplerMipFilter::kNone) {
+		guest_lod_bias += static_cast<float>(igpu_lod_bias);
+	}
+	sampler_info.mipLodBias = guest_lod_bias;
 	sampler_info.anisotropyEnable        = (aniso ? VK_TRUE : VK_FALSE);
 	sampler_info.maxAnisotropy           = aniso_ratio;
 	sampler_info.compareEnable           = (r.DepthCompareFunc() != 0 ? VK_TRUE : VK_FALSE);

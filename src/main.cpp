@@ -260,6 +260,12 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			}
 		} else if (arg == "--upscaler-sharpness") {
 			options.config.upscaler_sharpness = Common::ToFloat(value);
+		} else if (arg == "--igpu-optimization") {
+			if (value == "Force") {
+				options.config.force_igpu_mode = true;
+			}
+		} else if (arg == "--texture-lod-bias") {
+			options.config.texture_lod_bias = Common::ToInt32(value);
 		} else if (arg == "--spirv-debug-printf") {
 			if (!ParseBool(value, options.config.spirv_debug_printf_enabled)) {
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());

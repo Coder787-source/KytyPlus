@@ -310,6 +310,40 @@
         </property>
        </widget>
       </item>
+      <item row="14" column="0">
+       <widget class="QLabel" name="label_igpu_optimization">
+        <property name="text">
+         <string>iGPU optimization:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="14" column="1">
+       <widget class="QComboBox" name="comboBox_igpu_optimization">
+        <property name="toolTip">
+         <string>Auto: detect integrated GPUs and apply FSR + texture LOD bias. Force: treat this GPU as integrated (useful for testing on discrete GPUs). Off: disable iGPU optimizations.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="15" column="0">
+       <widget class="QLabel" name="label_texture_lod_bias">
+        <property name="text">
+         <string>Texture LOD bias:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="15" column="1">
+       <widget class="QSpinBox" name="spinBox_texture_lod_bias">
+        <property name="toolTip">
+         <string>Shifts texture sampling toward coarser mip levels to save bandwidth on iGPUs. 0 = no bias, 1 = skip one mip level. Applied per-sampler.</string>
+        </property>
+        <property name="minimum">
+         <number>0</number>
+        </property>
+        <property name="maximum">
+         <number>4</number>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>

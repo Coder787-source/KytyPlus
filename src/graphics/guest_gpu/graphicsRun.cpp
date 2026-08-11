@@ -1307,7 +1307,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		case 0x03: with_interrupt = false; break;
 		case 0x01: Sync::TriggerEopEventAtEndOfPipe(CurrentBuffer(), interrupt_context_id); return;
 		case 0x02: with_interrupt = true; break;
-		default: EXIT("unknown interrupt_selector\n");
+		default: EXIT("unknown interrupt_selector: 0x%08" PRIx32 "\n", interrupt_selector);
 	}
 
 	auto write32 = [&](bool with_writeback) {
@@ -1474,7 +1474,8 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		default: break;
 	}
 
-	EXIT("unknown event type\n");
+	EXIT("unknown event type: eop_event_type=0x%08" PRIx32 ", cache_action=0x%08" PRIx32 "\n",
+	     eop_event_type, cache_action);
 }
 
 void CommandProcessor::WriteAtEndOfPipe32(uint32_t cache_policy, uint32_t event_write_dest,

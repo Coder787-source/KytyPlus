@@ -72,6 +72,10 @@ public:
 	enum class UpscalerQuality { UltraQuality, Quality, Balanced, Performance };
 	Q_ENUM(UpscalerQuality)
 
+	// iGPU optimization presets (auto-detected at runtime; Force lets users opt in).
+	enum class IgpuOptimization { Off, Auto, Force };
+	Q_ENUM(IgpuOptimization)
+
 	enum class LogDirection { Silent, Console, File };
 	Q_ENUM(LogDirection)
 
@@ -111,6 +115,8 @@ public:
 	UpscalerMethod upscaler_method    = UpscalerMethod::Off;
 	UpscalerQuality upscaler_quality  = UpscalerQuality::Quality;
 	float upscaler_sharpness          = 0.5f;
+	IgpuOptimization igpu_optimization  = IgpuOptimization::Auto;
+	int  texture_lod_bias               = 0;
 	QStringList host_input_mapping;
 
 	QString elf = QStringLiteral("eboot.bin");
@@ -137,6 +143,8 @@ public:
 		upscaler_method    = other.upscaler_method;
 		upscaler_quality   = other.upscaler_quality;
 		upscaler_sharpness = other.upscaler_sharpness;
+		igpu_optimization  = other.igpu_optimization;
+		texture_lod_bias   = other.texture_lod_bias;
 		host_input_mapping = other.host_input_mapping;
 	}
 
@@ -180,6 +188,8 @@ public:
 		KYTY_CFG_SET(upscaler_method);
 		KYTY_CFG_SET(upscaler_quality);
 		s->setValue("upscaler_sharpness", upscaler_sharpness);
+		KYTY_CFG_SET(igpu_optimization);
+		s->setValue("texture_lod_bias", texture_lod_bias);
 		s->setValue("host_input_mapping", host_input_mapping);
 		KYTY_CFG_SET(elf);
 	}
@@ -214,6 +224,8 @@ public:
 		KYTY_CFG_GET(upscaler_method);
 		KYTY_CFG_GET(upscaler_quality);
 		upscaler_sharpness = s->value("upscaler_sharpness", upscaler_sharpness).toFloat();
+		KYTY_CFG_GET(igpu_optimization);
+		texture_lod_bias  = s->value("texture_lod_bias", texture_lod_bias).toInt();
 		host_input_mapping = s->value("host_input_mapping", host_input_mapping).toStringList();
 		elf                = s->value("elf", elf).toString();
 	}

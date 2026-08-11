@@ -222,6 +222,8 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 	args << "--upscaler-method" << EnumToText(info.upscaler_method);
 	args << "--upscaler-quality" << EnumToText(info.upscaler_quality);
 	args << "--upscaler-sharpness" << QString::number(info.upscaler_sharpness, 'f', 2);
+	args << "--igpu-optimization" << EnumToText(info.igpu_optimization);
+	args << "--texture-lod-bias" << QString::number(info.texture_lod_bias);
 	args << "--spirv-debug-printf" << "false";
 #if defined(_WIN32)
 	if (info.red_zone_protection_enabled) {

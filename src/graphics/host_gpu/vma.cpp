@@ -17,6 +17,7 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "common/emulatorConfig.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vma.h"
 
@@ -79,6 +80,14 @@ bool GraphicContext::CreateAllocator() {
 		LOGF("vmaCreateAllocator failed: %s\n", VulkanToString(result).c_str());
 		return false;
 	}
+
+	// iGPU auto-detection: once the physical-device properties are known, apply the
+	// integrated-GPU performance floor (FSR 1.0 upscaler + texture LOD bias). force_igpu_mode
+	// lets users opt in on discrete GPUs for testing.
+	const bool is_integrated =
+	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu ||
+	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eVirtualGpu;
+	Config::ApplyIgpuDefaults(is_integrated || Config::ForceIgpuMode());
 	return true;
 }
 

@@ -186,6 +186,8 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	ListInit(m_ui->comboBox_upscaler_quality, info.upscaler_quality);
 	m_ui->horizontalSlider_upscaler_sharpness->setValue(
 	    static_cast<int>(info.upscaler_sharpness * 100.0f));
+	ListInit(m_ui->comboBox_igpu_optimization, info.igpu_optimization);
+	m_ui->spinBox_texture_lod_bias->setValue(info.texture_lod_bias);
 }
 
 void ConfigurationEditDialog::InitGameDirectories() {
@@ -316,6 +318,9 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui) {
 	    TextToEnum<Configuration::UpscalerQuality>(ui.comboBox_upscaler_quality->currentText());
 	info.upscaler_sharpness =
 	    static_cast<float>(ui.horizontalSlider_upscaler_sharpness->value()) / 100.0f;
+	info.igpu_optimization =
+	    TextToEnum<Configuration::IgpuOptimization>(ui.comboBox_igpu_optimization->currentText());
+	info.texture_lod_bias = ui.spinBox_texture_lod_bias->value();
 }
 
 void ConfigurationEditDialog::update_info() {
