@@ -7,6 +7,7 @@
 #include "configurationItem.h"
 #include "gameListTreeWidget.h"
 #include "inputMappingDialog.h"
+#include "logViewerDialog.h"
 #include "mainDialog.h"
 #include "patchesDialog.h"
 #include "trophyViewerDialog.h"
@@ -889,6 +890,11 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 	    style()->standardIcon(QStyle::SP_FileDialogContentsView), tr("View trophies..."));
 	connect(action_view_trophies, &QAction::triggered, this,
 	        &ConfigurationListWidget::ViewTrophies);
+	QAction* action_view_log = menu.addAction(
+	    style()->standardIcon(QStyle::SP_FileDialogListView), tr("View log..."));
+	connect(action_view_log, &QAction::triggered, this, [this, item]() {
+		LogViewerDialog::ShowForGame(item != nullptr ? &item->GetInfo() : nullptr, this);
+	});
 	QAction* action_patches = menu.addAction(tr("Patches (experimental)..."));
 	connect(action_patches, &QAction::triggered, this, [this, item]() {
 		if (item != nullptr) {
@@ -914,6 +920,10 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 		/*QAction *action_global = */ menu.addAction(
 		    style()->standardIcon(QStyle::SP_FileDialogDetailedView), tr("Global settings..."),
 		    this, SLOT(edit_global_settings()));
+		QAction* action_global_log = menu.addAction(
+		    style()->standardIcon(QStyle::SP_FileDialogListView), tr("View log..."));
+		connect(action_global_log, &QAction::triggered, this,
+		        [this]() { LogViewerDialog::ShowGlobal(this); });
 	}
 
 	if (item != nullptr) {
