@@ -1,4 +1,4 @@
-name: Build and Release KytyPS5
+name: Build and Release KytyPlus
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
   pull_request:
 
 env:
-  KYTY_BUILD_ORIGIN: ${{ github.repository != 'KytyPS5/KytyPS5' && 'Fork' || github.event_name == 'push' && 'Official' || 'Source' }}
+  KYTY_BUILD_ORIGIN: ${{ github.repository != 'Coder787-source/KytyPlus' && 'Fork' || github.event_name == 'push' && 'Official' || 'Source' }}
   KYTY_BUILD_REPOSITORY: ${{ github.repository }}
 
 jobs:
@@ -22,10 +22,10 @@ jobs:
         id: release_tag
         shell: bash
         run: |
-          echo "value=KytyPS5-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "value=KytyPlus-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   windows:
-    name: Build KytyPS5 (Windows)
+    name: Build KytyPlus (Windows)
     needs: metadata
     runs-on: windows-2022
 
@@ -115,12 +115,12 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Windows-x64
+          name: KytyPlus-Windows-x64
           path: _Build/windows/install/**
           if-no-files-found: error
 
   macos:
-    name: Build KytyPS5 (macOS)
+    name: Build KytyPlus (macOS)
     needs: metadata
     runs-on: macos-15
 
@@ -223,12 +223,12 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-macOS-x86_64
+          name: KytyPlus-macOS-x86_64
           path: _Build/macos/install/**
           if-no-files-found: error
 
   linux:
-    name: Build KytyPS5 (Linux)
+    name: Build KytyPlus (Linux)
     needs: metadata
     runs-on: ubuntu-24.04
 
@@ -349,12 +349,12 @@ jobs:
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Linux-x86_64
+          name: KytyPlus-Linux-x86_64
           path: _Build/linux/install/**
           if-no-files-found: error
 
   release:
-    name: Release KytyPS5
+    name: Release KytyPlus
     if: >-
       always() &&
       github.event_name == 'push' &&
@@ -374,28 +374,28 @@ jobs:
         if: needs.windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          name: KytyPS5-Windows-x64
-          path: artifacts/KytyPS5-Windows-x64
+          name: KytyPlus-Windows-x64
+          path: artifacts/KytyPlus-Windows-x64
 
       - name: Download macOS build
         if: needs.macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          name: KytyPS5-macOS-x86_64
-          path: artifacts/KytyPS5-macOS-x86_64
+          name: KytyPlus-macOS-x86_64
+          path: artifacts/KytyPlus-macOS-x86_64
 
       - name: Download Linux build
         if: needs.linux.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          name: KytyPS5-Linux-x86_64
-          path: artifacts/KytyPS5-Linux-x86_64
+          name: KytyPlus-Linux-x86_64
+          path: artifacts/KytyPlus-Linux-x86_64
 
       - name: Package Windows build
         if: needs.windows.result == 'success'
         shell: bash
         run: |
-          windows_dir="artifacts/KytyPS5-Windows-x64"
+          windows_dir="artifacts/KytyPlus-Windows-x64"
           test -d "$windows_dir"
           (
             cd "$windows_dir"
@@ -406,7 +406,7 @@ jobs:
         if: needs.macos.result == 'success'
         shell: bash
         run: |
-          macos_dir="artifacts/KytyPS5-macOS-x86_64"
+          macos_dir="artifacts/KytyPlus-macOS-x86_64"
           test -d "$macos_dir"
           chmod a+x \
             "$macos_dir/launcher" \
@@ -421,7 +421,7 @@ jobs:
         if: needs.linux.result == 'success'
         shell: bash
         run: |
-          linux_dir="artifacts/KytyPS5-Linux-x86_64"
+          linux_dir="artifacts/KytyPlus-Linux-x86_64"
           test -d "$linux_dir"
           chmod a+x \
             "$linux_dir/launcher" \
