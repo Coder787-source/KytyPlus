@@ -28,6 +28,7 @@
 #include "common/timer.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/presentation/fsrUpscaler.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vma.h"
 #include "graphics/host_gpu/vulkanCommon.h"
@@ -353,6 +354,7 @@ private:
 	std::vector<vk::Semaphore>  m_image_acquired;
 	std::vector<vk::Semaphore>  m_render_complete;
 	std::unique_ptr<ImeOverlay> m_ime_overlay;
+	std::unique_ptr<FsrUpscaler> m_fsr;
 	uint32_t                    m_image_index = static_cast<uint32_t>(-1);
 	uint32_t                    m_frame_index = 0;
 };
@@ -464,6 +466,11 @@ void Swapchain::Create() {
 	create_info.imageArrayLayers = 1;
 	create_info.imageUsage =
 	    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
+	// FSR writes the upscaled frame to the swapchain image as a storage image (RCAS pass),
+	// so the storage usage flag is required when the upscaler is active.
+	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr31) {
+		create_info.imageUsage |= vk::ImageUsageFlagBits::eStorage;
+	}
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
 	create_info.preTransform     = transform;
 	create_info.compositeAlpha   = composite;
@@ -497,6 +504,15 @@ void Swapchain::Create() {
 		EXIT_IF(m_image_views[i] == nullptr);
 	}
 
+	// FSR upscaler: create the EASU + RCAS compute pipelines now that the device is ready.
+	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr31) {
+		m_fsr = std::make_unique<FsrUpscaler>();
+		if (!m_fsr->Create(graphics)) {
+			LOGF("Swapchain: FSR upscaler creation failed, falling back to blit\n");
+			m_fsr.reset();
+		}
+	}
+
 	vk::SemaphoreCreateInfo semaphore_info {};
 	semaphore_info.sType = vk::StructureType::eSemaphoreCreateInfo;
 	m_image_acquired.resize(m_images.size());
@@ -528,6 +544,11 @@ void Swapchain::Destroy() {
 		Common::LockGuard queue_lock(graphics.queue_mutex);
 		RequireVulkanSuccess(graphics.queue.waitIdle(), "wait for swapchain queue");
 	}
+	if (m_fsr != nullptr) {
+		m_fsr->Destroy();
+		m_fsr.reset();
+	}
+
 	if (m_ime_overlay != nullptr) {
 		m_ime_overlay->ReleaseVulkan();
 	}
@@ -649,58 +670,72 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
 	                           nullptr, 0, nullptr, 1, &to_transfer);
 
-	vk::ImageBlit region {};
-	region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
-	region.srcSubresource.mipLevel       = 0;
-	region.srcSubresource.baseArrayLayer = 0;
-	region.srcSubresource.layerCount     = 1;
-	region.srcOffsets[1].x               = static_cast<int>(source.extent.width);
-	region.srcOffsets[1].y               = static_cast<int>(source.extent.height);
-	region.srcOffsets[1].z               = 1;
-	region.dstSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
-	region.dstSubresource.mipLevel       = 0;
-	region.dstSubresource.baseArrayLayer = 0;
-	region.dstSubresource.layerCount     = 1;
-	region.dstOffsets[1].x               = static_cast<int>(m_extent.width);
-	region.dstOffsets[1].y               = static_cast<int>(m_extent.height);
-	region.dstOffsets[1].z               = 1;
-	vk_command.blitImage(source.image, vk::ImageLayout::eTransferSrcOptimal,
-	                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1, &region,
-	                     vk::Filter::eLinear);
+	const bool fsr_active = (m_fsr != nullptr && m_fsr->IsReady()) && !draw_ime_overlay;
+	if (fsr_active) {
+		// FSR two-pass upscaler: EASU (edge-adaptive upscale) + RCAS (sharpen).
+		// Dispatch handles all image transitions and leaves the swapchain image in
+		// ePresentSrcKHR, so the to_present barrier below is skipped.
+		m_fsr->Dispatch(vk_command, source, m_images[m_image_index], m_format,
+		               source.extent.width, source.extent.height, m_extent.width, m_extent.height,
+		               Config::GetUpscalerSharpness());
+	} else {
+		vk::ImageBlit region {};
+		region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
+		region.srcSubresource.mipLevel       = 0;
+		region.srcSubresource.baseArrayLayer = 0;
+		region.srcSubresource.layerCount     = 1;
+		region.srcOffsets[1].x               = static_cast<int>(source.extent.width);
+		region.srcOffsets[1].y               = static_cast<int>(source.extent.height);
+		region.srcOffsets[1].z               = 1;
+		region.dstSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
+		region.dstSubresource.mipLevel       = 0;
+		region.dstSubresource.baseArrayLayer = 0;
+		region.dstSubresource.layerCount     = 1;
+		region.dstOffsets[1].x               = static_cast<int>(m_extent.width);
+		region.dstOffsets[1].y               = static_cast<int>(m_extent.height);
+		region.dstOffsets[1].z               = 1;
+		vk_command.blitImage(source.image, vk::ImageLayout::eTransferSrcOptimal,
+		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1, &region,
+		                     vk::Filter::eLinear);
+	}
 
-	vk::ImageMemoryBarrier to_present {};
-	to_present.sType         = vk::StructureType::eImageMemoryBarrier;
-	to_present.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-	to_present.dstAccessMask = draw_ime_overlay ? vk::AccessFlagBits::eColorAttachmentRead |
-	                                                  vk::AccessFlagBits::eColorAttachmentWrite
-	                                            : vk::AccessFlagBits::eMemoryRead;
-	to_present.oldLayout     = vk::ImageLayout::eTransferDstOptimal;
-	to_present.newLayout     = draw_ime_overlay ? vk::ImageLayout::eColorAttachmentOptimal
-	                                            : vk::ImageLayout::ePresentSrcKHR;
-	to_present.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
-	to_present.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
-	to_present.image                           = m_images[m_image_index];
-	to_present.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
-	to_present.subresourceRange.baseMipLevel   = 0;
-	to_present.subresourceRange.levelCount     = 1;
-	to_present.subresourceRange.baseArrayLayer = 0;
-	to_present.subresourceRange.layerCount     = 1;
-	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-	                           draw_ime_overlay ? vk::PipelineStageFlagBits::eColorAttachmentOutput
-	                                            : vk::PipelineStageFlagBits::eAllCommands,
-	                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
-	                           &to_present);
-	if (draw_ime_overlay) {
-		m_ime_overlay->Record(vk_command, m_image_views[m_image_index]);
-		to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-		to_present.dstAccessMask = vk::AccessFlagBits::eMemoryRead;
-		to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
-		to_present.newLayout     = vk::ImageLayout::ePresentSrcKHR;
-		vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
-		                           vk::PipelineStageFlagBits::eAllCommands,
+	if (!fsr_active) {
+		vk::ImageMemoryBarrier to_present {};
+		to_present.sType         = vk::StructureType::eImageMemoryBarrier;
+		to_present.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		to_present.dstAccessMask = draw_ime_overlay ? vk::AccessFlagBits::eColorAttachmentRead |
+		                                                  vk::AccessFlagBits::eColorAttachmentWrite
+		                                            : vk::AccessFlagBits::eMemoryRead;
+		to_present.oldLayout     = vk::ImageLayout::eTransferDstOptimal;
+		to_present.newLayout     = draw_ime_overlay ? vk::ImageLayout::eColorAttachmentOptimal
+		                                            : vk::ImageLayout::ePresentSrcKHR;
+		to_present.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+		to_present.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+		to_present.image                           = m_images[m_image_index];
+		to_present.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
+		to_present.subresourceRange.baseMipLevel   = 0;
+		to_present.subresourceRange.levelCount     = 1;
+		to_present.subresourceRange.baseArrayLayer = 0;
+		to_present.subresourceRange.layerCount     = 1;
+		vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		                           draw_ime_overlay ? vk::PipelineStageFlagBits::eColorAttachmentOutput
+		                                            : vk::PipelineStageFlagBits::eAllCommands,
 		                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
 		                           &to_present);
+		if (draw_ime_overlay) {
+			m_ime_overlay->Record(vk_command, m_image_views[m_image_index]);
+			to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+			to_present.dstAccessMask = vk::AccessFlagBits::eMemoryRead;
+			to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
+			to_present.newLayout     = vk::ImageLayout::ePresentSrcKHR;
+			vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+			                           vk::PipelineStageFlagBits::eAllCommands,
+			                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
+			                           &to_present);
+		}
+
 	}
+
 	command.End();
 }
 
