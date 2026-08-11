@@ -41,6 +41,7 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -450,7 +451,7 @@ void Swapchain::Create() {
 		format = *it;
 	}
 	m_format                      = format.format;
-	const auto swapchain_features = graphics.GetFormatProperties(m_format).optimalTilingFeatures;
+	const auto swapchain_features = m_window.graphic_ctx.GetFormatProperties(m_format).optimalTilingFeatures;
 	if (!static_cast<bool>(swapchain_features & vk::FormatFeatureFlagBits::eBlitDst)) {
 		EXIT("swapchain format cannot be a blit destination: format=%d\n",
 		     static_cast<int>(m_format));
@@ -474,7 +475,27 @@ void Swapchain::Create() {
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
 	create_info.preTransform     = transform;
 	create_info.compositeAlpha   = composite;
-	create_info.presentMode      = vk::PresentModeKHR::eFifo;
+	// Present mode is configurable (Config::PresentMode); fall back to eFifo if the
+	// requested mode isn't supported by the surface (standard Vulkan practice).
+	const auto requested_present_mode = [mode = Config::GetPresentMode()]() -> vk::PresentModeKHR {
+		switch (mode) {
+			case Config::PresentMode::Mailbox:   return vk::PresentModeKHR::eMailbox;
+			case Config::PresentMode::Immediate: return vk::PresentModeKHR::eImmediate;
+			case Config::PresentMode::Fifo:
+			default:                            return vk::PresentModeKHR::eFifo;
+		}
+	}();
+	const auto supported_modes = EnumerateVulkan<vk::PresentModeKHR>(
+	    "vkGetPhysicalDeviceSurfacePresentModesKHR", [&](uint32_t* count, vk::PresentModeKHR* modes) {
+		    return graphics.physical_device.getSurfacePresentModesKHR(m_window.surface, count, modes);
+	    });
+	create_info.presentMode = (std::find(supported_modes.begin(), supported_modes.end(),
+	                                     requested_present_mode) != supported_modes.end())
+	                               ? requested_present_mode
+	                               : vk::PresentModeKHR::eFifo;
+	if (create_info.presentMode != requested_present_mode) {
+		LOGF("Swapchain: requested present mode unsupported, falling back to FIFO\n");
+	}
 	create_info.clipped          = VK_TRUE;
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
@@ -679,6 +700,51 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 		               source.extent.width, source.extent.height, m_extent.width, m_extent.height,
 		               Config::GetUpscalerSharpness());
 	} else {
+		// Aspect ratio is configurable (Config::AspectRatio). Compute the destination
+		// region to letterbox/pillarbox the source instead of stretching it to fill.
+		// Stretch (the default) keeps the original full-surface behavior.
+		int dst_x0 = 0;
+		int dst_y0 = 0;
+		int dst_w  = static_cast<int>(m_extent.width);
+		int dst_h  = static_cast<int>(m_extent.height);
+		const auto aspect = Config::GetAspectRatio();
+		if (aspect != Config::AspectRatio::Stretch && source.extent.width > 0 &&
+		    source.extent.height > 0) {
+			// Target aspect ratio (width / height) for the fitted region.
+			double target = 0.0;
+			switch (aspect) {
+				case Config::AspectRatio::Fit16x9: target = 16.0 / 9.0; break;
+				case Config::AspectRatio::Fit4x3:  target =  4.0 / 3.0; break;
+				case Config::AspectRatio::Integer: {
+					// Integer scaling: largest integer factor that fits the swapchain.
+					const int sx = static_cast<int>(source.extent.width);
+					const int sy = static_cast<int>(source.extent.height);
+					const int fx = sx > 0 ? dst_w / sx : 0;
+					const int fy = sy > 0 ? dst_h / sy : 0;
+					const int f  = std::max(1, std::min(fx, fy));
+					dst_w = sx * f;
+					dst_h = sy * f;
+					break;
+				}
+				default: break;
+			}
+			if (target > 0.0) {
+				const double swap_aspect =
+				    static_cast<double>(m_extent.width) / static_cast<double>(m_extent.height);
+				if (swap_aspect > target) {
+					// Window is wider than target -> pillarbox (black bars left/right).
+					dst_w = static_cast<int>(std::round(static_cast<double>(m_extent.height) * target));
+					dst_h = static_cast<int>(m_extent.height);
+				} else {
+					// Window is taller than target -> letterbox (black bars top/bottom).
+					dst_w = static_cast<int>(m_extent.width);
+					dst_h = static_cast<int>(std::round(static_cast<double>(m_extent.width) / target));
+				}
+			}
+			// Center the fitted region within the swapchain extent.
+			dst_x0 = (static_cast<int>(m_extent.width)  - dst_w) / 2;
+			dst_y0 = (static_cast<int>(m_extent.height) - dst_h) / 2;
+		}
 		vk::ImageBlit region {};
 		region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.srcSubresource.mipLevel       = 0;
@@ -691,12 +757,28 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 		region.dstSubresource.mipLevel       = 0;
 		region.dstSubresource.baseArrayLayer = 0;
 		region.dstSubresource.layerCount     = 1;
-		region.dstOffsets[1].x               = static_cast<int>(m_extent.width);
-		region.dstOffsets[1].y               = static_cast<int>(m_extent.height);
+		region.dstOffsets[0].x               = dst_x0;
+		region.dstOffsets[0].y               = dst_y0;
+		region.dstOffsets[1].x               = dst_x0 + dst_w;
+		region.dstOffsets[1].y               = dst_y0 + dst_h;
 		region.dstOffsets[1].z               = 1;
+		// Present filter is configurable (Config::PresentFilter); Cubic requires
+		// the sampledImageFilterCubic format feature, so fall back to Linear if unsupported.
+		auto present_filter = vk::Filter::eLinear;
+		switch (Config::GetPresentFilter()) {
+			case Config::PresentFilter::Nearest: present_filter = vk::Filter::eNearest; break;
+			case Config::PresentFilter::Cubic: {
+				const bool cubic_ok = (m_window.graphic_ctx.GetFormatProperties(m_format).optimalTilingFeatures
+				                       & vk::FormatFeatureFlagBits::eSampledImageFilterCubicEXT).operator bool();
+				present_filter = cubic_ok ? vk::Filter::eCubicEXT : vk::Filter::eLinear;
+				break;
+			}
+			case Config::PresentFilter::Linear:
+			default: present_filter = vk::Filter::eLinear; break;
+		}
 		vk_command.blitImage(source.image, vk::ImageLayout::eTransferSrcOptimal,
 		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1, &region,
-		                     vk::Filter::eLinear);
+		                     present_filter);
 	}
 
 	if (!fsr_active) {

@@ -76,6 +76,15 @@ public:
 	enum class IgpuOptimization { Off, Auto, Force };
 	Q_ENUM(IgpuOptimization)
 
+	enum class PresentMode { Fifo, Mailbox, Immediate };
+	Q_ENUM(PresentMode)
+
+	enum class PresentFilter { Nearest, Linear, Cubic };
+	Q_ENUM(PresentFilter)
+
+	enum class AspectRatio { Stretch, Fit16x9, Fit4x3, Integer };
+	Q_ENUM(AspectRatio)
+
 	enum class LogDirection { Silent, Console, File };
 	Q_ENUM(LogDirection)
 
@@ -117,6 +126,9 @@ public:
 	float upscaler_sharpness          = 0.5f;
 	IgpuOptimization igpu_optimization  = IgpuOptimization::Auto;
 	int  texture_lod_bias               = 0;
+	PresentMode    present_mode    = PresentMode::Fifo;
+	PresentFilter  present_filter  = PresentFilter::Linear;
+	AspectRatio    aspect_ratio    = AspectRatio::Stretch;
 	QStringList host_input_mapping;
 
 	QString elf = QStringLiteral("eboot.bin");
@@ -145,6 +157,9 @@ public:
 		upscaler_sharpness = other.upscaler_sharpness;
 		igpu_optimization  = other.igpu_optimization;
 		texture_lod_bias   = other.texture_lod_bias;
+		present_mode    = other.present_mode;
+		present_filter  = other.present_filter;
+		aspect_ratio    = other.aspect_ratio;
 		host_input_mapping = other.host_input_mapping;
 	}
 
@@ -190,6 +205,9 @@ public:
 		s->setValue("upscaler_sharpness", upscaler_sharpness);
 		KYTY_CFG_SET(igpu_optimization);
 		s->setValue("texture_lod_bias", texture_lod_bias);
+		KYTY_CFG_SET(present_mode);
+		KYTY_CFG_SET(present_filter);
+		KYTY_CFG_SET(aspect_ratio);
 		s->setValue("host_input_mapping", host_input_mapping);
 		KYTY_CFG_SET(elf);
 	}
@@ -226,6 +244,9 @@ public:
 		upscaler_sharpness = s->value("upscaler_sharpness", upscaler_sharpness).toFloat();
 		KYTY_CFG_GET(igpu_optimization);
 		texture_lod_bias  = s->value("texture_lod_bias", texture_lod_bias).toInt();
+		KYTY_CFG_GET(present_mode);
+		KYTY_CFG_GET(present_filter);
+		KYTY_CFG_GET(aspect_ratio);
 		host_input_mapping = s->value("host_input_mapping", host_input_mapping).toStringList();
 		elf                = s->value("elf", elf).toString();
 	}

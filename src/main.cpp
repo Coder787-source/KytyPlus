@@ -292,6 +292,21 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			}
 		} else if (arg == "--texture-lod-bias") {
 			options.config.texture_lod_bias = Common::ToInt32(value);
+		} else if (arg == "--present-mode") {
+			if (!ParseEnum(value, options.config.present_mode)) {
+				::printf("invalid present mode: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--present-filter") {
+			if (!ParseEnum(value, options.config.present_filter)) {
+				::printf("invalid present filter: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--aspect-ratio") {
+			if (!ParseEnum(value, options.config.aspect_ratio)) {
+				::printf("invalid aspect ratio: %s\n", value.c_str());
+				return false;
+			}
 		} else if (arg == "--spirv-debug-printf") {
 			if (!ParseBool(value, options.config.spirv_debug_printf_enabled)) {
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());

@@ -188,6 +188,9 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	    static_cast<int>(info.upscaler_sharpness * 100.0f));
 	ListInit(m_ui->comboBox_igpu_optimization, info.igpu_optimization);
 	m_ui->spinBox_texture_lod_bias->setValue(info.texture_lod_bias);
+	ListInit(m_ui->comboBox_present_mode, info.present_mode);
+	ListInit(m_ui->comboBox_present_filter, info.present_filter);
+	ListInit(m_ui->comboBox_aspect_ratio, info.aspect_ratio);
 }
 
 void ConfigurationEditDialog::InitGameDirectories() {
@@ -321,6 +324,12 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui) {
 	info.igpu_optimization =
 	    TextToEnum<Configuration::IgpuOptimization>(ui.comboBox_igpu_optimization->currentText());
 	info.texture_lod_bias = ui.spinBox_texture_lod_bias->value();
+	info.present_mode =
+	    TextToEnum<Configuration::PresentMode>(ui.comboBox_present_mode->currentText());
+	info.present_filter =
+	    TextToEnum<Configuration::PresentFilter>(ui.comboBox_present_filter->currentText());
+	info.aspect_ratio =
+	    TextToEnum<Configuration::AspectRatio>(ui.comboBox_aspect_ratio->currentText());
 }
 
 void ConfigurationEditDialog::update_info() {

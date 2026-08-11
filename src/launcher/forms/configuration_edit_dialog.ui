@@ -344,6 +344,48 @@
         </property>
        </widget>
       </item>
+      <item row="16" column="0">
+       <widget class="QLabel" name="label_present_mode">
+        <property name="text">
+         <string>Present mode:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="16" column="1">
+       <widget class="QComboBox" name="comboBox_present_mode">
+        <property name="toolTip">
+         <string>Vulkan swapchain present mode. FIFO = VSync (default, always available). Mailbox = tear-free low latency (if supported). Immediate = no VSync, lowest latency (may tear).</string>
+        </property>
+       </widget>
+      </item>
+      <item row="17" column="0">
+       <widget class="QLabel" name="label_present_filter">
+        <property name="text">
+         <string>Present filter:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="17" column="1">
+       <widget class="QComboBox" name="comboBox_present_filter">
+        <property name="toolTip">
+         <string>Filter used when stretching the guest frame to the window. Linear = smooth (default). Nearest = sharp pixels. Cubic = highest quality (if the GPU supports it, otherwise falls back to Linear).</string>
+        </property>
+       </widget>
+      </item>
+      <item row="18" column="0">
+       <widget class="QLabel" name="label_aspect_ratio">
+        <property name="text">
+         <string>Aspect ratio:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="18" column="1">
+       <widget class="QComboBox" name="comboBox_aspect_ratio">
+        <property name="toolTip">
+         <string>How the guest frame fits the window. Stretch = fill (default). Fit 16:9 / Fit 4:3 = letterbox/pillarbox bars. Integer = nearest-multiple scaling (sharpest pixels, largest that fits).</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
