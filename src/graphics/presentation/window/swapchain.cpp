@@ -468,7 +468,7 @@ void Swapchain::Create() {
 	    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
 	// FSR writes the upscaled frame to the swapchain image as a storage image (RCAS pass),
 	// so the storage usage flag is required when the upscaler is active.
-	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr31) {
+	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr1) {
 		create_info.imageUsage |= vk::ImageUsageFlagBits::eStorage;
 	}
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
@@ -505,7 +505,7 @@ void Swapchain::Create() {
 	}
 
 	// FSR upscaler: create the EASU + RCAS compute pipelines now that the device is ready.
-	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr31) {
+	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr1) {
 		m_fsr = std::make_unique<FsrUpscaler>();
 		if (!m_fsr->Create(graphics)) {
 			LOGF("Swapchain: FSR upscaler creation failed, falling back to blit\n");
