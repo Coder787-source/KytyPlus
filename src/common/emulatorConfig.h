@@ -193,6 +193,9 @@ bool             ForceIgpuMode();
 ResolutionScale  GetResolutionScale();
 int32_t          GetTextureLodBias();
 bool             UmaStagingBypass();
+// Set the UMA staging-bypass flag. Used by the VMA allocator to auto-enable the
+// bypass once a unified-memory heap is detected at device-creation time.
+void             SetUmaStagingBypass(bool value);
 
 // Returns the scale factor for the selected resolution scale (1.0, 0.5, or 0.25).
 float GetResolutionScaleFactor();

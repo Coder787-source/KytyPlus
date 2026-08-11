@@ -88,6 +88,31 @@ bool GraphicContext::CreateAllocator() {
 	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu ||
 	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eVirtualGpu;
 	Config::ApplyIgpuDefaults(is_integrated || Config::ForceIgpuMode());
+
+	// UMA detection: scan the memory types for one that is simultaneously device-local,
+	// host-visible and host-coherent. That combination only exists on unified-memory
+	// architectures (iGPUs / APU laptops / mini-PCs like the Minisforum UM870), where the
+	// CPU and GPU share the same physical memory. On such devices a staging-buffer copy is
+	// pure overhead — the GPU can read host-writable memory directly — so auto-enable the
+	// staging bypass. An explicit user choice (UmaStagingBypass() already true/false) wins
+	// over auto-detection: we only flip the flag when it is still at its default (false).
+	if (!Config::UmaStagingBypass()) {
+		const auto& mem_props = physical_device_memory_properties;
+		bool        uma_heap = false;
+		for (uint32_t i = 0; i < mem_props.memoryTypeCount && !uma_heap; i++) {
+			const auto flags = mem_props.memoryTypes[i].propertyFlags;
+			const bool device_local  = static_cast<bool>(flags & vk::MemoryPropertyFlagBits::eDeviceLocal);
+			const bool host_visible  = static_cast<bool>(flags & vk::MemoryPropertyFlagBits::eHostVisible);
+			const bool host_coherent = static_cast<bool>(flags & vk::MemoryPropertyFlagBits::eHostCoherent);
+			if (device_local && host_visible && host_coherent) {
+				uma_heap = true;
+			}
+		}
+		if (uma_heap) {
+			Config::SetUmaStagingBypass(true);
+			LOGF("VMA: unified-memory (UMA) heap detected — UMA staging-bypass flag set\n");
+		}
+	}
 	return true;
 }
 

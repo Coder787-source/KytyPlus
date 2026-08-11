@@ -99,13 +99,39 @@ static bool ParseBool(const std::string& value, bool& out) {
 
 template <typename E>
 static bool ParseEnum(const std::string& value, E& out) {
+	// Config validation: accept the value as-is first.
 	auto enum_value = magic_enum::enum_cast<E>(value.c_str());
-	if (!enum_value.has_value()) {
-		return false;
+	if (enum_value.has_value()) {
+		out = enum_value.value();
+		return true;
 	}
-
-	out = enum_value.value();
-	return true;
+	// Case-insensitive fallback so "fsr1"/"FSR1" both work.
+	enum_value = magic_enum::enum_cast<E>(value.c_str(), magic_enum::case_insensitive);
+	if (enum_value.has_value()) {
+		LOGF("Config: normalized enum value '%s' -> '%s'\n", value.c_str(),
+		     std::string(magic_enum::enum_name(enum_value.value())).c_str());
+		out = enum_value.value();
+		return true;
+	}
+	// Deprecated-name migration: Fsr31 was the old (inflated) label for the FSR 1.0
+	// implementation. Map it transparently so configs written against v2.4 keep working.
+	if constexpr (std::is_same_v<E, Config::UpscalerMethod>) {
+		if (value == "Fsr31" || value == "fsr31" || value == "FSR31") {
+			LOGF("Config: deprecated upscaler name '%s' -> 'Fsr1' (FSR 1.0)\n", value.c_str());
+			out = Config::UpscalerMethod::Fsr1;
+			return true;
+		}
+	}
+	// Report the offending value plus the accepted set so the user can fix it.
+	std::string valid = "[";
+	for (const auto name : magic_enum::enum_names<E>()) {
+		if (valid.size() > 1) valid += ", ";
+		valid += std::string(name);
+	}
+	valid += "]";
+	LOGF("Config: invalid enum value '%s' for %s (accepted: %s)\n", value.c_str(),
+	     typeid(E).name(), valid.c_str());
+	return false;
 }
 
 static bool ParseConsoleLanguage(const std::string& value, uint32_t& out) {

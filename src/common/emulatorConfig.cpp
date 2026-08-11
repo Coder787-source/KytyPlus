@@ -184,6 +184,11 @@ bool UmaStagingBypass() {
 	return g_config->uma_staging_bypass;
 }
 
+void SetUmaStagingBypass(bool value) {
+	EXIT_IF(g_config == nullptr);
+	g_config->uma_staging_bypass = value;
+}
+
 float GetResolutionScaleFactor() {
 	switch (g_config->resolution_scale) {
 		case ResolutionScale::Native:  return 1.0f;
