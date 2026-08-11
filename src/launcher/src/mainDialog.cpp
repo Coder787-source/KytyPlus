@@ -219,6 +219,9 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 	args << "--printf-direction" << EnumToText(info.printf_direction);
 	args << "--printf-output-file" << info.printf_output_file;
 	args << "--profiler-direction" << EnumToText(info.profiler_direction);
+	args << "--upscaler-method" << EnumToText(info.upscaler_method);
+	args << "--upscaler-quality" << EnumToText(info.upscaler_quality);
+	args << "--upscaler-sharpness" << QString::number(info.upscaler_sharpness, 'f', 2);
 	args << "--spirv-debug-printf" << "false";
 #if defined(_WIN32)
 	if (info.red_zone_protection_enabled) {

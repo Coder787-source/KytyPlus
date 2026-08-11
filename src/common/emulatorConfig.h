@@ -41,8 +41,8 @@ enum class ResolutionScale { Native, Half, Quarter };
 
 // Upscaling method applied during the final guest->swapchain presentation.
 //   Off   -- plain vkBlitImage (Nearest/Linear per PresentFilter)
-//   Fsr31 -- AMD FSR-inspired spatial upscaler (EASU + RCAS), works on all Vulkan GPUs
-enum class UpscalerMethod { Off, Fsr31 };
+//   Fsr1  -- AMD FSR 1.0-inspired spatial upscaler (EASU + RCAS), works on all Vulkan GPUs
+enum class UpscalerMethod { Off, Fsr1 };
 
 // Quality preset for the upscaler. Controls the internal render scale:
 //   UltraQuality -- 77% (barely visible, minimal perf gain)

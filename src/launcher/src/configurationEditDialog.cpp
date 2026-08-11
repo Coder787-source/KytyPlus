@@ -182,6 +182,10 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	m_ui->lineEdit_printf_file->setEnabled(info.printf_direction ==
 	                                       Configuration::LogDirection::File);
 	ListInit(m_ui->comboBox_profiler_direction, info.profiler_direction);
+	ListInit(m_ui->comboBox_upscaler_method, info.upscaler_method);
+	ListInit(m_ui->comboBox_upscaler_quality, info.upscaler_quality);
+	m_ui->horizontalSlider_upscaler_sharpness->setValue(
+	    static_cast<int>(info.upscaler_sharpness * 100.0f));
 }
 
 void ConfigurationEditDialog::InitGameDirectories() {
@@ -306,6 +310,12 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui) {
 	info.printf_output_file = ui.lineEdit_printf_file->text();
 	info.profiler_direction =
 	    TextToEnum<Configuration::ProfilerDirection>(ui.comboBox_profiler_direction->currentText());
+	info.upscaler_method =
+	    TextToEnum<Configuration::UpscalerMethod>(ui.comboBox_upscaler_method->currentText());
+	info.upscaler_quality =
+	    TextToEnum<Configuration::UpscalerQuality>(ui.comboBox_upscaler_quality->currentText());
+	info.upscaler_sharpness =
+	    static_cast<float>(ui.horizontalSlider_upscaler_sharpness->value()) / 100.0f;
 }
 
 void ConfigurationEditDialog::update_info() {

@@ -34,12 +34,12 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 	}
 
 	// Performance-floor defaults for integrated-GPU machines (Steam Deck / 780M class):
-	// FSR 3.1 presentation upscaling and a texture LOD bias that skips the highest mip
+	// FSR 1.0 presentation upscaling and a texture LOD bias that skips the highest mip
 	// levels, reducing texture bandwidth. Applied only when the value is still at its
 	// built-in default, so an explicit user choice always wins.
 	bool changed = false;
 	if (g_config->upscaler_method == UpscalerMethod::Off) {
-		g_config->upscaler_method = UpscalerMethod::Fsr31;
+		g_config->upscaler_method = UpscalerMethod::Fsr1;
 		changed                   = true;
 	}
 	if (g_config->texture_lod_bias == 0) {
@@ -48,7 +48,7 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 	}
 	if (changed) {
 		LOGF("Config: integrated GPU detected — applied floor defaults: "
-		     "FSR 3.1 upscaler, texture LOD bias 1\n");
+		     "FSR 1.0 upscaler, texture LOD bias 1\n");
 	}
 }
 

@@ -248,6 +248,18 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid profiler direction: %s\n", value.c_str());
 				return false;
 			}
+		} else if (arg == "--upscaler-method") {
+			if (!ParseEnum(value, options.config.upscaler_method)) {
+				::printf("invalid upscaler method: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--upscaler-quality") {
+			if (!ParseEnum(value, options.config.upscaler_quality)) {
+				::printf("invalid upscaler quality: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--upscaler-sharpness") {
+			options.config.upscaler_sharpness = Common::ToFloat(value);
 		} else if (arg == "--spirv-debug-printf") {
 			if (!ParseBool(value, options.config.spirv_debug_printf_enabled)) {
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());

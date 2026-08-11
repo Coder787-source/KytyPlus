@@ -259,6 +259,57 @@
         </property>
        </widget>
       </item>
+      <item row="11" column="0">
+       <widget class="QLabel" name="label_upscaler_method">
+        <property name="text">
+         <string>Upscaler:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="11" column="1">
+       <widget class="QComboBox" name="comboBox_upscaler_method">
+        <property name="toolTip">
+         <string>Spatial upscaler for the final guest-to-swapchain stretch. Off = plain blit. FSR 1.0 works on all Vulkan GPUs and falls back to blit if unsupported.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="12" column="0">
+       <widget class="QLabel" name="label_upscaler_quality">
+        <property name="text">
+         <string>Upscaler quality:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="12" column="1">
+       <widget class="QComboBox" name="comboBox_upscaler_quality">
+        <property name="toolTip">
+         <string>Internal render scale preset: Ultra Quality 77%, Quality 67%, Balanced 59%, Performance 50%</string>
+        </property>
+       </widget>
+      </item>
+      <item row="13" column="0">
+       <widget class="QLabel" name="label_upscaler_sharpness">
+        <property name="text">
+         <string>Upscaler sharpness:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="13" column="1">
+       <widget class="QSlider" name="horizontalSlider_upscaler_sharpness">
+        <property name="toolTip">
+         <string>RCAS sharpening strength (0.0 = none, 1.0 = maximum)</string>
+        </property>
+        <property name="minimum">
+         <number>0</number>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
