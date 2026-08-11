@@ -78,8 +78,35 @@ builds on that with focused changes such as:
 - Safer paths around several graphics **EXIT** crash clusters (layered render targets, storage
   texture encoding/swizzle, texture-cache alias retirement, sampled depth cubes, etc.)
 - **HLE** improvements for sysmodule load/unload state (soft-success for unknown IDs where safe)
-- Defaults and allocator tweaks **designed with integrated GPUs / UMA in mind** (e.g. Radeon 780M-class). iGPU behavior is **not yet verified** — testing reports on integrated hardware are especially welcome (see [iGPU status](#igpu-status))
-- Present / pipeline-cache / shader-optimization adjustments for smoother local testing
+
+### Features exclusive to KytyPlus
+
+These are **not** in upstream Kyty or KytyPS5:
+
+- **FSR 1.0 upscaler** — edge-adaptive spatial upscaling (EASU + RCAS), works on all Vulkan GPUs
+  (AMD / NVIDIA / Intel). Four quality presets + adjustable sharpness. Configurable via the
+  launcher. Falls back to a plain blit if the GPU can't handle it.
+- **Shader / pipeline disk cache** — compiled Vulkan pipelines persist to
+  `_Cache/vulkan_pipeline_cache.bin` and reload on subsequent launches, skipping work for shaders
+  that haven't changed. A compatibility check rejects stale caches.
+- **iGPU auto-optimization** — detects integrated GPUs (e.g. Radeon 780M-class) via the Vulkan
+  device type and automatically enables FSR 1.0 + a texture LOD bias to cut bandwidth.
+  `force_igpu_mode` lets you opt in on a discrete GPU for testing.
+- **UMA heap detection** — detects unified-memory architectures (device-local + host-visible +
+  host-coherent). Detection is live; the staging-bypass itself is not yet wired.
+- **Configurable present path** — present mode (VSync / Mailbox / Immediate), present filter
+  (Nearest / Linear / Cubic), and aspect ratio (Stretch / 16:9 / 4:3 / Integer).
+- **Launcher settings UI** — upscaler, present path, and iGPU settings are all configurable from
+  the launcher's Settings dialog, not just the config file.
+- **Log viewer with one-click Share Log** — view the emulator's `_kyty.txt` for a game, then copy
+  the full log + system info to the clipboard in one click, with instructions on where to paste it.
+- **Config validation** — case-insensitive parsing, deprecated names transparently migrated
+  (e.g. `Fsr31` → `Fsr1`), and invalid values rejected with a clear log message.
+
+> [!NOTE]
+> All of the above are implemented, compiled, and wired in. They have **not yet been validated
+> against real games on real hardware** — that's what testers are for. Reports (especially on
+> iGPU systems) are extremely welcome.
 
 Compatibility is still **early**. A title that no longer hits one known crash will often hit the
 next unimplemented feature. Always test with a **fresh build** and attach logs when reporting.
