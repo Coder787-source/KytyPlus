@@ -19,7 +19,7 @@ Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX
 
 [▶ Watch on Google Drive](https://drive.google.com/file/d/1_7IoA9B2iV-H1VUGtYyxEGiN6PYI2vbu/view?pli=1)
 
-> First-party footage of a commercial game reaching menu — the project's first confirmed boot-to-menu result. Past-menu state has not been tested. See the [compatibility list](https://github.com/Coder787-source/KytyPlus/blob/main/CONTRIBUTING.md) for the full picture.
+> First-party footage of a commercial game reaching menu — the project's first confirmed boot-to-menu result. Past-menu state has not been tested.
 
 ---
 
