@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KytyPlus — experimental PS5 emulator</title>
+  <meta name="description" content="KytyPlus is an open-source, KytyPS5-based PlayStation 5 emulator for Windows. Experimental crash and boot-reach work — not a playability claim. Source on GitHub under GPL-2.0.">
+  <meta name="theme-color" content="#e8edf2">
+  <meta name="google-site-verification" content="87aKr9Jar3jp0cTJoP4Tqdn3D9cUC1_20fxKTaRZivM" />
+  <link rel="canonical" href="https://coder787-source.github.io/KytyPlus/">
+  <link rel="icon" href="favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Sora:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #14181f;
+      --muted: #5c6673;
+      --paper: #e8edf2;
+      --panel: #f4f7fa;
+      --line: rgba(20, 24, 31, 0.12);
+      --accent: #1f6f63;
+      --accent-ink: #0f3f39;
+      --hero-fade: linear-gradient(105deg, rgba(232, 237, 242, 0.97) 0%, rgba(232, 237, 242, 0.88) 42%, rgba(232, 237, 242, 0.2) 72%, rgba(232, 237, 242, 0) 100%);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Sora", sans-serif;
+      font-size: 1.05rem;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a {
+      color: var(--accent-ink);
+      text-decoration-thickness: 1.5px;
+      text-underline-offset: 0.22em;
+      transition: color 160ms ease, text-decoration-color 160ms ease;
+    }
+    a:hover { color: var(--accent); }
+
+    .hero {
+      position: relative;
+      min-height: 100svh;
+      display: grid;
+      align-items: end;
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .hero-media {
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      overflow: hidden;
+    }
+
+    .hero-media img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center 35%;
+      transform: scale(1.04);
+      animation: drift 18s ease-in-out infinite alternate;
+    }
+
+    .hero-fade {
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      background: var(--hero-fade);
+    }
+
+    .hero-inner {
+      width: min(720px, calc(100% - 3rem));
+      margin: 0 auto 0 8vw;
+      padding: 18vh 0 12vh;
+      animation: rise 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    .brand {
+      font-family: "Fraunces", serif;
+      font-weight: 700;
+      font-size: clamp(3.4rem, 9vw, 6.2rem);
+      line-height: 0.95;
+      letter-spacing: -0.03em;
+      margin: 0 0 1.1rem;
+    }
+
+    .headline {
+      font-family: "Fraunces", serif;
+      font-weight: 600;
+      font-size: clamp(1.35rem, 2.6vw, 1.85rem);
+      line-height: 1.25;
+      max-width: 18ch;
+      margin: 0 0 0.85rem;
+    }
+
+    .lede {
+      max-width: 34ch;
+      color: var(--muted);
+      margin: 0 0 1.75rem;
+      font-size: 1.02rem;
+    }
+
+    .cta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.85rem 1.4rem;
+      align-items: baseline;
+      animation: rise 1100ms 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    .cta a {
+      font-weight: 600;
+      font-size: 0.98rem;
+    }
+
+    .cta a.primary {
+      color: var(--panel);
+      background: var(--ink);
+      padding: 0.72rem 1.15rem;
+      text-decoration: none;
+      border-radius: 2px;
+      transition: background 160ms ease, transform 160ms ease;
+    }
+    .cta a.primary:hover {
+      background: var(--accent);
+      color: var(--panel);
+      transform: translateY(-1px);
+    }
+
+    .cta a.secondary {
+      text-decoration-color: transparent;
+      background-image: linear-gradient(currentColor, currentColor);
+      background-position: 0 100%;
+      background-repeat: no-repeat;
+      background-size: 0% 1.5px;
+      transition: background-size 220ms ease, color 160ms ease;
+    }
+    .cta a.secondary:hover {
+      background-size: 100% 1.5px;
+    }
+
+    section {
+      width: min(760px, calc(100% - 3rem));
+      margin: 0 auto;
+      padding: 4.5rem 0;
+    }
+
+    section + section {
+      border-top: 1px solid var(--line);
+    }
+
+    section h2 {
+      font-family: "Fraunces", serif;
+      font-weight: 600;
+      font-size: 1.55rem;
+      margin: 0 0 0.85rem;
+      letter-spacing: -0.02em;
+    }
+
+    section p { margin: 0 0 1rem; color: var(--muted); }
+    section p:last-child { margin-bottom: 0; }
+
+    .note {
+      color: var(--ink);
+      background: var(--panel);
+      border-left: 3px solid var(--accent);
+      padding: 0.95rem 1.1rem;
+      margin: 1.25rem 0 0;
+    }
+
+    footer {
+      border-top: 1px solid var(--line);
+      padding: 1.75rem 8vw 2.5rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.25rem;
+      justify-content: space-between;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(18px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes drift {
+      from { transform: scale(1.04) translate3d(0, 0, 0); }
+      to { transform: scale(1.08) translate3d(-1.2%, -0.6%, 0); }
+    }
+
+    @media (max-width: 720px) {
+      .hero-fade {
+        background: linear-gradient(180deg, rgba(232, 237, 242, 0.55) 0%, rgba(232, 237, 242, 0.92) 48%, rgba(232, 237, 242, 0.98) 100%);
+      }
+      .hero-inner {
+        margin: 0 auto;
+        width: min(720px, calc(100% - 2rem));
+        padding: 22vh 0 10vh;
+      }
+      .headline { max-width: none; }
+      .lede { max-width: 38ch; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+      .hero-media img { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-media" aria-hidden="true">
+      <img src="screenshots/ps5-04.png" alt="" width="1920" height="1080">
+    </div>
+    <div class="hero-fade" aria-hidden="true"></div>
+    <div class="hero-inner">
+      <p class="brand">KytyPlus</p>
+      <h1 class="headline">An experimental PS5 emulator for Windows.</h1>
+      <p class="lede">Open-source, KytyPS5-based. Built for crash and boot-reach work — not a claim that games are playable.</p>
+      <div class="cta">
+        <a class="primary" href="https://github.com/Coder787-source/KytyPlus">View the KytyPlus Source Code on GitHub</a>
+        <a class="secondary" href="https://github.com/Coder787-source/KytyPlus/releases">Releases</a>
+        <a class="secondary" href="COMPATIBILITY.md">Compatibility list</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>What this is</h2>
+      <p>
+        KytyPlus is a community emulator derived from
+        <a href="https://github.com/KytyPS5/KytyPS5">KytyPS5</a>.
+        The focus is fewer hard crashes, clearer HLE gaps, and better reach on Windows + Vulkan —
+        especially on integrated GPUs.
+      </p>
+      <p class="note">
+        Source is public under <strong>GPL-2.0</strong>. Binary builds should always point back here.
+        If a download does not link to this repository, treat it as unverified.
+      </p>
+    </section>
+
+    <section>
+      <h2>See it in action</h2>
+      <p>
+        Video of Dead Cells booting to the main menu on KytyPlus v1.8 (i7-9700K, RTX 4060 Ti, external HDD).
+        Tested and recorded by <a href="https://github.com/KytyPS5/KytyPS5/issues/127">@CorpseSlayer</a>.
+      </p>
+      <p>
+        <a href="https://streamable.com/7ryvh1" style="font-weight: 600;">▶ Watch on Streamable</a>
+      </p>
+    </section>
+
+    <section>
+      <h2>Legal use only</h2>
+      <p>
+        Not affiliated with Sony Interactive Entertainment. PlayStation and PS5 are trademarks of
+        their owners. KytyPlus does not ship games, dumps, or system firmware.
+      </p>
+      <p>
+        Use only titles you own legally. Do not ask for piracy links, firmware, or copyrighted
+        <code>sce_module</code> files.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <span>KytyPlus · GPL-2.0 · Windows x64</span>
+    <span><a href="https://github.com/Coder787-source/KytyPlus">github.com/Coder787-source/KytyPlus</a></span>
+  </footer>
+</body>
+</html>
