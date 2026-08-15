@@ -130,7 +130,7 @@ static bool ParseEnum(const std::string& value, E& out) {
 	}
 	valid += "]";
 	LOGF("Config: invalid enum value '%s' for %s (accepted: %s)\n", value.c_str(),
-	     typeid(E).name(), valid.c_str());
+	     std::string(magic_enum::enum_type_name<E>()).c_str(), valid.c_str());
 	return false;
 }
 
