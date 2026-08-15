@@ -48,7 +48,6 @@ Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX
 - Firmware is **not included** with the emulator. Download it directly from Sony:
   **https://www.playstation.com/en-us/support/hardware/ps5/system-software/**
 - To install (CLI, no launcher UI yet): run `kyty_emulator.exe --install-firmware <path-to-PS5UPDATE.PUP>` (Windows) or `./kyty_emulator --install-firmware <path>` (macOS/Linux). The parser reads the official Sony `.pup`; decryption of encrypted PUPs requires a user-supplied `keys.bin` placed next to the `.pup` (the emulator never provides or links to keys).
-- **Is this legal?** Downloading the `.pup` from Sony's official page and running the parser is fully legal — you're reading a publicly distributed file and parsing its container (SLB2) + detecting encryption. No decryption happens unless you supply your own `keys.bin`. The only gray area is the *decryption* step (which requires keys from reverse-engineering); the emulator itself never performs it without user-supplied keys, and never provides or links to keys. This is the same legal stance RPCS3 and ShadPS4 use.
 - KytyPlus does **not** distribute, include, or link to any Sony copyrighted material.
 
 ### No warranty
