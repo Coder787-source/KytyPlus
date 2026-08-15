@@ -70,6 +70,98 @@ static constexpr KnownFileId kKnownFiles[] = {
     {0x7001, "libSceAppInst.prx", true},
 };
 
+// Local fixed-string reader (ReadFixedString is private on PupParser).
+static std::string ReadFixedStringLocal(const char* buffer, size_t max_len) {
+    std::string str;
+    for (size_t i = 0; i < max_len; ++i) {
+        if (buffer[i] == '\0') break;
+        str += buffer[i];
+    }
+    return str;
+}
+
+// Check whether a firmware module name looks like a nested PUP container
+// (e.g. "PS5UPDATE1.PUP"). Real PS5 firmware ships as an outer SLB2 container
+// holding a single inner .PUP entry; the inner .PUP is itself an SLB2 container
+// (or an encrypted blob) holding the actual firmware modules.
+static bool IsNestedPupName(const std::string& name) {
+    if (name.size() < 5) return false;
+    const size_t n = name.size();
+    return (name[n-4] == '.' &&
+            (name[n-3] == 'P' || name[n-3] == 'p') &&
+            (name[n-2] == 'U' || name[n-2] == 'u') &&
+            (name[n-1] == 'P' || name[n-1] == 'p'));
+}
+
+// Attempt to parse a nested SLB2 container from an in-memory buffer.
+static PupParseResult ParseNestedPup(const std::vector<uint8_t>& buf) {
+    PupParseResult result {};
+    if (buf.size() < sizeof(SLB2Header)) {
+        result.ok = false;
+        result.error = "Nested PUP buffer too small for SLB2 header";
+        return result;
+    }
+    if (buf[0] != 'S' || buf[1] != 'L' || buf[2] != 'B' || buf[3] != '2') {
+        result.ok = false;
+        result.error = "Nested entry is not an SLB2 container";
+        return result;
+    }
+    SLB2Header slb2_hdr {};
+    std::memcpy(&slb2_hdr, buf.data(), sizeof(slb2_hdr));
+    LOGF("[Firmware] INFO: Nested SLB2 found: version=%u, entries=%u, blocks=%u \
+", slb2_hdr.version, slb2_hdr.entries, slb2_hdr.blocks);
+    if (slb2_hdr.entries == 0 || slb2_hdr.entries > 10000) {
+        result.ok = false;
+        result.error = "Nested SLB2 invalid entry count";
+        return result;
+    }
+    std::vector<SLB2Entry> slb2_entries(slb2_hdr.entries);
+    const size_t entry_table_size = slb2_hdr.entries * sizeof(SLB2Entry);
+    if (sizeof(SLB2Header) + entry_table_size > buf.size()) {
+        result.ok = false;
+        result.error = "Nested SLB2 entry table truncated";
+        return result;
+    }
+    std::memcpy(slb2_entries.data(), buf.data() + sizeof(SLB2Header), entry_table_size);
+    result.ok = true;
+    result.total_entries = slb2_hdr.entries;
+    result.total_blocks = slb2_hdr.blocks;
+    uint32_t prx_count = 0, elf_count = 0;
+    for (uint32_t i = 0; i < slb2_hdr.entries; i++) {
+        const SLB2Entry& e = slb2_entries[i];
+        const uint64_t off = static_cast<uint64_t>(e.start) * SLB2_BLOCK_SIZE;
+        if (off + e.size > buf.size()) {
+            LOGF("[Firmware] WARN: Nested entry %u bad offset \
+", i);
+            continue;
+        }
+        std::vector<uint8_t> data(buf.begin() + off, buf.begin() + off + e.size);
+        const bool has_elf = PupParser::HasElfMagic(data);
+        const bool is_prx = PupParser::IsPrxModule(data);
+        FirmwareModule module {};
+        module.file_id = 0;
+        for (char c : e.name) module.file_id = (module.file_id * 31) + static_cast<uint8_t>(c);
+        module.data = std::move(data);
+        module.is_encrypted = !has_elf;
+        module.is_prx = is_prx;
+        module.is_valid = is_prx || has_elf;
+        module.name = ReadFixedStringLocal(e.name, sizeof(e.name));
+        module.path = "";
+        module.offset = off;
+        module.size = e.size;
+        if (is_prx) prx_count++;
+        else if (has_elf) elf_count++;
+        LOGF("[Firmware] INFO: Nested entry '%s' (%llu bytes, %s) \
+", module.name.c_str(),
+             static_cast<unsigned long long>(module.data.size()),
+             is_prx ? "PRX" : (has_elf ? "ELF" : "encrypted"));
+        result.modules.push_back(std::move(module));
+    }
+    LOGF("[Firmware] INFO: Nested parse complete: %u PRX, %u ELF \
+", prx_count, elf_count);
+    return result;
+}
+
 PupParseResult PupParser::Parse(const std::string& pup_path) {
     PupParseResult result {};
 
@@ -203,6 +295,28 @@ PupParseResult PupParser::Parse(const std::string& pup_path) {
                  static_cast<unsigned long long>(module.data.size()));
         }
 
+        // KytyPlus: nested-PUP recursion. Real PS5 firmware ships as an outer
+        // SLB2 container holding a single inner .PUP entry (e.g. PS5UPDATE1.PUP).
+        // That inner entry is itself an SLB2 container with the real firmware modules.
+        // If this entry is a named .PUP and lacks ELF magic, recurse into it.
+        if (!has_elf_magic && IsNestedPupName(module.name)) {
+            LOGF("[Firmware] INFO: Entry '%s' is a nested PUP — recursing... \
+", module.name.c_str());
+            PupParseResult nested = ParseNestedPup(module.data);
+            if (nested.ok && !nested.modules.empty()) {
+                for (auto& nm : nested.modules) {
+                    if (nm.is_prx) prx_count++;
+                    else if (nm.is_valid) elf_count++;
+                    result.modules.push_back(std::move(nm));
+                }
+                result.had_encrypted_entries = nested.had_encrypted_entries;
+                continue; // skip pushing the outer container entry
+            } else {
+                LOGF("[Firmware] WARN: Nested PUP parse did not yield modules \
+");
+            }
+        }
+
         result.modules.push_back(std::move(module));
     }
 
@@ -258,8 +372,9 @@ bool PupParser::ValidateSLB2Header(const SLB2Header& hdr, uint64_t file_size) {
     }
 
     // Sanity checks
-    if (hdr.version != 1) {
-        LOGF("[Firmware] WARN: SLB2 version %u is unsupported (expected 1) \
+    // Sony moved to SLB2 version 3 in newer firmware. Versions 1 and 3 are both accepted.
+    if (hdr.version != 1 && hdr.version != 3) {
+        LOGF("[Firmware] WARN: SLB2 version %u is unknown (expected 1 or 3) \
 ", hdr.version);
     }
 

@@ -10,6 +10,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "emulator.h"
+#include "firmware/firmwareManager.h"
 #include "kytyGitVersion.h"
 
 #include <charconv>
@@ -47,6 +48,7 @@ static void PrintUsage() {
 	::printf("  --game <dir|elf>                     Game directory or ELF to load.\n");
 	::printf(
 	    "  --game-patch <json>                  Validated patch plan to apply before entry.\n");
+	::printf("  --install-firmware <pup>             Install PS5 firmware from a .pup, then exit.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
@@ -326,13 +328,21 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.config.keymap.push_back(value);
+		} else if (arg == "--install-firmware") {
+			value = Common::FixFilenameSlash(value);
+			if (!Common::File::IsFileExisting(value)) {
+				::printf("--install-firmware must point to an existing .pup file: %s\n", value.c_str());
+				return false;
+			}
+			options.install_firmware = value;
 		} else {
 			::printf("unknown option: %s\n", arg.c_str());
 			return false;
 		}
 	}
 
-	return show_help || (!options.app0_dir.empty() && !options.elf.empty());
+	return show_help || (!options.install_firmware.empty()) ||
+	       (!options.app0_dir.empty() && !options.elf.empty());
 }
 
 int main(int argc, char* argv[]) {
@@ -382,6 +392,26 @@ int main(int argc, char* argv[]) {
 		slist.DestroyAll(false);
 		return 0;
 	}
+
+	// KytyPlus: firmware installation + module loading.
+	// --install-firmware parses + (optionally decrypts with user keys.bin) a .pup,
+	// extracts the modules to firmware/ps5/, then exits (no game run).
+	// Otherwise, Initialize() scans firmware/ps5/ for previously-installed modules
+	// so HLE can resolve firmware-provided symbols at boot.
+	if (!options.install_firmware.empty()) {
+		const auto result = Libs::Firmware::FirmwareManager::Instance().InstallFromPup(
+			options.install_firmware.string());
+		if (result.ok) {
+			::printf("Firmware installed: version %s, %u modules.\n",
+			         result.version.c_str(), result.modules_installed);
+		} else {
+			::printf("Firmware install failed: %s\n", result.error.c_str());
+		}
+		slist.DestroyAll(false);
+		return result.ok ? 0 : 1;
+	}
+
+	Libs::Firmware::FirmwareManager::Instance().Initialize();
 
 	Run(options);
 
