@@ -93,9 +93,9 @@ void uc_check(const HW::UserConfig& uc) {
 		LOGF("\t warning: unsupported GE_CNTL vertex_group_size = 0x%04" PRIx16 "\n",
 		     ge_cntl.vertex_group_size);
 	}
-	EXIT_NOT_IMPLEMENTED(user_en.vgpr1 != false);
-	EXIT_NOT_IMPLEMENTED(user_en.vgpr2 != false);
-	EXIT_NOT_IMPLEMENTED(user_en.vgpr3 != false);
+	EXIT_NOT_IMPLEMENTED_MSG(user_en.vgpr1 != false, "shader debug: VGPR user_en.vgpr1 set (unsupported)");
+	EXIT_NOT_IMPLEMENTED_MSG(user_en.vgpr2 != false, "shader debug: VGPR user_en.vgpr2 set (unsupported)");
+	EXIT_NOT_IMPLEMENTED_MSG(user_en.vgpr3 != false, "shader debug: VGPR user_en.vgpr3 set (unsupported)");
 }
 
 void sh_print(const char* func, const HW::Shader& /*uc*/) {

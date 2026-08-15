@@ -27,7 +27,10 @@ public:
 	vk::Sampler GetSampler(const ShaderSamplerResource& r);
 
 private:
-	using SamplerKey = std::array<uint32_t, 4>;
+	// Key = 4 guest register dwords + the bandwidth-controller LOD-bias generation.
+	// Embedding the generation means a change to the adaptive LOD bias invalidates
+	// all stale samplers, so the next GetSampler() rebuilds them with the new bias.
+	using SamplerKey = std::array<uint32_t, 5>;
 
 	struct SamplerKeyHash {
 		std::size_t operator()(const SamplerKey& key) const {

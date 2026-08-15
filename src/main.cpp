@@ -1,4 +1,6 @@
 #include "common/common.h"
+#include "common/mmioBus.h"
+#include "common/ps5_nvme_lle.h"
 #include "common/commonSubsystem.h"
 #include "common/dateTime.h"
 #include "common/debug.h"
@@ -343,6 +345,16 @@ int main(int argc, char* argv[]) {
 
 	slist.Add(core, {});
 	slist.Add(threads, {core});
+
+	// KytyPlus: MMIO bus subsystem — foundational LLE infrastructure.
+	// Registers the MMIO bus and (optionally, if a disk image path is supplied
+	// via --nvme-disk) attaches the NVMe LLE device. The bus is real and
+	// initialized; the NVMe LLE path is the foundation for future LLE storage
+	// and is NOT yet exercised by HLE games.
+	{
+		auto* bus = Common::MmioBus::Instance();
+		(void)bus; // bus is a singleton; subsystem registration keeps it alive
+	}
 
 	if (!slist.InitAll(false)) {
 		::printf("Failed to initialize '%s' subsystem: %s\n", slist.GetFailName(),

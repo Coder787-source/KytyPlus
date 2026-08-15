@@ -3,6 +3,7 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/emulatorConfig.h"
+#include "common/bandwidthController.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
@@ -18,7 +19,9 @@ SamplerCache::~SamplerCache() {
 vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r) {
 	Common::LockGuard lock(m_mutex);
 
-	const SamplerKey key {r.fields[0], r.fields[1], r.fields[2], r.fields[3]};
+	const uint64_t bias_gen = Config::BandwidthControllerInstance().CurrentLodBiasGeneration();
+	const SamplerKey key {r.fields[0], r.fields[1], r.fields[2], r.fields[3],
+	                     static_cast<uint32_t>(bias_gen)};
 	if (auto iter = m_samplers.find(key); iter != m_samplers.end()) {
 		return iter->second;
 	}
@@ -133,7 +136,7 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r) {
 	    static_cast<float>(static_cast<int16_t>((r.LodBias() ^ 0x2000u) - 0x2000u)) / 256.0f;
 	// iGPU bandwidth optimization: shift effective LOD toward coarser mip levels so
 	// high-resolution mips are skipped on bandwidth-limited integrated GPUs.
-	const int32_t igpu_lod_bias = Config::GetTextureLodBias();
+	const int32_t igpu_lod_bias = Config::BandwidthControllerInstance().CurrentLodBias();
 	if (igpu_lod_bias > 0 &&
 	    static_cast<Prospero::SamplerMipFilter>(mip_filter) != Prospero::SamplerMipFilter::kNone) {
 		guest_lod_bias += static_cast<float>(igpu_lod_bias);

@@ -624,9 +624,9 @@ static void patch_shader_register_address(ShaderRegister* regs, uint32_t num_reg
 int KYTY_SYSV_ABI GraphicsCreateShader(Shader** dst, void* header, const volatile void* code) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED(dst == nullptr);
-	EXIT_NOT_IMPLEMENTED(header == nullptr);
-	EXIT_NOT_IMPLEMENTED(code == nullptr);
+	EXIT_NOT_IMPLEMENTED_MSG(dst == nullptr, "AGC: null destination buffer");
+	EXIT_NOT_IMPLEMENTED_MSG(header == nullptr, "AGC: null header");
+	EXIT_NOT_IMPLEMENTED_MSG(code == nullptr, "AGC: null shader code");
 
 	LOGF("\t header = 0x%016" PRIx64 "\n"
 	     "\t code   = 0x%016" PRIx64 "\n",

@@ -18,12 +18,16 @@ int DbgExitIfHandler(char const* expr, char const* file, int line)
     __attribute__((analyzer_noreturn));
 int DbgNotImplementedHandler(char const* expr, char const* file, int line)
     __attribute__((analyzer_noreturn));
+int DbgNotImplementedHandler(char const* expr, char const* file, int line, std::string_view msg)
+    __attribute__((analyzer_noreturn));
 void DbgExit(int status) __attribute__((analyzer_noreturn));
 #else
 int  DbgExitHandler(char const* file, int line, std::string_view text);
 int  DbgExitHandler(char const* file, int line, fmt::text_style style, std::string_view text);
 int  DbgExitIfHandler(char const* expr, char const* file, int line);
 int  DbgNotImplementedHandler(char const* expr, char const* file, int line);
+int  DbgNotImplementedHandler(char const* expr, char const* file, int line, std::string_view msg);
+int  DbgNotImplementedHandler(char const* expr, char const* file, int line, std::string_view msg);
 void DbgExit(int status);
 #endif
 
@@ -63,5 +67,14 @@ void DbgExit(int status);
 	((void)((x) && Common::DbgNotImplementedHandler(#x, __FILE__, __LINE__) != 0 &&                \
 	        (EXIT_HALT(), 1) != 0))
 #define KYTY_NOT_IMPLEMENTED EXIT_NOT_IMPLEMENTED(true)
+
+// Like EXIT_NOT_IMPLEMENTED, but with a human-readable description of what is missing,
+// so tester logs name the unimplemented path (opcode / register / syscall) instead of
+// dumping the raw guard condition. The original condition is still printed for context.
+#define EXIT_NOT_IMPLEMENTED_MSG(x, ...)                                                          \
+	((void)((x) &&                                                                                \
+	        Common::DbgNotImplementedHandler(#x, __FILE__, __LINE__, ::fmt::sprintf(__VA_ARGS__)) != 0 && \
+	        (EXIT_HALT(), 1) != 0))
+#define KYTY_NOT_IMPLEMENTED_MSG(...) EXIT_NOT_IMPLEMENTED_MSG(true, __VA_ARGS__)
 
 #endif /* KYTY_COMMON_ASSERT_H_ */

@@ -44,6 +44,13 @@ struct PadData;
 struct PadVibrationParam;
 struct PadLightBarParam;
 
+// Lightbar RGB. Defined here because upstream only forward-declares this type.
+struct PadLightBarParam {
+	uint8_t r;
+	uint8_t g;
+	uint8_t b;
+};
+
 inline int controller_get_axis(int min, int max, int value) {
 	int v = (255 * (value - min)) / (max - min);
 	return (v < 0 ? 0 : (v > 255 ? 255 : v));
@@ -67,6 +74,11 @@ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num);
 int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param);
 int KYTY_SYSV_ABI PadResetLightBar(int handle);
 int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param);
+
+// Opaque handle to the native DualSense driver (defined in dualsense.h).
+// Returned as void* here to avoid a forward-declaration namespace nesting issue;
+// the .cpp casts it back to Libs::DualSense::DualSenseDriver*.
+void* DualSenseDriverInstance();
 
 } // namespace Libs::Controller
 

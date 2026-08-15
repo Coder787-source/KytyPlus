@@ -6,6 +6,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "kernel/pthread.h"
+#include "libs/dualsense.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/padData.h"
@@ -85,6 +86,74 @@ private:
 };
 
 static GameController* g_controller = nullptr;
+// Native DualSense driver instance (spec-accurate, hardware-unvalidated).
+// Owned by the Controller subsystem; opened on subsystem init if a device is
+// present, polled on an internal thread, and closed on subsystem destroy.
+static ::Libs::DualSense::DualSenseDriver* g_dualsense = nullptr;
+
+void* DualSenseDriverInstance() {
+	return g_dualsense;
+}
+
+// Input callback: forward a parsed DualSense state into the real pad flow.
+// This mirrors what window.cpp does for SDL events, but for a real DualSense
+// connected via the native HID driver. Uses a fixed controller id.
+static constexpr int DUALSENSE_CONTROLLER_ID = -2000;
+
+static void DualSenseInputCallback(const ::Libs::DualSense::InputState& state, void* /*user*/) {
+	if (!state.valid) return;
+	// Buttons: the DualSense button bitmask overlaps with the PAD_BUTTON_* layout
+	// used by the rest of the pad system. Forward each button as a press/release
+	// event into the real ControllerButton flow. We diff against the previous
+	// reported buttons to only emit edge transitions.
+	static uint32_t prev_buttons = 0;
+	const uint32_t changed = state.buttons ^ prev_buttons;
+	// Map DualSense bits to PAD_BUTTON_* (the layouts happen to match for the
+	// face/dpad/L1R1/L2R2/Create/Options/L3R3 set; PS/touchpad are extra).
+	const uint32_t mappable =
+		::Libs::DualSense::ButtonCross | ::Libs::DualSense::ButtonCircle | ::Libs::DualSense::ButtonSquare |
+		::Libs::DualSense::ButtonTriangle | ::Libs::DualSense::ButtonDpadUp | ::Libs::DualSense::ButtonDpadRight |
+		::Libs::DualSense::ButtonDpadDown | ::Libs::DualSense::ButtonDpadLeft | ::Libs::DualSense::ButtonL1 |
+		::Libs::DualSense::ButtonR1 | ::Libs::DualSense::ButtonL2 | ::Libs::DualSense::ButtonR2 |
+		::Libs::DualSense::ButtonCreate | ::Libs::DualSense::ButtonOptions |
+		::Libs::DualSense::ButtonL3 | ::Libs::DualSense::ButtonR3 | ::Libs::DualSense::ButtonTouchpad;
+	const uint32_t mask = changed & mappable;
+	for (uint32_t b = 1; b != 0; b <<= 1) {
+		if ((mask & b) == 0) continue;
+		uint32_t pad_btn = 0;
+		switch (b) {
+			case ::Libs::DualSense::ButtonCross:    pad_btn = PAD_BUTTON_CROSS; break;
+			case ::Libs::DualSense::ButtonCircle:   pad_btn = PAD_BUTTON_CIRCLE; break;
+			case ::Libs::DualSense::ButtonSquare:   pad_btn = PAD_BUTTON_SQUARE; break;
+			case ::Libs::DualSense::ButtonTriangle: pad_btn = PAD_BUTTON_TRIANGLE; break;
+			case ::Libs::DualSense::ButtonDpadUp:   pad_btn = PAD_BUTTON_UP; break;
+			case ::Libs::DualSense::ButtonDpadRight: pad_btn = PAD_BUTTON_RIGHT; break;
+			case ::Libs::DualSense::ButtonDpadDown: pad_btn = PAD_BUTTON_DOWN; break;
+			case ::Libs::DualSense::ButtonDpadLeft: pad_btn = PAD_BUTTON_LEFT; break;
+			case ::Libs::DualSense::ButtonL1:       pad_btn = PAD_BUTTON_L1; break;
+			case ::Libs::DualSense::ButtonR1:       pad_btn = PAD_BUTTON_R1; break;
+			case ::Libs::DualSense::ButtonL2:       pad_btn = PAD_BUTTON_L2; break;
+			case ::Libs::DualSense::ButtonR2:       pad_btn = PAD_BUTTON_R2; break;
+			// PS5 "Create" has no dedicated PAD_BUTTON_* bit in this pad layout; skip.
+			case ::Libs::DualSense::ButtonCreate:   continue;
+			case ::Libs::DualSense::ButtonOptions:  pad_btn = PAD_BUTTON_OPTIONS; break;
+			case ::Libs::DualSense::ButtonL3:       pad_btn = PAD_BUTTON_L3; break;
+			case ::Libs::DualSense::ButtonR3:       pad_btn = PAD_BUTTON_R3; break;
+			case ::Libs::DualSense::ButtonTouchpad: pad_btn = PAD_BUTTON_TOUCH_PAD; break;
+			default: continue;
+		}
+		ControllerButton(DUALSENSE_CONTROLLER_ID, pad_btn, (state.buttons & b) != 0);
+	}
+	prev_buttons = state.buttons;
+
+	// Axes: forward sticks and analog triggers.
+	ControllerAxis(DUALSENSE_CONTROLLER_ID, Axis::LeftX, state.left_stick_x);
+	ControllerAxis(DUALSENSE_CONTROLLER_ID, Axis::LeftY, state.left_stick_y);
+	ControllerAxis(DUALSENSE_CONTROLLER_ID, Axis::RightX, state.right_stick_x);
+	ControllerAxis(DUALSENSE_CONTROLLER_ID, Axis::RightY, state.right_stick_y);
+	ControllerAxis(DUALSENSE_CONTROLLER_ID, Axis::TriggerLeft, state.l2);
+	ControllerAxis(DUALSENSE_CONTROLLER_ID, Axis::TriggerRight, state.r2);
+}
 
 static uint8_t pad_connected_count_to_u8(int connected_count) {
 	return static_cast<uint8_t>(connected_count > 255 ? 255 : connected_count);
@@ -117,11 +186,28 @@ KYTY_SUBSYSTEM_INIT(Controller) {
 
 	g_controller = new GameController;
 	g_controller->Connect(HOST_INPUT_CONTROLLER_ID);
+
+	// Open a native DualSense if one is present (spec-accurate, unvalidated).
+	g_dualsense = new ::Libs::DualSense::DualSenseDriver;
+	if (g_dualsense->Open()) {
+		g_dualsense->SetInputCallback(&DualSenseInputCallback, nullptr);
+		g_controller->Connect(DUALSENSE_CONTROLLER_ID);
+	} else {
+		// No DualSense found; the SDL path remains the active input source.
+		delete g_dualsense;
+		g_dualsense = nullptr;
+	}
 }
 
 KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Controller) {}
 
-KYTY_SUBSYSTEM_DESTROY(Controller) {}
+KYTY_SUBSYSTEM_DESTROY(Controller) {
+	if (g_dualsense != nullptr) {
+		g_dualsense->Close();
+		delete g_dualsense;
+		g_dualsense = nullptr;
+	}
+}
 
 void GameController::Connect(int id) {
 	Common::LockGuard lock(m_mutex);
@@ -543,6 +629,15 @@ int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
 	     "\t small_motor = %d\n",
 	     static_cast<int>(param->large_motor), static_cast<int>(param->small_motor));
 
+	// Drive the real DualSense rumble actuators if a device is attached.
+	auto* ds = static_cast<Libs::DualSense::DualSenseDriver*>(DualSenseDriverInstance());
+	if (ds != nullptr && ds->IsOpen()) {
+		Libs::DualSense::VibrationParam v;
+		v.large_motor = param->large_motor;
+		v.small_motor = param->small_motor;
+		ds->SetVibration(v);
+	}
+
 	return OK;
 }
 
@@ -564,6 +659,17 @@ int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
 	}
 	if (param == nullptr) {
 		return PAD_ERROR_INVALID_ARG;
+	}
+
+	// Drive the real DualSense lightbar if a device is attached.
+	auto* ds = static_cast<Libs::DualSense::DualSenseDriver*>(DualSenseDriverInstance());
+	if (ds != nullptr && ds->IsOpen()) {
+		Libs::DualSense::LightBarColor c;
+		// PadLightBarParam carries RGB fields (r/g/b) per the pad data layout.
+		c.r = param->r;
+		c.g = param->g;
+		c.b = param->b;
+		ds->SetLightBar(c);
 	}
 
 	return OK;

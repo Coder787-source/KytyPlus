@@ -962,6 +962,12 @@ void WindowContext::CreateVulkan() {
 		if (HasExtension(available_extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)) {
 			device_extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
 		}
+
+		// KytyPlus: enable hardware ray-query extensions when the device supports them.
+		// On-ramp only — RT shader/BVH translation is not implemented; if a game requests
+		// ray tracing, the path is not active. See src/graphics/rt/hardware.cpp.
+		graphic_ctx.AppendHardwareRayTracingDeviceExtensions(available_extensions,
+		                                                      device_extensions);
 	}
 
 	memcpy(device_name, device_properties.deviceName, sizeof(device_name));
@@ -976,6 +982,11 @@ void WindowContext::CreateVulkan() {
 		EXIT("Could not create device");
 	}
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(graphic_ctx.device);
+
+	// KytyPlus: load hardware ray-tracing device functions (no-op if RT extensions
+	// were not enabled above).
+	graphic_ctx.LoadHardwareRayTracingFunctions();
+
 	graphic_ctx.queue_family = queue_family;
 	graphic_ctx.device.getQueue(queue_family, 0, &graphic_ctx.queue);
 	EXIT_IF(graphic_ctx.queue == nullptr);

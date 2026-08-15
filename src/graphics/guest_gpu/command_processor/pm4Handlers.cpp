@@ -115,8 +115,8 @@ static HW::AaConfig ParseAaConfig(uint32_t value) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetAaConfig) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0016900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::PA_SC_AA_CONFIG);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xc0016900, "AA config: unexpected PM4 opcode header, expected 0xc0016900");
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::PA_SC_AA_CONFIG, "AA config: unexpected register offset, expected Pm4::PA_SC_AA_CONFIG");
 
 	cp.GetCtx().SetAaConfig(ParseAaConfig(buffer[0]));
 
@@ -409,8 +409,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetAaMask) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetBlendColor) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0046900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::CB_BLEND_RED);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xc0046900, "blend color: unexpected PM4 opcode header, expected 0xc0046900");
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::CB_BLEND_RED, "blend color: unexpected register offset, expected Pm4::CB_BLEND_RED");
 
 	HW::BlendColor r;
 
@@ -425,7 +425,7 @@ KYTY_HW_CTX_PARSER(HwCtxSetBlendColor) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetBlendControl) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xC0016900, "clip control: unexpected PM4 opcode header, expected 0xC0016900");
 
 	uint32_t param = (cmd_offset - Pm4::CB_BLEND0_CONTROL) / 1;
 
@@ -454,8 +454,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetBlendControl) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetClipControl) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::PA_CL_CLIP_CNTL);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xC0016900, "depth clear: unexpected PM4 opcode header, expected 0xC0016900");
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::PA_CL_CLIP_CNTL, "clip control: unexpected register offset, expected Pm4::PA_CL_CLIP_CNTL");
 
 	HW::ClipControl r;
 
@@ -494,8 +494,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetClipControl) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetColorControl) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0016900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::CB_COLOR_CONTROL);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xc0016900, "color control: unexpected PM4 opcode header, expected 0xc0016900");
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::CB_COLOR_CONTROL, "color control: unexpected register offset, expected Pm4::CB_COLOR_CONTROL");
 
 	HW::ColorControl r;
 
@@ -548,8 +548,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetColorInfo) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetDepthClear) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::DB_DEPTH_CLEAR);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xC0016900, "depth control: unexpected PM4 opcode header, expected 0xC0016900");
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::DB_DEPTH_CLEAR, "depth clear: unexpected register offset, expected Pm4::DB_DEPTH_CLEAR");
 
 	cp.GetCtx().SetDepthClearValue(*reinterpret_cast<const float*>(buffer));
 
@@ -557,8 +557,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetDepthClear) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetDepthControl) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::DB_DEPTH_CONTROL);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xC0016900, "EQAA control: unexpected PM4 opcode header, expected 0xC0016900");
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::DB_DEPTH_CONTROL, "depth control: unexpected register offset, expected Pm4::DB_DEPTH_CONTROL");
 
 	HW::DepthControl r;
 
@@ -603,7 +603,7 @@ KYTY_HW_CTX_PARSER(HwCtxSetDepthHtileSurface) {
 	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
 
 	EXIT_NOT_IMPLEMENTED(num_values != 1);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::DB_HTILE_SURFACE);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::DB_HTILE_SURFACE, "HTILE surface: unexpected register offset, expected Pm4::DB_HTILE_SURFACE");
 
 	HwCtxSetDepthHtileSurfaceRegister(cp, buffer[0]);
 
@@ -714,8 +714,8 @@ static HW::EqaaControl ParseEqaaControl(uint32_t value) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetEqaaControl) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::DB_EQAA);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xC0016900, "hardware screen offset: unexpected PM4 opcode header, expected 0xC0016900");
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::DB_EQAA, "EQAA control: unexpected register offset, expected Pm4::DB_EQAA");
 
 	cp.GetCtx().SetEqaaControl(ParseEqaaControl(buffer[0]));
 
@@ -805,8 +805,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetClipRect) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetGuardBands) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0046900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::PA_CL_GB_VERT_CLIP_ADJ);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xC0046900, "guard bands: unexpected PM4 opcode header, expected 0xC0046900");
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::PA_CL_GB_VERT_CLIP_ADJ, "guard bands: unexpected register offset, expected Pm4::PA_CL_GB_VERT_CLIP_ADJ");
 
 	auto vert_clip    = *reinterpret_cast<const float*>(&buffer[0]); // PA_CL_GB_VERT_CLIP_ADJ
 	auto vert_discard = *reinterpret_cast<const float*>(&buffer[1]); // PA_CL_GB_VERT_DISC_ADJ
@@ -819,8 +819,8 @@ KYTY_HW_CTX_PARSER(HwCtxSetGuardBands) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetHardwareScreenOffset) {
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::PA_SU_HARDWARE_SCREEN_OFFSET);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_id != 0xC0016900, "window offset: unexpected PM4 opcode header, expected 0xC0016900");
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::PA_SU_HARDWARE_SCREEN_OFFSET, "hardware screen offset: unexpected register offset, expected Pm4::PA_SU_HARDWARE_SCREEN_OFFSET");
 
 	// uint32_t x = static_cast<uint16_t>(buffer[0] & 0xffffu);
 	// uint32_t y = static_cast<uint16_t>((buffer[0] >> 16u) & 0xffffu);
@@ -835,7 +835,7 @@ KYTY_HW_CTX_PARSER(HwCtxSetHardwareScreenOffset) {
 
 KYTY_HW_CTX_PARSER(HwCtxSetWindowOffset) {
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0016900);
-	EXIT_NOT_IMPLEMENTED(cmd_offset != Pm4::PA_SC_WINDOW_OFFSET);
+	EXIT_NOT_IMPLEMENTED_MSG(cmd_offset != Pm4::PA_SC_WINDOW_OFFSET, "window offset: unexpected register offset, expected Pm4::PA_SC_WINDOW_OFFSET");
 
 	int offset_x = static_cast<int16_t>(
 	    static_cast<uint16_t>(KYTY_PM4_GET(buffer[0], PA_SC_WINDOW_OFFSET, WINDOW_X)));

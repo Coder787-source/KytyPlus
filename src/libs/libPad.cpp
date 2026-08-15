@@ -1,6 +1,7 @@
 #include "common/abi.h"
 #include "common/logging/log.h"
 #include "libs/controller.h"
+#include "libs/dualsense.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/padData.h"
@@ -54,6 +55,29 @@ static int KYTY_SYSV_ABI PadSetTriggerEffect(int handle, const void* param) {
 	}
 	if (param == nullptr) {
 		return -2137915391; /* 0x80920001 */
+	}
+
+	// KytyPlus: forward adaptive-trigger effect to the DualSense HID driver.
+	// HONEST: spec-accurate interpretation of the PS5 ScePadTriggerEffect param
+	// forwarded to the driver. UNVALIDATED on hardware — the exact param layout
+	// mapping has not been tested against a real DualSense + PS5 game combination.
+	// Cast the opaque handle back to the concrete DualSense driver type.
+	auto* ds = static_cast<Libs::DualSense::DualSenseDriver*>(Controller::DualSenseDriverInstance());
+	if (ds != nullptr) {
+		// The PS5 param encodes two trigger effect blocks (L2/R2). We forward a
+		// best-effort simplified form: mode + strength derived from the first byte
+		// of each block. Full per-stage param decoding is future work.
+		const auto* bytes = static_cast<const uint8_t*>(param);
+		Libs::DualSense::TriggerEffectParam left {};
+		Libs::DualSense::TriggerEffectParam right {};
+		left.strength  = (bytes[0] >> 4) & 0x07;
+		right.strength = (bytes[1] >> 4) & 0x07;
+		left.mode  = (bytes[0] != 0) ? Libs::DualSense::TriggerEffect::Feedback
+	                                : Libs::DualSense::TriggerEffect::Off;
+		right.mode = (bytes[1] != 0) ? Libs::DualSense::TriggerEffect::Feedback
+	                                 : Libs::DualSense::TriggerEffect::Off;
+		ds->SetTriggerEffect(true, left);
+		ds->SetTriggerEffect(false, right);
 	}
 
 	return OK;

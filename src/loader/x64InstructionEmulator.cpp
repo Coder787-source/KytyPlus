@@ -9,6 +9,7 @@
 #elif !defined(__APPLE__)
 #include <sched.h>
 #include <ucontext.h>
+#include <time.h>
 #endif
 
 namespace Loader::X64InstructionEmulator {
@@ -573,6 +574,115 @@ static bool TryEmulateMonitorxMwaitx(PCONTEXT context) {
 	return true;
 }
 
+// --- KytyPlus: additional x86-64 instruction emulation (Windows) ---
+// PS5-consistent reference TSC frequency (Zen 2 ~2.0 GHz on PS5).
+static uint64_t Ps5ReferenceTscWin() {
+	static const uint64_t PS5_TSC_HZ = 2'000'000'000ULL;
+	static const uint64_t HOST_QUERY_HZ = [](){
+		LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+		return static_cast<uint64_t>(f.QuadPart);
+	}();
+	LARGE_INTEGER c; QueryPerformanceCounter(&c);
+	const uint64_t host_ticks = static_cast<uint64_t>(c.QuadPart);
+	return (host_ticks * PS5_TSC_HZ) / HOST_QUERY_HZ;
+}
+
+static bool TryEmulateRdtsc(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	auto set = [&](uint64_t v){
+		context->Rdx = static_cast<DWORD>(v >> 32u);
+		context->Rax = static_cast<DWORD>(v & 0xffffffffu);
+	};
+	if (rip[0] == 0x0f && rip[1] == 0x31) { set(Ps5ReferenceTscWin()); context->Rip += 2; return true; }
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xf9) { set(Ps5ReferenceTscWin()); context->Rip += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateCpuid(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] != 0x0f || rip[1] != 0xa2) return false;
+	if (static_cast<uint32_t>(context->Rax) == 0x40000000u) {
+		context->Rax = 0; context->Rbx = 0x794e6f53u; context->Rcx = 0x35535079u; context->Rdx = 0;
+		context->Rip += 2; return true;
+	}
+	if (static_cast<uint32_t>(context->Rax) == 0x40000001u) {
+		context->Rax = 0; context->Rbx = 0; context->Rcx = 0; context->Rdx = 0;
+		context->Rip += 2; return true;
+	}
+	return false;
+}
+
+static bool TryEmulateXgetbvXsetbv(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xd0) {
+		if (static_cast<uint32_t>(context->Rcx) == 0u) { context->Rdx = 0; context->Rax = 0x7; context->Rip += 3; return true; }
+		return false;
+	}
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xd1) { context->Rip += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateRdmsrWrmsr(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] == 0x0f && rip[1] == 0x30) { context->Rax = 0; context->Rdx = 0; context->Rip += 2; return true; }
+	if (rip[0] == 0x0f && rip[1] == 0x32) { context->Rip += 2; return true; }
+	return false;
+}
+
+static bool TryEmulateClzero(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xfc) { context->Rip += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateRdpmc(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] == 0x0f && rip[1] == 0x33) { context->Rax = 0; context->Rdx = 0; context->Rip += 2; return true; }
+	return false;
+}
+
+static bool TryEmulateRdpru(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xfd) { context->Rax = 0; context->Rdx = 0; context->Rip += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateRdpid(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] == 0xf3 && rip[1] == 0x0f && rip[2] == 0xc7) { context->Rax = 0; context->Rip += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateCacheFlush(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] == 0x0f && (rip[1] == 0x09 || rip[1] == 0x08)) { context->Rip += 2; return true; }
+	return false;
+}
+
+static bool TryEmulateMwait(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xc9) { SwitchToThread(); context->Rip += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateDescriptorOps(PCONTEXT context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->Rip);
+	if (rip[0] == 0x0f && rip[1] == 0x00 && (rip[2] & 0x38) == 0x08) { context->Rip += 3; return true; } // LLDT/LTR/STR /1,/2,/3
+	if (rip[0] == 0x0f && rip[1] == 0x01 && (rip[2] & 0x38) == 0x20) { context->Rip += 3; return true; } // LMSW/SMSW /4,/6
+	return false;
+}
+
 #elif !defined(__APPLE__)
 
 // Linux signal contexts expose registers through ucontext_t.
@@ -768,17 +878,150 @@ static bool TryEmulateMonitorxMwaitx(ucontext_t* context) {
 	return true;
 }
 
+// --- KytyPlus: additional x86-64 instruction emulation (Linux) ---
+static uint64_t Ps5ReferenceTscLin() {
+	static constexpr uint64_t PS5_TSC_HZ = 2'000'000'000ULL;
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	const uint64_t ns = static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL + static_cast<uint64_t>(ts.tv_nsec);
+	return (ns * PS5_TSC_HZ) / 1'000'000'000ULL;
+}
+
+static bool TryEmulateRdtsc(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	auto set = [&](uint64_t v){
+		context->uc_mcontext.gregs[REG_RDX] = static_cast<greg_t>(v >> 32u);
+		context->uc_mcontext.gregs[REG_RAX] = static_cast<greg_t>(v & 0xffffffffu);
+	};
+	if (rip[0] == 0x0f && rip[1] == 0x31) { set(Ps5ReferenceTscLin()); rip_reg += 2; return true; }
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xf9) { set(Ps5ReferenceTscLin()); rip_reg += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateCpuid(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	if (rip[0] != 0x0f || rip[1] != 0xa2) return false;
+	if (static_cast<uint32_t>(context->uc_mcontext.gregs[REG_RAX]) == 0x40000000u) {
+		auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+		context->uc_mcontext.gregs[REG_RAX] = 0;
+		context->uc_mcontext.gregs[REG_RBX] = 0x794e6f53u;
+		context->uc_mcontext.gregs[REG_RCX] = 0x35535079u;
+		context->uc_mcontext.gregs[REG_RDX] = 0;
+		rip_reg += 2; return true;
+	}
+	if (static_cast<uint32_t>(context->uc_mcontext.gregs[REG_RAX]) == 0x40000001u) {
+		auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+		context->uc_mcontext.gregs[REG_RAX] = 0;
+		context->uc_mcontext.gregs[REG_RBX] = 0;
+		context->uc_mcontext.gregs[REG_RCX] = 0;
+		context->uc_mcontext.gregs[REG_RDX] = 0;
+		rip_reg += 2; return true;
+	}
+	return false;
+}
+
+static bool TryEmulateXgetbvXsetbv(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xd0) {
+		if (static_cast<uint32_t>(context->uc_mcontext.gregs[REG_RCX]) == 0u) {
+			context->uc_mcontext.gregs[REG_RDX] = 0;
+			context->uc_mcontext.gregs[REG_RAX] = 0x7;
+			rip_reg += 3; return true;
+		}
+		return false;
+	}
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xd1) { rip_reg += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateRdmsrWrmsr(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	if (rip[0] == 0x0f && rip[1] == 0x30) { context->uc_mcontext.gregs[REG_RAX] = 0; context->uc_mcontext.gregs[REG_RDX] = 0; rip_reg += 2; return true; }
+	if (rip[0] == 0x0f && rip[1] == 0x32) { rip_reg += 2; return true; }
+	return false;
+}
+
+static bool TryEmulateClzero(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xfc) { rip_reg += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateRdpmc(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	if (rip[0] == 0x0f && rip[1] == 0x33) { context->uc_mcontext.gregs[REG_RAX] = 0; context->uc_mcontext.gregs[REG_RDX] = 0; rip_reg += 2; return true; }
+	return false;
+}
+
+static bool TryEmulateRdpru(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xfd) { context->uc_mcontext.gregs[REG_RAX] = 0; context->uc_mcontext.gregs[REG_RDX] = 0; rip_reg += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateRdpid(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	if (rip[0] == 0xf3 && rip[1] == 0x0f && rip[2] == 0xc7) { context->uc_mcontext.gregs[REG_RAX] = 0; rip_reg += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateCacheFlush(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	if (rip[0] == 0x0f && (rip[1] == 0x09 || rip[1] == 0x08)) { rip_reg += 2; return true; }
+	return false;
+}
+
+static bool TryEmulateMwait(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	if (rip[0] == 0x0f && rip[1] == 0x01 && rip[2] == 0xc9) { ::sched_yield(); rip_reg += 3; return true; }
+	return false;
+}
+
+static bool TryEmulateDescriptorOps(ucontext_t* context) {
+	if (context == nullptr) return false;
+	const auto* rip = reinterpret_cast<const uint8_t*>(context->uc_mcontext.gregs[REG_RIP]);
+	auto& rip_reg = context->uc_mcontext.gregs[REG_RIP];
+	if (rip[0] == 0x0f && rip[1] == 0x00 && (rip[2] & 0x38) == 0x08) { rip_reg += 3; return true; }
+	if (rip[0] == 0x0f && rip[1] == 0x01 && (rip[2] & 0x38) == 0x20) { rip_reg += 3; return true; }
+	return false;
+}
+
 #endif
 
 bool TryEmulate(void* native_context) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	auto* context = static_cast<PCONTEXT>(native_context);
-	return TryEmulateMonitorxMwaitx(context) || TryEmulateSse4a(context) ||
-	       TryEmulateShaNi(context);
+	return TryEmulateMonitorxMwaitx(context) || TryEmulateMwait(context) || TryEmulateSse4a(context) ||
+	       TryEmulateShaNi(context) || TryEmulateRdtsc(context) || TryEmulateCpuid(context) ||
+	       TryEmulateXgetbvXsetbv(context) || TryEmulateRdmsrWrmsr(context) || TryEmulateClzero(context) ||
+	       TryEmulateRdpmc(context) || TryEmulateRdpru(context) || TryEmulateRdpid(context) ||
+	       TryEmulateCacheFlush(context) || TryEmulateDescriptorOps(context);
 #elif !defined(__APPLE__)
 	auto* context = static_cast<ucontext_t*>(native_context);
-	return TryEmulateMonitorxMwaitx(context) || TryEmulateSse4a(context) ||
-	       TryEmulateShaNi(context);
+	return TryEmulateMonitorxMwaitx(context) || TryEmulateMwait(context) || TryEmulateSse4a(context) ||
+	       TryEmulateShaNi(context) || TryEmulateRdtsc(context) || TryEmulateCpuid(context) ||
+	       TryEmulateXgetbvXsetbv(context) || TryEmulateRdmsrWrmsr(context) || TryEmulateClzero(context) ||
+	       TryEmulateRdpmc(context) || TryEmulateRdpru(context) || TryEmulateRdpid(context) ||
+	       TryEmulateCacheFlush(context) || TryEmulateDescriptorOps(context);
 #else
 	(void)native_context;
 	return false;

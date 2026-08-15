@@ -18,6 +18,7 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/emulatorConfig.h"
+#include "common/bandwidthController.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vma.h"
 
@@ -88,6 +89,12 @@ bool GraphicContext::CreateAllocator() {
 	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu ||
 	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eVirtualGpu;
 	Config::ApplyIgpuDefaults(is_integrated || Config::ForceIgpuMode());
+
+	// Initialize the bandwidth-aware adaptive LOD controller. It reads the base bias
+	// (after iGPU defaults were applied above) so it can relax back toward it when the
+	// iGPU has headroom, and ramp up when bandwidth-starved.
+	Config::BandwidthControllerInstance().Initialize(is_integrated || Config::ForceIgpuMode(),
+	                                                 Config::GetTextureLodBias());
 
 	// UMA detection: scan the memory types for one that is simultaneously device-local,
 	// host-visible and host-coherent. That combination only exists on unified-memory

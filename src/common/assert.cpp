@@ -48,6 +48,11 @@ int DbgNotImplementedHandler(const char* expr, const char* file, int line) {
 	return DbgReport("--- Fatal Error ---", fmt::format("Not implemented ({})", expr), file, line);
 }
 
+int DbgNotImplementedHandler(const char* expr, const char* file, int line, std::string_view msg) {
+	return DbgReport("--- Fatal Error ---",
+	                  fmt::format("Not implemented: {} (condition: {})", msg, expr), file, line);
+}
+
 int DbgExitHandler(const char* file, int line, std::string_view text) {
 	Log::WriteFatal(BuildFatalReport("--- Error ---", text, file, line));
 	return 1;

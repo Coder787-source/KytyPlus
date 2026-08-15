@@ -512,8 +512,8 @@ bool Audio::AudioOutSetVolume(Id handle, uint32_t bitflag, const int* volume) {
 }
 
 uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking) {
-	EXIT_NOT_IMPLEMENTED(num == 0);
-	EXIT_NOT_IMPLEMENTED(!AudioOutValid(params[0].handle));
+	EXIT_NOT_IMPLEMENTED_MSG(num == 0, "AudioOut: called with zero ports");
+	EXIT_NOT_IMPLEMENTED_MSG(!AudioOutValid(params[0].handle), "AudioOut: invalid output handle");
 
 	const auto& first_port = m_out_ports[params[0].handle.GetId()];
 
@@ -590,7 +590,7 @@ bool Audio::AudioInValid(Id handle) {
 }
 
 uint32_t Audio::AudioInInput(Id handle, void* dest) {
-	EXIT_NOT_IMPLEMENTED(!AudioInValid(handle));
+	EXIT_NOT_IMPLEMENTED_MSG(!AudioInValid(handle), "AudioIn: invalid input handle");
 	EXIT_NOT_IMPLEMENTED(dest == nullptr);
 
 	const auto& port = m_in_ports[handle.GetId()];

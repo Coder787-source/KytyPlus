@@ -18,6 +18,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
+#include "common/bandwidthController.h"
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -934,6 +935,7 @@ RenderContext& Presenter::Renderer() const noexcept {
 
 void Presenter::Present(Frame& frame, bool reuse) {
 	KYTY_PROFILER_FUNCTION();
+	const auto present_start = std::chrono::steady_clock::now();
 	m_impl->frames.ValidateForPresent(&frame, reuse);
 
 	auto& window = m_impl->window;
@@ -987,6 +989,11 @@ void Presenter::Present(Frame& frame, bool reuse) {
 		RenderDocOnPresent();
 		m_impl->presented_ime_revision.store(ime_visual.revision, std::memory_order_release);
 		window.UpdateTitle();
+		{
+			const auto present_end = std::chrono::steady_clock::now();
+			const float frame_ms = std::chrono::duration<float, std::milli>(present_end - present_start).count();
+			Config::BandwidthControllerInstance().OnFrame(frame_ms);
+		}
 		m_impl->frames.Release(&frame, true);
 		return;
 	}
