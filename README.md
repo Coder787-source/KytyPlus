@@ -47,7 +47,7 @@ Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX
   Low-Level Emulation, significantly improving compatibility for complex titles.
 - Firmware is **not included** with the emulator. Download it directly from Sony:
   **https://www.playstation.com/en-us/support/hardware/ps5/system-software/**
-- To install: **Settings > Firmware > Install PS5 Firmware** and select the downloaded `.pup` file.
+- To install (CLI, no launcher UI yet): run `kyty_emulator.exe --install-firmware <path-to-PS5UPDATE.PUP>` (Windows) or `./kyty_emulator --install-firmware <path>` (macOS/Linux). The parser reads the official Sony `.pup`; decryption of encrypted PUPs requires a user-supplied `keys.bin` placed next to the `.pup` (the emulator never provides or links to keys).
 - KytyPlus does **not** distribute, include, or link to any Sony copyrighted material.
 
 ### No warranty
@@ -81,28 +81,28 @@ builds on that with focused changes such as:
 
 ### Features exclusive to KytyPlus
 
-These are **not** in upstream Kyty or KytyPS5:
+These are **not** in upstream Kyty or KytyPS5. Each is implemented, compiled, and wired into a
+real code path. Game-level benefit is **not yet validated** on real hardware — that is what
+testers are for.
 
-- **FSR 1.0 upscaler** — edge-adaptive spatial upscaling (EASU + RCAS), works on all Vulkan GPUs
-  (AMD / NVIDIA / Intel). Four quality presets + adjustable sharpness. Configurable via the
-  launcher. Falls back to a plain blit if the GPU can't handle it.
-- **Shader / pipeline disk cache** — compiled Vulkan pipelines persist to
-  `_Cache/vulkan_pipeline_cache.bin` and reload on subsequent launches, skipping work for shaders
-  that haven't changed. A compatibility check rejects stale caches.
-- **iGPU auto-optimization** — detects integrated GPUs (e.g. Radeon 780M-class) via the Vulkan
-  device type and automatically enables FSR 1.0 + a texture LOD bias to cut bandwidth.
-  `force_igpu_mode` lets you opt in on a discrete GPU for testing.
-- **UMA heap detection** — detects unified-memory architectures (device-local + host-visible +
-  host-coherent). Detection is live; the staging-bypass itself is not yet wired.
-- **Configurable present path** — present mode (VSync / Mailbox / Immediate), present filter
-  (Nearest / Linear / Cubic), and aspect ratio (Stretch / 16:9 / 4:3 / Integer).
-- **Launcher settings UI** — upscaler, present path, and iGPU settings are all configurable from
-  the launcher's Settings dialog, not just the config file.
-- **Log viewer with one-click Share Log** — view the emulator's `_kyty.txt` for a game, then copy
-  the full log + system info to the clipboard in one click, with instructions on where to paste it.
-- **Config validation** — case-insensitive parsing, deprecated names transparently migrated
-  (e.g. `Fsr31` → `Fsr1`), and invalid values rejected with a clear log message.
+**Fully wired, validated where noted:**
 
+- **Shader / pipeline disk cache** — compiled Vulkan pipelines persist to `_Cache/vulkan_pipeline_cache.bin` and reload on subsequent launches, skipping work for shaders that haven’t changed. A compatibility check rejects stale caches. *(First in the PS5 scene. Game-level benefit unvalidated.)*
+- **FSR 1.0 upscaler** — edge-adaptive spatial upscaling (EASU + RCAS), works on all Vulkan GPUs (AMD / NVIDIA / Intel). Configurable via the launcher (method + sharpness); auto-enabled on iGPUs. Falls back to a plain blit if the GPU can’t handle it. *(First in the PS5 scene. The upscaler runs; the internal-resolution-reduction / bandwidth-saving half is not yet wired.)*
+- **Configurable present path** — present mode (VSync / Mailbox / Immediate), present filter (Nearest / Linear / Cubic), and aspect ratio (Stretch / 16:9 / 4:3 / Integer). *(First in the PS5 scene.)*
+- **PUP firmware parsing + installation** — parses official Sony `.pup` firmware update files via `--install-firmware`; loads installed modules at boot. SLB2 parsing, inner-payload extraction, and encryption detection **validated against a real Sony firmware file**. Decryption + module extraction require a user-supplied `keys.bin` (never provided by the emulator) and remain untested. *(First in the PS5 scene for PUP parsing.)*
+
+**Wired, validated only as mechanism / spec, not on real games or hardware:**
+
+- **iGPU auto-optimization** — detects integrated GPUs (e.g. Radeon 780M-class) via the Vulkan device type and automatically enables FSR 1.0 + a texture LOD bias to cut bandwidth. `force_igpu_mode` lets you opt in on a discrete GPU for testing. *(First PS5 emulator to focus on iGPU optimization. Game-level benefit unvalidated.)*
+- **UMA heap detection** — detects unified-memory architectures (device-local + host-visible + host-coherent). Detection is live; the staging-bypass itself is not yet wired.
+- **Bandwidth-aware adaptive LOD bias** — monitors frame timing and ramps texture LOD bias up under bandwidth pressure / down with headroom, invalidating stale samplers via a generation counter. *(First in the PS5 scene. Mechanism self-validatable; game-level benefit unvalidated.)*
+- **MMIO bus + NVMe LLE foundation** — a real address-range router for memory-mapped devices (registered in the boot path) plus an NVMe controller rewritten as an `MmioDevice` talking to the real MMU. *(First LLE infrastructure in the PS5 scene. Not yet exercised by games — groundwork, not a working storage path.)*
+- **Unified PS4/PS5 dispatch** — auto-detects PS4 vs PS5 from the game ELF and dispatches PS4 titles to an embedded **shadPS4** subprocess, reparenting its window into KytyPlus with unified saves. *(Only unified PS4/PS5 emulator. Wired, not yet tested with a real PS4 game.)*
+- **Native DualSense HID driver** — replaces SDL-only input with a native HID driver (buttons, sticks, L2/R2, gyro/IMU, touchpad in; rumble, lightbar RGB, adaptive trigger effects out), wired into the real pad path. *(First in the PS5 scene. Spec-accurate, not validated on a physical DualSense.)*
+- **Extended CPU instruction emulation** — software-emulates 15+ x86-64 instructions that fault on hosts lacking them (RDTSC/RDTSCP, CPUID hypervisor leaves, XGETBV/XSETBV, RDMSR/WRMSR, RDPMC/RDPRU/RDPID, CLZERO, WBINVD/INVD, MWAIT, descriptor-table/status-word ops). *(Extends upstream’s MONITORX/MWAITX + SSE4a + SHA-NI baseline. Strictly additive, no-regression.)*
+- **EXIT diagnostics** — 24 highest-impact unimplemented-path guards upgraded from raw condition strings to descriptive messages, so tester crash logs say what opcode/register/syscall was missing. *(No-regression.)*
+- **Config validation** — case-insensitive parsing, deprecated names transparently migrated (e.g. `Fsr31` → `Fsr1`), invalid values rejected with a clear log message.
 > [!NOTE]
 > All of the above are implemented, compiled, and wired in. They have **not yet been validated
 > against real games on real hardware** — that's what testers are for. Reports (especially on
