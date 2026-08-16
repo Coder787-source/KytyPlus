@@ -6,8 +6,8 @@
 
 **KytyPlus** is a KytyPS5-based PlayStation 5 emulator for **Windows, macOS, and Linux**. This repository is a
 standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (itself based on
-[Kyty](https://github.com/InoriRus/Kyty)), with additional work aimed at **crash/boot reach**,
-**HLE sysmodules**, and **iGPU-minded defaults** (intent only — iGPU behavior is **not yet verified**; see [iGPU status](#igpu-status)).
+[Kyty](https://github.com/InoriRus/Kyty)), with additional work focused on **iGPU optimization**,
+**build stability**, **firmware parsing**, and a **unified PS4/PS5 dispatch** (iGPU behavior is **not yet verified**; see [iGPU status](#igpu-status)).
 
 > [!CAUTION]
 > **Early-development software.** Many games still crash, hang, black-screen, or render incorrectly.
@@ -17,9 +17,10 @@ standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (i
 
 Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX 4060 Ti, external HDD). Tested and recorded by [@CorpseSlayer](https://github.com/KytyPS5/KytyPS5/issues/127).
 
+[▶ Watch on YouTube](https://www.youtube.com/watch?v=1vXa9zByq68) (CC-BY 4.0 — reuse with credit to @CorpseSlayer)
 [▶ Watch on Google Drive](https://drive.google.com/file/d/1_7IoA9B2iV-H1VUGtYyxEGiN6PYI2vbu/view?pli=1)
 
-> [First-party footage](https://drive.google.com/file/d/1_7IoA9B2iV-H1VUGtYyxEGiN6PYI2vbu/view?pli=1) of a commercial game reaching menu — the project's first confirmed [boot-to-menu result](COMPATIBILITY.md). Past-menu state has not been tested.
+> Footage of a commercial game reaching menu — the project's first confirmed [boot-to-menu result](COMPATIBILITY.md). Past-menu state has not been tested.
 
 ---
 
@@ -43,8 +44,10 @@ Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX
 
 - KytyPlus uses an **HLE-first** approach: many titles do **not** require external low-level
   firmware modules to start.
-- **Optional LLE support**: KytyPlus can parse official PS5 firmware update files (`.pup`) for
-  Low-Level Emulation, significantly improving compatibility for complex titles.
+- **Optional firmware parsing**: KytyPlus can parse official PS5 firmware update files (`.pup`)
+  via `--install-firmware`. The parser reads the SLB2 container, extracts the inner payload, and
+  detects encryption — validated against a real Sony firmware file. Decryption requires a
+  user-supplied `keys.bin` and remains untested.
 - Firmware is **not included** with the emulator. Download it directly from Sony:
   **https://www.playstation.com/en-us/support/hardware/ps5/system-software/**
 - To install (CLI, no launcher UI yet): run `kyty_emulator.exe --install-firmware <path-to-PS5UPDATE.PUP>` (Windows) or `./kyty_emulator --install-firmware <path>` (macOS/Linux). The parser reads the official Sony `.pup`; decryption of encrypted PUPs requires a user-supplied `keys.bin` placed next to the `.pup` (the emulator never provides or links to keys).
@@ -62,7 +65,7 @@ Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX
 | Is | Is not |
 |----|--------|
 | A compatibility-oriented KytyPS5 derivative | An official Sony product |
-| Aimed at fewer hard EXITs and better boot reach | A claim that games are “fixed” or playable |
+| iGPU optimization + unified PS4/PS5 dispatch | A claim that games are “fixed” or playable |
 | Windows / macOS / Linux + Vulkan focused | A finished, stable emulator |
 | Tester-oriented (logs welcome) | A place to request illegal files |
 
@@ -73,11 +76,8 @@ Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX
 Windows, macOS, and Linux. Vulkan 1.3 required (MoltenVK on macOS).
 
 Upstream KytyPS5 can already boot a range of 2D/3D titles (UE4/5, Unity, custom engines). KytyPlus
-builds on that with focused changes such as:
-
-- Safer paths around several graphics **EXIT** crash clusters (layered render targets, storage
-  texture encoding/swizzle, texture-cache alias retirement, sampled depth cubes, etc.)
-- **HLE** improvements for sysmodule load/unload state (soft-success for unknown IDs where safe)
+inherits that capability and adds an optimization/tooling layer on top — see the
+"Features exclusive to KytyPlus" section below for what's genuinely new.
 
 ### Features exclusive to KytyPlus
 
@@ -139,16 +139,13 @@ Until such a report exists, treat iGPU support as **unproven**, not advertised.
 
 ### KytyPlus
 
-- **GameGaz** (大人のためのゲーム講座, JP) — [GameGaz Daily 2026.8.3](https://gamegaz.com/2026080345888/) —
-  coverage of the KytyPlus v2.0 release.
+- **GameGaz** (大人のためのゲーム講座, JP) — has tracked KytyPlus releases since v1.9, covering
+  v1.9, v2.0, v2.4, v2.5, and v2.7.
 
 ### Upstream KytyPS5
 
 These links cover the *upstream* KytyPS5 project (the lineage KytyPlus is derived from), not
 KytyPlus itself. Listed for context only.
-
-- **GameGaz** (大人のためのゲーム講座, JP) — [GameGaz Daily 2026.8.4](https://gamegaz.com/2026080445890/) —
-  coverage of the KytyPS5 2026-08-03-e8752ac release.
 
 > Coverage links are external and not affiliated with this project. They are listed for community
 > reference only.
