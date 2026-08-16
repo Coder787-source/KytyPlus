@@ -139,13 +139,16 @@ Until such a report exists, treat iGPU support as **unproven**, not advertised.
 
 ### KytyPlus
 
-- **GameGaz** (大人のためのゲーム講座, JP) — has tracked KytyPlus releases since v1.9, covering
-  v1.9, v2.0, v2.4, v2.5, and v2.7.
+- **GameGaz** (大人のためのゲーム講座, JP) — has tracked KytyPlus releases since v1.9:
+  - [GameGaz Daily 2026.8.16](https://gamegaz.com/2026081645948) — KytyPlus v2.7 (iGPU auto-detection, unified PS4/PS5 dispatch)
+  - [GameGaz Daily 2026.8.3](https://gamegaz.com/2026080345888/) — KytyPlus v2.0 (enhanced caching)
 
 ### Upstream KytyPS5
 
 These links cover the *upstream* KytyPS5 project (the lineage KytyPlus is derived from), not
 KytyPlus itself. Listed for context only.
+
+- [GameGaz Daily 2026.8.4](https://gamegaz.com/2026080445890/) — KytyPS5 2026-08-03-e8752ac
 
 > Coverage links are external and not affiliated with this project. They are listed for community
 > reference only.
