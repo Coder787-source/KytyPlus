@@ -587,7 +587,7 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
     }
 
     // Check for PFSC (compressed PFS)
-    if (sb.magic != PFS_MAGIC) {
+    if (sb.format != PFS_FORMAT_MAGIC) {
         f.seekg(0, std::ios::beg);
         uint8_t magic4[4] = {0};
         f.read(reinterpret_cast<char*>(magic4), 4);
@@ -604,16 +604,16 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
             return result;
         }
 
-        result.error = "Invalid PFS magic (expected 20130315, got " +
-                        std::to_string(sb.magic) + ")";
+        result.error = "Invalid PFS magic (expected 20130315 at format field, got " +
+                        std::to_string(sb.format) + ")";
         return result;
     }
 
-    result.version = sb.version;
+    result.version = static_cast<uint32_t>(sb.version);
     result.mode = sb.mode;
     result.block_size = sb.block_size;
-    result.num_blocks = sb.num_blocks;
-    result.num_inodes = sb.num_inodes;
+    result.num_blocks = static_cast<uint32_t>(sb.num_blocks);
+    result.num_inodes = static_cast<uint32_t>(sb.num_inodes);
     result.is_encrypted = (sb.mode & PFS_MODE_ENCRYPTED) != 0;
 
     LOGF("PFS: version=%u (%s), mode=0x%X, block_size=%u, num_blocks=%u, num_inodes=%u",

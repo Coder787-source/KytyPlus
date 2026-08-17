@@ -48,13 +48,24 @@ bool PkgParser::IsEncrypted(const std::string& pkg_path, uint32_t body_offset) {
     std::ifstream f(pkg_path, std::ios::binary);
     if (!f) return true; // assume encrypted if unreadable
 
+    // The PFS 'format' (magic) field is at offset 0x08 within the PFS image
+    // (the header is: version U64 @ 0x00, format U64 @ 0x08).
+    // Read 8 bytes starting at body_offset + 0x08 and check if the low 4 bytes
+    // match the PFS magic 20130315 (LE: 0B 2A 33 01).
+    // Also accept PFSC (compressed, ASCII "PFSC" at offset 0x00) as decrypted.
     f.seekg(static_cast<std::streamoff>(body_offset), std::ios::beg);
-    uint8_t magic[4] = {0};
-    f.read(reinterpret_cast<char*>(magic), 4);
-    if (f.gcount() < 4) return true;
+    uint8_t head[16] = {0};
+    f.read(reinterpret_cast<char*>(head), 16);
+    if (f.gcount() < 8) return true;
 
-    // PFS magic "PFS\0" indicates decrypted/plaintext body
-    return !(magic[0] == 0x50 && magic[1] == 0x46 && magic[2] == 0x53 && magic[3] == 0x00);
+    // PFSC compressed PFS: ASCII "PFSC" at offset 0x00 of body
+    const bool is_pfsc = (head[0] == 0x50 && head[1] == 0x46 && head[2] == 0x53 && head[3] == 0x43);
+
+    // PFS format magic 20130315 (0x01332A0B) at offset 0x08, stored as LE uint64
+    // Low 4 bytes at body+0x08: 0B 2A 33 01
+    const bool is_pfs = (head[8] == 0x0B && head[9] == 0x2A && head[10] == 0x33 && head[11] == 0x01);
+
+    return !(is_pfs || is_pfsc);
 }
 
 // ---- Header validation ----

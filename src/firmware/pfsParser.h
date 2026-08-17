@@ -26,19 +26,30 @@ namespace Libs::Firmware {
 
 #pragma pack(push, 1)
 
-// PFS superblock (at offset 0 of the PFS image)
-// Magic: 20130315 (0x013926B3) as uint32 little-endian
+// PFS header/superblock (at offset 0 of the PFS image)
+// Verified layout from orbis-pfs (videobitva/orbis) and PSDevWiki.
+// All multi-byte fields are LITTLE-ENDIAN on disk.
+// The 'magic' is actually the 'format' field at 0x08 (U64 = 20130315).
+// Full header size is 0x380 bytes (includes key seed at 0x370).
 struct PfsSuperblock {
-    uint32_t magic;           // 0x00: 20130315 (0x013926B3)
-    uint32_t version;         // 0x04: 1=PS4, 2=PS5
-    uint32_t mode;            // 0x08: flags (0x4 = encrypted, 0x2 = 64-bit inodes)
-    uint32_t block_size;      // 0x0C: filesystem block size (e.g. 0x10000 = 64KB)
-    uint32_t num_blocks;      // 0x10: total blocks in image
-    uint32_t num_inodes;      // 0x14: total inodes
-    uint32_t unk_18;           // 0x18: unknown
-    uint32_t unk_1c;           // 0x1C: unknown
-    // ... more fields follow (the full superblock is larger)
+    uint64_t version;         // 0x00: header version (always 1)
+    uint64_t format;          // 0x08: format magic = 20130315 (0x01332A0B)
+    uint64_t id;              // 0x10: filesystem id
+    uint8_t  flags[4];        // 0x18: fmode/clean/ronly/rsv
+    uint16_t mode;            // 0x1C: mode flags
+    uint16_t unk_1e;          // 0x1E: unknown
+    uint32_t block_size;      // 0x20: filesystem block size (e.g. 0x10000 = 64KB)
+    uint32_t nbackup;         // 0x24: backup block count
+    uint64_t num_blocks;      // 0x28: total blocks in image
+    uint64_t num_inodes;      // 0x30: number of inodes
+    uint64_t num_data_blocks; // 0x38: number of data blocks
+    uint64_t num_inode_blocks;// 0x40: number of inode blocks
+    uint64_t root_inode;     // 0x48: root inode number
+    // ... more fields follow up to 0x380 (includes key seed at 0x370)
 };
+
+// Convenience: the real PFS 'magic' is the format field at offset 0x08
+static constexpr uint64_t PFS_FORMAT_MAGIC = 20130315;  // format field value
 
 // PFS inode — D32 variant (32-bit block pointers, 0xA8 = 168 bytes)
 // Used when PFS_MODE_64BIT_INODES is NOT set
