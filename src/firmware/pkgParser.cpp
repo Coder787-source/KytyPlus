@@ -1,4 +1,5 @@
 #include "firmware/pkgParser.h"
+#include "firmware/pfsParser.h"
 #include "common/logging/log.h"
 
 #include <algorithm>
@@ -223,17 +224,11 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
 
     uint32_t extracted = 0;
 
-    // For a decrypted PKG, the body is a PFS image. A full PFS parser would
-    // walk the filesystem. For now, we extract the known manifest files by
-    // scanning the body for file signatures. This is a best-effort extraction
-    // that handles the common case (param.sfo, pic0.png, etc.).
-    //
-    // NOTE: Full PFS extraction requires implementing the PFS block format
-    // (see PSDevWiki PFS). This stub extracts the raw body to a .pfs file
-    // so external tools or a future PFS parser can process it.
+    // For a decrypted PKG, the body is a PFS image.
+    // Extract the body to a temporary .pfs file, then parse it with
+    // the PFS parser to enumerate and extract individual files.
 
     if (result.body_size == 0) {
-        // Fallback: use file_size - body_offset
         const uint64_t fsize = std::filesystem::file_size(pkg_path);
         const uint32_t bsize = static_cast<uint32_t>(fsize - result.body_offset);
         const_cast<PkgParseResult&>(result).body_size = bsize;
@@ -248,7 +243,6 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
         return 0;
     }
 
-    // Copy body to output file
     constexpr size_t kBufSize = 1 << 20; // 1 MB
     std::vector<uint8_t> buf(kBufSize);
     uint64_t remaining = result.body_size;
@@ -260,12 +254,30 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
         out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(got));
         remaining -= got;
     }
-
     out.close();
-    extracted = 1; // the body.pfs file
+    f.close();
 
     LOGF("PKG: extracted body PFS image to %s (%u bytes)",
          out_pfs.string().c_str(), result.body_size);
+
+    // Parse the extracted PFS image and extract individual files
+    const std::string pfs_out_dir = std::filesystem::path(output_dir).string() + "/pfs_files";
+    auto pfs_result = PfsParser::Parse(out_pfs.string());
+    if (pfs_result.ok && !pfs_result.is_encrypted && !pfs_result.is_compressed) {
+        const uint32_t pfs_extracted = PfsParser::ExtractAll(pfs_result, out_pfs.string(), pfs_out_dir);
+        LOGF("PKG: PFS parser extracted %u individual file(s) to %s",
+             pfs_extracted, pfs_out_dir.c_str());
+        extracted = pfs_extracted;
+    } else if (pfs_result.ok && pfs_result.is_encrypted) {
+        LOGF("PKG: PFS body is encrypted (requires EKPFS keys) - extracted raw body.pfs only");
+        extracted = 1;
+    } else if (pfs_result.ok && pfs_result.is_compressed) {
+        LOGF("PKG: PFS body is PFSC-compressed - extracted raw body.pfs only");
+        extracted = 1;
+    } else {
+        LOGF("PKG: PFS parse failed (%s) - extracted raw body.pfs only", pfs_result.error.c_str());
+        extracted = 1;
+    }
 
     return extracted;
 }

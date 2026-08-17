@@ -47,7 +47,7 @@ struct PkgHeader {
 
 // PFS (PlayStation File System) magic for detecting decrypted body content
 static constexpr uint32_t PKG_MAGIC       = 0x7F504B47; // "\x7FPKG" (big-endian)
-static constexpr uint32_t PFS_MAGIC        = 0x00534650; // "PFS\0" (little-endian read)
+static constexpr uint32_t PKG_PFS_BODY_MAGIC = 0x00534650; // "PFS\0" (little-endian read)
 static constexpr uint32_t PKG_BODY_OFFSET  = 0x200;       // Standard body offset
 
 #pragma pack(pop)
