@@ -44,13 +44,16 @@ Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX
 
 - KytyPlus uses an **HLE-first** approach: many titles do **not** require external low-level
   firmware modules to start.
-- **Optional firmware parsing**: KytyPlus can parse official PS5 firmware update files (`.pup`)
-  via `--install-firmware`. The parser reads the SLB2 container, extracts the inner payload, and
-  detects encryption — validated against a real Sony firmware file. Decryption requires a
-  user-supplied `keys.bin` and remains untested.
+- **Optional firmware / package parsing**: KytyPlus can parse official PS5 firmware update files (`.pup`)
+  via `--install-firmware` and Sony package files (`.pkg`) via `--install-pkg`. The PUP parser reads
+  the SLB2 container, extracts the inner payload, and detects encryption — validated against a real
+  Sony firmware file. The PKG parser reads the big-endian header and extracts the inner PFS image;
+  a full PFS filesystem parser then walks the filesystem (inodes, directories, indirect blocks) and
+  extracts individual files. Decryption of encrypted PUPs/PKGs requires a user-supplied `keys.bin`
+  and remains untested.
 - Firmware is **not included** with the emulator. Download it directly from Sony:
   **https://www.playstation.com/en-us/support/hardware/ps5/system-software/**
-- To install (CLI, no launcher UI yet): run `kyty_emulator.exe --install-firmware <path-to-PS5UPDATE.PUP>` (Windows) or `./kyty_emulator --install-firmware <path>` (macOS/Linux). The parser reads the official Sony `.pup`; decryption of encrypted PUPs requires a user-supplied `keys.bin` placed next to the `.pup` (the emulator never provides or links to keys).
+- To install: use the **Install Firmware (.pup)** or **Install Package (.pkg)** button in the launcher, or run `kyty_emulator.exe --install-firmware <path-to-PS5UPDATE.PUP>` / `--install-pkg <path-to-file.pkg>` (Windows) or `./kyty_emulator --install-firmware <path>` / `--install-pkg <path>` (macOS/Linux). The parser reads the official Sony `.pup`/`.pkg`; decryption of encrypted files requires a user-supplied `keys.bin` placed next to the file (the emulator never provides or links to keys).
 - KytyPlus does **not** distribute, include, or link to any Sony copyrighted material.
 
 ### No warranty
@@ -91,6 +94,8 @@ testers are for.
 - **FSR 1.0 upscaler** — edge-adaptive spatial upscaling (EASU + RCAS), works on all Vulkan GPUs (AMD / NVIDIA / Intel). Configurable via the launcher (method + sharpness); auto-enabled on iGPUs. Falls back to a plain blit if the GPU can’t handle it. *(First in the PS5 scene. The upscaler runs; the internal-resolution-reduction / bandwidth-saving half is not yet wired.)*
 - **Configurable present path** — present mode (VSync / Mailbox / Immediate), present filter (Nearest / Linear / Cubic), and aspect ratio (Stretch / 16:9 / 4:3 / Integer). *(First in the PS5 scene.)*
 - **PUP firmware parsing + installation** — parses official Sony `.pup` firmware update files via `--install-firmware`; loads installed modules at boot. SLB2 parsing, inner-payload extraction, and encryption detection **validated against a real Sony firmware file**. Decryption + module extraction require a user-supplied `keys.bin` (never provided by the emulator) and remain untested. *(First in the PS5 scene for PUP parsing.)*
+- **PKG package parser + full PFS filesystem parser** — parses Sony `.pkg` package files (PS4/PS5 digital games / updates) via `--install-pkg`, extracts the inner PFS image, then walks the full filesystem (PFS superblock, D32/S32/S64 inodes, directory enumeration, indirect block traversal, PFSC/zlib decompression, AES-XTS decryption with user-supplied EKPFS keys). The plaintext/uncompressed case is complete; encrypted + compressed cases are structurally complete but runtime-unvalidated. *(First in the PS5 scene.)*
+- **Launcher GUI install buttons** — "Install Firmware (.pup)" and "Install Package (.pkg)" buttons in the launcher, so users no longer need the command line to install. Fixes the discoverability gap where users previously couldn't find the install path.
 
 **Wired, validated only as mechanism / spec, not on real games or hardware:**
 
