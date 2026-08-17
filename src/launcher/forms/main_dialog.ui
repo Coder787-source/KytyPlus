@@ -78,6 +78,20 @@
          </property>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_InstallFirmware">
+         <property name="text">
+          <string>Install Firmware (.pup)</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_InstallPkg">
+         <property name="text">
+          <string>Install Package (.pkg)</string>
+         </property>
+        </widget>
+       </item>
       </layout>
      </item>
     </layout>

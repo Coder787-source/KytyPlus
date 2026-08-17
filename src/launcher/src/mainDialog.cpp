@@ -8,6 +8,7 @@
 
 #include <QApplication>
 #include <QByteArray>
+#include <QFileDialog>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
@@ -80,6 +81,9 @@ public:
 	void Update();
 	void FindInterpreter();
 	void Run();
+	void InstallFirmware();
+	void InstallPkg();
+	void RunInstall(const QString& file, const QString& flag);
 
 	[[nodiscard]] const QString& GetInterpreter() const { return m_interpreter; }
 
@@ -121,6 +125,8 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	        Qt::QueuedConnection);
 	connect(m_ui->widget, &ConfigurationListWidget::Select, this, &MainDialogPrivate::Update);
 	connect(m_ui->widget, &ConfigurationListWidget::Run, this, &MainDialogPrivate::Run);
+	connect(m_ui->pushButton_InstallFirmware, &QPushButton::clicked, this, &MainDialogPrivate::InstallFirmware);
+	connect(m_ui->pushButton_InstallPkg, &QPushButton::clicked, this, &MainDialogPrivate::InstallPkg);
 	connect(main_dialog, &MainDialog::Resize, [this]() {
 		g_last_geometry = m_main_dialog->saveGeometry();
 		m_ui->widget->WriteSettings();
@@ -474,6 +480,79 @@ void MainDialogPrivate::Update() {
 	}
 
 	m_ui->widget->SetRunEnabled(run_enabled);
+}
+
+void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
+	if (file.isEmpty()) return;
+	if (m_interpreter.isEmpty() || !QFile::exists(m_interpreter)) {
+		QMessageBox::critical(m_main_dialog, tr("Error"), tr("Can't find emulator"));
+		return;
+	}
+
+	QFileInfo f(m_interpreter);
+	auto dir = f.absoluteDir();
+
+	QStringList args;
+	args << flag << file;
+
+#ifdef __linux__
+	auto bash_file_name = dir.filePath(KYTY_BASH_FILE);
+	if (!CreateBashScript(m_interpreter, args, bash_file_name)) {
+		QMessageBox::critical(m_main_dialog, tr("Error"), tr("Can't create file:\\n") + bash_file_name);
+		return;
+	}
+
+	QString terminal;
+	QStringList terminal_prefix;
+	QProcess* process = new QProcess(m_main_dialog);
+	if (FindTerminal(&terminal, &terminal_prefix)) {
+		process->setProgram(terminal);
+		process->setArguments(terminal_prefix + QStringList {"bash", "-c", bash_file_name});
+	} else {
+		process->setProgram(QStringLiteral("bash"));
+		process->setArguments({QStringLiteral("-c"), bash_file_name});
+	}
+	process->setWorkingDirectory(dir.path());
+	process->start();
+#elif defined(_WIN32)
+	QStringList process_args;
+	process_args << QStringLiteral("/K") << m_interpreter;
+	process_args += args;
+
+	QProcess* process = new QProcess(m_main_dialog);
+	process->setProgram(CMD_EXE);
+	process->setArguments(process_args);
+	process->setWorkingDirectory(dir.path());
+	process->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
+		args->flags |= static_cast<uint32_t>(CREATE_NEW_CONSOLE);
+		args->startupInfo->dwFlags &= ~static_cast<DWORD>(STARTF_USESTDHANDLES);
+		args->startupInfo->dwFlags |= static_cast<DWORD>(STARTF_USECOUNTCHARS);
+		args->startupInfo->dwXCountChars = CMD_X_CHARS;
+		args->startupInfo->dwYCountChars = CMD_Y_CHARS;
+	});
+	process->start();
+#else
+	QProcess* process = new QProcess(m_main_dialog);
+	process->setProgram(m_interpreter);
+	process->setArguments(args);
+	process->setWorkingDirectory(dir.path());
+	process->start();
+#endif
+#if !defined(_WIN32)
+	if (!process->waitForStarted(5000)) {
+		QMessageBox::critical(m_main_dialog, tr("Error"), tr("Failed to start:\\n%1\\n\\n%2").arg(process->program(), process->errorString()));
+	}
+#endif
+}
+
+void MainDialogPrivate::InstallFirmware() {
+	const QString file = QFileDialog::getOpenFileName(m_main_dialog, tr("Install Firmware"), QString(), tr("PS5 Firmware (*.pup);;All Files (*.*)"));
+	RunInstall(file, QStringLiteral("--install-firmware"));
+}
+
+void MainDialogPrivate::InstallPkg() {
+	const QString file = QFileDialog::getOpenFileName(m_main_dialog, tr("Install Package"), QString(), tr("PS4/PS5 Package (*.pkg);;All Files (*.*)"));
+	RunInstall(file, QStringLiteral("--install-pkg"));
 }
 
 #include "mainDialog.moc"
