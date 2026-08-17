@@ -1,6 +1,7 @@
 #ifndef KYTY_FIRMWARE_PFS_PARSER_H_
 #define KYTY_FIRMWARE_PFS_PARSER_H_
 
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <string>
@@ -16,8 +17,10 @@ namespace Libs::Firmware {
 //
 // The PFS superblock (header) is UNENCRYPTED and can be parsed without keys.
 // File data blocks may be encrypted (AES-XTS) requiring user-supplied EKPFS keys,
-// or plaintext (debug/decrypted images). This parser handles the plaintext case
-// fully and detects encryption without attempting decryption.
+// or plaintext (debug/decrypted images). This parser handles both cases:
+//   - Plaintext: full enumeration + extraction
+//   - Encrypted: superblock parse + enumeration (data needs EKPFS keys)
+//   - PFSC compressed: full decompression via zlib
 //
 // Format constants verified against MkPFS (github.com/PSBrew/MkPFS) consts.py.
 
@@ -34,11 +37,10 @@ struct PfsSuperblock {
     uint32_t num_inodes;      // 0x14: total inodes
     uint32_t unk_18;           // 0x18: unknown
     uint32_t unk_1c;           // 0x1C: unknown
-    // ... more fields follow (the full superblock is larger, but these
-    //     are the fields we need for parsing)
+    // ... more fields follow (the full superblock is larger)
 };
 
-// PFS inode (D32 variant, 0xA8 bytes = 168 bytes)
+// PFS inode — D32 variant (32-bit block pointers, 0xA8 = 168 bytes)
 // Used when PFS_MODE_64BIT_INODES is NOT set
 struct PfsInodeD32 {
     uint32_t number;          // 0x00: inode number
@@ -53,6 +55,46 @@ struct PfsInodeD32 {
     int32_t  db[12];           // 0x20: direct block pointers (12 entries)
     int32_t  ib[5];            // 0x50: indirect block pointers (5 entries)
     uint8_t  pad[0xA8 - 0x50 - 20]; // padding to 0xA8
+};
+
+// PFS inode — S32 variant (32-bit block pointers, extended, 0x2C8 = 712 bytes)
+// Used when PFS_MODE_64BIT_INODES is set AND version is PS4
+struct PfsInodeS32 {
+    uint32_t number;          // 0x00: inode number
+    uint16_t mode;             // 0x04: file mode
+    uint16_t nlink;            // 0x06: link count
+    uint32_t uid;              // 0x08: owner UID
+    uint32_t gid;              // 0x0C: group GID
+    uint32_t flags;            // 0x10: inode flags
+    uint32_t blocks;           // 0x14: block count
+    uint64_t size;             // 0x18: file size in bytes (64-bit)
+    uint32_t unk_20;           // 0x20: unknown
+    uint32_t unk_24;           // 0x24: unknown
+    uint32_t unk_28;           // 0x28: unknown
+    uint32_t unk_2c;           // 0x2C: unknown
+    int32_t  db[12];           // 0x30: direct block pointers (12 entries)
+    int32_t  ib[5];            // 0x60: indirect block pointers (5 entries)
+    uint8_t  pad[0x2C8 - 0x60 - 20]; // padding to 0x2C8
+};
+
+// PFS inode — S64 variant (64-bit block pointers, 0x310 = 784 bytes)
+// Used when PFS_MODE_64BIT_INODES is set AND version is PS5
+struct PfsInodeS64 {
+    uint32_t number;          // 0x00: inode number
+    uint16_t mode;             // 0x04: file mode
+    uint16_t nlink;            // 0x06: link count
+    uint32_t uid;              // 0x08: owner UID
+    uint32_t gid;              // 0x0C: group GID
+    uint32_t flags;            // 0x10: inode flags
+    uint32_t blocks;           // 0x14: block count
+    uint64_t size;             // 0x18: file size in bytes (64-bit)
+    uint32_t unk_20;           // 0x20: unknown
+    uint32_t unk_24;           // 0x24: unknown
+    uint32_t unk_28;           // 0x28: unknown
+    uint32_t unk_2c;           // 0x2C: unknown
+    int64_t  db[12];           // 0x30: direct block pointers (12 entries, 64-bit)
+    int64_t  ib[5];            // 0x90: indirect block pointers (5 entries, 64-bit)
+    uint8_t  pad[0x310 - 0x90 - 40]; // padding to 0x310
 };
 
 // PFS directory entry
@@ -87,6 +129,8 @@ static constexpr uint32_t DIRENT_TYPE_DOT         = 4;
 static constexpr uint32_t DIRENT_TYPE_DOTDOT      = 5;
 
 static constexpr size_t   INODE_D32_SIZE          = 0xA8;  // 168 bytes
+static constexpr size_t   INODE_S32_SIZE          = 0x2C8; // 712 bytes
+static constexpr size_t   INODE_S64_SIZE          = 0x310; // 784 bytes
 static constexpr size_t   MAX_DIRECT_BLOCKS        = 12;
 static constexpr size_t   MAX_INDIRECT_BLOCKS      = 5;
 
@@ -98,13 +142,20 @@ static constexpr uint32_t PFSC_OFFSET_ENTRY_SIZE  = 0x8;
 static constexpr uint32_t PFSC_BLOCK_OFFSETS_OFFSET = 0x400;
 static constexpr uint32_t PFSC_INITIAL_DATA_OFFSET  = 0x10000;
 
+// AES-XTS sector size (for encrypted PFS)
+static constexpr uint32_t PFS_XTS_SECTOR_SIZE      = 0x1000; // 4KB
+
+// EKPFS key size (32 bytes = 16-byte data key + 16-byte tweak key)
+static constexpr size_t   EKPFS_KEY_SIZE           = 32;
+
 // Extracted file from PFS
 struct PfsFile {
     std::string name;        // file name
     uint32_t inode;          // inode number
-    uint32_t size;            // file size in bytes
+    uint64_t size;            // file size in bytes
     uint32_t block_number;   // first data block
     bool is_compressed;       // PFSC compressed
+    bool is_directory;        // true if this is a directory
     std::vector<uint8_t> data; // extracted file data (for small files)
 };
 
@@ -122,20 +173,28 @@ struct PfsParseResult {
     std::vector<PfsFile> files; // extracted file entries
 };
 
+// EKPFS key material for encrypted PFS decryption
+struct PfsEkpfsKey {
+    std::array<uint8_t, 16> tweak_key;  // AES-XTS tweak key
+    std::array<uint8_t, 16> data_key;   // AES-XTS data key
+};
+
 class PfsParser {
 public:
     // Parse a PFS image file.
     // Reads the superblock, validates magic, detects encryption/compression,
     // and enumerates the root directory to list files.
-    // For encrypted images, only the superblock + directory structure is parsed
-    // (file data cannot be read without EKPFS keys).
+    // For encrypted images, the superblock + directory structure is parsed.
+    // File data extraction requires EKPFS keys (use ExtractWithKeys).
     static PfsParseResult Parse(const std::string& pfs_path);
 
     // Extract all files from a decrypted (plaintext) PFS image to output_dir.
-    // Returns the number of files extracted. Returns 0 for encrypted images.
+    // Returns the number of files extracted. Returns 0 for encrypted images
+    // without keys.
     static uint32_t ExtractAll(const PfsParseResult& result,
                                  const std::string& pfs_path,
-                                 const std::string& output_dir);
+                                 const std::string& output_dir,
+                                 const PfsEkpfsKey* ekpfs_key = nullptr);
 
     // Check if data starts with PFS magic
     static bool HasPfsMagic(const std::vector<uint8_t>& data);
@@ -144,25 +203,61 @@ public:
     static bool HasPfscMagic(const std::vector<uint8_t>& data);
 
 private:
-    // Read an inode at a given block number
+    // Read an inode at a given block number (handles D32/S32/S64 variants)
     static bool ReadInode(std::ifstream& f, uint32_t block_number,
-                           uint32_t block_size, bool is_64bit,
-                           PfsInodeD32& out_inode);
+                           uint32_t block_size, uint32_t version, uint32_t mode,
+                           PfsInodeD32& out_d32, PfsInodeS32& out_s32,
+                           PfsInodeS64& out_s64, int& out_variant);
+
+    // Unified inode info extracted from any variant
+    struct InodeInfo {
+        uint32_t number;
+        uint16_t mode;
+        uint32_t flags;
+        uint64_t size;
+        int64_t  db[MAX_DIRECT_BLOCKS];
+        int64_t  ib[MAX_INDIRECT_BLOCKS];
+    };
+
+    // Extract unified inode info from any variant
+    static InodeInfo ExtractInodeInfo(const PfsInodeD32& d32,
+                                       const PfsInodeS32& s32,
+                                       const PfsInodeS64& s64,
+                                       int variant);
 
     // Read directory entries from a directory inode's data blocks
+    // Handles both direct and indirect blocks
     static std::vector<std::pair<std::string, uint32_t>> ReadDirectory(
-        std::ifstream& f, const PfsInodeD32& dir_inode,
-        uint32_t block_size, uint32_t num_blocks);
-
-    // Decompress a PFSC block (zlib)
-    static std::vector<uint8_t> DecompressPfscBlock(
-        std::ifstream& f, uint32_t block_offset, uint32_t block_size);
-
-    // Read file data from inode's direct blocks (for small files)
-    static std::vector<uint8_t> ReadFileData(
-        std::ifstream& f, const PfsInodeD32& inode,
+        std::ifstream& f, const InodeInfo& dir_inode,
         uint32_t block_size, uint32_t num_blocks,
-        bool is_compressed);
+        const PfsEkpfsKey* ekpfs_key);
+
+    // Read file data from inode's direct + indirect blocks
+    // Handles both direct and indirect block pointers for files > 12 blocks
+    static std::vector<uint8_t> ReadFileData(
+        std::ifstream& f, const InodeInfo& inode,
+        uint32_t block_size, uint32_t num_blocks,
+        bool is_compressed, const PfsEkpfsKey* ekpfs_key);
+
+    // Read a data block, decrypting if EKPFS key is provided
+    static std::vector<uint8_t> ReadBlock(
+        std::ifstream& f, int64_t block_num, uint32_t block_size,
+        uint32_t num_blocks, const PfsEkpfsKey* ekpfs_key);
+
+    // Decompress a PFSC block (requires zlib)
+    static std::vector<uint8_t> DecompressPfscBlock(
+        const std::vector<uint8_t>& raw_block);
+
+    // Follow indirect block chain and collect all block numbers
+    static std::vector<int64_t> GetIndirectBlocks(
+        std::ifstream& f, const InodeInfo& inode,
+        uint32_t block_size, uint32_t num_blocks,
+        const PfsEkpfsKey* ekpfs_key);
+
+    // AES-XTS decrypt a sector (self-contained, no OpenSSL)
+    static std::vector<uint8_t> AesXtsDecryptSector(
+        const uint8_t* sector_data, size_t sector_size,
+        const PfsEkpfsKey& key, uint64_t sector_number);
 };
 
 } // namespace Libs::Firmware

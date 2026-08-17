@@ -16,3 +16,10 @@ target_include_directories(firmware PUBLIC
 )
 
 target_link_libraries(firmware PRIVATE common)
+
+# zlib is required for PFSC (compressed PFS) decompression.
+find_package(ZLIB)
+if(ZLIB_FOUND)
+    target_link_libraries(firmware PRIVATE ZLIB::ZLIB)
+    target_compile_definitions(firmware PRIVATE KYTY_HAS_ZLIB=1)
+endif()
