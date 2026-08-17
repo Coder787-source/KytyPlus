@@ -14,6 +14,7 @@ struct RunOptions {
 	std::filesystem::path elf;
 	std::filesystem::path game_patch;
 	std::filesystem::path install_firmware; // KytyPlus: --install-firmware <pup>
+	std::filesystem::path install_pkg;     // KytyPlus: --install-pkg <pkg>
 };
 
 void Run(const RunOptions& options);

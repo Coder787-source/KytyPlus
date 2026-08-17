@@ -11,6 +11,7 @@
 #include "common/threads.h"
 #include "emulator.h"
 #include "firmware/firmwareManager.h"
+#include "firmware/pkgParser.h"
 #include "kytyGitVersion.h"
 
 #include <charconv>
@@ -49,6 +50,7 @@ static void PrintUsage() {
 	::printf(
 	    "  --game-patch <json>                  Validated patch plan to apply before entry.\n");
 	::printf("  --install-firmware <pup>             Install PS5 firmware from a .pup, then exit.\n");
+	::printf("  --install-pkg <pkg>                 Parse/extract a PS4/PS5 .pkg, then exit.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
@@ -335,6 +337,13 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.install_firmware = value;
+		} else if (arg == "--install-pkg") {
+			value = Common::FixFilenameSlash(value);
+			if (!Common::File::IsFileExisting(value)) {
+				::printf("--install-pkg must point to an existing .pkg file: %s\n", value.c_str());
+				return false;
+			}
+			options.install_pkg = value;
 		} else {
 			::printf("unknown option: %s\n", arg.c_str());
 			return false;
@@ -342,6 +351,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 	}
 
 	return show_help || (!options.install_firmware.empty()) ||
+	       (!options.install_pkg.empty()) ||
 	       (!options.app0_dir.empty() && !options.elf.empty());
 }
 
@@ -409,6 +419,34 @@ int main(int argc, char* argv[]) {
 		}
 		slist.DestroyAll(false);
 		return result.ok ? 0 : 1;
+	}
+
+	if (!options.install_pkg.empty()) {
+		const auto pr = Libs::Firmware::PkgParser::Parse(options.install_pkg.string());
+		if (!pr.ok) {
+			::printf("PKG parse failed: %s\n", pr.error.c_str());
+			slist.DestroyAll(false);
+			return 1;
+		}
+		if (pr.is_encrypted) {
+			::printf("PKG '%s' is encrypted. Decryption requires user-supplied keys.bin\n",
+			         pr.content_id.c_str());
+			::printf("(The emulator never provides or distributes keys.)\n");
+			slist.DestroyAll(false);
+			return 1;
+		}
+		const auto out_dir = std::filesystem::path(options.install_pkg).parent_path().string() + "/pkg_out";
+		const uint32_t n = Libs::Firmware::PkgParser::ExtractAll(pr, options.install_pkg.string(), out_dir);
+		::printf("PKG '%s' parsed OK. Extracted %u file(s) to %s\n",
+		         pr.content_id.c_str(), n, out_dir.c_str());
+		if (!pr.files.empty()) {
+			::printf("File entries found: %zu\n", pr.files.size());
+			for (const auto& fe : pr.files) {
+				::printf("  - %s\n", fe.name.c_str());
+			}
+		}
+		slist.DestroyAll(false);
+		return 0;
 	}
 
 	Libs::Firmware::FirmwareManager::Instance().Initialize();
