@@ -180,13 +180,19 @@ PkgParseResult PkgParser::Parse(const std::string& pkg_path) {
     }
 
     // Detect encryption (check for PFS magic at body_offset)
-    result.is_encrypted = IsEncrypted(pkg_path, result.body_offset);
-
-    if (result.is_encrypted) {
-        LOGF("PKG: body is encrypted (no PFS magic at offset 0x%X) - requires user keys to extract",
-             result.body_offset);
+    // First check for empty body — an empty body is NOT encrypted, it's just empty
+    if (result.body_size == 0) {
+        result.is_encrypted = false;
+        LOGF("PKG: body is empty (body_size=0) - nothing to extract");
     } else {
-        LOGF("PKG: body is decrypted (PFS magic found) - can extract without keys");
+        result.is_encrypted = IsEncrypted(pkg_path, result.body_offset);
+
+        if (result.is_encrypted) {
+            LOGF("PKG: body is encrypted (no PFS magic at offset 0x%X) - requires user keys to extract",
+                 result.body_offset);
+        } else {
+            LOGF("PKG: body is decrypted (PFS magic found) - can extract without keys");
+        }
     }
 
     result.ok = true;
@@ -205,6 +211,11 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
 
     if (result.is_encrypted) {
         LOGF("PKG: cannot extract - body is encrypted, requires user-supplied keys.bin");
+        return 0;
+    }
+
+    if (result.body_size == 0) {
+        LOGF("PKG: cannot extract - body is empty, nothing to extract");
         return 0;
     }
 
