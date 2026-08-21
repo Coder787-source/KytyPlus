@@ -1,5 +1,8 @@
 # Compatibility List
 
+> 📢 **CALL FOR HARDWARE TESTERS:** Because the maintainer does not personally own a physical PlayStation 5 console, community validation is critical. If you own a jailbroken console and want to help us push past the *Dead Cells* menu milestone using your legally obtained backups, please submit your boot logs and game footage! You can submit an automated format instantly via our **[New Compatibility Report Form](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)**.
+
+
 Community-reported results for KytyPlus. Entries here come **only** from user-submitted
 [Compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)
 issues — nobody on this project claims to have personally verified every row.
