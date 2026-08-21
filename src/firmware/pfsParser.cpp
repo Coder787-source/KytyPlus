@@ -18,7 +18,7 @@ namespace Libs::Firmware {
 
 // ============================================================================
 // Self-contained AES-128 implementation (for AES-XTS decryption)
-// Based on the same S-box and key expansion used in pupParser.cpp
+// Self-contained AES-XTS implementation (FIPS 197 tables).
 // ============================================================================
 
 namespace {

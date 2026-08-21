@@ -81,7 +81,6 @@ public:
 	void Update();
 	void FindInterpreter();
 	void Run();
-	void InstallFirmware();
 	void InstallPkg();
 	void RunInstall(const QString& file, const QString& flag);
 
@@ -125,7 +124,6 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	        Qt::QueuedConnection);
 	connect(m_ui->widget, &ConfigurationListWidget::Select, this, &MainDialogPrivate::Update);
 	connect(m_ui->widget, &ConfigurationListWidget::Run, this, &MainDialogPrivate::Run);
-	connect(m_ui->pushButton_InstallFirmware, &QPushButton::clicked, this, &MainDialogPrivate::InstallFirmware);
 	connect(m_ui->pushButton_InstallPkg, &QPushButton::clicked, this, &MainDialogPrivate::InstallPkg);
 	connect(main_dialog, &MainDialog::Resize, [this]() {
 		g_last_geometry = m_main_dialog->saveGeometry();
@@ -543,11 +541,6 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 		QMessageBox::critical(m_main_dialog, tr("Error"), tr("Failed to start:\\n%1\\n\\n%2").arg(process->program(), process->errorString()));
 	}
 #endif
-}
-
-void MainDialogPrivate::InstallFirmware() {
-	const QString file = QFileDialog::getOpenFileName(m_main_dialog, tr("Install Firmware"), QString(), tr("PS5 Firmware (*.pup);;All Files (*.*)"));
-	RunInstall(file, QStringLiteral("--install-firmware"));
 }
 
 void MainDialogPrivate::InstallPkg() {

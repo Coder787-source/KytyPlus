@@ -10,7 +10,6 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "emulator.h"
-#include "firmware/firmwareManager.h"
 #include "firmware/pkgParser.h"
 #include "kytyGitVersion.h"
 
@@ -49,7 +48,6 @@ static void PrintUsage() {
 	::printf("  --game <dir|elf>                     Game directory or ELF to load.\n");
 	::printf(
 	    "  --game-patch <json>                  Validated patch plan to apply before entry.\n");
-	::printf("  --install-firmware <pup>             Install PS5 firmware from a .pup, then exit.\n");
 	::printf("  --install-pkg <pkg>                 Parse/extract a PS4/PS5 .pkg, then exit.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
@@ -330,13 +328,6 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.config.keymap.push_back(value);
-		} else if (arg == "--install-firmware") {
-			value = Common::FixFilenameSlash(value);
-			if (!Common::File::IsFileExisting(value)) {
-				::printf("--install-firmware must point to an existing .pup file: %s\n", value.c_str());
-				return false;
-			}
-			options.install_firmware = value;
 		} else if (arg == "--install-pkg") {
 			value = Common::FixFilenameSlash(value);
 			if (!Common::File::IsFileExisting(value)) {
@@ -350,8 +341,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		}
 	}
 
-	return show_help || (!options.install_firmware.empty()) ||
-	       (!options.install_pkg.empty()) ||
+	return show_help || 	       (!options.install_pkg.empty()) ||
 	       (!options.app0_dir.empty() && !options.elf.empty());
 }
 
@@ -403,23 +393,7 @@ int main(int argc, char* argv[]) {
 		return 0;
 	}
 
-	// KytyPlus: firmware installation + module loading.
-	// --install-firmware parses + (optionally decrypts with user keys.bin) a .pup,
-	// extracts the modules to firmware/ps5/, then exits (no game run).
-	// Otherwise, Initialize() scans firmware/ps5/ for previously-installed modules
-	// so HLE can resolve firmware-provided symbols at boot.
-	if (!options.install_firmware.empty()) {
-		const auto result = Libs::Firmware::FirmwareManager::Instance().InstallFromPup(
-			options.install_firmware.string());
-		if (result.ok) {
-			::printf("Firmware installed: version %s, %u modules.\n",
-			         result.version.c_str(), result.modules_installed);
-		} else {
-			::printf("Firmware install failed: %s\n", result.error.c_str());
-		}
-		slist.DestroyAll(false);
-		return result.ok ? 0 : 1;
-	}
+
 
 	if (!options.install_pkg.empty()) {
 		const auto pr = Libs::Firmware::PkgParser::Parse(options.install_pkg.string());
@@ -449,7 +423,6 @@ int main(int argc, char* argv[]) {
 		return 0;
 	}
 
-	Libs::Firmware::FirmwareManager::Instance().Initialize();
 
 	Run(options);
 

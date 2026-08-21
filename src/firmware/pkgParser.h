@@ -1,8 +1,6 @@
 #ifndef KYTY_FIRMWARE_PKG_PARSER_H_
 #define KYTY_FIRMWARE_PKG_PARSER_H_
 
-#include "firmware/pupKeyStore.h"
-
 #include <cstdint>
 #include <string>
 #include <vector>
