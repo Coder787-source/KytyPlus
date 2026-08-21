@@ -40,22 +40,6 @@ Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX
 - Do **not** ask maintainers for piracy links, firmware dumps, or copyrighted `sce_module` SPRXs.
 - Distributing copyrighted dumps or firmware with this software is **illegal**.
 
-### Firmware / modules
-
-- KytyPlus uses an **HLE-first** approach: many titles do **not** require external low-level
-  firmware modules to start.
-- **Optional firmware / package parsing**: KytyPlus can parse official PS5 firmware update files (`.pup`)
-  via `--install-firmware` and Sony package files (`.pkg`) via `--install-pkg`. The PUP parser reads
-  the SLB2 container, extracts the inner payload, and detects encryption — validated against a real
-  Sony firmware file. The PKG parser reads the big-endian header and extracts the inner PFS image;
-  a full PFS filesystem parser then walks the filesystem (inodes, directories, indirect blocks) and
-  extracts individual files. Decryption of encrypted PUPs/PKGs requires a user-supplied `keys.bin`
-  and remains untested.
-- Firmware is **not included** with the emulator. Download it directly from Sony:
-  **https://www.playstation.com/en-us/support/hardware/ps5/system-software/**
-- To install: use the **Install Firmware (.pup)** or **Install Package (.pkg)** button in the launcher, or run `kyty_emulator.exe --install-firmware <path-to-PS5UPDATE.PUP>` / `--install-pkg <path-to-file.pkg>` (Windows) or `./kyty_emulator --install-firmware <path>` / `--install-pkg <path>` (macOS/Linux). The parser reads the official Sony `.pup`/`.pkg`; decryption of encrypted files requires a user-supplied `keys.bin` placed next to the file (the emulator never provides or links to keys).
-- KytyPlus does **not** distribute, include, or link to any Sony copyrighted material.
-
 ### No warranty
 
 - Provided **as-is**, without warranty of any kind.
