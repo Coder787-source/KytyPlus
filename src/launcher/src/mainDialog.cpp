@@ -1,5 +1,7 @@
 #include "mainDialog.h"
 
+#include <functional>
+
 #include "common.h"
 #include "configuration.h"
 #include "configurationItem.h"
@@ -558,15 +560,32 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 						QString dest_dir = QDir(games_dir).filePath(content_id);
 						QDir().mkpath(dest_dir);
 
-						QDir source(pkg_out_dir);
-						QStringList files = source.entryList(QDir::Files | QDir::NoDotAndDotDot);
-						int moved = 0;
-						for (const auto& fname : files) {
-							QString src = source.filePath(fname);
-							QString dst = QDir(dest_dir).filePath(fname);
-							if (QFile::exists(dst)) QFile::remove(dst);
-							if (QFile::rename(src, dst)) moved++;
-						}
+						// Recursively copy all files AND subdirectories (e.g. sce_sys/param.json)
+						std::function<bool(const QString&, const QString&)> copyRecursively =
+							[&copyRecursively](const QString& srcPath, const QString& dstPath) -> bool {
+							QDir srcDir(srcPath);
+							if (!srcDir.exists()) return false;
+							QDir().mkpath(dstPath);
+
+							// Copy files
+							QStringList files = srcDir.entryList(QDir::Files | QDir::NoDotAndDotDot);
+							for (const auto& fname : files) {
+								QString srcFile = srcDir.filePath(fname);
+								QString dstFile = QDir(dstPath).filePath(fname);
+								if (QFile::exists(dstFile)) QFile::remove(dstFile);
+								if (!QFile::copy(srcFile, dstFile)) return false;
+							}
+
+							// Recurse into subdirectories
+							QStringList dirs = srcDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+							for (const auto& dname : dirs) {
+								if (!copyRecursively(srcDir.filePath(dname), QDir(dstPath).filePath(dname)))
+									return false;
+							}
+							return true;
+						};
+
+						int moved = copyRecursively(pkg_out_dir, dest_dir) ? 1 : 0;
 
 						m_ui->widget->ScanGameDirectory();
 
