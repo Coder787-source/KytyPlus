@@ -547,6 +547,13 @@ static Configuration* FindCustomInfo(QMap<QString, Configuration*>* custom_infos
 	return info;
 }
 
+void ConfigurationListWidget::AddGameDirectory(const QString& dir) {
+	QString normalized = NormalizeGameDirectory(dir);
+	if (!normalized.isEmpty() && !m_game_dirs.contains(normalized)) {
+		m_game_dirs.append(normalized);
+	}
+}
+
 bool ConfigurationListWidget::EnsureGameDirectory() {
 	if (HasValidGameDirectory()) {
 		return true;

@@ -92,6 +92,13 @@
          </property>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_ConfigureController">
+         <property name="text">
+          <string>Configure Controller</string>
+         </property>
+        </widget>
+       </item>
       </layout>
      </item>
     </layout>

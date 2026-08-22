@@ -38,6 +38,7 @@ public:
 
 	[[nodiscard]] const QString&     GetSettingsFile() const { return m_settings_file; }
 	[[nodiscard]] const QStringList& GetGameDirectories() const { return m_game_dirs; }
+	void AddGameDirectory(const QString& dir);
 	[[nodiscard]] const QStringList& GetHostInputMapping() const {
 		return m_global_info.host_input_mapping;
 	}
@@ -57,11 +58,13 @@ public slots:
 	void WriteSettings();
 	void ReadSettings();
 
+public slots:
+	void edit_input_mapping();
+
 protected slots:
 
 	void edit_configuration();
 	void delete_configuartion();
-	void edit_input_mapping();
 	void run_configuration();
 	void list_currentItemChanged(QTreeWidgetItem* current, QTreeWidgetItem* previous);
 	void list_itemDoubleClicked(QTreeWidgetItem* witem, int column);
