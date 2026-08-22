@@ -129,7 +129,6 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	connect(m_ui->widget, &ConfigurationListWidget::Run, this, &MainDialogPrivate::Run);
 	connect(m_ui->pushButton_InstallPkg, &QPushButton::clicked, this, &MainDialogPrivate::InstallPkg);
 	connect(m_ui->pushButton_GoToSettings, &QPushButton::clicked, this, &MainDialogPrivate::OpenGlobalSettings);
-	connect(m_ui->pushButton_ConfigureController, &QPushButton::clicked, m_ui->widget, &ConfigurationListWidget::edit_input_mapping);
 	connect(main_dialog, &MainDialog::Resize, [this]() {
 		g_last_geometry = m_main_dialog->saveGeometry();
 		m_ui->widget->WriteSettings();
