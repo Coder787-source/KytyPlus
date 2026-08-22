@@ -524,6 +524,14 @@ std::vector<std::pair<std::string, uint32_t>> PfsParser::ReadDirectory(
                 name += static_cast<char>(block_data[pos++]);
             }
 
+            // Skip null terminator + 8-byte padding to align next dirent
+            while (pos < block_data.size() && (pos % 8) != 0) {
+                if (block_data[pos] != '\0') break;
+                pos++;
+            }
+            // Align to 8-byte boundary for next entry
+            while (pos < block_data.size() && (pos % 8) != 0) pos++;
+
             if (dirent.type != DIRENT_TYPE_DOT && dirent.type != DIRENT_TYPE_DOTDOT) {
                 entries.emplace_back(name, dirent.inode);
             }
