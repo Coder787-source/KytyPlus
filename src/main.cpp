@@ -10,7 +10,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "emulator.h"
-#include "firmware/pkgParser.h"
+#include "package/pkgParser.h"
 #include "kytyGitVersion.h"
 
 #include <charconv>

@@ -85,6 +85,7 @@ public:
 	void Run();
 	void InstallPkg();
 	void RunInstall(const QString& file, const QString& flag);
+	void OpenGlobalSettings();
 
 	[[nodiscard]] const QString& GetInterpreter() const { return m_interpreter; }
 
@@ -127,6 +128,7 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	connect(m_ui->widget, &ConfigurationListWidget::Select, this, &MainDialogPrivate::Update);
 	connect(m_ui->widget, &ConfigurationListWidget::Run, this, &MainDialogPrivate::Run);
 	connect(m_ui->pushButton_InstallPkg, &QPushButton::clicked, this, &MainDialogPrivate::InstallPkg);
+	connect(m_ui->pushButton_GoToSettings, &QPushButton::clicked, this, &MainDialogPrivate::OpenGlobalSettings);
 	connect(main_dialog, &MainDialog::Resize, [this]() {
 		g_last_geometry = m_main_dialog->saveGeometry();
 		m_ui->widget->WriteSettings();
@@ -604,6 +606,10 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 void MainDialogPrivate::InstallPkg() {
 	const QString file = QFileDialog::getOpenFileName(m_main_dialog, tr("Install Package"), QString(), tr("PS4/PS5 Package (*.pkg);;All Files (*.*)"));
 	RunInstall(file, QStringLiteral("--install-pkg"));
+}
+
+void MainDialogPrivate::OpenGlobalSettings() {
+	m_ui->widget->edit_global_settings();
 }
 
 #include "mainDialog.moc"

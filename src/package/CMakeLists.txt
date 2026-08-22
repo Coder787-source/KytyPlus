@@ -3,19 +3,19 @@
 # Parses PS4/PS5 .pkg package containers and PFS filesystem images.
 # Does NOT distribute or include any Sony copyrighted material.
 
-file(GLOB firmware_src CONFIGURE_DEPENDS
+file(GLOB package_src CONFIGURE_DEPENDS
     *.cpp
     *.h
 )
 
-add_library(firmware STATIC ${firmware_src})
+add_library(package STATIC ${package_src})
 
-target_include_directories(firmware PUBLIC
+target_include_directories(package PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-target_link_libraries(firmware PRIVATE common)
+target_link_libraries(package PRIVATE common)
 
 # zlib is required for PFSC (compressed PFS) decompression.
 find_package(ZLIB)

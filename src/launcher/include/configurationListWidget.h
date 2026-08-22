@@ -46,6 +46,7 @@ public:
 	bool EnsureGameDirectory();
 	void ScanGameDirectory();
 	void ViewTrophies();
+	void edit_global_settings();
 
 signals:
 
@@ -60,7 +61,6 @@ protected slots:
 
 	void edit_configuration();
 	void delete_configuartion();
-	void edit_global_settings();
 	void edit_input_mapping();
 	void run_configuration();
 	void list_currentItemChanged(QTreeWidgetItem* current, QTreeWidgetItem* previous);

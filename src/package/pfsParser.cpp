@@ -1,4 +1,5 @@
 #include "firmware/pfsParser.h"
+#include <functional>
 #include "common/logging/log.h"
 
 #include <algorithm>
@@ -656,40 +657,52 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
         return result;
     }
 
-    // Read root directory entries (handles direct + indirect blocks)
-    auto dir_entries = ReadDirectory(f, root_info, result.block_size, result.num_blocks, nullptr);
-    LOGF("PFS: root directory has %zu entries", dir_entries.size());
-
-    // For each entry, read its inode to get file info
-    for (const auto& [name, inode_num] : dir_entries) {
-        if (inode_num == 0 || inode_num > result.num_inodes) continue;
-
-        PfsInodeD32 ed32{};
-        PfsInodeS32 es32{};
-        PfsInodeS64 es64{};
-        int evar = 0;
-
-        if (ReadInode(f, inode_num, result.block_size, result.version, result.mode,
-                      ed32, es32, es64, evar)) {
-            auto info = ExtractInodeInfo(ed32, es32, es64, evar);
-
-            PfsFile file;
-            file.name = name;
-            file.inode = info.number;
-            file.size = info.size;
-            file.is_compressed = (info.flags & INODE_FLAG_COMPRESSED) != 0;
-            file.is_directory = (info.mode & INODE_MODE_DIR) != 0;
-            file.block_number = (info.db[0] > 0) ? static_cast<uint32_t>(info.db[0]) : 0;
-            result.files.push_back(file);
-
-            LOGF("PFS:  %s%s (inode=%u, size=%llu, compressed=%s)",
-                 name.c_str(),
-                 file.is_directory ? "/" : "",
-                 file.inode,
-                 static_cast<unsigned long long>(file.size),
-                 file.is_compressed ? "yes" : "no");
+    // Recursively walk the directory tree starting from root
+    std::function<void(const InodeInfo&, const std::string&)> walkDir =
+        [&](const InodeInfo& dir_info, const std::string& path_prefix) {
+        auto dir_entries = ReadDirectory(f, dir_info, result.block_size, result.num_blocks, nullptr);
+        if (path_prefix.empty()) {
+            LOGF("PFS: root directory has %zu entries", dir_entries.size());
         }
-    }
+
+        for (const auto& [name, inode_num] : dir_entries) {
+            if (inode_num == 0 || inode_num > result.num_inodes) continue;
+            if (name == "." || name == "..") continue;
+
+            PfsInodeD32 ed32{};
+            PfsInodeS32 es32{};
+            PfsInodeS64 es64{};
+            int evar = 0;
+
+            if (ReadInode(f, inode_num, result.block_size, result.version, result.mode,
+                          ed32, es32, es64, evar)) {
+                auto info = ExtractInodeInfo(ed32, es32, es64, evar);
+
+                PfsFile file;
+                file.name = path_prefix.empty() ? name : (path_prefix + "/" + name);
+                file.inode = info.number;
+                file.size = info.size;
+                file.is_compressed = (info.flags & INODE_FLAG_COMPRESSED) != 0;
+                file.is_directory = (info.mode & INODE_MODE_DIR) != 0;
+                file.block_number = (info.db[0] > 0) ? static_cast<uint32_t>(info.db[0]) : 0;
+                result.files.push_back(file);
+
+                LOGF("PFS:  %s%s (inode=%u, size=%llu, compressed=%s)",
+                     file.name.c_str(),
+                     file.is_directory ? "/" : "",
+                     file.inode,
+                     static_cast<unsigned long long>(file.size),
+                     file.is_compressed ? "yes" : "no");
+
+                // Recurse into subdirectories
+                if (file.is_directory) {
+                    walkDir(info, file.name);
+                }
+            }
+        }
+    };
+
+    walkDir(root_info, "");
 
     result.ok = true;
     return result;
@@ -741,9 +754,11 @@ uint32_t PfsParser::ExtractAll(const PfsParseResult& result,
 
     for (const auto& file : result.files) {
         if (file.name.empty() || file.name == "." || file.name == "..") continue;
-        if (file.is_directory) continue; // skip directories for now
+        if (file.is_directory) continue; // skip directories, only extract files
 
         const std::filesystem::path out_path = std::filesystem::path(output_dir) / file.name;
+        // Create parent directories for nested files (e.g. sce_sys/param.json)
+        std::filesystem::create_directories(out_path.parent_path(), ec);
         std::ofstream out(out_path, std::ios::binary);
         if (!out) {
             LOGF("PFS: cannot create %s", out_path.string().c_str());

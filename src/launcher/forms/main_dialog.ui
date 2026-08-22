@@ -85,6 +85,13 @@
          </property>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_GoToSettings">
+         <property name="text">
+          <string>Go To Settings</string>
+         </property>
+        </widget>
+       </item>
       </layout>
      </item>
     </layout>
