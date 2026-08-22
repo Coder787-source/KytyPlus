@@ -518,8 +518,11 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 	process->setWorkingDirectory(dir.path());
 	process->start();
 #elif defined(_WIN32)
+	// /C closes cmd after emulator exits — needed for install so the
+	// QProcess::finished signal fires and post-extraction copy runs.
+	// /K keeps the console open for regular game boots.
 	QStringList process_args;
-	process_args << QStringLiteral("/K") << m_interpreter;
+	process_args << (flag == QStringLiteral("--install-pkg") ? QStringLiteral("/C") : QStringLiteral("/K")) << m_interpreter;
 	process_args += args;
 
 	QProcess* process = new QProcess(m_main_dialog);
@@ -551,7 +554,9 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 	// games directory and rescan the library, using an async signal so we
 	// dont block the GUI thread (which was causing the launcher to freeze).
 	if (flag == QStringLiteral("--install-pkg")) {
-		QString pkg_out_dir = QDir(dir.path()).filePath(QStringLiteral("pkg_out/pfs_files"));
+		// Emulator extracts to <parent_dir_of_pkg>/pkg_out/pfs_files, not emulator_dir.
+		QString pkg_parent = QFileInfo(file).absoluteDir().absolutePath();
+		QString pkg_out_dir = QDir(pkg_parent).filePath(QStringLiteral("pkg_out/pfs_files"));
 		QStringList game_dirs = m_ui->widget->GetGameDirectories();
 		QString content_id = QFileInfo(file).completeBaseName();
 
