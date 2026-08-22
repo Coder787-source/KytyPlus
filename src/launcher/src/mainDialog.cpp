@@ -542,38 +542,43 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 	}
 #endif
 
-	// After launching the install process, wait for it to finish, then move
-	// the extracted files to the games directory and rescan the library.
-	// This makes installed PKGs appear in the main game window.
+	// After launching the install process, move the extracted files to the
+	// games directory and rescan the library, using an async signal so we
+	// dont block the GUI thread (which was causing the launcher to freeze).
 	if (flag == QStringLiteral("--install-pkg")) {
-		if (process->waitForFinished(60000)) {  // wait up to 60s for extraction
-			QString pkg_out_dir = QDir(dir.path()).filePath(QStringLiteral("pkg_out/pfs_files"));
-			QStringList game_dirs = m_ui->widget->GetGameDirectories();
-			if (!game_dirs.isEmpty() && QDir(pkg_out_dir).exists()) {
-				QString games_dir = game_dirs.first();
-				if (!games_dir.isEmpty() && QDir(games_dir).exists()) {
-					QString content_id = QFileInfo(file).completeBaseName();
-					QString dest_dir = QDir(games_dir).filePath(content_id);
-					QDir().mkpath(dest_dir);
+		QString pkg_out_dir = QDir(dir.path()).filePath(QStringLiteral("pkg_out/pfs_files"));
+		QStringList game_dirs = m_ui->widget->GetGameDirectories();
+		QString content_id = QFileInfo(file).completeBaseName();
 
-					QDir source(pkg_out_dir);
-					QStringList files = source.entryList(QDir::Files | QDir::NoDotAndDotDot);
-					int moved = 0;
-					for (const auto& fname : files) {
-						QString src = source.filePath(fname);
-						QString dst = QDir(dest_dir).filePath(fname);
-						if (QFile::exists(dst)) QFile::remove(dst);
-						if (QFile::rename(src, dst)) moved++;
+		QObject::connect(process, &QProcess::finished, m_main_dialog,
+			[this, process, pkg_out_dir, game_dirs, content_id](int exitCode, QProcess::ExitStatus) {
+				if (!game_dirs.isEmpty() && QDir(pkg_out_dir).exists()) {
+					QString games_dir = game_dirs.first();
+					if (!games_dir.isEmpty() && QDir(games_dir).exists()) {
+						QString dest_dir = QDir(games_dir).filePath(content_id);
+						QDir().mkpath(dest_dir);
+
+						QDir source(pkg_out_dir);
+						QStringList files = source.entryList(QDir::Files | QDir::NoDotAndDotDot);
+						int moved = 0;
+						for (const auto& fname : files) {
+							QString src = source.filePath(fname);
+							QString dst = QDir(dest_dir).filePath(fname);
+							if (QFile::exists(dst)) QFile::remove(dst);
+							if (QFile::rename(src, dst)) moved++;
+						}
+
+						m_ui->widget->ScanGameDirectory();
+
+						QMessageBox::information(m_main_dialog, tr("Install complete"),
+						                         tr("Extracted %1 file(s) to:\n%2\n\nThe game should now appear in the list.").arg(moved).arg(dest_dir));
 					}
-
-					// Trigger a rescan so the new game appears in the list
-					m_ui->widget->ScanGameDirectory();
-
-					QMessageBox::information(m_main_dialog, tr("Install complete"),
-					                         tr("Extracted %1 file(s) to:\n%2\n\nThe game should now appear in the list.").arg(moved).arg(dest_dir));
 				}
-			}
-		}
+				process->deleteLater();
+			});
+	} else {
+		// For non-pkg installs, auto-cleanup the process
+		QObject::connect(process, &QProcess::finished, process, &QProcess::deleteLater);
 	}
 }
 
