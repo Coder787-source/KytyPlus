@@ -336,6 +336,8 @@ static void GameEventController([[maybe_unused]] const EventController& f) {
 		if (button != 0) {
 			Controller::ControllerButton(f.id, button, f.down);
 		}
+		// Also route through custom gamepad mapping if user has one set.
+		HostInputGamepadButton(static_cast<uint8_t>(f.button), f.down);
 	}
 
 	if (f.axis) {

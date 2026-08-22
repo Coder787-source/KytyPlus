@@ -1,6 +1,7 @@
 #include "configurationEditDialog.h"
 
 #include "configuration.h"
+#include "controllerMappingPanel.h"
 #include "mandatoryLineEdit.h"
 
 #include <QAbstractItemView>
@@ -96,6 +97,7 @@ ConfigurationEditDialog::ConfigurationEditDialog(Configuration& info, QWidget* p
       m_info(info) {
 	m_ui->setupUi(this);
 	InitGameDirectories();
+	InitControllerMapping();
 
 	connect(m_ui->ok_button, &QPushButton::clicked, this, &ConfigurationEditDialog::save);
 	connect(m_ui->clear_button, &QPushButton::clicked, this, &ConfigurationEditDialog::clear);
@@ -191,6 +193,21 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	ListInit(m_ui->comboBox_present_mode, info.present_mode);
 	ListInit(m_ui->comboBox_present_filter, info.present_filter);
 	ListInit(m_ui->comboBox_aspect_ratio, info.aspect_ratio);
+	m_controller_mapping->SetMappings(info.host_input_mapping);
+}
+
+void ConfigurationEditDialog::InitControllerMapping() {
+	m_controller_group = new QGroupBox(tr("Controller Mapping"), this);
+	auto* group_layout = new QVBoxLayout(m_controller_group);
+	group_layout->setContentsMargins(8, 8, 8, 8);
+	group_layout->setSpacing(6);
+
+	m_controller_mapping = new ControllerMappingPanel(m_controller_group);
+	m_controller_mapping->setMinimumHeight(200);
+	group_layout->addWidget(m_controller_mapping);
+
+	// addRow with a plain QWidget (no label) spans both columns.
+	m_ui->formLayout_6->addRow(m_controller_group);
 }
 
 void ConfigurationEditDialog::InitGameDirectories() {
@@ -334,6 +351,9 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui) {
 
 void ConfigurationEditDialog::update_info() {
 	UpdateInfo(m_info, *m_ui);
+	if (m_controller_mapping != nullptr) {
+		m_info.host_input_mapping = m_controller_mapping->GetMappings();
+	}
 }
 
 void ConfigurationEditDialog::adjust_size() {

@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 class QByteArray;
+class ControllerMappingPanel;
 class QGroupBox;
 class QListWidget;
 class QMoveEvent;
@@ -38,6 +39,8 @@ private:
 	Ui::ConfigurationEditDialog* m_ui = nullptr;
 	Configuration&               m_info;
 	QGroupBox*                   m_game_dirs_group        = nullptr;
+	QGroupBox*                   m_controller_group       = nullptr;
+	ControllerMappingPanel*      m_controller_mapping     = nullptr;
 	QListWidget*                 m_game_dirs_list         = nullptr;
 	QToolButton*                 m_remove_game_dir_button = nullptr;
 	bool                         m_show_game_dirs         = false;
@@ -45,6 +48,7 @@ private:
 protected:
 	void Init(const Configuration& info);
 	void InitGameDirectories();
+	void InitControllerMapping();
 	void AddGameDirectoryItem(const QString& dir);
 
 	void moveEvent(QMoveEvent* event) override;

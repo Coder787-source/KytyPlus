@@ -1,5 +1,6 @@
 #include "graphics/presentation/window/hostInput.h"
 
+#include "SDL_gamecontroller.h"
 #include "SDL_keyboard.h"
 #include "SDL_keycode.h"
 #include "SDL_mouse.h"
@@ -55,9 +56,10 @@ static constexpr std::array CONTROL_INFO = {
 constexpr std::size_t INVALID_CONTROL = CONTROL_INFO.size();
 
 struct Binding {
-	SDL_Keycode key          = SDLK_UNKNOWN;
-	uint8_t     mouse_button = 0;
-	std::size_t control      = INVALID_CONTROL;
+	SDL_Keycode key            = SDLK_UNKNOWN;
+	uint8_t     mouse_button   = 0;
+	int         gamepad_button = -1;  // SDL_GameControllerButton or -1
+	std::size_t control        = INVALID_CONTROL;
 };
 
 std::size_t ControlFromName(std::string_view name) {
@@ -95,10 +97,17 @@ uint8_t MouseButtonFromName(std::string_view name) {
 	return button != buttons.end() ? button->second : 0;
 }
 
+int GamepadButtonFromName(std::string_view name) {
+	if (!name.starts_with("Pad:")) return -1;
+	return static_cast<int>(
+	    SDL_GameControllerGetButtonFromString(std::string(name.substr(4)).c_str()));
+}
+
 bool Conflicts(const Binding& first, const Binding& second) {
 	return first.control == second.control ||
 	       (first.key != SDLK_UNKNOWN && first.key == second.key) ||
-	       (first.mouse_button != 0 && first.mouse_button == second.mouse_button);
+	       (first.mouse_button != 0 && first.mouse_button == second.mouse_button) ||
+	       (first.gamepad_button >= 0 && first.gamepad_button == second.gamepad_button);
 }
 
 class InputMap {
@@ -108,23 +117,27 @@ public:
 			const std::string_view entry = value;
 			const auto             split = entry.find('=');
 
-			Binding binding;
-			if (split != std::string_view::npos) {
-				binding.control       = ControlFromName(entry.substr(0, split));
-				const auto host_input = entry.substr(split + 1);
-				binding.mouse_button  = MouseButtonFromName(host_input);
-				if (binding.mouse_button == 0) {
-					binding.key = NormalizeKey(SDL_GetKeyFromName(std::string(host_input).c_str()));
-				}
+		Binding binding;
+		if (split != std::string_view::npos) {
+			binding.control       = ControlFromName(entry.substr(0, split));
+			const auto host_input = entry.substr(split + 1);
+			binding.mouse_button  = MouseButtonFromName(host_input);
+			if (binding.mouse_button == 0) {
+				binding.gamepad_button = GamepadButtonFromName(host_input);
 			}
+			if (binding.mouse_button == 0 && binding.gamepad_button < 0) {
+				binding.key = NormalizeKey(SDL_GetKeyFromName(std::string(host_input).c_str()));
+			}
+		}
 
-			const bool reserved =
-			    binding.key == SDLK_ESCAPE || binding.key == SDLK_SPACE || binding.key == SDLK_F1;
-			if (binding.control == INVALID_CONTROL || reserved ||
-			    (binding.key == SDLK_UNKNOWN && binding.mouse_button == 0)) {
-				EXIT("Invalid input mapping: %s\n", value.c_str());
-			}
-			Add(binding);
+		const bool reserved =
+		    binding.key == SDLK_ESCAPE || binding.key == SDLK_SPACE || binding.key == SDLK_F1;
+		const bool has_binding = binding.key != SDLK_UNKNOWN || binding.mouse_button != 0 ||
+		                         binding.gamepad_button >= 0;
+		if (binding.control == INVALID_CONTROL || reserved || !has_binding) {
+			EXIT("Invalid input mapping: %s\n", value.c_str());
+		}
+		Add(binding);
 		}
 	}
 	[[nodiscard]] bool Custom() const { return m_custom; }
@@ -141,6 +154,13 @@ public:
 		const auto binding = std::find_if(
 		    m_bindings.begin(), m_bindings.begin() + m_size,
 		    [mouse_button](const auto& item) { return item.mouse_button == mouse_button; });
+		return binding != m_bindings.begin() + m_size ? binding->control : INVALID_CONTROL;
+	}
+
+	[[nodiscard]] std::size_t FindGamepadButton(int button) const {
+		const auto binding = std::find_if(
+		    m_bindings.begin(), m_bindings.begin() + m_size,
+		    [button](const auto& item) { return item.gamepad_button == button; });
 		return binding != m_bindings.begin() + m_size ? binding->control : INVALID_CONTROL;
 	}
 
@@ -299,6 +319,13 @@ void HostInputMouseButton(uint8_t mouse_button, bool down) {
 	const auto& map = GetInputMap();
 	if (map.Custom() && mouse_button != 0) {
 		SetControl(map.FindMouseButton(mouse_button), down);
+	}
+}
+
+void HostInputGamepadButton(int gamepad_button, bool down) {
+	const auto& map = GetInputMap();
+	if (map.Custom() && gamepad_button >= 0) {
+		SetControl(map.FindGamepadButton(gamepad_button), down);
 	}
 }
 
