@@ -4,6 +4,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMessageBox>
+#include <QSizePolicy>
 
 // Mirrors the ControlInfo table in hostInput.cpp.
 // Use readable display names alongside the internal keymap names.
@@ -90,6 +91,9 @@ void ControllerMappingPanel::BuildLayout() {
 	m_grid->setSpacing(4);
 	setLayout(m_grid);
 
+	// Make the Binding column stretch to fill available space.
+	m_grid->setColumnStretch(1, 1);
+
 	// Column headers
 	m_grid->addWidget(new QLabel(tr("Control"), this), 0, 0);
 	m_grid->addWidget(new QLabel(tr("Binding"), this), 0, 1);
@@ -99,7 +103,8 @@ void ControllerMappingPanel::BuildLayout() {
 		ControlRow row;
 		row.control_name = CONTROLS[i].keymap_name;
 		row.bind_button  = new QPushButton(tr("Unbound"), this);
-		row.bind_button->setMinimumWidth(180);
+		row.bind_button->setMinimumWidth(200);
+		row.bind_button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 		// Capture on click: enter listening mode for next key/button.
 		connect(row.bind_button, &QPushButton::clicked, this, [this, idx = i]() {
 			if (idx >= 0 && idx < m_rows.size()) SetCaptureMode(m_rows[idx]);
@@ -108,6 +113,9 @@ void ControllerMappingPanel::BuildLayout() {
 		m_grid->addWidget(row.bind_button, i + 1, 1);
 		m_rows.append(row);
 	}
+
+	// Let the panel expand to fill the scroll area width.
+	setMinimumWidth(420);
 }
 
 void ControllerMappingPanel::SetCaptureMode(ControlRow& row) {
