@@ -779,6 +779,37 @@ void ConfigurationListWidget::open_game_folder() {
 	}
 }
 
+void ConfigurationListWidget::delete_game() {
+	auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->currentItem());
+	if (item == nullptr) {
+		return;
+	}
+
+	const auto& info  = item->GetInfo();
+	QDir        dir(info.basedir);
+	if (!dir.exists()) {
+		return;
+	}
+
+	const auto ret = QMessageBox::question(this, tr("Delete game"),
+	                                       tr("Delete \"%1\" from your game library?\n\n"
+	                                          "This will permanently remove all files in:\n"
+	                                          "%2")
+	                                           .arg(info.name, dir.absolutePath()),
+	                                       QMessageBox::Yes | QMessageBox::No,
+	                                       QMessageBox::No);
+	if (ret != QMessageBox::Yes) {
+		return;
+	}
+
+	if (!dir.removeRecursively()) {
+		QMessageBox::warning(this, tr("Delete game"), tr("Could not delete the game folder."));
+		return;
+	}
+
+	ScanGameDirectory();
+}
+
 void ConfigurationListWidget::remove_save_data() {
 	auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->currentItem());
 	if (item == nullptr) {
@@ -921,6 +952,10 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 	QAction* action_delete =
 	    menu.addAction(style()->standardIcon(QStyle::SP_DialogDiscardButton),
 	                   tr("Clear custom settings"), this, SLOT(delete_configuartion()));
+	menu.addSeparator();
+	QAction* action_delete_game =
+	    menu.addAction(style()->standardIcon(QStyle::SP_TrashIcon), tr("Delete game..."),
+	                   this, SLOT(delete_game()));
 
 	if (item == nullptr) {
 		menu.addSeparator();
@@ -940,6 +975,7 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 		action_remove_save_data->setDisabled(item->IsRunning() || save_data_dirs.isEmpty());
 		action_edit->setDisabled(item->IsRunning());
 		action_delete->setDisabled(item->IsRunning() || !item->GetInfo().custom_settings);
+		action_delete_game->setDisabled(item->IsRunning());
 	} else {
 		action_run->setDisabled(true);
 		action_open_folder->setDisabled(true);
@@ -947,6 +983,7 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 		action_remove_save_data->setDisabled(true);
 		action_edit->setDisabled(true);
 		action_delete->setDisabled(true);
+		action_delete_game->setDisabled(true);
 	}
 
 	if (!m_run_enabled) {

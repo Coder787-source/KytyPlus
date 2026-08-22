@@ -70,6 +70,7 @@ protected slots:
 	void list_itemDoubleClicked(QTreeWidgetItem* witem, int column);
 	void show_context_menu(const QPoint& pos);
 	void open_game_folder();
+	void delete_game();
 	void remove_save_data();
 	void filter_configurations(const QString& text);
 
