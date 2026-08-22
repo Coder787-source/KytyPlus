@@ -86,6 +86,13 @@
         </widget>
        </item>
        <item>
+        <widget class="QPushButton" name="pushButton_LoadGame">
+         <property name="text">
+          <string>Load Game / ELF...</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QPushButton" name="pushButton_GoToSettings">
          <property name="text">
           <string>Go To Settings</string>

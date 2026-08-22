@@ -84,6 +84,7 @@ public:
 	void FindInterpreter();
 	void Run();
 	void InstallPkg();
+	void LoadGame();
 	void RunInstall(const QString& file, const QString& flag);
 	void OpenGlobalSettings();
 
@@ -128,6 +129,7 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	connect(m_ui->widget, &ConfigurationListWidget::Select, this, &MainDialogPrivate::Update);
 	connect(m_ui->widget, &ConfigurationListWidget::Run, this, &MainDialogPrivate::Run);
 	connect(m_ui->pushButton_InstallPkg, &QPushButton::clicked, this, &MainDialogPrivate::InstallPkg);
+	connect(m_ui->pushButton_LoadGame, &QPushButton::clicked, this, &MainDialogPrivate::LoadGame);
 	connect(m_ui->pushButton_GoToSettings, &QPushButton::clicked, this, &MainDialogPrivate::OpenGlobalSettings);
 	connect(main_dialog, &MainDialog::Resize, [this]() {
 		g_last_geometry = m_main_dialog->saveGeometry();
@@ -613,6 +615,23 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 		// For non-pkg installs, auto-cleanup the process
 		QObject::connect(process, &QProcess::finished, process, &QProcess::deleteLater);
 	}
+}
+
+void MainDialogPrivate::LoadGame() {
+	const QString game = QFileDialog::getOpenFileName(m_main_dialog, tr("Load Game / ELF"), QString(),
+	                                                  tr("PS5 ELF / Game (*.elf *.bin);;All Files (*.*)"));
+	if (game.isEmpty()) {
+		return;
+	}
+
+	Configuration info;
+	info.basedir = QFileInfo(game).absoluteDir().absolutePath();
+	info.elf     = game;
+	info.host_input_mapping = m_ui->widget->GetHostInputMapping();
+
+	m_running_item = nullptr;
+	m_main_dialog->RunInterpreter(&m_process, info);
+	Update();
 }
 
 void MainDialogPrivate::InstallPkg() {
