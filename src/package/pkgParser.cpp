@@ -1,5 +1,5 @@
-#include "firmware/pkgParser.h"
-#include "firmware/pfsParser.h"
+#include "package/pkgParser.h"
+#include "package/pfsParser.h"
 #include "common/logging/log.h"
 
 #include <algorithm>

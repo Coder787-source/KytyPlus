@@ -590,7 +590,7 @@ add_dependencies(kyty_emulator fsr_shaders)
 # Anchorx86_64 macOS-guest .zerofill segments; selected by configure_macos_guest_address_space.
 configure_macos_guest_address_space(kyty_emulator)
 
-target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries} gcn_decoder package)
+target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries} gcn_decoder pkg_parser)
 target_compile_definitions(kyty_emulator PRIVATE ${kyty_emulator_compile_definitions})
 if (WIN32)
 	target_link_libraries(kyty_emulator opengl32)
