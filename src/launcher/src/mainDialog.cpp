@@ -496,7 +496,7 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 #ifdef __linux__
 	auto bash_file_name = dir.filePath(KYTY_BASH_FILE);
 	if (!CreateBashScript(m_interpreter, args, bash_file_name)) {
-		QMessageBox::critical(m_main_dialog, tr("Error"), tr("Can't create file:\\n") + bash_file_name);
+		QMessageBox::critical(m_main_dialog, tr("Error"), tr("Can't create file:\n") + bash_file_name);
 		return;
 	}
 
@@ -538,9 +538,43 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 #endif
 #if !defined(_WIN32)
 	if (!process->waitForStarted(5000)) {
-		QMessageBox::critical(m_main_dialog, tr("Error"), tr("Failed to start:\\n%1\\n\\n%2").arg(process->program(), process->errorString()));
+		QMessageBox::critical(m_main_dialog, tr("Error"), tr("Failed to start:\n%1\n\n%2").arg(process->program(), process->errorString()));
 	}
 #endif
+
+	// After launching the install process, wait for it to finish, then move
+	// the extracted files to the games directory and rescan the library.
+	// This makes installed PKGs appear in the main game window.
+	if (flag == QStringLiteral("--install-pkg")) {
+		if (process->waitForFinished(60000)) {  // wait up to 60s for extraction
+			QString pkg_out_dir = QDir(dir.path()).filePath(QStringLiteral("pkg_out/pfs_files"));
+			QStringList game_dirs = m_ui->widget->GetGameDirectories();
+			if (!game_dirs.isEmpty() && QDir(pkg_out_dir).exists()) {
+				QString games_dir = game_dirs.first();
+				if (!games_dir.isEmpty() && QDir(games_dir).exists()) {
+					QString content_id = QFileInfo(file).completeBaseName();
+					QString dest_dir = QDir(games_dir).filePath(content_id);
+					QDir().mkpath(dest_dir);
+
+					QDir source(pkg_out_dir);
+					QStringList files = source.entryList(QDir::Files | QDir::NoDotAndDotDot);
+					int moved = 0;
+					for (const auto& fname : files) {
+						QString src = source.filePath(fname);
+						QString dst = QDir(dest_dir).filePath(fname);
+						if (QFile::exists(dst)) QFile::remove(dst);
+						if (QFile::rename(src, dst)) moved++;
+					}
+
+					// Trigger a rescan so the new game appears in the list
+					m_ui->widget->ScanGameDirectory();
+
+					QMessageBox::information(m_main_dialog, tr("Install complete"),
+					                         tr("Extracted %1 file(s) to:\n%2\n\nThe game should now appear in the list.").arg(moved).arg(dest_dir));
+				}
+			}
+		}
+	}
 }
 
 void MainDialogPrivate::InstallPkg() {
