@@ -17,7 +17,7 @@ standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (i
 
 KytyPlus has a validated PKG/PFS parser, a strict ELF loader, and working SDL controller mapping. The infrastructure works. **The only thing missing is game results.**
 
-If you have a decrypted PS4 or PS5 game file (eboot.bin/ELF):
+If you have a decrypted PS4 or PS5 game file (eboot.bin/ELF, or .PKG):
 1. Download the [latest release](https://github.com/Coder787-source/KytyPlus/releases).
 2. Load your game via the GUI.
 3. If it crashes, click the **Share Log** button in the log viewer.
