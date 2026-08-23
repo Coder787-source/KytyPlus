@@ -321,7 +321,17 @@ static void GameEventController([[maybe_unused]] const EventController& f) {
 
 	if (f.added) {
 		auto* pad = SDL_GameControllerOpen(f.id);
-		EXIT_NOT_IMPLEMENTED(pad == nullptr);
+		if (pad == nullptr) {
+			// SDL doesn't recognize this controller in its gamepad database.
+			// Fall back to raw joystick so buttons/axes still route to the guest.
+			auto* joy = SDL_JoystickOpen(f.id);
+			if (joy != nullptr) {
+				LOGF("Controller opened as raw joystick: %s\n",
+				     SDL_JoystickName(joy));
+				Controller::ControllerConnect(f.id);
+			}
+			return;
+		}
 		int id = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pad));
 		Controller::ControllerConnect(id);
 	}
@@ -691,6 +701,63 @@ void WindowContext::ProcessEvent(double time_s) {
 
 			GameEventController(c);
 
+			break;
+		}
+
+		// Raw joystick fallback — when SDL doesn't recognize a controller
+		// in its gamepad DB, events arrive as joystick events instead.
+		case SDL_JOYAXISMOTION: {
+			// Map raw axis to a controller event. Axes 0-5 map to
+			// left stick X/Y, right stick X/Y, L2, R2 by convention.
+			static const uint8_t axis_map[] = {
+			    SDL_CONTROLLER_AXIS_LEFTX,
+			    SDL_CONTROLLER_AXIS_LEFTY,
+			    SDL_CONTROLLER_AXIS_RIGHTX,
+			    SDL_CONTROLLER_AXIS_RIGHTY,
+			    SDL_CONTROLLER_AXIS_TRIGGERLEFT,
+			    SDL_CONTROLLER_AXIS_TRIGGERRIGHT,
+			};
+			EventController c {};
+			c.id         = event->jaxis.which;
+			c.axis_id    = (event->jaxis.axis < 6) ? axis_map[event->jaxis.axis]
+			                                        : SDL_CONTROLLER_AXIS_INVALID;
+			c.axis_value = event->jaxis.value;
+			c.axis       = true;
+			c.timestamp_seconds = time_s;
+			GameEventController(c);
+			break;
+		}
+
+		case SDL_JOYBUTTONDOWN:
+		case SDL_JOYBUTTONUP: {
+			EventController c {};
+			c.id    = event->jbutton.which;
+			c.button = event->jbutton.button;
+			c.down   = (event->jbutton.type == SDL_JOYBUTTONDOWN);
+			c.up     = (event->jbutton.type == SDL_JOYBUTTONUP);
+			c.pressed  = (event->jbutton.state == SDL_PRESSED);
+			c.released = (event->jbutton.state == SDL_RELEASED);
+			c.timestamp_seconds = time_s;
+			GameEventController(c);
+			break;
+		}
+
+		case SDL_JOYDEVICEADDED: {
+			// Open as raw joystick when we don't get a controller event.
+			auto* joy = SDL_JoystickOpen(event->jdevice.which);
+			if (joy != nullptr) {
+				LOGF("Joystick added: %s\n", SDL_JoystickName(joy));
+				Controller::ControllerConnect(event->jdevice.which);
+			}
+			break;
+		}
+
+		case SDL_JOYDEVICEREMOVED: {
+			Controller::ControllerDisconnect(event->jdevice.which);
+			auto* joy = SDL_JoystickFromInstanceID(event->jdevice.which);
+			if (joy != nullptr) {
+				SDL_JoystickClose(joy);
+			}
 			break;
 		}
 	}
