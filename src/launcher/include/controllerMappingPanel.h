@@ -3,13 +3,10 @@
 
 #include "common.h"
 
-#include <QKeyEvent>
-#include <QPushButton>
 #include <QString>
 #include <QStringList>
+#include <QTableWidget>
 #include <QWidget>
-
-class QGridLayout;
 
 // Editable table: each PS5 control gets a bindable cell.
 // Click a row to capture the next keyboard key, mouse button, or gamepad button press.
@@ -26,19 +23,12 @@ public:
 	void                     SetMappings(const QStringList& list);
 
 private:
-	struct ControlRow {
-		QString      control_name; // e.g. "Cross", "LeftStickUp"
-		QPushButton* bind_button = nullptr;
-	};
-
-	void BuildLayout();
-	void SetCaptureMode(ControlRow& row);
-
+	void BuildTable();
 	void keyPressEvent(QKeyEvent* event) override;
 
-	QList<ControlRow> m_rows;
-	QGridLayout*      m_grid = nullptr;
-	ControlRow*        m_capturing = nullptr;
+	QTableWidget* m_table      = nullptr;
+	int           m_capturing  = -1; // row index currently listening, -1 = none
+	QStringList   m_key_names;       // internal keymap names per row
 };
 
 #endif // CONTROLLER_MAPPING_PANEL_H
