@@ -89,7 +89,7 @@ testers are for.
 - **Shader / pipeline disk cache** — compiled Vulkan pipelines persist to `_Cache/vulkan_pipeline_cache.bin` and reload on subsequent launches, skipping work for shaders that haven’t changed. A compatibility check rejects stale caches. *(First in the PS5 scene. Game-level benefit unvalidated.)*
 - **FSR 1.0 upscaler** — edge-adaptive spatial upscaling (EASU + RCAS), works on all Vulkan GPUs (AMD / NVIDIA / Intel). Configurable via the launcher (method + sharpness); auto-enabled on iGPUs. Falls back to a plain blit if the GPU can’t handle it. *(First in the PS5 scene. The upscaler runs; the internal-resolution-reduction / bandwidth-saving half is not yet wired.)*
 - **Configurable present path** — present mode (VSync / Mailbox / Immediate), present filter (Nearest / Linear / Cubic), and aspect ratio (Stretch / 16:9 / 4:3 / Integer). *(First in the PS5 scene.)*
-- **PKG package parser + full PFS filesystem parser** — parses Sony `.pkg` package files (PS4/PS5 digital games / updates) via `--install-pkg`, extracts the inner PFS image, then walks the full filesystem (PFS superblock, D32/S32/S64 inodes, directory enumeration, indirect block traversal, PFSC/zlib decompression, AES-XTS decryption with user-supplied EKPFS keys). The plaintext/uncompressed case is complete; encrypted + compressed cases are structurally complete but runtime-unvalidated. *(First in the PS5 scene.)*
+- **PKG package parser + full PFS filesystem parser** — parses Sony `.pkg` package files (PS4/PS5 digital games / updates) via `--install-pkg`, extracts the inner PFS image, then walks the full filesystem (PFS superblock, D32/S32/S64 inodes, directory enumeration, indirect block traversal, PFSC/zlib decompression). *(First in the PS5 scene.)*
 - **Install .PKG GUI buttons** — "Install Package (.pkg)" buttons in the launcher, so users no longer need the command line to install. Fixes the discoverability gap where users previously couldn't find the install path.
 
 **Wired, validated only as mechanism / spec, not on real games or hardware:**
@@ -117,7 +117,7 @@ next unimplemented feature. Always test with a **fresh build** and attach logs w
 >
 > **Have a question or need help (firmware install, config, a game not booting)?** Open an issue —
 > it's not just for bug reports. I read every one and reply. Questions are welcome, even if it's
-> just "how do I install firmware" or "does this work on my GPU." Better to ask than guess.
+> just "how do I map my controller" or "does this work on my GPU." Better to ask than guess.
 
 ---
 
