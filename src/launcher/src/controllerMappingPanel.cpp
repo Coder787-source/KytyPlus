@@ -221,7 +221,7 @@ void ControllerMappingPanel::PollGamepad() {
 
 	JOYINFOEX info = {};
 	info.dwSize  = sizeof(info);
-	info.dwFlags = JOY_RETURNBUTTONS | JOY_RETURNPOV | JOY_RETURNX | JOY_RETURNY | JOY_RETURNZ | JOY_RETURNR;
+	info.dwFlags = JOY_RETURNBUTTONS | JOY_RETURNPOV | JOY_RETURNX | JOY_RETURNY | JOY_RETURNZ | JOY_RETURNR | JOY_RETURNU | JOY_RETURNV;
 
 	// Try joystick 0 first.
 	if (joyGetPosEx(JOYSTICKID1, &info) == JOYERR_NOERROR) {
@@ -257,37 +257,40 @@ void ControllerMappingPanel::PollGamepad() {
 		m_prev_pov = pov;
 
 		// --- Analog sticks and triggers ---
-		// Axis order on common controllers: X=leftX, Y=leftY, Z=rightX/triggers, R=rightY
+		// Axis order varies by controller. X/Y=left stick on most pads.
+		// Z/R or U/V = right stick, depending on the driver.
+		// We check all four candidate right-stick axis pairs.
 		struct AxisCheck { DWORD val; DWORD prev; const char* name; };
 		AxisCheck axes[] = {
 		    {info.dwXpos, m_prev_axes[0], "LeftStick"},
 		    {info.dwYpos, m_prev_axes[1], "LeftStick"},
 		    {info.dwZpos, m_prev_axes[2], "RightStick"},
 		    {info.dwRpos, m_prev_axes[3], "RightStick"},
+		    {info.dwUpos, m_prev_axes[4], "RightStick"},
+		    {info.dwVpos, m_prev_axes[5], "RightStick"},
 		};
 
 		const DWORD CENTER  = 32767;
 		const DWORD DEADZONE = 12000;  // ~37% of range
 
-		for (int i = 0; i < 4; i++) {
-			// Detect first significant movement away from center.
+		for (int i = 0; i < 6; i++) {
 			DWORD diff = (axes[i].val > CENTER) ? (axes[i].val - CENTER) : (CENTER - axes[i].val);
 			if (diff > DEADZONE && m_prev_axes[i] <= DEADZONE) {
 				m_prev_axes[i] = diff;
 				QString dir;
-				if (i == 0)      dir = (axes[i].val > CENTER) ? QStringLiteral("Right") : QStringLiteral("Left");
-				else if (i == 1) dir = (axes[i].val > CENTER) ? QStringLiteral("Down")  : QStringLiteral("Up");
-				else if (i == 2) dir = (axes[i].val > CENTER) ? QStringLiteral("Right") : QStringLiteral("Left");
-				else             dir = (axes[i].val > CENTER) ? QStringLiteral("Down")  : QStringLiteral("Up");
+				// Even axis indices = X (Left/Right), odd = Y (Up/Down)
+				if ((i % 2) == 0) {
+					dir = (axes[i].val > CENTER) ? QStringLiteral("Right") : QStringLiteral("Left");
+				} else {
+					dir = (axes[i].val > CENTER) ? QStringLiteral("Down")  : QStringLiteral("Up");
+				}
 				CaptureInput(QStringLiteral("Pad: %1%2").arg(axes[i].name, dir));
 				return;
 			}
-			// Track whether axis has been centered recently.
 			if (diff <= DEADZONE) m_prev_axes[i] = diff;
 		}
 
-		// Store last non-zero axis values so we detect the next nudge.
-		for (int i = 0; i < 4; i++) {
+		for (int i = 0; i < 6; i++) {
 			DWORD diff = (axes[i].val > CENTER) ? (axes[i].val - CENTER) : (CENTER - axes[i].val);
 			if (diff > DEADZONE) m_prev_axes[i] = diff;
 		}
