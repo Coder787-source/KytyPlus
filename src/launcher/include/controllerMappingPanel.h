@@ -30,10 +30,12 @@ private:
 	void CaptureInput(const QString& label);
 	void PollGamepad();
 
-	QTableWidget* m_table        = nullptr;
-	QTimer*       m_poll_timer   = nullptr;
-	int           m_capturing    = -1;
-	uint32_t      m_prev_buttons = 0;
+	QTableWidget* m_table          = nullptr;
+	QTimer*       m_poll_timer     = nullptr;
+	int           m_capturing      = -1;
+	uint32_t      m_prev_buttons   = 0;
+	uint32_t      m_prev_pov       = 0xFFFF;
+	uint32_t      m_prev_axes[4]   = {0, 0, 0, 0};
 	QStringList   m_key_names;
 };
 

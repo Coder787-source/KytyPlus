@@ -221,16 +221,16 @@ void ControllerMappingPanel::PollGamepad() {
 
 	JOYINFOEX info = {};
 	info.dwSize  = sizeof(info);
-	info.dwFlags = JOY_RETURNBUTTONS;
+	info.dwFlags = JOY_RETURNBUTTONS | JOY_RETURNPOV | JOY_RETURNX | JOY_RETURNY | JOY_RETURNZ | JOY_RETURNR;
 
 	// Try joystick 0 first.
 	if (joyGetPosEx(JOYSTICKID1, &info) == JOYERR_NOERROR) {
+		// --- Digital buttons ---
 		uint32_t changed = info.dwButtons ^ m_prev_buttons;
 		uint32_t pressed = info.dwButtons & changed;
 		m_prev_buttons  = info.dwButtons;
 
 		if (pressed != 0) {
-			// Find the lowest pressed bit.
 			int btn = 0;
 			uint32_t mask = pressed;
 			while ((mask & 1) == 0 && btn < 32) {
@@ -238,6 +238,58 @@ void ControllerMappingPanel::PollGamepad() {
 				btn++;
 			}
 			CaptureInput(QStringLiteral("Pad: Button%1").arg(btn + 1));
+			return;
+		}
+
+		// --- D-pad (POV hat) ---
+		const DWORD pov = info.dwPOV;
+		if (pov != m_prev_pov && pov != JOY_POVCENTERED) {
+			m_prev_pov = pov;
+			// POV is in hundredths of a degree: 0=up, 9000=right, 18000=down, 27000=left
+			QString dir;
+			if (pov < 4500 || pov > 31500)      dir = QStringLiteral("DPadUp");
+			else if (pov >= 4500 && pov < 13500) dir = QStringLiteral("DPadRight");
+			else if (pov >= 13500 && pov < 22500) dir = QStringLiteral("DPadDown");
+			else                                 dir = QStringLiteral("DPadLeft");
+			CaptureInput(QStringLiteral("Pad: %1").arg(dir));
+			return;
+		}
+		m_prev_pov = pov;
+
+		// --- Analog sticks and triggers ---
+		// Axis order on common controllers: X=leftX, Y=leftY, Z=rightX/triggers, R=rightY
+		struct AxisCheck { DWORD val; DWORD prev; const char* name; };
+		AxisCheck axes[] = {
+		    {info.dwXpos, m_prev_axes[0], "LeftStick"},
+		    {info.dwYpos, m_prev_axes[1], "LeftStick"},
+		    {info.dwZpos, m_prev_axes[2], "RightStick"},
+		    {info.dwRpos, m_prev_axes[3], "RightStick"},
+		};
+
+		const DWORD CENTER  = 32767;
+		const DWORD DEADZONE = 12000;  // ~37% of range
+
+		for (int i = 0; i < 4; i++) {
+			// Detect first significant movement away from center.
+			DWORD diff = (axes[i].val > CENTER) ? (axes[i].val - CENTER) : (CENTER - axes[i].val);
+			if (diff > DEADZONE && m_prev_axes[i] <= DEADZONE) {
+				m_prev_axes[i] = diff;
+				QString dir;
+				if (i == 0)      dir = (axes[i].val > CENTER) ? QStringLiteral("Right") : QStringLiteral("Left");
+				else if (i == 1) dir = (axes[i].val > CENTER) ? QStringLiteral("Down")  : QStringLiteral("Up");
+				else if (i == 2) dir = (axes[i].val > CENTER) ? QStringLiteral("Right") : QStringLiteral("Left");
+				else             dir = (axes[i].val > CENTER) ? QStringLiteral("Down")  : QStringLiteral("Up");
+				CaptureInput(QStringLiteral("Pad: %1%2").arg(axes[i].name, dir));
+				return;
+			}
+			// Track whether axis has been centered recently.
+			if (diff <= DEADZONE) m_prev_axes[i] = diff;
+		}
+
+		// Store last non-zero axis values so we detect the next nudge.
+		for (int i = 0; i < 4; i++) {
+			DWORD diff = (axes[i].val > CENTER) ? (axes[i].val - CENTER) : (CENTER - axes[i].val);
+			if (diff > DEADZONE) m_prev_axes[i] = diff;
 		}
 	}
 #else
