@@ -22,7 +22,7 @@ add_executable(launcher WIN32
 
 target_link_libraries(launcher Qt6::Concurrent Qt6::Network Qt6::Widgets)
 if(WIN32)
-target_link_libraries(launcher setupapi)
+target_link_libraries(launcher setupapi winmm)
 endif()
 if (CLANG AND NOT KYTY_CLANG_CL)
 target_compile_options(launcher PRIVATE -frtti)

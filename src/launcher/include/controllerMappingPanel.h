@@ -8,6 +8,8 @@
 #include <QTableWidget>
 #include <QWidget>
 
+class QTimer;
+
 // Editable table: each PS5 control gets a bindable cell.
 // Click a row to capture the next keyboard key, mouse button, or gamepad button press.
 class ControllerMappingPanel: public QWidget {
@@ -25,10 +27,14 @@ public:
 private:
 	void BuildTable();
 	void keyPressEvent(QKeyEvent* event) override;
+	void CaptureInput(const QString& label);
+	void PollGamepad();
 
-	QTableWidget* m_table      = nullptr;
-	int           m_capturing  = -1; // row index currently listening, -1 = none
-	QStringList   m_key_names;       // internal keymap names per row
+	QTableWidget* m_table        = nullptr;
+	QTimer*       m_poll_timer   = nullptr;
+	int           m_capturing    = -1;
+	uint32_t      m_prev_buttons = 0;
+	QStringList   m_key_names;
 };
 
 #endif // CONTROLLER_MAPPING_PANEL_H

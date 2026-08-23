@@ -3,7 +3,15 @@
 #include <QHeaderView>
 #include <QKeyEvent>
 #include <QTableWidgetItem>
+#include <QTimer>
 #include <QVBoxLayout>
+
+#include <cstdint>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <mmsystem.h>
+#endif
 
 // Mirrors the ControlInfo table in hostInput.cpp.
 struct ControlEntry {
@@ -64,6 +72,11 @@ static int ControlIndex(const QString& name) {
 ControllerMappingPanel::ControllerMappingPanel(QWidget* parent)
     : QWidget(parent) {
 	BuildTable();
+
+	// Poll for gamepad button presses during capture mode.
+	m_poll_timer = new QTimer(this);
+	m_poll_timer->setInterval(16); // ~60 Hz
+	connect(m_poll_timer, &QTimer::timeout, this, &ControllerMappingPanel::PollGamepad);
 }
 
 void ControllerMappingPanel::BuildTable() {
@@ -93,10 +106,16 @@ void ControllerMappingPanel::BuildTable() {
 	connect(m_table, &QTableWidget::cellClicked, this,
 	        [this](int row, int /*col*/) {
 		        if (row < 0 || row >= m_key_names.size()) return;
+		        // Cancel previous capture.
+		        if (m_capturing >= 0) {
+			        m_table->item(m_capturing, 1)->setBackground(Qt::white);
+		        }
 		        m_capturing                        = row;
+		        m_prev_buttons                     = 0;
 		        m_table->item(row, 1)->setText(tr("... press key or button ..."));
 		        m_table->item(row, 1)->setBackground(QColor(0xDD, 0xEE, 0xFF));
 		        m_table->setFocus();
+		        m_poll_timer->start();
 	        });
 
 	// Fill remaining space.
@@ -178,11 +197,50 @@ void ControllerMappingPanel::keyPressEvent(QKeyEvent* event) {
 	}
 
 	if (!key_name.isEmpty()) {
-		m_table->item(m_capturing, 1)->setBackground(Qt::white);
-		m_table->item(m_capturing, 1)->setText(KeyToLabel(key_name));
-		m_capturing = -1;
+		CaptureInput(KeyToLabel(key_name));
 		return;
 	}
 
 	QWidget::keyPressEvent(event);
+}
+
+void ControllerMappingPanel::CaptureInput(const QString& label) {
+	if (m_capturing < 0) return;
+	m_poll_timer->stop();
+	m_table->item(m_capturing, 1)->setBackground(Qt::white);
+	m_table->item(m_capturing, 1)->setText(label);
+	m_capturing = -1;
+}
+
+void ControllerMappingPanel::PollGamepad() {
+#ifdef _WIN32
+	if (m_capturing < 0) {
+		m_poll_timer->stop();
+		return;
+	}
+
+	JOYINFOEX info = {};
+	info.dwSize  = sizeof(info);
+	info.dwFlags = JOY_RETURNBUTTONS;
+
+	// Try joystick 0 first.
+	if (joyGetPosEx(JOYSTICKID1, &info) == JOYERR_NOERROR) {
+		uint32_t changed = info.dwButtons ^ m_prev_buttons;
+		uint32_t pressed = info.dwButtons & changed;
+		m_prev_buttons  = info.dwButtons;
+
+		if (pressed != 0) {
+			// Find the lowest pressed bit.
+			int btn = 0;
+			uint32_t mask = pressed;
+			while ((mask & 1) == 0 && btn < 32) {
+				mask >>= 1;
+				btn++;
+			}
+			CaptureInput(QStringLiteral("Pad: Button%1").arg(btn + 1));
+		}
+	}
+#else
+	(void)this;
+#endif
 }
