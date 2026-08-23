@@ -555,9 +555,8 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 	// games directory and rescan the library, using an async signal so we
 	// dont block the GUI thread (which was causing the launcher to freeze).
 	if (flag == QStringLiteral("--install-pkg")) {
-		// Emulator extracts to <parent_dir_of_pkg>/pkg_out/pfs_files, not emulator_dir.
-		QString pkg_parent = QFileInfo(file).absoluteDir().absolutePath();
-		QString pkg_out_dir = QDir(pkg_parent).filePath(QStringLiteral("pkg_out/pfs_files"));
+		// Emulator extracts to <working_dir>/pkg_out/pfs_files (working dir = emulator dir)
+		QString pkg_out_dir = QDir(dir.path()).filePath(QStringLiteral("pkg_out/pfs_files"));
 		QStringList game_dirs = m_ui->widget->GetGameDirectories();
 		QString content_id = QFileInfo(file).completeBaseName();
 
@@ -618,16 +617,33 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 }
 
 void MainDialogPrivate::LoadGame() {
-	const QString game = QFileDialog::getOpenFileName(m_main_dialog, tr("Load Game / ELF"), QString(),
-	                                                  tr("PS5 ELF / Game (*.elf *.bin);;All Files (*.*)"));
-	if (game.isEmpty()) {
-		return;
-	}
+	// Ask file or folder first
+	auto* msg = new QMessageBox(m_main_dialog);
+	msg->setWindowTitle(tr("Load Game"));
+	msg->setText(tr("What do you want to load?"));
+	auto* btn_file   = msg->addButton(tr("Single ELF / eboot..."), QMessageBox::ActionRole);
+	auto* btn_folder = msg->addButton(tr("Game folder (eboot.bin inside)..."), QMessageBox::ActionRole);
+	msg->addButton(tr("Cancel"), QMessageBox::RejectRole);
+	msg->exec();
 
 	Configuration info;
-	info.basedir = QFileInfo(game).absoluteDir().absolutePath();
-	info.elf     = game;
 	info.host_input_mapping = m_ui->widget->GetHostInputMapping();
+
+	if (msg->clickedButton() == btn_file) {
+		const QString game = QFileDialog::getOpenFileName(m_main_dialog, tr("Load ELF"), QString(),
+		                                                  tr("PS5 ELF (*.elf *.bin);;All Files (*.*)"));
+		if (game.isEmpty()) return;
+		info.basedir = QFileInfo(game).absoluteDir().absolutePath();
+		info.elf     = QFileInfo(game).fileName();
+	} else if (msg->clickedButton() == btn_folder) {
+		const QString dir = QFileDialog::getExistingDirectory(m_main_dialog, tr("Select game folder"));
+		if (dir.isEmpty()) return;
+		info.basedir = dir;
+		info.elf     = QStringLiteral("eboot.bin");
+	} else {
+		return;
+	}
+	delete msg;
 
 	m_running_item = nullptr;
 	m_main_dialog->RunInterpreter(&m_process, info);
