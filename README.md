@@ -20,8 +20,8 @@ KytyPlus has a validated PKG/PFS parser, a strict ELF loader, and working SDL co
 If you have a decrypted PS4 or PS5 game file (eboot.bin/ELF, or .PKG):
 1. Download the [latest release](https://github.com/Coder787-source/KytyPlus/releases).
 2. Load your game via the GUI.
-3. If it crashes, click the **Share Log** button in the log viewer.
-4. [Submit a new Issue](https://github.com/Coder787-source/KytyPlus/issues) and paste the log.
+3. If it crashes, click the **Share Log** button in the log viewer or screenshot the log.
+4. [Submit a new Issue](https://github.com/Coder787-source/KytyPlus/issues) and paste the log(or add the screenshot).
 
 **You don't need to be a developer. You just need to have a game file. Every report helps.**
 
