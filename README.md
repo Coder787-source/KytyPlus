@@ -105,7 +105,7 @@ next unimplemented feature. Always test with a **fresh build** and attach logs w
 >
 > **Have a question or need help (firmware install, config, a game not booting)?** Open an issue —
 > it's not just for bug reports. I read every one and reply. Questions are welcome, even if it's
-> just "how do I install firmware" or "does this work on my GPU." Better to ask than guess.
+> just "how do I map my controller" or "does this work on my GPU." Better to ask than guess.
 
 ---
 
