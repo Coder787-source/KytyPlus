@@ -263,6 +263,13 @@ private:
     static std::vector<uint8_t> DecompressPfscBlock(
         const std::vector<uint8_t>& raw_block);
 
+    // Decode an entire PFSC container: 0x30-byte header, block offset table,
+    // then stored blocks (compressed when smaller than the logical block size,
+    // raw when exactly the logical block size). Returns the logical
+    // (decompressed) byte stream, or an empty vector on invalid input.
+    static std::vector<uint8_t> DecompressPfscStream(
+        const std::vector<uint8_t>& pfsc_payload);
+
     // Follow indirect block chain and collect all block numbers
     static std::vector<int64_t> GetIndirectBlocks(
         std::ifstream& f, const InodeInfo& inode,

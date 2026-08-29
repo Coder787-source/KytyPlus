@@ -348,60 +348,199 @@ std::vector<uint8_t> PfsParser::ReadBlock(
 
 // ---- PFSC decompression ----
 
+// Byte-safe little-endian reads (no type punning on unaligned untrusted data)
+static uint32_t ReadLe32(const uint8_t* p) {
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+static uint64_t ReadLe64(const uint8_t* p) {
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; --i) v = (v << 8) | p[i];
+    return v;
+}
+
+std::vector<uint8_t> PfsParser::DecompressPfscStream(const std::vector<uint8_t>& pfsc_payload) {
+#if KYTY_PFS_HAS_ZLIB
+    // ---- Header: 0x30 bytes, little-endian ----
+    //   0x00 u32 magic, 0x04 i32 unk4(0), 0x08 i32 unk8(6),
+    //   0x0C i32 logical_block_size, 0x10 i32 logical_block_size (repeat),
+    //   0x14 u64 block_offsets_offset, 0x1C u64 data_offset,
+    //   0x24 q  logical_size (data_length)
+    if (pfsc_payload.size() < PFSC_HEADER_SIZE) {
+        LOGF("PFS: PFSC payload too small for header (%zu bytes)", pfsc_payload.size());
+        return {};
+    }
+
+    const uint32_t magic = ReadLe32(pfsc_payload.data() + 0x00);
+    const int32_t  unk4   = static_cast<int32_t>(ReadLe32(pfsc_payload.data() + 0x04));
+    const int32_t  unk8   = static_cast<int32_t>(ReadLe32(pfsc_payload.data() + 0x08));
+    const int32_t  lbs    = static_cast<int32_t>(ReadLe32(pfsc_payload.data() + 0x0C));
+    const uint64_t lbs2u  = ReadLe64(pfsc_payload.data() + 0x10);
+    const uint64_t off_off = ReadLe64(pfsc_payload.data() + 0x18);
+    const uint64_t data_off = ReadLe64(pfsc_payload.data() + 0x20);
+    const int64_t  logical_size = static_cast<int64_t>(ReadLe64(pfsc_payload.data() + 0x28));
+
+    if (magic != PFSC_MAGIC) {
+        LOGF("PFS: PFSC invalid magic 0x%08X", magic);
+        return {};
+    }
+    if (unk4 != 0 || unk8 != 6) {
+        LOGF("PFS: PFSC unexpected header fields (unk4=%d, unk8=%d)", unk4, unk8);
+        return {};
+    }
+    if (lbs <= 0 || lbs2u != static_cast<uint64_t>(lbs)) {
+        LOGF("PFS: PFSC logical block size mismatch (%d vs %llu)", lbs,
+             static_cast<unsigned long long>(lbs2u));
+        return {};
+    }
+    if (lbs != static_cast<int32_t>(PFSC_LOGICAL_BLOCK_SIZE)) {
+        LOGF("PFS: PFSC unsupported logical block size %d (expected %u)",
+             lbs, PFSC_LOGICAL_BLOCK_SIZE);
+        return {};
+    }
+    if (logical_size < 0) {
+        LOGF("PFS: PFSC negative logical size");
+        return {};
+    }
+
+    const uint64_t lbsU = static_cast<uint64_t>(lbs);
+    const uint64_t block_count = static_cast<uint64_t>(logical_size) / lbsU;
+
+    if (block_count > (1ULL << 26)) { // 64M blocks sanity cap
+        LOGF("PFS: PFSC block count %llu exceeds sanity cap", static_cast<unsigned long long>(block_count));
+        return {};
+    }
+    if (off_off != PFSC_BLOCK_OFFSETS_OFFSET) {
+        LOGF("PFS: PFSC offset table pointer %llu unexpected (expected 0x%X)",
+             static_cast<unsigned long long>(off_off), PFSC_BLOCK_OFFSETS_OFFSET);
+        return {};
+    }
+    if (data_off < PFSC_INITIAL_DATA_OFFSET) {
+        LOGF("PFS: PFSC data offset %llu below minimum header span",
+             static_cast<unsigned long long>(data_off));
+        return {};
+    }
+    if (data_off > pfsc_payload.size()) {
+        LOGF("PFS: PFSC data offset %llu exceeds payload length %zu",
+             static_cast<unsigned long long>(data_off), pfsc_payload.size());
+        return {};
+    }
+
+    // ---- Block offset table: (block_count + 1) x u64 LE ----
+    const size_t table_entries = static_cast<size_t>(block_count) + 1;
+    const size_t offsets_bytes = table_entries * PFSC_OFFSET_ENTRY_SIZE;
+    if (off_off > pfsc_payload.size() || offsets_bytes > pfsc_payload.size() - off_off) {
+        LOGF("PFS: PFSC offset table truncated (payload %zu bytes)", pfsc_payload.size());
+        return {};
+    }
+    if (data_off < off_off + offsets_bytes) {
+        LOGF("PFS: PFSC offset table overlaps data region");
+        return {};
+    }
+
+    std::vector<uint64_t> offsets(table_entries);
+    for (size_t i = 0; i < table_entries; ++i) {
+        offsets[i] = ReadLe64(pfsc_payload.data() + off_off + i * PFSC_OFFSET_ENTRY_SIZE);
+    }
+
+    if (offsets[0] != data_off) {
+        LOGF("PFS: PFSC first offset %llu != data start %llu",
+             static_cast<unsigned long long>(offsets[0]),
+             static_cast<unsigned long long>(data_off));
+        return {};
+    }
+    if (offsets[table_entries - 1] > pfsc_payload.size()) {
+        LOGF("PFS: PFSC final offset %llu exceeds payload size %zu",
+             static_cast<unsigned long long>(offsets[table_entries - 1]), pfsc_payload.size());
+        return {};
+    }
+    for (size_t i = 1; i < table_entries; ++i) {
+        if (offsets[i] < offsets[i - 1]) {
+            LOGF("PFS: PFSC block offsets not monotonic at index %zu", i);
+            return {};
+        }
+    }
+
+    // ---- Decode blocks ----
+    std::vector<uint8_t> logical;
+    logical.reserve(static_cast<size_t>(logical_size));
+
+    for (uint64_t i = 0; i < block_count; ++i) {
+        const uint64_t begin = offsets[i];
+        const uint64_t end = offsets[i + 1];
+        const uint64_t span = end - begin;
+
+        if (begin > pfsc_payload.size() || end > pfsc_payload.size()) {
+            LOGF("PFS: PFSC block %llu out of bounds", static_cast<unsigned long long>(i));
+            return {};
+        }
+
+        if (span == lbsU) {
+            // Stored raw: span equal to the logical block size is raw data
+            logical.insert(logical.end(), pfsc_payload.begin() + begin, pfsc_payload.begin() + end);
+            continue;
+        }
+
+        if (span > lbsU) {
+            LOGF("PFS: PFSC block %llu stored size %llu exceeds logical size %llu",
+                 static_cast<unsigned long long>(i), static_cast<unsigned long long>(span),
+                 static_cast<unsigned long long>(lbsU));
+            return {};
+        }
+
+        // Compressed: single zlib stream that must decompress to exactly lbs bytes
+        uLongf out_len = lbsU;
+        logical.resize(logical.size() + lbsU);
+        const int rc = uncompress(logical.data() + logical.size() - lbsU, &out_len,
+                                  pfsc_payload.data() + begin, static_cast<uLong>(span));
+        if (rc != Z_OK) {
+            LOGF("PFS: PFSC block %llu zlib failure (rc=%d)", static_cast<unsigned long long>(i), rc);
+            return {};
+        }
+        if (out_len != lbsU) {
+            LOGF("PFS: PFSC block %llu decompressed to %llu bytes, expected %llu",
+                 static_cast<unsigned long long>(i), static_cast<unsigned long long>(out_len),
+                 static_cast<unsigned long long>(lbsU));
+            return {};
+        }
+    }
+
+    if (logical.size() != static_cast<uint64_t>(logical_size)) {
+        LOGF("PFS: PFSC logical output size mismatch (%zu vs header %lld)",
+             logical.size(), static_cast<long long>(logical_size));
+        return {};
+    }
+
+    LOGF("PFS: PFSC decoded %llu block(s), %lld logical bytes",
+         static_cast<unsigned long long>(block_count), static_cast<long long>(logical_size));
+    return logical;
+#else
+    (void)pfsc_payload;
+    LOGF("PFS: PFSC decompression requested but zlib is not linked");
+    return {};
+#endif
+}
+
 std::vector<uint8_t> PfsParser::DecompressPfscBlock(const std::vector<uint8_t>& raw_block) {
 #if KYTY_PFS_HAS_ZLIB
-    // Check for PFSC header
-    if (raw_block.size() < PFSC_HEADER_SIZE) return raw_block;
+    // Legacy path: a complete zlib stream in a block-sized slice. Blocks in a
+    // real PFSC container are addressed via the offset table, not this path.
+    if (raw_block.size() < 4) return raw_block;
 
-    // PFSC magic check
-    const uint32_t magic = *reinterpret_cast<const uint32_t*>(raw_block.data());
-    if (magic != PFSC_MAGIC) return raw_block;
-
-    // PFSC format: 0x30-byte header, then block offset table at 0x400,
-    // then compressed data blocks.
-    // The header contains: magic, block_count, uncompressed_size, etc.
-    // For a full implementation, we'd parse the offset table and decompress
-    // each block. For now, attempt zlib decompression of data after header.
-
-    // Read the offset table (starts at PFSC_BLOCK_OFFSETS_OFFSET = 0x400)
-    if (raw_block.size() < PFSC_BLOCK_OFFSETS_OFFSET + 8) return raw_block;
-
-    // Simple approach: try decompressing from the data section
-    // The first compressed block starts at PFSC_INITIAL_DATA_OFFSET (0x10000)
-    // but in a single-block context, it may be right after the header.
-
-    // Attempt zlib decompression of everything after the header
-    std::vector<uint8_t> out(PFSC_LOGICAL_BLOCK_SIZE * 4); // generous output
+    std::vector<uint8_t> out(PFSC_LOGICAL_BLOCK_SIZE * 4);
     uLongf out_len = out.size();
 
     const int rc = uncompress(out.data(), &out_len,
-                               raw_block.data() + PFSC_HEADER_SIZE,
-                               raw_block.size() - PFSC_HEADER_SIZE);
-
+                              raw_block.data(), static_cast<uLong>(raw_block.size()));
     if (rc == Z_OK) {
         out.resize(out_len);
         return out;
     }
-
-    // If simple decompression failed, try from the block offsets area
-    out_len = out.size();
-    const int rc2 = uncompress(out.data(), &out_len,
-                                raw_block.data() + PFSC_BLOCK_OFFSETS_OFFSET,
-                                raw_block.size() - PFSC_BLOCK_OFFSETS_OFFSET);
-    if (rc2 == Z_OK) {
-        out.resize(out_len);
-        return out;
-    }
-
-    LOGF("PFS: PFSC decompression failed (zlib rc=%d, rc2=%d), returning raw", rc, rc2);
+    LOGF("PFS: PFSC single-block decompression failed (zlib rc=%d), returning raw", rc);
     return raw_block;
 #else
-    // No zlib — return raw data, log warning
     if (raw_block.size() >= 4) {
-        const uint32_t magic = *reinterpret_cast<const uint32_t*>(raw_block.data());
-        if (magic == PFSC_MAGIC) {
-            LOGF("PFS: PFSC compressed block detected but zlib not linked — returning raw");
-        }
+        LOGF("PFS: PFSC compressed data detected but zlib not linked - returning raw");
     }
     return raw_block;
 #endif
@@ -625,16 +764,39 @@ std::vector<uint8_t> PfsParser::ReadFileData(
     std::vector<uint8_t> data;
     data.reserve(static_cast<size_t>(inode.size));
 
+    // The inode payload spans its data blocks. For a compressed inode the
+    // whole payload is one PFSC container: gather all block bytes first, then
+    // decode the container in one pass (its offset table spans the entire
+    // payload, so per-block decompression cannot work).
+    if (is_compressed && (inode.flags & INODE_FLAG_COMPRESSED)) {
+        std::vector<uint8_t> payload;
+        uint64_t payload_len = 0;
+        const uint64_t max_len = static_cast<uint64_t>(num_blocks) * block_size;
+        for (int64_t blk : all_blocks) {
+            if (payload_len >= max_len) break;
+            auto block_data = ReadBlock(f, blk, block_size, num_blocks, ekpfs_key);
+            if (block_data.empty()) break;
+            payload.insert(payload.end(), block_data.begin(), block_data.end());
+            payload_len += block_data.size();
+        }
+        auto logical = DecompressPfscStream(payload);
+        if (logical.empty()) {
+            LOGF("PFS: inode %u PFSC payload decode failed", inode.number);
+            return {};
+        }
+        const size_t to_keep = std::min<size_t>(logical.size(),
+                                                static_cast<size_t>(inode.size));
+        logical.resize(to_keep);
+        return logical;
+    }
+
+    // Uncompressed path: copy block bytes up to the inode size
     uint64_t remaining = inode.size;
     for (int64_t blk : all_blocks) {
         if (remaining == 0) break;
 
         auto block_data = ReadBlock(f, blk, block_size, num_blocks, ekpfs_key);
         if (block_data.empty()) break;
-
-        if (is_compressed && (inode.flags & INODE_FLAG_COMPRESSED)) {
-            block_data = DecompressPfscBlock(block_data);
-        }
 
         const size_t to_copy = std::min<size_t>(block_data.size(), remaining);
         data.insert(data.end(), block_data.begin(), block_data.begin() + to_copy);
@@ -666,24 +828,108 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
         return result;
     }
 
-    // Check for PFSC (compressed PFS)
+    // Check for PFSC (compressed PFS): the whole image is one PFSC container.
+    // Decode it to the logical (decompressed) PFS image and parse that instead.
     if (sb.format != PFS_FORMAT_MAGIC) {
+        f.clear();
         f.seekg(0, std::ios::beg);
         uint8_t magic4[4] = {0};
         f.read(reinterpret_cast<char*>(magic4), 4);
         if (magic4[0] == 0x50 && magic4[1] == 0x46 && magic4[2] == 0x53 && magic4[3] == 0x43) {
             result.is_compressed = true;
-            LOGF("PFS: PFSC compressed image detected");
+            LOGF("PFS: PFSC compressed image detected, decoding");
 #if KYTY_PFS_HAS_ZLIB
-            LOGF("PFS: zlib available — PFSC decompression supported");
-            result.error = "PFSC compressed image (decompression requires full PFSC offset table parsing)";
+            // Read the whole file and decode the PFSC container.
+            std::vector<uint8_t> whole;
+            {
+                f.clear();
+                f.seekg(0, std::ios::end);
+                const auto end_pos = f.tellg();
+                if (end_pos < 0) {
+                    result.error = "PFSC: cannot determine file size";
+                    result.ok = false;
+                    return result;
+                }
+                const size_t file_size = static_cast<size_t>(end_pos);
+                whole.resize(file_size);
+                f.clear();
+                f.seekg(0, std::ios::beg);
+                f.read(reinterpret_cast<char*>(whole.data()), file_size);
+                if (static_cast<size_t>(f.gcount()) < file_size) {
+                    result.error = "PFSC: short read of file";
+                    result.ok = false;
+                    return result;
+                }
+            }
+
+            auto logical = DecompressPfscStream(whole);
+            if (logical.empty()) {
+                result.error = "PFSC: container decode failed";
+                result.ok = false;
+                return result;
+            }
+
+            // The walk below reads via the file stream, so materialize the
+            // logical bytes to a temporary file and re-parse it. RAII removes
+            // the temp file when this parse returns.
+            struct TempFileGuard {
+                std::string path;
+                ~TempFileGuard() {
+                    if (!path.empty()) {
+                        std::error_code ec;
+                        std::filesystem::remove(path, ec);
+                    }
+                }
+            } guard;
+            {
+                const std::filesystem::path src_path(pfs_path);
+                const std::filesystem::path tmp = src_path.parent_path() /
+                    (src_path.filename().string() + ".kyty_pfsc.tmp");
+                std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+                if (!out) {
+                    result.error = "PFSC: cannot create temp file for decompressed image";
+                    result.ok = false;
+                    return result;
+                }
+                out.write(reinterpret_cast<const char*>(logical.data()),
+                          static_cast<std::streamsize>(logical.size()));
+                if (!out) {
+                    result.error = "PFSC: failed writing temp file";
+                    result.ok = false;
+                    return result;
+                }
+                out.close();
+                guard.path = tmp.string();
+            }
+
+            // Recursive parse of the decompressed image
+            auto inner = Parse(guard.path);
+            if (!inner.ok) {
+                result.error = "PFSC: inner PFS parse failed: " + inner.error;
+                result.ok = false;
+                return result;
+            }
+
+            // Merge the inner (decoded) image results. is_compressed is cleared:
+            // this result now describes the decoded image, and callers
+            // (ExtractAll) should extract files from it normally. The inner
+            // parse already logged that the source was PFSC.
+            result.version = inner.version;
+            result.mode = inner.mode;
+            result.block_size = inner.block_size;
+            result.num_blocks = inner.num_blocks;
+            result.num_inodes = inner.num_inodes;
+            result.is_encrypted = inner.is_encrypted;
+            result.is_compressed = false;
+            result.files = std::move(inner.files);
+            result.ok = true;
+            return result;
 #else
             result.error = "PFSC compressed image but zlib not linked";
-#endif
             result.ok = false;
             return result;
+#endif
         }
-
         result.error = "Invalid PFS magic (expected 20130315 at format field, got " +
                         std::to_string(sb.format) + ")";
         return result;
@@ -819,12 +1065,79 @@ uint32_t PfsParser::ExtractAll(const PfsParseResult& result,
         return 0;
     }
 
-    if (result.is_compressed) {
-#if !KYTY_PFS_HAS_ZLIB
+    // For a PFSC-compressed whole image, the caller (Parse) decoded it to a
+    // temp file and parsed that; but ExtractAll re-opens pfs_path, which is the
+    // original compressed file. Decode again here and extract from the logical
+    // image instead, via the same container decode.
+    std::string effective_path = pfs_path;
+    struct TempFileGuard2 {
+        std::string path;
+        ~TempFileGuard2() {
+            if (!path.empty()) {
+                std::error_code ec;
+                std::filesystem::remove(path, ec);
+            }
+        }
+    } extract_guard;
+    // Decode when the file itself is a PFSC container, regardless of the
+    // result flag: Parse clears is_compressed after a successful decode, but
+    // callers may pass the original (still compressed) image path here.
+    {
+        std::ifstream sniff(pfs_path, std::ios::binary);
+        uint8_t sniff_magic[4] = {0};
+        if (sniff) {
+            sniff.clear();
+            sniff.seekg(0, std::ios::beg);
+            sniff.read(reinterpret_cast<char*>(sniff_magic), 4);
+            const bool is_pfsc = sniff_magic[0] == 0x50 && sniff_magic[1] == 0x46 &&
+                                 sniff_magic[2] == 0x53 && sniff_magic[3] == 0x43;
+            if (!is_pfsc) {
+                // Not compressed: no decode needed
+                goto after_pfsc_decode;
+            }
+        }
+    }
+    if (true) { // PFSC detected
+#if KYTY_PFS_HAS_ZLIB
+        std::ifstream cf(pfs_path, std::ios::binary);
+        if (!cf) {
+            LOGF("PFS: cannot extract - cannot open compressed image");
+            return 0;
+        }
+        cf.seekg(0, std::ios::end);
+        const auto cend = cf.tellg();
+        if (cend <= 0) { LOGF("PFS: cannot extract - bad compressed image size"); return 0; }
+        std::vector<uint8_t> whole(static_cast<size_t>(cend));
+        cf.seekg(0, std::ios::beg);
+        cf.read(reinterpret_cast<char*>(whole.data()), static_cast<std::streamsize>(whole.size()));
+        if (static_cast<size_t>(cf.gcount()) < whole.size()) {
+            LOGF("PFS: cannot extract - short read of compressed image");
+            return 0;
+        }
+        auto logical = DecompressPfscStream(whole);
+        if (logical.empty()) {
+            LOGF("PFS: cannot extract - PFSC container decode failed");
+            return 0;
+        }
+        const std::filesystem::path src_path(pfs_path);
+        const std::filesystem::path tmp = src_path.parent_path() /
+            (src_path.filename().string() + ".kyty_pfsc_extract.tmp");
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            LOGF("PFS: cannot extract - cannot create temp file for decompressed image");
+            return 0;
+        }
+        out.write(reinterpret_cast<const char*>(logical.data()),
+                  static_cast<std::streamsize>(logical.size()));
+        out.close();
+        extract_guard.path = tmp.string();
+        effective_path = extract_guard.path;
+#else
         LOGF("PFS: cannot extract - PFSC compressed and zlib not linked");
         return 0;
 #endif
     }
+after_pfsc_decode:;
 
     if (result.files.empty()) {
         LOGF("PFS: no files to extract");
@@ -838,9 +1151,9 @@ uint32_t PfsParser::ExtractAll(const PfsParseResult& result,
         return 0;
     }
 
-    std::ifstream f(pfs_path, std::ios::binary);
+    std::ifstream f(effective_path, std::ios::binary);
     if (!f) {
-        LOGF("PFS: cannot open for extraction: %s", pfs_path.c_str());
+        LOGF("PFS: cannot open for extraction: %s", effective_path.c_str());
         return 0;
     }
 

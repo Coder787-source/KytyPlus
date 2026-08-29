@@ -195,6 +195,70 @@ def build_pfs():
     
     return pfs
 
+
+
+# ---- PFSC (compressed PFS) builder ----
+# Mirrors MkPFS encode_pfsc_payload: 0x30-byte header, offset table at 0x400,
+# stored blocks (compressed when strictly smaller than the logical block size,
+# raw otherwise), offset table has (block_count + 1) entries with a final
+# sentinel equal to the end of the data region.
+
+PFSC_MAGIC = 0x43534650          # "PFSC" little-endian
+PFSC_LBS = 0x10000               # logical block size (64KB)
+PFSC_HEADER_SIZE = 0x30
+PFSC_OFFSET_ENTRY_SIZE = 8
+PFSC_BLOCK_OFFSETS_OFFSET = 0x400
+PFSC_INITIAL_DATA_OFFSET = 0x10000
+
+def build_pfsc(raw, threshold_gain=0, level=9):
+    """Compress raw bytes into a PFSC container (zlib per 64KB logical block)."""
+    import zlib
+    # Split into 64KB logical blocks (last padded with zeros)
+    blocks = []
+    for off in range(0, len(raw), PFSC_LBS):
+        blk = raw[off:off + PFSC_LBS]
+        blk = blk + b'\\x00' * (PFSC_LBS - len(blk))
+        blocks.append(blk)
+    if not blocks:
+        blocks = [b'\\x00' * PFSC_LBS]
+    block_count = len(blocks)
+
+    # Encode each block: compress; keep compressed only if strictly smaller
+    stored = []
+    for blk in blocks:
+        comp = zlib.compress(blk, level)
+        gain_pct = (1.0 - len(comp) / PFSC_LBS) * 100.0
+        if len(comp) < PFSC_LBS and gain_pct >= threshold_gain:
+            stored.append(comp)
+        else:
+            stored.append(blk)
+
+    # Header size: 0x10000 unless the offset table outgrows the initial
+    # capacity (0x10000 - 0x400 bytes = 508 entries), then it grows in
+    # logical-block steps.
+    table_bytes = (block_count + 1) * PFSC_OFFSET_ENTRY_SIZE
+    initial_capacity = PFSC_INITIAL_DATA_OFFSET - PFSC_BLOCK_OFFSETS_OFFSET
+    extra = max(0, table_bytes - initial_capacity)
+    extra_blocks = (extra + PFSC_LBS - 1) // PFSC_LBS if extra > 0 else 0
+    data_offset = PFSC_INITIAL_DATA_OFFSET + extra_blocks * PFSC_LBS
+
+    offsets = [data_offset]
+    for s in stored:
+        offsets.append(offsets[-1] + len(s))
+
+    header = bytearray(data_offset)
+    # struct '<iiiiqqQq': magic, unk4=0, unk8=6, lbs, lbs, off_off, data_off, logical_size
+    struct.pack_into('<iiiiqqQq', header, 0,
+                     PFSC_MAGIC, 0, 6, PFSC_LBS, PFSC_LBS,
+                     PFSC_BLOCK_OFFSETS_OFFSET, data_offset,
+                     block_count * PFSC_LBS)
+    # Offset table at 0x400: (block_count + 1) x u64 LE
+    for i, off in enumerate(offsets):
+        struct.pack_into('<Q', header, PFSC_BLOCK_OFFSETS_OFFSET + i * 8, off)
+
+    payload = bytes(header) + b''.join(stored)
+    return payload
+
 def build_pkg(pfs_body):
     """Wrap a PFS image in a PKG container with a real-format entry table."""
     body_offset = 0x200
@@ -272,6 +336,16 @@ if __name__ == "__main__":
         f.write(pkg)
     
     print(f"\nWritten to: {out_path}")
+
+    # Also emit a PFSC-compressed variant to exercise the compressed-PFS path
+    pfsc = build_pfsc(pfs)
+    pfsc_path = "mock_astro_pkg_pfsc.pkg"
+    with open(pfsc_path, "wb") as f:
+        f.write(build_pkg(pfsc))
+    print(f"\nPFSC variant written to: {pfsc_path}")
+    print(f"  PFSC magic: 0x{struct.unpack_from('<I', pfsc, 0)[0]:08X}")
+    print(f"  Compressed: {len(pfsc)} bytes vs raw {len(pfs)} bytes")
+
     print(f"\nMetadata in sce_sys/param.json:")
     print(f'  title: "Astro\'s Playroom"')
     print(f'  title_id: "PPSA01325"')

@@ -18,8 +18,6 @@ target_include_directories(pkg_parser PUBLIC
 target_link_libraries(pkg_parser PRIVATE common)
 
 # zlib is required for PFSC (compressed PFS) decompression.
-find_package(ZLIB)
-if(ZLIB_FOUND)
-    target_link_libraries(pkg_parser PRIVATE ZLIB::ZLIB)
-    target_compile_definitions(pkg_parser PRIVATE KYTY_HAS_ZLIB=1)
-endif()
+# Vendored static build from 3rdparty/zlib (always available, no system dependency).
+target_link_libraries(pkg_parser PRIVATE ZLIB::ZLIB)
+target_compile_definitions(pkg_parser PRIVATE KYTY_HAS_ZLIB=1)
