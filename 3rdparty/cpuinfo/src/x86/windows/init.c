@@ -9,6 +9,9 @@
 #include <cpuinfo/log.h>
 
 #include <windows.h>
+#if defined(_MSC_VER)
+	#include <intrin.h>
+#endif
 
 #ifdef __GNUC__
   #define CPUINFO_ALLOCA __builtin_alloca
