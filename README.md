@@ -7,7 +7,7 @@
 **KytyPlus** is a KytyPS5-based PlayStation 5 emulator for **Windows, macOS, and Linux**. This repository is a
 standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (itself based on
 [Kyty](https://github.com/InoriRus/Kyty)), with additional work focused on **iGPU optimization**,
-**build stability**, **firmware parsing**, and a **unified PS4/PS5 dispatch** (iGPU behavior is **not yet verified**; see [iGPU status](#igpu-status)).
+**build stability**, and a **unified PS4/PS5 dispatch** (iGPU behavior is **not yet verified**; see [iGPU status](#igpu-status)).
 
 > [!CAUTION]
 > **Early-development software.** Many games still crash, hang, black-screen, or render incorrectly.
