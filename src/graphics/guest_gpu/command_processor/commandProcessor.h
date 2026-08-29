@@ -7,6 +7,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -30,10 +31,9 @@ private:
 	friend class CommandProcessor;
 
 	struct BufferCursor {
-		uint32_t* next_packet         = nullptr;
-		uint32_t  remaining_dw        = 0;
-		uint32_t  total_dw            = 0;
-		uint32_t  deferred_advance_dw = 0;
+		std::span<const uint32_t> commands;
+		uint32_t                  offset_dw           = 0;
+		uint32_t                  deferred_advance_dw = 0;
 	};
 
 	std::vector<BufferCursor> m_buffer_stack;
@@ -50,7 +50,8 @@ public:
 		int64_t flip_arg  = 0;
 	};
 
-	explicit CommandProcessor(RenderContext& renderer): m_renderer(renderer) {}
+	CommandProcessor(RenderContext& renderer, int interrupt_event_id)
+	    : m_renderer(renderer), m_interrupt_event_id(interrupt_event_id) {}
 	~CommandProcessor() = default;
 
 	KYTY_CLASS_NO_COPY(CommandProcessor);
@@ -103,7 +104,7 @@ public:
 	                    uint32_t mode);
 	void DispatchIndirect(uint32_t data_offset, uint32_t mode);
 	void WaitFlipDone(uint32_t video_out_handle, uint32_t display_buffer_index);
-	void TriggerEvent(uint32_t event_type, uint32_t event_index);
+	void TriggerEvent(uint32_t event_type, uint32_t event_index, uint64_t event_address = 0);
 
 	void SetUserDataMarker(HW::UserSgprType type) { m_user_data_marker = type; }
 	[[nodiscard]] HW::UserSgprType GetUserDataMarker() const { return m_user_data_marker; }
@@ -112,6 +113,7 @@ public:
 	void SetCeComplete(bool complete) { m_ce_complete = complete; }
 	void WaitCe();
 	void WaitDeDiff(uint32_t diff);
+	void WaitForRewind(bool valid);
 	void IncrementDe();
 	void IncrementCe();
 
@@ -130,13 +132,14 @@ public:
 	                    const volatile void* address, uint32_t count_in_dwords);
 	[[nodiscard]] bool ShouldSkipPredicatedPackets() const { return m_predicate_skip; }
 
-	Pm4ProcessResult Process(Pm4Execution& execution, uint32_t* buffer, uint32_t size_dw);
-	void             ProcessIndirectBuffer(uint32_t* buffer, uint32_t size_dw);
+	Pm4ProcessResult Process(Pm4Execution& execution, std::span<const uint32_t> commands);
+	void             ProcessIndirectBuffer(std::span<const uint32_t> commands);
 
 	void SetFlip(const FlipInfo& flip) { m_flip = flip; }
 
 	[[nodiscard]] uint64_t GetSubmitId() const { return m_submit_id; }
 	void                   SetSubmitId(uint64_t submit_id) { m_submit_id = submit_id; }
+	[[nodiscard]] bool     IsAsyncComputeQueue() const { return m_interrupt_event_id >= 0x20; }
 
 private:
 	template <typename T>
@@ -150,10 +153,10 @@ private:
 	                          uint32_t render_target_slice_offset, uint32_t first_vertex,
 	                          uint32_t first_instance);
 
-	CommandScheduler&    GetScheduler() const { return m_renderer.GetCommandScheduler(); }
-	RenderCommandBuffer& CurrentBuffer() { return GetScheduler().Current(); }
-	void                 CheckBuffer() const { GetScheduler().CheckActive(); }
-	GpuResourceManager&  GetGpuResources() const { return m_renderer.GetGpuResources(); }
+	CommandScheduler&   GetScheduler() const { return m_renderer.GetCommandScheduler(); }
+	CommandBuffer&      CurrentBuffer() { return GetScheduler().Current(); }
+	void                CheckBuffer() const { GetScheduler().CheckActive(); }
+	GpuResourceManager& GetGpuResources() const { return m_renderer.GetGpuResources(); }
 
 	RenderContext&   m_renderer;
 	HW::Context      m_ctx;
@@ -176,9 +179,11 @@ private:
 
 	uint32_t m_const_ram[0x3000] = {0};
 
-	FlipInfo m_flip;
-	uint64_t m_submit_id      = 0;
-	bool     m_predicate_skip = false;
+	FlipInfo  m_flip;
+	const int m_interrupt_event_id;
+	uint64_t  m_submit_id                   = 0;
+	uint64_t  m_synthetic_occlusion_counter = 0;
+	bool      m_predicate_skip              = false;
 };
 
 } // namespace Libs::Graphics

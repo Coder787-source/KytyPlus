@@ -14,156 +14,67 @@
 namespace Libs::Graphics {
 namespace {
 
-struct RenderTargetFormatMapping {
-	Prospero::ChannelLayout layout;
-	Prospero::ChannelType   type;
-	Prospero::ChannelOrder  order;
-	RenderTargetFormatInfo  info;
+// Rows are channel order; columns are the number of physical components minus one. Unused
+// selectors complete each entry to a permutation so logical write masks can be inverted.
+constexpr Prospero::ColorComponentMapping kRenderTargetColorMappings[4][4] = {
+    {Prospero::ColorMappingRgba, Prospero::ColorMappingRgba, Prospero::ColorMappingRgba,
+     Prospero::ColorMappingRgba},
+    {Prospero::ColorMappingGr, Prospero::ColorMappingRabg, Prospero::ColorMappingRgab,
+     Prospero::ColorMappingBgra},
+    {Prospero::ColorMappingBgra, Prospero::ColorMappingGr, Prospero::ColorMappingBgra,
+     Prospero::ColorMappingAbgr},
+    {Prospero::ColorMappingAgba, Prospero::ColorMappingArbg, Prospero::ColorMappingAgbr,
+     Prospero::ColorMappingArgb},
 };
 
-constexpr RenderTargetFormatMapping kRenderTargetFormats[] = {
-    {Prospero::ChannelLayout::k8,
-     Prospero::ChannelType::kUInt,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR8Uint, 1}},
-    {Prospero::ChannelLayout::k8_8,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR8G8Unorm, 2}},
-    {Prospero::ChannelLayout::k8_8_8_8,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR8G8B8A8Unorm, 4}},
-    {Prospero::ChannelLayout::k8_8_8_8,
-     Prospero::ChannelType::kSNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR8G8B8A8Snorm, 4}},
-    {Prospero::ChannelLayout::k8_8_8_8,
-     Prospero::ChannelType::kSrgb,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR8G8B8A8Srgb, 4}},
-    {Prospero::ChannelLayout::k8_8_8_8,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kAlt,
-     {vk::Format::eB8G8R8A8Unorm, 4}},
-    {Prospero::ChannelLayout::k8_8_8_8,
-     Prospero::ChannelType::kSNorm,
-     Prospero::ChannelOrder::kAlt,
-     {vk::Format::eB8G8R8A8Snorm, 4}},
-    {Prospero::ChannelLayout::k8_8_8_8,
-     Prospero::ChannelType::kSrgb,
-     Prospero::ChannelOrder::kAlt,
-     {vk::Format::eB8G8R8A8Srgb, 4}},
-    {Prospero::ChannelLayout::k5_5_5_1,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR5G5B5A1UnormPack16, 2}},
-    {Prospero::ChannelLayout::k4_4_4_4,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kReversed,
-     {vk::Format::eB4G4R4A4UnormPack16, 2}},
-    {Prospero::ChannelLayout::k10_10_10_2,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eA2B10G10R10UnormPack32, 4}},
-    {Prospero::ChannelLayout::k10_10_10_2,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kAlt,
-     {vk::Format::eA2R10G10B10UnormPack32, 4}},
-    {Prospero::ChannelLayout::k11_11_10,
-     Prospero::ChannelType::kFloat,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eB10G11R11UfloatPack32, 4}},
-    {Prospero::ChannelLayout::k5_6_5,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eB5G6R5UnormPack16, 2}},
-    {Prospero::ChannelLayout::k16,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16Unorm, 2}},
-    {Prospero::ChannelLayout::k16,
-     Prospero::ChannelType::kUInt,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16Uint, 2}},
-    {Prospero::ChannelLayout::k16,
-     Prospero::ChannelType::kFloat,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16Sfloat, 2}},
-    {Prospero::ChannelLayout::k16_16,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16G16Unorm, 4}},
-    {Prospero::ChannelLayout::k16_16,
-     Prospero::ChannelType::kSNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16G16Snorm, 4}},
-    {Prospero::ChannelLayout::k16_16,
-     Prospero::ChannelType::kUInt,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16G16Uint, 4}},
-    {Prospero::ChannelLayout::k16_16,
-     Prospero::ChannelType::kFloat,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16G16Sfloat, 4}},
-    {Prospero::ChannelLayout::k16_16_16_16,
-     Prospero::ChannelType::kUNorm,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16G16B16A16Unorm, 8}},
-    {Prospero::ChannelLayout::k16_16_16_16,
-     Prospero::ChannelType::kUInt,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16G16B16A16Uint, 8}},
-    {Prospero::ChannelLayout::k16_16_16_16,
-     Prospero::ChannelType::kFloat,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR16G16B16A16Sfloat, 8}},
-    {Prospero::ChannelLayout::k16_16_16_16,
-     Prospero::ChannelType::kFloat,
-     Prospero::ChannelOrder::kAlt,
-     {vk::Format::eR16G16B16A16Sfloat, 8, Prospero::ColorMappingBgra}},
-    {Prospero::ChannelLayout::k16_16_16_16,
-     Prospero::ChannelType::kFloat,
-     Prospero::ChannelOrder::kReversed,
-     {vk::Format::eR16G16B16A16Sfloat, 8, Prospero::ColorMappingAbgr}},
-    {Prospero::ChannelLayout::k32,
-     Prospero::ChannelType::kFloat,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR32Sfloat, 4}},
-    {Prospero::ChannelLayout::k32_32,
-     Prospero::ChannelType::kUInt,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR32G32Uint, 8}},
-    {Prospero::ChannelLayout::k32_32,
-     Prospero::ChannelType::kFloat,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR32G32Sfloat, 8}},
-    {Prospero::ChannelLayout::k32_32_32_32,
-     Prospero::ChannelType::kFloat,
-     Prospero::ChannelOrder::kStandard,
-     {vk::Format::eR32G32B32A32Sfloat, 16}},
+struct RenderTargetHostFormatInfo {
+	vk::Format                      format = vk::Format::eUndefined;
+	Prospero::ColorComponentMapping host_to_storage;
 };
+
+RenderTargetHostFormatInfo ResolveRenderTargetHostFormat(Prospero::BufferFormat guest_format,
+                                                         Prospero::ChannelOrder order) {
+	if (order == Prospero::ChannelOrder::kAlt) {
+		switch (guest_format) {
+			case Prospero::BufferFormat::k8_8_8_8UNorm:
+				return {vk::Format::eB8G8R8A8Unorm, Prospero::ColorMappingBgra};
+			case Prospero::BufferFormat::k8_8_8_8SNorm:
+				return {vk::Format::eB8G8R8A8Snorm, Prospero::ColorMappingBgra};
+			case Prospero::BufferFormat::k8_8_8_8Srgb:
+				return {vk::Format::eB8G8R8A8Srgb, Prospero::ColorMappingBgra};
+			case Prospero::BufferFormat::k10_10_10_2UNorm:
+				return {vk::Format::eA2R10G10B10UnormPack32, Prospero::ColorMappingBgra};
+			default: break;
+		}
+	}
+	switch (guest_format) {
+		case Prospero::BufferFormat::k5_5_5_1UNorm:
+			return {vk::Format::eA1R5G5B5UnormPack16, Prospero::ColorMappingBgra};
+		case Prospero::BufferFormat::k1_5_5_5UNorm:
+			return {vk::Format::eR5G5B5A1UnormPack16, Prospero::ColorMappingAbgr};
+		case Prospero::BufferFormat::k4_4_4_4UNorm:
+			return {vk::Format::eR4G4B4A4UnormPack16, Prospero::ColorMappingAbgr};
+		default: return {VulkanFormat(guest_format), {}};
+	}
+}
 
 } // namespace
 
-// TODO: cleanup!
-RenderTargetFormatInfo TextureGetRenderTargetFormat(uint32_t raw_layout, uint32_t raw_type,
-                                                    uint32_t raw_order) {
-	const auto layout = static_cast<Prospero::ChannelLayout>(raw_layout);
-	const auto type   = static_cast<Prospero::ChannelType>(raw_type);
-	const auto order  = static_cast<Prospero::ChannelOrder>(raw_order);
-
-	if (layout == Prospero::ChannelLayout::k8 && type == Prospero::ChannelType::kUNorm &&
-	    raw_order <= Prospero::GpuEnumValue(Prospero::ChannelOrder::kAltReversed)) {
-		return {vk::Format::eR8Unorm, 1};
-	}
-	for (const auto& mapping: kRenderTargetFormats) {
-		if (mapping.layout == layout && mapping.type == type && mapping.order == order) {
-			return mapping.info;
+RenderTargetFormatInfo TextureGetRenderTargetFormat(Prospero::ChannelLayout layout,
+                                                    Prospero::ChannelType   type,
+                                                    Prospero::ChannelOrder  order) {
+	const auto encoding = Prospero::ResolveRenderTargetFormat(layout, type);
+	if (encoding.IsValid() && encoding.SupportsOrder(order)) {
+		const auto host  = ResolveRenderTargetHostFormat(encoding.buffer_format, order);
+		const auto bytes = Prospero::RenderTargetBytesPerElement(encoding.buffer_format);
+		if (host.format != vk::Format::eUndefined && bytes != 0) {
+			const auto order_mapping =
+			    kRenderTargetColorMappings[static_cast<size_t>(order)][encoding.components - 1u];
+			return {host.format, bytes, host.host_to_storage.Then(order_mapping)};
 		}
 	}
-	EXIT("unsupported render-target format combination: layout=%u type=%u order=%u\n", raw_layout,
-	     raw_type, raw_order);
+	EXIT("unsupported render-target format combination: layout=%u type=%u order=%u\n",
+	     static_cast<uint32_t>(layout), static_cast<uint32_t>(type), static_cast<uint32_t>(order));
 }
 
 namespace {
@@ -208,13 +119,16 @@ vk::ComponentMapping TextureGetComponentMapping(uint32_t swizzle) {
 	return components;
 }
 
-vk::Format TextureGetFormat(uint32_t fmt) {
-	const auto vk_format = VulkanFormat(fmt);
+SurfaceFormatInfo TextureGetSurfaceFormatInfo(Prospero::BufferFormat format) {
+	const auto backing_format    = Prospero::RemapTextureFormat(format);
+	const auto vk_format         = VulkanFormat(backing_format);
+	const auto conversion_format =
+	    backing_format != format ? format : Prospero::BufferFormat::kInvalid;
 	if (vk_format != vk::Format::eUndefined) {
-		return vk_format;
+		return SurfaceFormatInfo(vk_format, conversion_format);
 	}
-	EXIT("unknown format: fmt = %u\n", fmt);
-	return vk::Format::eUndefined;
+	EXIT("unknown format: fmt = %u\n", static_cast<uint32_t>(format));
+	return SurfaceFormatInfo(vk::Format::eUndefined, Prospero::BufferFormat::kInvalid);
 }
 
 namespace {
@@ -271,13 +185,14 @@ uint64_t SetLinearUploadLevels(TextureUploadMipLayout*         mips,
 
 } // namespace
 
-TextureUploadLayout TextureCalcUploadLayout(uint32_t fmt, uint32_t width, uint32_t height,
-                                            uint32_t levels, uint32_t depth, uint32_t tile,
-                                            uint64_t upload_size, bool allow_depth_tile,
-                                            bool volume_texture, const char* owner) {
+TextureUploadLayout TextureCalcUploadLayout(Prospero::BufferFormat format, uint32_t width,
+                                            uint32_t height, uint32_t levels, uint32_t depth,
+                                            Prospero::TileMode tile, uint64_t upload_size,
+                                            bool allow_depth_tile, bool volume_texture,
+                                            const char* owner) {
 	TextureUploadLayout layout {};
 	layout.surface.description = {
-	    fmt,
+	    format,
 	    tile,
 	    volume_texture ? TileSurfaceDimension::Dim3D : TileSurfaceDimension::Dim2D,
 	    width,
@@ -287,35 +202,39 @@ TextureUploadLayout TextureCalcUploadLayout(uint32_t fmt, uint32_t width, uint32
 	    volume_texture ? 1u : depth,
 	};
 	const auto&              description = layout.surface.description;
-	const auto               tile_mode   = static_cast<Prospero::TileMode>(description.tile_mode);
+	const auto               tile_mode   = description.tile_mode;
 	TileTextureElementLayout element {};
 
-	if (fmt == 0) {
+	if (format == Prospero::BufferFormat::kInvalid) {
 		EXIT("%s: legacy texture upload format unsupported: fmt=0 tile=%u size=%" PRIu64
 		     " extent=%ux%u levels=%u\n",
-		     owner, description.tile_mode, upload_size, width, height, levels);
+		     owner, static_cast<uint32_t>(description.tile_mode), upload_size, width, height,
+		     levels);
 	}
 
 	switch (tile_mode) {
 		case Prospero::TileMode::kLinear:
-			if (!TileGetTextureElementLayout(fmt, element)) {
-				EXIT("%s: unsupported linear texture format: fmt=%u\n", owner, fmt);
+			if (!TileGetTextureElementLayout(format, element)) {
+				EXIT("%s: unsupported linear texture format: fmt=%u\n", owner,
+				     static_cast<uint32_t>(format));
 			}
 			break;
 		case Prospero::TileMode::kDepth:
 			if (!allow_depth_tile || !TileGetTiledTextureLayout(description, layout.surface)) {
 				EXIT("%s: unsupported typed tiled upload: fmt=%u tile=%u "
 				     "size=%" PRIu64 " extent=%ux%u levels=%u\n",
-				     owner, static_cast<uint32_t>(fmt), description.tile_mode, upload_size, width,
-				     height, levels);
+				     owner, static_cast<uint32_t>(format),
+				     static_cast<uint32_t>(description.tile_mode), upload_size, width, height,
+				     levels);
 			}
 			break;
 		default:
 			if (!TileGetTiledTextureLayout(description, layout.surface)) {
 				EXIT("%s: unsupported typed tiled upload: fmt=%u tile=%u "
 				     "size=%" PRIu64 " extent=%ux%u levels=%u\n",
-				     owner, static_cast<uint32_t>(fmt), description.tile_mode, upload_size, width,
-				     height, levels);
+				     owner, static_cast<uint32_t>(format),
+				     static_cast<uint32_t>(description.tile_mode), upload_size, width, height,
+				     levels);
 			}
 			break;
 	}
@@ -324,12 +243,12 @@ TextureUploadLayout TextureCalcUploadLayout(uint32_t fmt, uint32_t width, uint32
 		element = {layout.surface.texture.block.bytes_per_element,
 		           layout.surface.texture.texel_width, layout.surface.texture.texel_height};
 	}
-	layout.pitch = TileGetTexturePitch(fmt, width, description.tile_mode);
+	layout.pitch = TileGetTexturePitch(format, width, description.tile_mode);
 	if (tile_mode == Prospero::TileMode::kLinear) {
 		TileSizeOffset level_sizes[16] {};
 		TilePaddedSize padded_sizes[16] {};
-		TileGetTextureSize(fmt, width, height, levels, description.tile_mode, nullptr, level_sizes,
-		                   padded_sizes);
+		TileGetTextureSize(format, width, height, levels, description.tile_mode, nullptr,
+		                   level_sizes, padded_sizes);
 		for (uint32_t level = 0; level < levels; ++level) {
 			layout.mips[level] = {level_sizes[level].offset, level_sizes[level].size,
 			                      padded_sizes[level].width, padded_sizes[level].height};
@@ -356,10 +275,9 @@ std::vector<vk::BufferImageCopy> TextureBuildImageCopies(const TextureUploadLayo
 	const auto  depth          = volume_texture ? description.depth : description.layers;
 	uint32_t    mip_width      = description.width;
 	uint32_t    mip_height     = description.height;
-	uint32_t mip_pitch = volume_texture && static_cast<Prospero::TileMode>(description.tile_mode) !=
-	                                           Prospero::TileMode::kLinear
-	                         ? description.width
-	                         : layout.pitch;
+	uint32_t    mip_pitch = volume_texture && description.tile_mode != Prospero::TileMode::kLinear
+	                            ? description.width
+	                            : layout.pitch;
 
 	std::vector<vk::BufferImageCopy> regions;
 	regions.reserve(GetTextureRegionCount(depth, description.levels, volume_texture));
@@ -376,8 +294,7 @@ std::vector<vk::BufferImageCopy> TextureBuildImageCopies(const TextureUploadLayo
 			                           1};
 			region.imageOffset.z    = volume_texture ? static_cast<int>(z) : 0;
 			region.imageExtent      = {mip_width, mip_height, 1};
-			const bool linear       = static_cast<Prospero::TileMode>(description.tile_mode) ==
-			                          Prospero::TileMode::kLinear;
+			const bool linear       = description.tile_mode == Prospero::TileMode::kLinear;
 			if (linear) {
 				region.bufferRowLength   = layout.mips[i].row_length;
 				region.bufferImageHeight = layout.mips[i].image_height;

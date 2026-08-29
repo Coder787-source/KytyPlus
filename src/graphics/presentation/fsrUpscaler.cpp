@@ -37,7 +37,7 @@ FsrUpscaler::~FsrUpscaler() {
 	Destroy();
 }
 
-bool FsrUpscaler::Create(VulkanInstance& gfx) {
+bool FsrUpscaler::Create(GraphicContext& gfx) {
 	m_gfx = &gfx;
 
 	// Sampler: linear filtering, clamp-to-edge.

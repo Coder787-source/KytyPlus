@@ -3,11 +3,16 @@
 
 #include "common/abi.h"
 #include "common/common.h"
-#include "common/subsystems.h"
-
 namespace Libs::Network {
 
-KYTY_SUBSYSTEM_DEFINE(Network);
+void Initialize();
+void Shutdown();
+
+struct Lifecycle {
+	static constexpr const char* name       = "Network";
+	static constexpr auto        initialize = Libs::Network::Initialize;
+	static constexpr auto        shutdown   = Libs::Network::Shutdown;
+};
 
 namespace Net {
 
@@ -35,6 +40,7 @@ int KYTY_SYSV_ABI NetTerm();
 int KYTY_SYSV_ABI NetPoolCreate(const char* name, int size, int flags);
 int KYTY_SYSV_ABI NetPoolDestroy(int memid);
 int KYTY_SYSV_ABI NetResolverCreate(const char* name, int memid, int flags);
+int KYTY_SYSV_ABI NetResolverDestroy(int rid);
 int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr, int timeout,
                                        int retry, int flags);
 int KYTY_SYSV_ABI NetInetPton(int af, const char* src, void* dst);

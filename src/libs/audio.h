@@ -3,11 +3,16 @@
 
 #include "common/abi.h"
 #include "common/common.h"
-#include "common/subsystems.h"
-
 namespace Libs::Audio {
 
-KYTY_SUBSYSTEM_DEFINE(Audio);
+void Initialize();
+void Shutdown();
+
+struct Lifecycle {
+	static constexpr const char* name       = "Audio";
+	static constexpr auto        initialize = Libs::Audio::Initialize;
+	static constexpr auto        shutdown   = Libs::Audio::Shutdown;
+};
 
 namespace AudioOut {
 
@@ -94,6 +99,7 @@ namespace AudioIn {
 int KYTY_SYSV_ABI AudioInOpen(int user_id, uint32_t type, uint32_t index, uint32_t len,
                               uint32_t freq, uint32_t param);
 int KYTY_SYSV_ABI AudioInInput(int handle, void* dest);
+int KYTY_SYSV_ABI AudioInGetSilentState(int handle);
 
 } // namespace AudioIn
 
@@ -282,6 +288,7 @@ int KYTY_SYSV_ABI  Audio3dPortPush(uint32_t port_id, uint32_t blocking);
 namespace Ngs2 {
 
 struct Ngs2SystemOption;
+struct Ngs2SystemInfo;
 struct Ngs2RackOption;
 struct Ngs2BufferAllocator;
 struct Ngs2VoiceParamHeader;
@@ -303,6 +310,8 @@ int KYTY_SYSV_ABI Ngs2SystemQueryBufferSize(const Ngs2SystemOption* option,
                                             Ngs2ContextBufferInfo*  buffer_info);
 int KYTY_SYSV_ABI Ngs2SystemCreate(const Ngs2SystemOption*      option,
                                    const Ngs2ContextBufferInfo* buffer_info, uintptr_t* handle);
+int KYTY_SYSV_ABI Ngs2SystemGetInfo(uintptr_t system_handle, Ngs2SystemInfo* info,
+                                    size_t info_size);
 int KYTY_SYSV_ABI Ngs2SystemSetGrainSamples(uintptr_t system_handle, uint32_t num_samples);
 int KYTY_SYSV_ABI Ngs2RackQueryBufferSize(uint32_t rack_id, const Ngs2RackOption* option,
                                           Ngs2ContextBufferInfo* buffer_info);

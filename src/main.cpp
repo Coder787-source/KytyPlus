@@ -1,7 +1,4 @@
 #include "common/common.h"
-#include "common/mmioBus.h"
-#include "common/ps5_nvme_lle.h"
-#include "common/commonSubsystem.h"
 #include "common/dateTime.h"
 #include "common/debug.h"
 #include "common/file.h"
@@ -9,6 +6,7 @@
 #include "common/platform/sysDbg.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "common/virtualMemory.h"
 #include "emulator.h"
 #include "package/pkgParser.h"
 #include "kytyGitVersion.h"
@@ -46,15 +44,22 @@ static void PrintUsage() {
 	::printf("kyty_emulator --game <dir|elf> [options]\n\n");
 	::printf("Options:\n");
 	::printf("  --game <dir|elf>                     Game directory or ELF to load.\n");
-	::printf(
-	    "  --game-patch <json>                  Validated patch plan to apply before entry.\n");
-	::printf("  --install-pkg <pkg>                 Parse/extract a PS4/PS5 .pkg, then exit.\n");
+	::printf("  --game-patch <json>                  ETAHen cheat file.\n");
+	::printf("  --install-pkg <pkg>                   Parse/extract a PS4/PS5 .pkg, then exit.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
+	::printf(
+	    "  --user-name <name>                   Local user name (1-16 bytes). Default: Kyty.\n");
+	::printf("  --user-id <num>                      Local user ID. Default: %d.\n",
+	         Config::DEFAULT_USER_ID);
+	::printf(
+	    "  --present-mode <value>               Fifo, Mailbox, or Immediate. Default: Fifo.\n");
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
 	::printf("  --vblank-frequency <num>             Virtual vblank frequency. Default: 60.\n");
 	::printf("  --console-language <0-29>            Console language. Default: 1 (English US).\n");
 	::printf("  --vulkan-validation <true|false>     Enable Vulkan validation.\n");
+	::printf("  --gpu-assisted-validation <t|f>      Bounds-check shader accesses on the GPU.\n"
+	         "                                       Implies --vulkan-validation; very slow.\n");
 	::printf("  --shader-validation <true|false>     Enable shader validation.\n");
 	::printf("  --shader-optimization-type <value>   None, Size, or Performance.\n");
 	::printf("  --shader-log-direction <value>       Silent, Console, or File.\n");
@@ -68,6 +73,7 @@ static void PrintUsage() {
 	::printf("  --spirv-debug-printf <true|false>    Enable SPIR-V debug printf.\n");
 	::printf(
 	    "  --readback-linear-images <true|false> Read back writable linear images on submit.\n");
+	::printf("  --playgo-hack                       Use the supplied PlayGo stub fallback.\n");
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	::printf("  --redzone                            Protect the guest SysV red zone.\n");
 #endif
@@ -103,39 +109,13 @@ static bool ParseBool(const std::string& value, bool& out) {
 
 template <typename E>
 static bool ParseEnum(const std::string& value, E& out) {
-	// Config validation: accept the value as-is first.
 	auto enum_value = magic_enum::enum_cast<E>(value.c_str());
-	if (enum_value.has_value()) {
-		out = enum_value.value();
-		return true;
+	if (!enum_value.has_value()) {
+		return false;
 	}
-	// Case-insensitive fallback so "fsr1"/"FSR1" both work.
-	enum_value = magic_enum::enum_cast<E>(value.c_str(), magic_enum::case_insensitive);
-	if (enum_value.has_value()) {
-		LOGF("Config: normalized enum value '%s' -> '%s'\n", value.c_str(),
-		     std::string(magic_enum::enum_name(enum_value.value())).c_str());
-		out = enum_value.value();
-		return true;
-	}
-	// Deprecated-name migration: Fsr31 was the old (inflated) label for the FSR 1.0
-	// implementation. Map it transparently so configs written against v2.4 keep working.
-	if constexpr (std::is_same_v<E, Config::UpscalerMethod>) {
-		if (value == "Fsr31" || value == "fsr31" || value == "FSR31") {
-			LOGF("Config: deprecated upscaler name '%s' -> 'Fsr1' (FSR 1.0)\n", value.c_str());
-			out = Config::UpscalerMethod::Fsr1;
-			return true;
-		}
-	}
-	// Report the offending value plus the accepted set so the user can fix it.
-	std::string valid = "[";
-	for (const auto name : magic_enum::enum_names<E>()) {
-		if (valid.size() > 1) valid += ", ";
-		valid += std::string(name);
-	}
-	valid += "]";
-	LOGF("Config: invalid enum value '%s' for %s (accepted: %s)\n", value.c_str(),
-	     std::string(magic_enum::enum_type_name<E>()).c_str(), valid.c_str());
-	return false;
+
+	out = enum_value.value();
+	return true;
 }
 
 static bool ParseConsoleLanguage(const std::string& value, uint32_t& out) {
@@ -146,6 +126,17 @@ static bool ParseConsoleLanguage(const std::string& value, uint32_t& out) {
 		return false;
 	}
 	out = language;
+	return true;
+}
+
+static bool ParseUserId(const std::string& value, int32_t& out) {
+	int32_t user_id   = 0;
+	auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), user_id);
+	if (error != std::errc {} || end != value.data() + value.size() ||
+	    !Config::IsConfiguredUserIdValid(user_id)) {
+		return false;
+	}
+	out = user_id;
 	return true;
 }
 
@@ -168,6 +159,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 
 		if (arg == "--fullscreen") {
 			options.config.fullscreen_enabled = true;
+			continue;
+		}
+
+		if (arg == "--playgo-hack") {
+			options.config.playgo_hack_enabled = true;
 			continue;
 		}
 
@@ -223,6 +219,23 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			options.config.screen_width = static_cast<uint32_t>(Common::ToInt32(value));
 		} else if (arg == "--screen-height") {
 			options.config.screen_height = static_cast<uint32_t>(Common::ToInt32(value));
+		} else if (arg == "--user-name") {
+			if (value.empty() || value.size() > Config::MAX_USER_NAME_LENGTH) {
+				::printf("invalid user name: must contain 1-%zu bytes\n",
+				         Config::MAX_USER_NAME_LENGTH);
+				return false;
+			}
+			options.config.user_name = value;
+		} else if (arg == "--user-id") {
+			if (!ParseUserId(value, options.config.user_id)) {
+				::printf("invalid user ID: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--present-mode") {
+			if (!ParseEnum(value, options.config.present_mode)) {
+				::printf("invalid present mode: %s\n", value.c_str());
+				return false;
+			}
 		} else if (arg == "--vblank-frequency") {
 			const int32_t vblank_frequency = Common::ToInt32(value);
 			options.config.vblank_frequency =
@@ -234,6 +247,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			}
 		} else if (arg == "--vulkan-validation") {
 			if (!ParseBool(value, options.config.vulkan_validation_enabled)) {
+				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
+				return false;
+			}
+		} else if (arg == "--gpu-assisted-validation") {
+			if (!ParseBool(value, options.config.gpu_assisted_validation_enabled)) {
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
 				return false;
 			}
@@ -278,39 +296,6 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid profiler direction: %s\n", value.c_str());
 				return false;
 			}
-		} else if (arg == "--upscaler-method") {
-			if (!ParseEnum(value, options.config.upscaler_method)) {
-				::printf("invalid upscaler method: %s\n", value.c_str());
-				return false;
-			}
-		} else if (arg == "--upscaler-quality") {
-			if (!ParseEnum(value, options.config.upscaler_quality)) {
-				::printf("invalid upscaler quality: %s\n", value.c_str());
-				return false;
-			}
-		} else if (arg == "--upscaler-sharpness") {
-			options.config.upscaler_sharpness = Common::ToFloat(value);
-		} else if (arg == "--igpu-optimization") {
-			if (value == "Force") {
-				options.config.force_igpu_mode = true;
-			}
-		} else if (arg == "--texture-lod-bias") {
-			options.config.texture_lod_bias = Common::ToInt32(value);
-		} else if (arg == "--present-mode") {
-			if (!ParseEnum(value, options.config.present_mode)) {
-				::printf("invalid present mode: %s\n", value.c_str());
-				return false;
-			}
-		} else if (arg == "--present-filter") {
-			if (!ParseEnum(value, options.config.present_filter)) {
-				::printf("invalid present filter: %s\n", value.c_str());
-				return false;
-			}
-		} else if (arg == "--aspect-ratio") {
-			if (!ParseEnum(value, options.config.aspect_ratio)) {
-				::printf("invalid aspect ratio: %s\n", value.c_str());
-				return false;
-			}
 		} else if (arg == "--spirv-debug-printf") {
 			if (!ParseBool(value, options.config.spirv_debug_printf_enabled)) {
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
@@ -331,7 +316,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--install-pkg") {
 			value = Common::FixFilenameSlash(value);
 			if (!Common::File::IsFileExisting(value)) {
-				::printf("--install-pkg must point to an existing .pkg file: %s\n", value.c_str());
+				::printf("--install-pkg must point to an existing .pkg file: %s\n",
+				         value.c_str());
 				return false;
 			}
 			options.install_pkg = value;
@@ -341,98 +327,67 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		}
 	}
 
-	return show_help || 	       (!options.install_pkg.empty()) ||
+	if (options.config.gpu_assisted_validation_enabled) {
+		options.config.vulkan_validation_enabled = true;
+	}
+
+	return show_help || (!options.install_pkg.empty()) ||
 	       (!options.app0_dir.empty() && !options.elf.empty());
 }
 
 int main(int argc, char* argv[]) {
-	auto& slist = *SubsystemsList::Instance();
-
-	slist.SetArgs(argc, argv);
-
-	auto* core    = CommonSubsystem::Instance();
-	auto* threads = ThreadsSubsystem::Instance();
-
-	slist.Add(core, {});
-	slist.Add(threads, {core});
-
-	// KytyPlus: MMIO bus subsystem — foundational LLE infrastructure.
-	// Registers the MMIO bus and (optionally, if a disk image path is supplied
-	// via --nvme-disk) attaches the NVMe LLE device. The bus is real and
-	// initialized; the NVMe LLE path is the foundation for future LLE storage
-	// and is NOT yet exercised by HLE games.
-	{
-		auto* bus = Common::MmioBus::Instance();
-		(void)bus; // bus is a singleton; subsystem registration keeps it alive
-	}
-
-	if (!slist.InitAll(false)) {
-		::printf("Failed to initialize '%s' subsystem: %s\n", slist.GetFailName(),
-		         slist.GetFailMsg());
-		return 1;
-	}
+	VirtualMemory::Init();
+	InitializeThreads();
 
 	RunOptions options;
 	bool       show_help = false;
 
 	if (argc < 2) {
 		PrintUsage();
-		slist.DestroyAll(false);
 		return 0;
 	}
 
 	if (!ParseArgs(argc, argv, options, show_help)) {
 		PrintUsage();
-		slist.DestroyAll(false);
 		return 1;
 	}
 
 	if (show_help) {
 		PrintUsage();
-		slist.DestroyAll(false);
 		return 0;
 	}
-
 
 
 	if (!options.install_pkg.empty()) {
 		const auto pr = Libs::Firmware::PkgParser::Parse(options.install_pkg.string());
 		if (!pr.ok) {
 			::printf("PKG parse failed: %s\n", pr.error.c_str());
-			slist.DestroyAll(false);
 			return 1;
 		}
 		if (pr.is_encrypted) {
 			::printf("PKG '%s' is encrypted. Decryption requires user-supplied keys.bin\n",
 			         pr.content_id.c_str());
 			::printf("(The emulator never provides or distributes keys.)\n");
-			slist.DestroyAll(false);
 			return 1;
 		}
-		// Build the extraction directory from the PKG's parent directory.
-		// A relative PKG path has an empty parent_path(), so use "." to stay
-		// in the working directory (a leading "/" would be a drive-root path
-		// on Windows and write to C:\pkg_out).
+		// Build the extraction directory relative to the PKG's own directory.
 		auto out_dir_path = std::filesystem::path(options.install_pkg).parent_path();
 		if (out_dir_path.empty()) out_dir_path = ".";
 		const auto out_dir = (out_dir_path / "pkg_out").string();
-		const uint32_t n = Libs::Firmware::PkgParser::ExtractAll(pr, options.install_pkg.string(), out_dir);
+		const uint32_t n   = Libs::Firmware::PkgParser::ExtractAll(
+		    pr, options.install_pkg.string(), out_dir);
 		::printf("PKG '%s' parsed OK. Extracted %u file(s) to %s\n",
 		         pr.content_id.c_str(), n, out_dir.c_str());
 		if (!pr.files.empty()) {
 			::printf("File entries found: %zu\n", pr.files.size());
-			for (const auto& fe : pr.files) {
+			for (const auto& fe: pr.files) {
 				::printf("  - %s\n", fe.name.c_str());
 			}
 		}
-		slist.DestroyAll(false);
 		return 0;
 	}
 
-
 	Run(options);
-
-	slist.DestroyAll(false);
 
 	return 0;
 }

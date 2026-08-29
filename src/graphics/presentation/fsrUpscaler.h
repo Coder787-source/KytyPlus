@@ -3,7 +3,7 @@
 
 #include "common/common.h"
 #include "graphics/host_gpu/vulkanCommon.h"
-#include "graphics/host_gpu/vulkanInstance.h"
+#include "graphics/host_gpu/graphicContext.h"
 
 namespace Libs::Graphics {
 
@@ -20,7 +20,7 @@ public:
 
 	// Create compute pipelines, descriptor layouts, and intermediate resources.
 	// Must be called once after the Vulkan device is ready.
-	bool Create(VulkanInstance& gfx);
+	bool Create(GraphicContext& gfx);
 
 	// Destroy all Vulkan resources.
 	void Destroy();
@@ -52,7 +52,7 @@ private:
 	bool CreateDescriptorResources();
 	bool EnsureIntermediate(uint32_t width, uint32_t height);
 
-	VulkanInstance*      m_gfx   = nullptr;
+	GraphicContext*      m_gfx   = nullptr;
 	bool                 m_ready = false;
 
 	// Descriptor set layout: binding 0 = sampler2D, binding 1 = storageImage, binding 2 = UBO.

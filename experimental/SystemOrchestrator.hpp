@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <atomic>
 #include <chrono>
@@ -10,9 +10,9 @@
 
 #include "kyty_expected.hpp"
 
-#include "../../AstroCompatLayer.hpp"
-#include "../../DualSenseEmulator.hpp"
-#include "../../DualSenseFeedbackLoop.hpp"
+#include "AstroCompatLayer.hpp"
+#include "DualSenseEmulator.hpp"
+#include "DualSenseFeedbackLoop.hpp"
 #include "../GPU/ShaderTranslator.hpp"
 #include "JitDispatcher.hpp"
 #include "../kernel/SyscallDispatcher.hpp"
@@ -90,3 +90,4 @@ private:
 };
 
 } // namespace KytyPS5
+

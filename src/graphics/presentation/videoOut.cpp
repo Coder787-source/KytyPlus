@@ -16,6 +16,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/presentation/presenter.h"
+#include "graphics/presentation/renderDoc.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -42,6 +43,9 @@ constexpr int      VIDEO_OUT_EVENT_PRE_VBLANK_START                     = 2;
 constexpr int      VIDEO_OUT_EVENT_SET_MODE                             = 8;
 constexpr int      VIDEO_OUT_TRUE                                       = 1;
 constexpr int      VIDEO_OUT_FALSE                                      = 0;
+constexpr int      VIDEO_OUT_BUS_TYPE_MAIN                              = 0;
+constexpr int      VIDEO_OUT_BUS_TYPE_OVERLAY                           = 1;
+constexpr int      VIDEO_OUT_BUS_TYPE_SUB                               = 2;
 constexpr int      VIDEO_OUT_FLIP_MODE_VSYNC                            = 1;
 constexpr int      VIDEO_OUT_FLIP_MODE_VSYNC_MULTI                      = 4;
 constexpr int      VIDEO_OUT_BUFFER_INDEX_BLACK                         = -2;
@@ -233,7 +237,7 @@ private:
 
 struct VideoOutDriver::Impl {
 public:
-	static constexpr int VIDEO_OUT_NUM_MAX = 2;
+	static constexpr int VIDEO_OUT_NUM_MAX = 4;
 
 	Impl(uint32_t width, uint32_t height, Graphics::Presenter& presenter)
 	    : m_renderer(presenter.Renderer()), m_presenter(presenter), m_flip_queue(presenter) {
@@ -244,7 +248,7 @@ public:
 	~Impl();
 	KYTY_CLASS_NO_COPY(Impl);
 
-	int             Open();
+	int             Open(int bus_type);
 	bool            Close(int handle);
 	VideoOutConfig* Get(int handle);
 	VideoOutConfig* Get(int handle, uint64_t& generation);
@@ -534,8 +538,7 @@ Graphics::ImageInfo BufferAttributeGroup::ImageInfo(const VideoOutBuffer& buffer
 	if (!Graphics::DecodeVideoOutPixelFormat(attribute.pixel_format, pixel_format)) {
 		EXIT("unsupported video-out pixel format: 0x%016" PRIx64 "\n", attribute.pixel_format);
 	}
-	const auto tile_mode =
-	    Graphics::Prospero::GpuEnumValue(Graphics::Prospero::TileMode::kRenderTarget);
+	const auto tile_mode = Graphics::Prospero::TileMode::kRenderTarget;
 	const auto pitch =
 	    Graphics::TileGetTexturePitch(pixel_format.guest_format, attribute.width, tile_mode);
 	Graphics::TileSizeAlign total {};
@@ -607,19 +610,11 @@ void VideoOutDriver::Impl::Init(uint32_t width, uint32_t height) {
 	}
 }
 
-int VideoOutDriver::Impl::Open() {
+int VideoOutDriver::Impl::Open(int bus_type) {
 	Common::LockGuard lock(m_mutex);
 
-	int handle = -1;
-
-	for (int i = 1; i < VIDEO_OUT_NUM_MAX; i++) {
-		if (!m_video_out_ctx[i].opened) {
-			handle = i;
-			break;
-		}
-	}
-
-	if (handle < 0) {
+	const int handle = bus_type + 1;
+	if (m_video_out_ctx[handle].opened) {
 		return -1;
 	}
 	auto&             config = m_video_out_ctx[handle];
@@ -1128,6 +1123,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 	m_mutex.Unlock();
 
 	m_presenter.Present(*r.frame);
+	Graphics::RenderDocOnGuestFlip();
 
 	m_mutex.Lock();
 	if (m_requests.empty() || m_requests.front().id != r.id ||
@@ -1172,12 +1168,15 @@ KYTY_SYSV_ABI int VideoOutOpen(int user_id, int bus_type, int index, const void*
 	PRINT_NAME();
 
 	EXIT_NOT_IMPLEMENTED(user_id != 255 && user_id != 0);
-	EXIT_NOT_IMPLEMENTED(bus_type != 0);
+	if (bus_type != VIDEO_OUT_BUS_TYPE_MAIN && bus_type != VIDEO_OUT_BUS_TYPE_OVERLAY &&
+	    bus_type != VIDEO_OUT_BUS_TYPE_SUB) {
+		return VIDEO_OUT_ERROR_INVALID_VALUE;
+	}
 	EXIT_NOT_IMPLEMENTED(index != 0);
 
 	LOGF("\t param = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(param));
 
-	int handle = DriverState().Open();
+	int handle = DriverState().Open(bus_type);
 
 	if (handle < 0) {
 		return VIDEO_OUT_ERROR_RESOURCE_BUSY;

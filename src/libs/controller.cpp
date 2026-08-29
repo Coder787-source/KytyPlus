@@ -1,7 +1,9 @@
 #include "libs/controller.h"
 
+#include "SDL.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -21,6 +23,9 @@ LIB_NAME("Pad", "Pad");
 
 constexpr int PAD_ERROR_INVALID_ARG    = -2137915391; /* 0x80920001 */
 constexpr int PAD_ERROR_INVALID_HANDLE = -2137915389; /* 0x80920003 */
+
+// SDL limits rumble commands to 0xffff ms; zero strengths stop immediately.
+constexpr uint32_t RUMBLE_DURATION_MS = 0xffff;
 
 struct PadControllerInformation {
 	float    touch_pixel_density;
@@ -57,8 +62,10 @@ public:
 	void Disconnect(int id);
 	void Button(int id, uint32_t button, bool down);
 	void Axis(int id, Axis axis, int value);
+	void RightStick(int id, int x, int y);
 	void ResetInputState();
 	void GetConnectionInfo(bool* flag, int* count);
+	void SetVibration(uint8_t large_motor, uint8_t small_motor);
 	void ReadState(ControllerState* state, bool* flag, int* count);
 	int  ReadStates(ControllerState* states, int states_num, bool* flag, int* count);
 
@@ -181,7 +188,7 @@ static void pad_fill_data(PadData* data, const ControllerState& state, bool conn
 	data->device_unique_data_len = 0;
 }
 
-KYTY_SUBSYSTEM_INIT(Controller) {
+void Initialize() {
 	EXIT_IF(g_controller != nullptr);
 
 	g_controller = new GameController;
@@ -199,14 +206,14 @@ KYTY_SUBSYSTEM_INIT(Controller) {
 	}
 }
 
-KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Controller) {}
-
-KYTY_SUBSYSTEM_DESTROY(Controller) {
+void Shutdown() {
 	if (g_dualsense != nullptr) {
 		g_dualsense->Close();
 		delete g_dualsense;
 		g_dualsense = nullptr;
 	}
+	delete g_controller;
+	g_controller = nullptr;
 }
 
 void GameController::Connect(int id) {
@@ -344,6 +351,18 @@ void GameController::Axis(int id, Controller::Axis axis, int value) {
 	}
 }
 
+void GameController::RightStick(int id, int x, int y) {
+	Common::LockGuard lock(m_mutex);
+
+	if (m_active_id == id || id == HOST_INPUT_CONTROLLER_ID) {
+		auto state                                 = GetLastState();
+		state.time                                 = LibKernel::KernelGetProcessTime();
+		state.axes[static_cast<int>(Axis::RightX)] = x;
+		state.axes[static_cast<int>(Axis::RightY)] = y;
+		AddState(state);
+	}
+}
+
 void GameController::ResetInputState() {
 	Common::LockGuard lock(m_mutex);
 	ControllerState   state {};
@@ -351,6 +370,25 @@ void GameController::ResetInputState() {
 	m_states_num  = 0;
 	m_first_state = 0;
 	AddState(state);
+}
+
+void GameController::SetVibration(uint8_t large_motor, uint8_t small_motor) {
+	Common::LockGuard lock(m_mutex);
+
+	if (m_active_id == HOST_INPUT_CONTROLLER_ID) {
+		return;
+	}
+
+	auto* pad = SDL_GameControllerFromInstanceID(static_cast<SDL_JoystickID>(m_active_id));
+	if (pad == nullptr) {
+		return;
+	}
+
+	const auto large = static_cast<uint16_t>(large_motor * 0x101U);
+	const auto small = static_cast<uint16_t>(small_motor * 0x101U);
+	if (SDL_GameControllerRumble(pad, large, small, RUMBLE_DURATION_MS) != 0) {
+		LOGF("\t rumble failed: %s\n", SDL_GetError());
+	}
 }
 
 void GameController::GetConnectionInfo(bool* flag, int* count) {
@@ -431,6 +469,12 @@ void ControllerAxis(int id, Axis axis, int value) {
 	g_controller->Axis(id, axis, value);
 }
 
+void ControllerRightStick(int id, int x, int y) {
+	EXIT_IF(g_controller == nullptr);
+
+	g_controller->RightStick(id, x, y);
+}
+
 void ControllerResetInputState() {
 	EXIT_IF(g_controller == nullptr);
 	g_controller->ResetInputState();
@@ -443,13 +487,12 @@ int KYTY_SYSV_ABI PadInit() {
 }
 
 static bool PadOpenArgsAreValid(int user_id, int type, int index) {
-	constexpr int user_id_initial    = 1000;
 	constexpr int user_id_system     = 0xff;
 	constexpr int port_type_standard = 0;
 	constexpr int port_type_special  = 2;
 	constexpr int port_type_remote   = 16;
 	const bool    personal_port =
-	    user_id == user_id_initial && (type == port_type_standard || type == port_type_special);
+	    user_id == Config::GetUserId() && (type == port_type_standard || type == port_type_special);
 	const bool system_remote_control = user_id == user_id_system && type == port_type_remote;
 	return index == 0 && (personal_port || system_remote_control);
 }
@@ -629,13 +672,17 @@ int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
 	     "\t small_motor = %d\n",
 	     static_cast<int>(param->large_motor), static_cast<int>(param->small_motor));
 
-	// Drive the real DualSense rumble actuators if a device is attached.
+	// KytyPlus: drive the native DualSense HID rumble actuators when a device is
+	// attached; otherwise fall back to upstream's SDL GameController rumble.
 	auto* ds = static_cast<Libs::DualSense::DualSenseDriver*>(DualSenseDriverInstance());
 	if (ds != nullptr && ds->IsOpen()) {
 		Libs::DualSense::VibrationParam v;
 		v.large_motor = param->large_motor;
 		v.small_motor = param->small_motor;
 		ds->SetVibration(v);
+	} else {
+		EXIT_IF(g_controller == nullptr);
+		g_controller->SetVibration(param->large_motor, param->small_motor);
 	}
 
 	return OK;

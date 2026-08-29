@@ -42,6 +42,7 @@ constexpr uint32_t IT_WRITE_DATA                = 0x37;
 constexpr uint32_t IT_MEM_SEMAPHORE             = 0x39;
 constexpr uint32_t IT_DRAW_INDEX_INDIRECT_MULTI = 0x38;
 constexpr uint32_t IT_DISPATCH_DRAW_PREAMBLE    = 0x3A;
+constexpr uint32_t IT_WAIT_REG_MEM              = 0x3C;
 constexpr uint32_t IT_INDIRECT_BUFFER           = 0x3F;
 constexpr uint32_t IT_COPY_DATA                 = 0x40;
 constexpr uint32_t IT_CP_DMA                    = 0x41;
@@ -70,6 +71,7 @@ constexpr uint32_t IT_WAIT_ON_CE_COUNTER        = 0x86;
 constexpr uint32_t IT_WAIT_ON_DE_COUNTER_DIFF   = 0x88;
 constexpr uint32_t IT_DISPATCH_DRAW             = 0x8D;
 constexpr uint32_t IT_GET_LOD_STATS             = 0x8E;
+constexpr uint32_t IT_WAIT_REG_MEM_64           = 0x93;
 constexpr uint32_t IT_SET_CONTEXT_REG_INDIRECT  = 0x9F;
 
 /* Custom codes. Implemented via IT_NOP */
@@ -78,12 +80,10 @@ constexpr uint32_t R_ZERO           = 0x00;
 constexpr uint32_t R_DRAW_RESET     = 0x05;
 constexpr uint32_t R_WAIT_FLIP_DONE = 0x06;
 constexpr uint32_t R_DISPATCH_RESET = 0x09;
-constexpr uint32_t R_WAIT_MEM_32    = 0x0A;
 constexpr uint32_t R_PUSH_MARKER    = 0x0B;
 constexpr uint32_t R_POP_MARKER     = 0x0C;
 constexpr uint32_t R_ACQUIRE_MEM    = 0x14;
 constexpr uint32_t R_WRITE_DATA     = 0x15;
-constexpr uint32_t R_WAIT_MEM_64    = 0x16;
 constexpr uint32_t R_FLIP           = 0x17;
 constexpr uint32_t R_RELEASE_MEM    = 0x18;
 constexpr uint32_t R_DMA_DATA       = 0x19;
@@ -317,8 +317,8 @@ constexpr uint32_t FSR_RECURSIONS1              = 0xF2;
 constexpr uint32_t VGT_MULTI_PRIM_IB_RESET_INDX = 0x103;
 constexpr uint32_t CB_RMI_GL2_CACHE_CONTROL     = 0x104;
 constexpr uint32_t CB_BLEND_RED                 = 0x105;
-constexpr uint32_t CB_BLEND_GREEN               = 0x106;
-constexpr uint32_t CB_BLEND_BLUE                = 0x107;
+constexpr uint32_t CB_BLEND_BLUE                = 0x106;
+constexpr uint32_t CB_BLEND_GREEN               = 0x107;
 constexpr uint32_t CB_BLEND_ALPHA               = 0x108;
 constexpr uint32_t CB_DCC_CONTROL               = 0x109;
 
@@ -386,9 +386,6 @@ constexpr uint32_t SPI_SHADER_IDX_FORMAT  = 0x1C2;
 constexpr uint32_t SPI_SHADER_POS_FORMAT  = 0x1C3;
 constexpr uint32_t SPI_SHADER_Z_FORMAT    = 0x1C4;
 constexpr uint32_t SPI_SHADER_COL_FORMAT  = 0x1C5;
-
-// Indirect Cx descriptor selector for the 32-entry PS input-control register bank.
-constexpr uint32_t CX_PS_SHADER_USAGE_BASE = 0x10000000u;
 
 constexpr uint32_t CB_BLEND0_CONTROL                            = 0x1E0;
 constexpr uint32_t CB_BLEND0_CONTROL_COLOR_SRCBLEND_SHIFT       = 0;
@@ -984,8 +981,16 @@ constexpr uint32_t COMPUTE_PGM_RSRC1_FP16_OVFL_SHIFT  = 26;
 constexpr uint32_t COMPUTE_PGM_RSRC1_FP16_OVFL_MASK   = 0x1;
 constexpr uint32_t COMPUTE_PGM_RSRC1_WGP_MODE_SHIFT   = 29;
 constexpr uint32_t COMPUTE_PGM_RSRC1_WGP_MODE_MASK    = 0x1;
-constexpr uint32_t COMPUTE_PGM_RSRC1_W32_EN_SHIFT     = 30;
-constexpr uint32_t COMPUTE_PGM_RSRC1_W32_EN_MASK      = 0x1;
+
+constexpr uint32_t COMPUTE_DISPATCH_INITIATOR_CS_W32_EN_SHIFT = 15;
+constexpr uint32_t COMPUTE_DISPATCH_INITIATOR_CS_W32_EN_MASK  = 0x1;
+
+[[nodiscard]] constexpr uint8_t ComputeWaveSize(uint32_t dispatch_initiator) {
+	return ((dispatch_initiator >> COMPUTE_DISPATCH_INITIATOR_CS_W32_EN_SHIFT) &
+	        COMPUTE_DISPATCH_INITIATOR_CS_W32_EN_MASK) != 0u
+	           ? 32u
+	           : 64u;
+}
 
 constexpr uint32_t COMPUTE_PGM_RSRC2                      = 0x213;
 constexpr uint32_t COMPUTE_PGM_RSRC2_SCRATCH_EN_SHIFT     = 0;
@@ -1083,7 +1088,7 @@ constexpr uint32_t UC_NOP                       = 0x80003FFF;
 
 constexpr uint32_t UC_NUM = 0x3FFF + 1;
 
-void DumpPm4PacketStream(Common::File* file, uint32_t* cmd_buffer, uint32_t start_dw,
+void DumpPm4PacketStream(Common::File* file, const uint32_t* cmd_buffer, uint32_t start_dw,
                          uint32_t num_dw);
 
 } // namespace Libs::Graphics::Pm4

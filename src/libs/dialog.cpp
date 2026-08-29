@@ -1,5 +1,6 @@
 #include "libs/dialog.h"
 
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "libs/errno.h"
@@ -21,6 +22,12 @@ int KYTY_SYSV_ABI CommonDialogInitialize() {
 	return OK;
 }
 
+bool KYTY_SYSV_ABI CommonDialogIsUsed() {
+	PRINT_NAME();
+
+	return false;
+}
+
 } // namespace CommonDialog
 
 namespace LoginDialog {
@@ -35,7 +42,6 @@ constexpr int LOGIN_RESULT_OK          = 0;
 constexpr int LOGIN_MODE_ALL_USERS     = 0;
 constexpr int LOGIN_MODE_NOT_LOGGED_IN = 1;
 constexpr int LOGIN_USER_INVALID       = -1;
-constexpr int LOGIN_USER_ID            = 1000;
 
 constexpr int LOGIN_ERROR_NOT_INITIALIZED     = static_cast<int>(0x81340001u);
 constexpr int LOGIN_ERROR_ALREADY_INITIALIZED = static_cast<int>(0x81340002u);
@@ -61,7 +67,7 @@ static_assert(sizeof(LoginDialogResult) == 16);
 static_assert(sizeof(LoginDialogParam) == 64);
 
 static int g_login_status        = LOGIN_STATUS_NONE;
-static int g_login_selected_user = LOGIN_USER_ID;
+static int g_login_selected_user = LOGIN_USER_INVALID;
 
 int KYTY_SYSV_ABI LoginDialogInitialize() {
 	PRINT_NAME();
@@ -71,7 +77,7 @@ int KYTY_SYSV_ABI LoginDialogInitialize() {
 	}
 
 	g_login_status        = LOGIN_STATUS_INITIALIZED;
-	g_login_selected_user = LOGIN_USER_ID;
+	g_login_selected_user = Config::GetUserId();
 
 	return OK;
 }
@@ -84,7 +90,7 @@ int KYTY_SYSV_ABI LoginDialogTerminate() {
 	}
 
 	g_login_status        = LOGIN_STATUS_NONE;
-	g_login_selected_user = LOGIN_USER_ID;
+	g_login_selected_user = LOGIN_USER_INVALID;
 
 	return OK;
 }
@@ -106,7 +112,7 @@ int KYTY_SYSV_ABI LoginDialogOpen(const void* param) {
 	}
 
 	g_login_selected_user =
-	    p->initial_focus != LOGIN_USER_INVALID ? p->initial_focus : LOGIN_USER_ID;
+	    p->initial_focus != LOGIN_USER_INVALID ? p->initial_focus : Config::GetUserId();
 
 	LOGF("\t size          = %d\n"
 	     "\t mode          = %d\n"

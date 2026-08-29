@@ -10,18 +10,20 @@ namespace Config {
 
 static std::unique_ptr<ConfigOptions> g_config;
 
-KYTY_SUBSYSTEM_INIT(Config) {
+void Initialize() {
 	EXIT_IF(g_config != nullptr);
 
 	g_config = std::make_unique<ConfigOptions>();
 }
 
-KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Config) {}
-
-KYTY_SUBSYSTEM_DESTROY(Config) {}
+void Shutdown() {
+	g_config.reset();
+}
 
 void Load(const ConfigOptions& cfg) {
 	EXIT_IF(g_config == nullptr);
+	EXIT_IF(cfg.user_name.empty() || cfg.user_name.size() > MAX_USER_NAME_LENGTH);
+	EXIT_IF(!IsConfiguredUserIdValid(cfg.user_id));
 
 	*g_config = cfg;
 }
@@ -58,6 +60,18 @@ uint32_t GetScreenWidth() {
 
 uint32_t GetScreenHeight() {
 	return g_config->screen_height;
+}
+
+const std::string& GetUserName() {
+	return g_config->user_name;
+}
+
+int32_t GetUserId() {
+	return g_config->user_id;
+}
+
+PresentMode GetPresentMode() {
+	return g_config->present_mode;
 }
 
 bool FullscreenEnabled() {
@@ -120,6 +134,10 @@ bool SpirvDebugPrintfEnabled() {
 	return g_config->spirv_debug_printf_enabled;
 }
 
+bool GpuAssistedValidationEnabled() {
+	return g_config->gpu_assisted_validation_enabled && g_config->vulkan_validation_enabled;
+}
+
 bool RenderDocEnabled() {
 	return g_config->renderdoc_enabled;
 }
@@ -130,6 +148,10 @@ bool NggRectlistDrawEnabled() {
 
 bool ReadbackLinearImagesEnabled() {
 	return g_config->readback_linear_images;
+}
+
+bool PlayGoHackEnabled() {
+	return g_config->playgo_hack_enabled;
 }
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS

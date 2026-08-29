@@ -13,6 +13,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/sync.h"
+#include "graphics/presentation/renderDoc.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
 #include "graphics/shader/shader.h"
@@ -26,6 +27,7 @@
 #include <cstdio>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <semaphore>
 #include <thread>
 #include <vector>
@@ -36,7 +38,7 @@ static thread_local CommandProcessor* g_current_processor = nullptr;
 static thread_local Pm4Execution*     g_current_execution = nullptr;
 static thread_local bool              g_gpu_mutex_owned   = false;
 static thread_local bool              g_gpu_thread        = false;
-static thread_local GpuState*         g_gpu_state         = nullptr;
+static thread_local GuestGpu*         g_gpu_state         = nullptr;
 
 class GpuMutexLock final {
 public:
@@ -59,115 +61,23 @@ private:
 	Common::Mutex& m_mutex;
 };
 
-struct OwnedCmdBuffer {
-	OwnedCmdBuffer() = default;
-	explicit OwnedCmdBuffer(const uint32_t* data, uint32_t count) {
-		EXIT_IF(data == nullptr && count != 0);
-		if (count != 0) {
-			m_words.assign(data, data + count);
-		}
-	}
-
-	[[nodiscard]] bool      Empty() const noexcept { return m_words.empty(); }
-	[[nodiscard]] uint32_t  Size() const noexcept { return static_cast<uint32_t>(m_words.size()); }
-	[[nodiscard]] uint32_t* Data() noexcept { return m_words.data(); }
-
-private:
-	std::vector<uint32_t> m_words;
-};
-
-class GpuState {
-public:
-	static constexpr uint32_t ComputePipeCount     = 7;
-	static constexpr uint32_t QueuesPerComputePipe = 8;
-	static constexpr uint32_t ComputeQueueCount    = ComputePipeCount * QueuesPerComputePipe;
-	static constexpr uint32_t QueueCount           = 1 + ComputeQueueCount;
-
-	explicit GpuState(RenderContext& renderer): m_renderer(renderer) {
-		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-		m_gfx_cp = std::make_unique<CommandProcessor>(renderer);
-		m_thread = std::jthread(ThreadRun, this);
-	}
-	~GpuState();
-
-	KYTY_CLASS_NO_COPY(GpuState);
-
-	void Submit(uint32_t* cmd_draw_buffer, uint32_t num_draw_dw, uint32_t* cmd_const_buffer,
-	            uint32_t num_const_dw, bool trigger_agc_interrupt_on_done);
-	void SubmitCompute(uint32_t queue, uint32_t* cmd_buffer, uint32_t num_dw,
-	                   bool trigger_agc_interrupt_on_done);
-	void SubmitFlipPreparation(uint64_t request_id);
-	void Done();
-	void Shutdown();
-	[[nodiscard]] bool        IsStopping();
-	void                      SendCommand(Common::UniqueFunction<void>&& command);
-	void                      SendCommandSync(Common::UniqueFunction<void>&& command);
-	int                       GetFrameNum();
-	[[nodiscard]] static bool IsGpuThread() noexcept { return g_gpu_thread; }
-
-private:
-	enum class SubmissionType { Graphics, Compute, FlipPreparation };
-
-	struct Submission {
-		SubmissionType type     = SubmissionType::Graphics;
-		uint32_t       queue_id = 0;
-		OwnedCmdBuffer commands;
-		OwnedCmdBuffer constant_commands;
-		Pm4Execution   command_execution;
-		Pm4Execution   constant_execution;
-		bool           trigger_agc_interrupt_on_done = false;
-		bool           reset_processor               = false;
-		bool           started                       = false;
-		bool           command_complete              = false;
-		bool           constant_complete             = false;
-		bool           blocked                       = false;
-		uint64_t       flip_request_id               = 0;
-	};
-
-	void              Enqueue(Submission submission);
-	void              WaitForIdle();
-	void              ProcessCommands();
-	bool              Process(Submission& submission);
-	static void       ThreadRun(void* data);
-	CommandProcessor& GetProcessor(uint32_t queue_id);
-
-	RenderContext&                                 m_renderer;
-	Common::Mutex                                  m_submission_mutex;
-	Common::Mutex                                  m_queue_mutex;
-	std::mutex                                     m_shutdown_mutex;
-	Common::CondVar                                m_work_available;
-	Common::CondVar                                m_idle;
-	std::array<std::deque<Submission>, QueueCount> m_queues;
-	std::deque<Common::UniqueFunction<void>>       m_commands;
-	std::atomic_uint32_t                           m_pending_commands {0};
-	uint32_t                                       m_next_queue        = 0;
-	uint32_t                                       m_submission_count  = 0;
-	bool                                           m_processing        = false;
-	bool                                           m_graphics_done     = true;
-	bool                                           m_accepting         = true;
-	bool                                           m_stopping          = false;
-	bool                                           m_shutdown_complete = false;
-
-	std::unique_ptr<CommandProcessor>                                m_gfx_cp;
-	std::array<std::unique_ptr<CommandProcessor>, ComputeQueueCount> m_compute_cp;
-
-	uint64_t        m_submit_id = 0;
-	std::atomic_int m_done_num  = 0;
-	std::jthread    m_thread;
-
-	friend class CommandProcessor;
-};
-
 static bool GraphicsRunDebugDumpEnabled() {
 	return Config::GraphicsDebugDumpEnabled() &&
 	       Config::GetPrintfDirection() != Config::OutputDirection::Silent;
 }
 
-GpuState::~GpuState() {
+GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
+	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+	GraphicsInitJmpTables();
+	m_gfx_cp = std::make_unique<CommandProcessor>(renderer, 0);
+	m_thread = std::jthread(ThreadRun, this);
+}
+
+GuestGpu::~GuestGpu() {
 	Shutdown();
 }
 
-void GpuState::Shutdown() {
+void GuestGpu::Shutdown() {
 	std::lock_guard shutdown_lock(m_shutdown_mutex);
 	if (m_shutdown_complete) {
 		return;
@@ -184,12 +94,12 @@ void GpuState::Shutdown() {
 	m_shutdown_complete = true;
 }
 
-bool GpuState::IsStopping() {
+bool GuestGpu::IsStopping() {
 	Common::LockGuard lock(m_queue_mutex);
 	return m_stopping;
 }
 
-void GpuState::SendCommand(Common::UniqueFunction<void>&& command) {
+void GuestGpu::SendCommand(Common::UniqueFunction<void>&& command) {
 	EXIT_IF(!command);
 	if (IsGpuThread()) {
 		command();
@@ -202,7 +112,7 @@ void GpuState::SendCommand(Common::UniqueFunction<void>&& command) {
 	m_work_available.Signal();
 }
 
-void GpuState::ProcessCommands() {
+void GuestGpu::ProcessCommands() {
 	EXIT_IF(!IsGpuThread());
 	while (m_pending_commands.load(std::memory_order_acquire) != 0) {
 		Common::UniqueFunction<void> command;
@@ -217,7 +127,7 @@ void GpuState::ProcessCommands() {
 	}
 }
 
-void GpuState::SendCommandSync(Common::UniqueFunction<void>&& command) {
+void GuestGpu::SendCommandSync(Common::UniqueFunction<void>&& command) {
 	EXIT_IF(!command);
 	if (IsGpuThread()) {
 		command();
@@ -231,38 +141,37 @@ void GpuState::SendCommandSync(Common::UniqueFunction<void>&& command) {
 	done.acquire();
 }
 
-void GpuState::Submit(uint32_t* cmd_draw_buffer, uint32_t num_draw_dw, uint32_t* cmd_const_buffer,
-                      uint32_t num_const_dw, bool trigger_agc_interrupt_on_done) {
+void GuestGpu::Submit(std::span<const uint32_t> draw_commands,
+                      std::span<const uint32_t> constant_commands) {
+	if (draw_commands.empty()) {
+		return;
+	}
 	GpuMutexLock lock(m_submission_mutex);
 	Submission   submission;
-	submission.type                          = SubmissionType::Graphics;
-	submission.queue_id                      = 0;
-	submission.commands                      = OwnedCmdBuffer(cmd_draw_buffer, num_draw_dw);
-	submission.constant_commands             = OwnedCmdBuffer(cmd_const_buffer, num_const_dw);
-	submission.trigger_agc_interrupt_on_done = trigger_agc_interrupt_on_done;
-	submission.reset_processor               = m_graphics_done;
-	m_graphics_done                          = false;
+	submission.type              = SubmissionType::Graphics;
+	submission.queue_id          = 0;
+	submission.commands          = draw_commands;
+	submission.constant_commands = constant_commands;
+	submission.reset_processor   = m_graphics_done;
+	m_graphics_done              = false;
 	Enqueue(std::move(submission));
 }
 
-void GpuState::SubmitCompute(uint32_t queue, uint32_t* cmd_buffer, uint32_t num_dw,
-                             bool trigger_agc_interrupt_on_done) {
+void GuestGpu::SubmitCompute(uint32_t queue, std::span<const uint32_t> commands) {
+	EXIT_IF(commands.empty());
 	GpuMutexLock lock(m_submission_mutex);
 
-	constexpr uint32_t compute_queue_base = 0x20u;
-	EXIT_NOT_IMPLEMENTED(queue < compute_queue_base ||
-	                     queue >= compute_queue_base + ComputeQueueCount);
+	EXIT_NOT_IMPLEMENTED(queue < ComputeQueueBase || queue >= ComputeQueueBase + ComputeQueueCount);
 
-	const auto compute_queue = queue - compute_queue_base;
+	const auto compute_queue = queue - ComputeQueueBase;
 	Submission submission;
-	submission.type                          = SubmissionType::Compute;
-	submission.queue_id                      = 1 + compute_queue;
-	submission.commands                      = OwnedCmdBuffer(cmd_buffer, num_dw);
-	submission.trigger_agc_interrupt_on_done = trigger_agc_interrupt_on_done;
+	submission.type     = SubmissionType::Compute;
+	submission.queue_id = 1 + compute_queue;
+	submission.commands = commands;
 	Enqueue(std::move(submission));
 }
 
-void GpuState::SubmitFlipPreparation(uint64_t request_id) {
+void GuestGpu::SubmitFlipPreparation(uint64_t request_id) {
 	GpuMutexLock lock(m_submission_mutex);
 	Submission   submission;
 	submission.type            = SubmissionType::FlipPreparation;
@@ -273,7 +182,7 @@ void GpuState::SubmitFlipPreparation(uint64_t request_id) {
 	Enqueue(std::move(submission));
 }
 
-void GpuState::Done() {
+void GuestGpu::Done() {
 	GpuMutexLock lock(m_submission_mutex);
 	if (!IsGpuThread()) {
 		WaitForIdle();
@@ -282,18 +191,18 @@ void GpuState::Done() {
 	m_done_num++;
 }
 
-int GpuState::GetFrameNum() {
+int GuestGpu::GetFrameNum() const {
 	return m_done_num;
 }
 
-CommandProcessor& GpuState::GetProcessor(uint32_t queue_id) {
+CommandProcessor& GuestGpu::GetProcessor(uint32_t queue_id) {
 	EXIT_IF(queue_id >= QueueCount);
 	if (queue_id == 0) {
 		return *m_gfx_cp;
 	}
 	auto& processor = m_compute_cp[queue_id - 1];
 	if (processor == nullptr) {
-		processor = std::make_unique<CommandProcessor>(m_renderer);
+		processor = std::make_unique<CommandProcessor>(m_renderer, ComputeQueueBase + queue_id - 1);
 	}
 	return *processor;
 }
@@ -346,8 +255,7 @@ void CommandProcessor::BufferFlush() {
 }
 
 void CommandProcessor::BufferFlushAndWait() {
-	auto& submitted = GetScheduler().FlushAndGetSubmitted();
-	submitted.WaitForFenceOnly();
+	GetScheduler().FlushAndWait();
 }
 
 void CommandProcessor::BufferWait() {
@@ -370,6 +278,12 @@ void CommandProcessor::WaitCe() {
 void CommandProcessor::WaitDeDiff(uint32_t diff) {
 	EXIT_IF(m_de_count > m_ce_count);
 	if (m_ce_count - m_de_count >= diff) {
+		SuspendPm4();
+	}
+}
+
+void CommandProcessor::WaitForRewind(bool valid) {
+	if (!valid) {
 		SuspendPm4();
 	}
 }
@@ -426,10 +340,8 @@ template void CommandProcessor::WaitRegMem<uint64_t>(uint32_t, const uint64_t*, 
 
 void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw_num,
                                  uint32_t write_control) {
-	const uint32_t dst_sel      = ((write_control >> 30u) & 0x1u) | ((write_control >> 7u) & 0x1eu);
-	const uint32_t cache_policy = (write_control >> 25u) & 0x3u;
-	const uint32_t increment    = (write_control >> 16u) & 0x1u;
-	const uint32_t write_confirm = (write_control >> 20u) & 0x1u;
+	const uint32_t dst_sel = ((write_control >> 30u) & 0x1u) | ((write_control >> 7u) & 0x1eu);
+	const bool     write_one_address = ((write_control >> 16u) & 0x1u) != 0;
 
 	switch (dst_sel) {
 		case 0:
@@ -439,16 +351,17 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 		case 6: break;
 		default: EXIT("unsupported writeData destination selector 0x%02" PRIx32 "\n", dst_sel);
 	}
-	EXIT_NOT_IMPLEMENTED(increment != 0);
-
-	if (cache_policy > 3 || write_confirm > 1) {
-		LOGF("\t warning: unexpected write_data control 0x%08" PRIx32 "\n", write_control);
-	}
 	if (dw_num == 0) {
 		return;
 	}
 
-	memcpy(dst, src, static_cast<size_t>(dw_num) * sizeof(uint32_t));
+	if (write_one_address) {
+		for (uint32_t i = 0; i < dw_num; i++) {
+			dst[0] = src[i];
+		}
+	} else {
+		memcpy(dst, src, static_cast<size_t>(dw_num) * sizeof(uint32_t));
+	}
 }
 
 void CommandProcessor::WriteReferenceClock(uint64_t dst_address, uint32_t num_bytes) {
@@ -489,6 +402,13 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 			default: return false;
 		}
 	};
+	if (dst_sel == 2) {
+		// kNowhere discards the GL2 prefetch destination without a guest-visible write.
+		if (src_sel != 3) {
+			EXIT("unsupported dmaData nowhere source selector 0x%02" PRIx8 "\n", src_sel);
+		}
+		return;
+	}
 	bool dst_gds = false;
 	if (!decode_gds(dst_sel, dst_gds)) {
 		EXIT("unsupported dmaData destination selector 0x%02" PRIx8 "\n", dst_sel);
@@ -511,7 +431,7 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	                        dst_gds, src_gds);
 }
 
-void GpuState::Enqueue(Submission submission) {
+void GuestGpu::Enqueue(Submission submission) {
 	EXIT_IF(submission.queue_id >= QueueCount);
 	Common::LockGuard lock(m_queue_mutex);
 	EXIT_IF(!m_accepting);
@@ -520,15 +440,15 @@ void GpuState::Enqueue(Submission submission) {
 	m_work_available.Signal();
 }
 
-void GpuState::WaitForIdle() {
+void GuestGpu::WaitForIdle() {
 	Common::LockGuard lock(m_queue_mutex);
 	while (m_processing || !m_commands.empty() || m_submission_count != 0) {
 		m_idle.Wait(&m_queue_mutex);
 	}
 }
 
-void GpuState::ThreadRun(void* data) {
-	auto* gpu = static_cast<GpuState*>(data);
+void GuestGpu::ThreadRun(void* data) {
+	auto* gpu = static_cast<GuestGpu*>(data);
 	EXIT_IF(gpu == nullptr);
 	KYTY_PROFILER_THREAD("Thread_Gpu");
 	g_gpu_thread = true;
@@ -624,9 +544,13 @@ void GpuState::ThreadRun(void* data) {
 	}
 }
 
-bool GpuState::Process(Submission& submission) {
-	auto&      cp          = GetProcessor(submission.queue_id);
+bool GuestGpu::Process(Submission& submission) {
 	const bool first_slice = !submission.started;
+	if (first_slice && RenderDocCaptureRequested()) {
+		Common::LockGuard render_lock(m_renderer.GetMutex());
+		RenderDocStartCapture();
+	}
+	auto& cp = GetProcessor(submission.queue_id);
 
 	if (first_slice && submission.reset_processor) {
 		cp.Reset();
@@ -645,21 +569,20 @@ bool GpuState::Process(Submission& submission) {
 	switch (submission.type) {
 		case SubmissionType::Graphics: {
 			bool progressed = false;
-			submission.constant_complete |= submission.constant_commands.Empty();
+			submission.constant_complete |= submission.constant_commands.empty();
 			for (;;) {
 				bool round_progress = false;
 				if (!submission.constant_complete) {
 					submission.constant_complete =
-					    cp.Process(
-					        submission.constant_execution, submission.constant_commands.Data(),
-					        submission.constant_commands.Size()) == Pm4ProcessResult::Complete;
+					    cp.Process(submission.constant_execution, submission.constant_commands) ==
+					    Pm4ProcessResult::Complete;
 					round_progress |= submission.constant_execution.MadeProgress();
 				}
 				cp.SetCeComplete(submission.constant_complete);
 				if (!submission.command_complete) {
 					submission.command_complete =
-					    cp.Process(submission.command_execution, submission.commands.Data(),
-					               submission.commands.Size()) == Pm4ProcessResult::Complete;
+					    cp.Process(submission.command_execution, submission.commands) ==
+					    Pm4ProcessResult::Complete;
 					round_progress |= submission.command_execution.MadeProgress();
 				}
 				progressed |= round_progress;
@@ -676,14 +599,11 @@ bool GpuState::Process(Submission& submission) {
 			} else if (complete) {
 				m_renderer.GetGpuResources().RunGarbageCollector();
 			}
-			if (complete && submission.trigger_agc_interrupt_on_done) {
-				m_renderer.TriggerEopEvent(0);
-			}
 			break;
 		}
 		case SubmissionType::Compute: {
-			const auto      num_dw                  = submission.commands.Size();
-			auto*           buffer                  = submission.commands.Data();
+			const auto      num_dw = static_cast<uint32_t>(submission.commands.size());
+			const auto*     buffer = submission.commands.data();
 			static uint32_t compute_batch_log_count = 0;
 			if (first_slice && num_dw <= 128 && compute_batch_log_count++ < 32) {
 				LOGF("compute direct batch: data=0x%016" PRIx64 ", num_dw=%" PRIu32 "\n",
@@ -695,7 +615,7 @@ bool GpuState::Process(Submission& submission) {
 			if (first_slice) {
 				GraphicsDbgDumpDcb("cc", num_dw, buffer);
 			}
-			complete = cp.Process(submission.command_execution, buffer, num_dw) ==
+			complete = cp.Process(submission.command_execution, submission.commands) ==
 			           Pm4ProcessResult::Complete;
 			if (submission.command_execution.MadeProgress()) {
 				if (complete) {
@@ -704,9 +624,6 @@ bool GpuState::Process(Submission& submission) {
 				cp.BufferFlush();
 			} else if (complete) {
 				m_renderer.GetGpuResources().RunGarbageCollector();
-			}
-			if (complete && submission.trigger_agc_interrupt_on_done) {
-				Sync::TriggerAgcUserInterrupt();
 			}
 			break;
 		}
@@ -719,12 +636,13 @@ bool GpuState::Process(Submission& submission) {
 	return complete;
 }
 
-Pm4ProcessResult CommandProcessor::Process(Pm4Execution& execution, uint32_t* buffer,
-                                           uint32_t size_dw) {
+Pm4ProcessResult CommandProcessor::Process(Pm4Execution&             execution,
+                                           std::span<const uint32_t> commands) {
 	KYTY_PROFILER_BLOCK("CommandProcessor::Process");
 	EXIT_IF(g_current_execution != nullptr);
-	if (execution.m_buffer_stack.empty() && size_dw != 0) {
-		execution.m_buffer_stack.push_back({buffer, size_dw, size_dw, 0});
+	EXIT_IF(commands.size() > UINT32_MAX);
+	if (execution.m_buffer_stack.empty() && !commands.empty()) {
+		execution.m_buffer_stack.push_back({commands});
 	}
 	execution.m_suspended     = false;
 	execution.m_made_progress = false;
@@ -749,14 +667,14 @@ Pm4ProcessResult CommandProcessor::Process(Pm4Execution& execution, uint32_t* bu
 	                                        : Pm4ProcessResult::Blocked;
 }
 
-void CommandProcessor::ProcessIndirectBuffer(uint32_t* buffer, uint32_t size_dw) {
+void CommandProcessor::ProcessIndirectBuffer(std::span<const uint32_t> commands) {
 	EXIT_IF(g_current_execution == nullptr);
-	if (size_dw == 0) {
+	if (commands.empty()) {
 		return;
 	}
 	auto&      execution  = *g_current_execution;
 	const auto stop_depth = execution.m_buffer_stack.size();
-	execution.m_buffer_stack.push_back({buffer, size_dw, size_dw, 0});
+	execution.m_buffer_stack.push_back({commands});
 	ProcessPm4(execution, stop_depth);
 }
 
@@ -772,29 +690,28 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution, size_t stop_depth) {
 		}
 		const auto buffer_index = execution.m_buffer_stack.size() - 1;
 		auto&      cursor       = execution.m_buffer_stack[buffer_index];
+		EXIT_IF(cursor.offset_dw > cursor.commands.size());
 		if (cursor.deferred_advance_dw != 0) {
-			EXIT_IF(cursor.deferred_advance_dw > cursor.remaining_dw);
-			cursor.next_packet += cursor.deferred_advance_dw;
-			cursor.remaining_dw -= cursor.deferred_advance_dw;
+			EXIT_IF(cursor.deferred_advance_dw > cursor.commands.size() - cursor.offset_dw);
+			cursor.offset_dw += cursor.deferred_advance_dw;
 			cursor.deferred_advance_dw = 0;
 			execution.m_made_progress  = true;
 			continue;
 		}
-		if (cursor.remaining_dw == 0) {
+		if (cursor.offset_dw == cursor.commands.size()) {
 			execution.m_buffer_stack.pop_back();
 			continue;
 		}
 
-		auto* const packet        = cursor.next_packet;
-		const auto  remaining_dw  = cursor.remaining_dw;
-		const auto  total_dw      = cursor.total_dw;
-		const auto  packet_header = packet[0];
-		const auto  opcode        = (packet_header >> 8u) & 0xffu;
+		const auto* const packet        = cursor.commands.data() + cursor.offset_dw;
+		const auto        total_dw      = static_cast<uint32_t>(cursor.commands.size());
+		const auto        remaining_dw  = total_dw - cursor.offset_dw;
+		const auto        packet_header = packet[0];
+		const auto        opcode        = (packet_header >> 8u) & 0xffu;
 		EXIT_NOT_IMPLEMENTED(remaining_dw > total_dw);
 
 		if (packet_header == 0x80000000u) {
-			cursor.next_packet++;
-			cursor.remaining_dw--;
+			cursor.offset_dw++;
 			execution.m_made_progress = true;
 			continue;
 		}
@@ -829,8 +746,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution, size_t stop_depth) {
 					     dst, val, packet[1], packet[2]);
 				}
 			}
-			cursor.next_packet += packet_dw;
-			cursor.remaining_dw -= packet_dw;
+			cursor.offset_dw += packet_dw;
 			execution.m_made_progress = true;
 			continue;
 		}
@@ -863,8 +779,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution, size_t stop_depth) {
 			return;
 		}
 		EXIT_IF(execution.m_buffer_stack.size() != buffer_index + 1);
-		execution.m_buffer_stack[buffer_index].next_packet += packet_dw;
-		execution.m_buffer_stack[buffer_index].remaining_dw -= packet_dw;
+		execution.m_buffer_stack[buffer_index].offset_dw += packet_dw;
 		execution.m_made_progress = true;
 	}
 }
@@ -1163,6 +1078,8 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_group_y,
                                       uint32_t thread_group_z, uint32_t mode) {
+	m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
+
 	uint32_t frame_num = 0;
 	// uint32_t local_x   = 1;
 	// uint32_t local_y   = 1;
@@ -1305,7 +1222,14 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 	switch (interrupt_selector) {
 		case 0x00:
 		case 0x03: with_interrupt = false; break;
-		case 0x01: Sync::TriggerEopEventAtEndOfPipe(CurrentBuffer(), interrupt_context_id); return;
+		case 0x01:
+			if (!IsAsyncComputeQueue()) {
+				Sync::TriggerEopEventAtEndOfPipe(CurrentBuffer(), m_interrupt_event_id,
+				                                 interrupt_context_id);
+				return;
+			}
+			with_interrupt = true;
+			break;
 		case 0x02: with_interrupt = true; break;
 		default: EXIT("unknown interrupt_selector: 0x%08" PRIx32 "\n", interrupt_selector);
 	}
@@ -1318,10 +1242,11 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		if (with_interrupt) {
 			if (with_writeback) {
 				Sync::WriteAtEndOfPipeWithInterruptWriteBack32(m_submit_id, CurrentBuffer(), dst,
-				                                               data, interrupt_context_id);
+				                                               data, m_interrupt_event_id,
+				                                               interrupt_context_id);
 			} else {
 				Sync::WriteAtEndOfPipeWithInterrupt32(m_submit_id, CurrentBuffer(), dst, data,
-				                                      interrupt_context_id);
+				                                      m_interrupt_event_id, interrupt_context_id);
 			}
 		} else if (with_writeback) {
 			Sync::WriteAtEndOfPipeWithWriteBack32(m_submit_id, CurrentBuffer(), dst, data);
@@ -1336,12 +1261,12 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 				if (eop_event_type == 0x2f && cache_action == 0x00 && event_index == 0x06) {
 					auto* dst = static_cast<uint32_t*>(dst_gpu_addr);
 					SynchronizeGpu();
-					Sync::ReadGds(m_renderer.GetBufferCache().GetGdsBuffer(), dst, value & 0xffffu,
+					Sync::ReadGds(*m_renderer.GetBufferCache().GetGdsBuffer(), dst, value & 0xffffu,
 					              value >> 16u);
 					Sync::WriteAtEndOfPipeGds32(m_submit_id, CurrentBuffer(), dst, value & 0xffffu,
 					                            value >> 16u);
 					if (with_interrupt) {
-						m_renderer.TriggerEopEvent(interrupt_context_id);
+						m_renderer.TriggerInterrupt(m_interrupt_event_id, interrupt_context_id);
 					}
 					return;
 				}
@@ -1367,10 +1292,12 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 					if (with_interrupt) {
 						if (with_writeback) {
 							Sync::WriteAtEndOfPipeWithInterruptWriteBack64(
-							    m_submit_id, CurrentBuffer(), dst, value, interrupt_context_id);
+							    m_submit_id, CurrentBuffer(), dst, value, m_interrupt_event_id,
+							    interrupt_context_id);
 						} else {
 							Sync::WriteAtEndOfPipeWithInterrupt64(m_submit_id, CurrentBuffer(), dst,
-							                                      value, interrupt_context_id);
+							                                      value, m_interrupt_event_id,
+							                                      interrupt_context_id);
 						}
 					} else if (with_writeback) {
 						Sync::WriteAtEndOfPipeWithWriteBack64(m_submit_id, CurrentBuffer(), dst,
@@ -1384,9 +1311,14 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 					case 0x00:
 						switch (eop_event_type) {
 							case 0x04:
+								if (event_index == 0x05) {
+									write64(false);
+									return;
+								}
+								break;
+							case 0x14:
 							case 0x28:
-								if ((eop_event_type == 0x04 && event_index == 0x05) ||
-								    (eop_event_type == 0x28 && event_index == 0x00)) {
+								if (event_index == 0x00) {
 									write64(false);
 									return;
 								}
@@ -1444,26 +1376,35 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		case 0x04:
 			if constexpr (sizeof(T) == sizeof(uint64_t)) {
 				const auto clock = Sync::ReadReferenceClock();
-				std::memcpy(dst_gpu_addr, &clock, sizeof(clock));
+				auto*      dst   = static_cast<uint64_t*>(dst_gpu_addr);
+				std::memcpy(dst, &clock, sizeof(clock));
 				switch (cache_action) {
 					case 0x00:
-						if (((eop_event_type == 0x04 && event_index == 0x05) ||
-						     (eop_event_type == 0x28 && event_index == 0x00)) &&
-						    !with_interrupt) {
-							Sync::WriteAtEndOfPipeClockCounter(m_submit_id, CurrentBuffer(),
-							                                   static_cast<uint64_t*>(dst_gpu_addr),
-							                                   clock);
+						if ((eop_event_type == 0x04 && event_index == 0x05) ||
+						    (eop_event_type == 0x28 && event_index == 0x00)) {
+							if (with_interrupt) {
+								Sync::WriteAtEndOfPipeWithInterrupt64(
+								    m_submit_id, CurrentBuffer(), dst, clock, m_interrupt_event_id,
+								    interrupt_context_id);
+							} else {
+								Sync::WriteAtEndOfPipeClockCounter(m_submit_id, CurrentBuffer(),
+								                                   dst, clock);
+							}
 							return;
 						}
 						break;
 					case 0x38:
-						if (((eop_event_type == 0x04 &&
-						      (event_index == 0x00 || event_index == 0x05)) ||
-						     (eop_event_type == 0x28 && event_index == 0x00)) &&
-						    !with_interrupt) {
-							Sync::WriteAtEndOfPipeClockCounterWithWriteBack(
-							    m_submit_id, CurrentBuffer(), static_cast<uint64_t*>(dst_gpu_addr),
-							    clock);
+						if ((eop_event_type == 0x04 &&
+						     (event_index == 0x00 || event_index == 0x05)) ||
+						    (eop_event_type == 0x28 && event_index == 0x00)) {
+							if (with_interrupt) {
+								Sync::WriteAtEndOfPipeWithInterruptWriteBack64(
+								    m_submit_id, CurrentBuffer(), dst, clock, m_interrupt_event_id,
+								    interrupt_context_id);
+							} else {
+								Sync::WriteAtEndOfPipeClockCounterWithWriteBack(
+								    m_submit_id, CurrentBuffer(), dst, clock);
+							}
 							return;
 						}
 						break;
@@ -1521,15 +1462,17 @@ void CommandProcessor::EmitGlobalBarrier() {
 void CommandProcessor::TriggerEopEventAtEndOfPipe(uint32_t interrupt_context_id) {
 	CheckBuffer();
 
-	Sync::TriggerEopEventAtEndOfPipe(CurrentBuffer(), interrupt_context_id);
+	Sync::TriggerEopEventAtEndOfPipe(CurrentBuffer(), m_interrupt_event_id, interrupt_context_id);
 }
 
-void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
+void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
+                                    uint64_t event_address) {
 	if (GraphicsRunDebugDumpEnabled()) {
 		LOGF("CommandProcessor::TriggerEvent()\n"
 		     "\t event_type  = 0x%08" PRIx32 "\n"
-		     "\t event_index = 0x%08" PRIx32 "\n",
-		     event_type, event_index);
+		     "\t event_index = 0x%08" PRIx32 "\n"
+		     "\t address     = 0x%016" PRIx64 "\n",
+		     event_type, event_index, event_address);
 	}
 
 	const auto valid_cache_event_index = event_index == 0x00000000 || event_index == 0x00000007;
@@ -1566,12 +1509,36 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index) {
 		case 0x0000001a:
 		case 0x0000001b:
 		case 0x00000038:
-		case 0x00000039:
 		case 0x0000003a:
 			LOGF("\t temporary: ignoring unsupported event_write type 0x%08" PRIx32
 			     ", index 0x%08" PRIx32 "\n",
 			     event_type, event_index);
 			break;
+		case 0x00000039: {
+			if (event_index != 0x00000001 || event_address == 0 || (event_address & 0x7u) != 0) {
+				EXIT("invalid occlusion-counter dump: index=0x%08" PRIx32 ", address=0x%016" PRIx64
+				     "\n",
+				     event_index, event_address);
+			}
+			static std::once_flag warning_once;
+			std::call_once(warning_once, [] {
+				std::printf("Warning: game uses occlusion queries, which are currently treated as "
+				            "always visible; GPU usage may be higher and FPS may be lower.\n");
+			});
+
+			// Until host occlusion queries are implemented, publish an always-visible result. The
+			// PS5 layout contains one interleaved begin/end pair per DB, and bit 63 marks a result
+			// ready.
+			constexpr uint64_t ready_bit    = 1ull << 63u;
+			constexpr uint64_t counter_mask = ready_bit - 1u;
+			auto*              results      = reinterpret_cast<volatile uint64_t*>(event_address);
+			const auto         value        = ready_bit | m_synthetic_occlusion_counter;
+			for (uint32_t db = 0; db < 16u; db++) {
+				results[db * 2u] = value;
+			}
+			m_synthetic_occlusion_counter = (m_synthetic_occlusion_counter + 1u) & counter_mask;
+			break;
+		}
 		default:
 			EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type, event_index);
 	}
@@ -1634,7 +1601,7 @@ void CommandProcessor::FlipWithInterrupt(uint32_t eop_event_type, uint32_t cache
 	                                         m_flip.flip_arg);
 	Sync::WriteAtEndOfPipeWithInterruptWriteBackFlip32(
 	    m_submit_id, command, static_cast<uint32_t*>(dst_gpu_addr), value, m_flip.handle,
-	    m_flip.index, m_flip.flip_mode, m_flip.flip_arg, request);
+	    m_flip.index, m_flip.flip_mode, m_flip.flip_arg, request, m_interrupt_event_id);
 	GetScheduler().Flush();
 }
 
@@ -1655,60 +1622,11 @@ void CommandProcessor::PrepareCpuFlip(uint64_t request_id) {
 }
 
 void CommandProcessor::SynchronizeGpu() {
-	GetScheduler().FinishCurrent();
+	GetScheduler().Finish();
 }
 
-Gpu::Gpu(RenderContext& renderer) {
-	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-	GraphicsInitJmpTables();
-	m_state = std::make_unique<GpuState>(renderer);
-}
-
-Gpu::~Gpu() = default;
-
-void Gpu::Shutdown() {
-	m_state->Shutdown();
-}
-
-bool Gpu::IsStopping() {
-	return m_state->IsStopping();
-}
-
-void Gpu::SendCommand(Common::UniqueFunction<void>&& command) {
-	m_state->SendCommand(std::move(command));
-}
-
-void Gpu::SendCommandSync(Common::UniqueFunction<void>&& command) {
-	m_state->SendCommandSync(std::move(command));
-}
-
-void Gpu::Submit(uint32_t* draw_commands, uint32_t draw_size_dw, uint32_t* constant_commands,
-                 uint32_t constant_size_dw, bool trigger_agc_interrupt_on_done) {
-	EXIT_IF(draw_commands == nullptr || draw_size_dw == 0);
-	m_state->Submit(draw_commands, draw_size_dw, constant_commands, constant_size_dw,
-	                trigger_agc_interrupt_on_done);
-}
-
-void Gpu::SubmitCompute(uint32_t queue, uint32_t* commands, uint32_t size_dw,
-                        bool trigger_agc_interrupt_on_done) {
-	EXIT_IF(commands == nullptr || size_dw == 0);
-	m_state->SubmitCompute(queue, commands, size_dw, trigger_agc_interrupt_on_done);
-}
-
-void Gpu::SubmitFlipPreparation(uint64_t request_id) {
-	m_state->SubmitFlipPreparation(request_id);
-}
-
-void Gpu::Done() {
-	m_state->Done();
-}
-
-int Gpu::GetFrameNum() const {
-	return m_state->GetFrameNum();
-}
-
-bool Gpu::IsGpuThread() noexcept {
-	return GpuState::IsGpuThread();
+bool GuestGpu::IsGpuThread() noexcept {
+	return g_gpu_thread;
 }
 
 } // namespace Libs::Graphics

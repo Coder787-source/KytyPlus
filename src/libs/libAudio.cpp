@@ -178,6 +178,7 @@ namespace AudioIn = Audio::AudioIn;
 LIB_DEFINE(InitAudio_1_AudioIn) {
 	LIB_FUNC("5NE8Sjc7VC8", AudioIn::AudioInOpen);
 	LIB_FUNC("LozEOU8+anM", AudioIn::AudioInInput);
+	LIB_FUNC("BohEAQ7DlUE", AudioIn::AudioInGetSilentState);
 }
 
 } // namespace LibAudioIn
@@ -1091,6 +1092,7 @@ LIB_DEFINE(InitAudio_1_Ngs2) {
 	LIB_FUNC("koBbCMvOKWw", Ngs2::Ngs2SystemCreate);
 	LIB_FUNC("mPYgU4oYpuY", Ngs2::Ngs2SystemCreateWithAllocator);
 	LIB_FUNC("u-WrYDaJA3k", Ngs2::Ngs2SystemDestroy);
+	LIB_FUNC("vU7TQ62pItw", Ngs2::Ngs2SystemGetInfo);
 	LIB_FUNC("U546k6orxQo", Ngs2::Ngs2RackCreateWithAllocator);
 	LIB_FUNC("cLV4aiT9JpA", Ngs2::Ngs2RackCreate);
 	LIB_FUNC("0eFLVCfWVds", Ngs2::Ngs2RackQueryBufferSize);

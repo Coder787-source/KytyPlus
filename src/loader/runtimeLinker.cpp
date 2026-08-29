@@ -38,7 +38,6 @@
 #endif
 #include <windows.h>
 #else
-#include <dlfcn.h>
 #if defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
@@ -672,48 +671,39 @@ static Common::VirtualMemory::Mode GetMode(Elf64_Word flags) {
 	}
 }
 
-struct FrameS {
-	FrameS*   next;
-	uintptr_t ret_addr;
+struct GuestStackFrame {
+	GuestStackFrame* next;
+	uintptr_t        return_address;
 };
 
-static void KYTY_SYSV_ABI StackwalkX86(uint64_t rbp, void** stack, int* depth, uintptr_t stack_addr,
-                                       size_t stack_size, uintptr_t code_addr, size_t code_size) {
-	auto* frame = reinterpret_cast<FrameS*>(rbp);
+static bool IsReadableRange(uint64_t addr, uint64_t size);
 
-	int d = *depth;
-	int i = 0;
+static int WalkGuestStack(uint64_t rbp, uint64_t rsp, void** stack, int capacity) {
+	constexpr uintptr_t STACK_SIZE = 1024u * 1024u;
+	const uintptr_t     code_start = SYSTEM_RESERVED + CODE_BASE_OFFSET;
+	const uintptr_t     stack_end  = rsp + STACK_SIZE;
+	if (stack == nullptr || capacity <= 0 || rsp == 0 || rbp < rsp || stack_end < rsp ||
+	    g_desired_base_addr <= code_start) {
+		return 0;
+	}
 
-	for (; i < d; i++) {
-		if (!(reinterpret_cast<uintptr_t>(frame) >= stack_addr &&
-		      reinterpret_cast<uintptr_t>(frame) < stack_addr + stack_size)) {
+	auto* frame = reinterpret_cast<GuestStackFrame*>(rbp);
+
+	int depth = 0;
+	while (depth < capacity) {
+		const auto frame_addr = reinterpret_cast<uintptr_t>(frame);
+		if (frame_addr < rsp || frame_addr > stack_end - sizeof(GuestStackFrame) ||
+		    !IsReadableRange(frame_addr, sizeof(GuestStackFrame)) ||
+		    frame->return_address < code_start || frame->return_address >= g_desired_base_addr) {
 			break;
 		}
-
-		if (!(frame->ret_addr >= code_addr && frame->ret_addr < code_addr + code_size)) {
+		stack[depth++] = reinterpret_cast<void*>(frame->return_address);
+		if (reinterpret_cast<uintptr_t>(frame->next) <= frame_addr) {
 			break;
 		}
-
-		stack[i] = reinterpret_cast<void*>(frame->ret_addr);
-
 		frame = frame->next;
 	}
-
-	*depth = i;
-}
-
-static void KYTY_SYSV_ABI SysStackWalkX86(uint64_t rbp, uint64_t rsp, void** stack, int* depth) {
-	if (rsp == 0 || rbp < rsp) {
-		*depth = 0;
-		return;
-	}
-
-	StackwalkX86(rbp, stack, depth, rsp, 1024u * 1024u, SYSTEM_RESERVED + CODE_BASE_OFFSET,
-	             g_desired_base_addr - (SYSTEM_RESERVED + CODE_BASE_OFFSET));
-}
-
-void KYTY_SYSV_ABI SysStackWalkX86(uint64_t rbp, void** stack, int* depth) {
-	SysStackWalkX86(rbp, rbp, stack, depth);
+	return depth;
 }
 
 // Probe diagnostic ranges without raising another fault.
@@ -789,15 +779,6 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 	return true;
 }
 
-static bool IsDumpableRange(uint64_t addr, uint64_t size) {
-#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
-	return IsReadableRange(addr, size);
-#else
-	(void)size;
-	return addr != 0;
-#endif
-}
-
 static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exception_info) {
 	const auto* info = &exception_info;
 
@@ -807,233 +788,23 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 	}
 
 	if (info->type == Common::HostException::ExceptionType::AccessViolation) {
-		using CoreAccess  = Common::HostException::AccessViolationType;
-		using GpuAccess   = Libs::Graphics::PageFaultAccess;
-		const auto access = [&]() {
-			switch (info->access_violation_type) {
-				case CoreAccess::Read: return GpuAccess::Read;
-				case CoreAccess::Write: return GpuAccess::Write;
-				case CoreAccess::Execute: return GpuAccess::Execute;
-				case CoreAccess::Unknown:
-					EXIT("unknown access type for page fault at 0x%016" PRIx64 "\n",
-					     info->access_violation_vaddr);
-			}
-			EXIT("invalid access type for page fault at 0x%016" PRIx64 "\n",
-			     info->access_violation_vaddr);
-		}();
+		using CoreAccess = Common::HostException::AccessViolationType;
+		using GpuAccess  = Libs::Graphics::PageFaultAccess;
+		GpuAccess access;
+		switch (info->access_violation_type) {
+			case CoreAccess::Read: access = GpuAccess::Read; break;
+			case CoreAccess::Write: access = GpuAccess::Write; break;
+			case CoreAccess::Execute: access = GpuAccess::Execute; break;
+			case CoreAccess::Unknown: return false;
+		}
 		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
 			return true;
 		}
-
-		if (Libs::LibKernel::Memory::KernelHandleReservedRangeAccessViolation(
-		        info->access_violation_vaddr)) {
-			return true;
-		}
 	}
-
-	LOGF("kyty_exception_handler: %016" PRIx64 "\n", info->exception_address);
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	HMODULE owner_module = nullptr;
-	if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-	                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-	                       reinterpret_cast<LPCSTR>(info->exception_address), &owner_module) != 0 &&
-	    owner_module != nullptr) {
-		char module_name[MAX_PATH] = {};
-		if (GetModuleFileNameA(owner_module, module_name, MAX_PATH) != 0) {
-			LOGF("exception module: %s\n", module_name);
-		}
-	}
-#else
-	Dl_info module_info {};
-	if (::dladdr(reinterpret_cast<void*>(info->exception_address), &module_info) != 0 &&
-	    module_info.dli_fname != nullptr) {
-		LOGF("exception module: %s\n", module_info.dli_fname);
-	}
-#endif
-	if (info->exception_address != 0) {
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-		MEMORY_BASIC_INFORMATION mem_info = {};
-		auto* dump_ptr = reinterpret_cast<const uint8_t*>(info->exception_address - 32);
-		if (VirtualQuery(dump_ptr, &mem_info, sizeof(mem_info)) != 0 &&
-		    mem_info.State == MEM_COMMIT && mem_info.Protect != PAGE_NOACCESS &&
-		    (mem_info.Protect & PAGE_GUARD) == 0) {
-			const auto dump_start = reinterpret_cast<uint64_t>(dump_ptr);
-			const auto region_end =
-			    reinterpret_cast<uint64_t>(mem_info.BaseAddress) + mem_info.RegionSize;
-			const auto dump_size =
-			    (dump_start + 64 <= region_end ? 64u
-			                                   : static_cast<uint32_t>(region_end - dump_start));
-			LOGF("code-32:");
-			for (uint32_t i = 0; i < dump_size; i++) {
-				LOGF(" %02" PRIx32, static_cast<uint32_t>(dump_ptr[i]));
-			}
-			LOGF("\n");
-		} else {
-			LOGF("code-32: unavailable\n");
-		}
-#else
-		const auto fault_addr = info->exception_address;
-		const auto dump_start = (fault_addr >= 32 ? fault_addr - 32 : fault_addr);
-		if (IsReadableRange(dump_start, 64)) {
-			auto* dump_ptr = reinterpret_cast<const uint8_t*>(dump_start);
-			LOGF("code-32:");
-			for (uint32_t i = 0; i < 64; i++) {
-				LOGF(" %02" PRIx32, static_cast<uint32_t>(dump_ptr[i]));
-			}
-			LOGF("\n");
-		} else {
-			LOGF("code-32: unavailable\n");
-		}
-#endif
-	} else {
-		LOGF("code: unavailable\n");
-	}
-	LOGF("exception: type=%s, av_type=%s, av_addr=%016" PRIx64 ", native_code=%08" PRIx32 "\n",
-	     Common::EnumName(info->type).c_str(),
-	     Common::EnumName(info->access_violation_type).c_str(), info->access_violation_vaddr,
-	     info->native_code);
-	LOGF("regs: rax=%016" PRIx64 " rbx=%016" PRIx64 " rcx=%016" PRIx64 " rdx=%016" PRIx64 "\n",
-	     info->rax, info->rbx, info->rcx, info->rdx);
-	LOGF("regs: rsi=%016" PRIx64 " rdi=%016" PRIx64 " rbp=%016" PRIx64 " rsp=%016" PRIx64 "\n",
-	     info->rsi, info->rdi, info->rbp, info->rsp);
-	LOGF("regs: r8 =%016" PRIx64 " r9 =%016" PRIx64 " r10=%016" PRIx64 " r11=%016" PRIx64 "\n",
-	     info->r8, info->r9, info->r10, info->r11);
-	LOGF("regs: r12=%016" PRIx64 " r13=%016" PRIx64 " r14=%016" PRIx64 " r15=%016" PRIx64 "\n",
-	     info->r12, info->r13, info->r14, info->r15);
-
-	if (IsReadableRange(info->rsp, 16u * sizeof(uint64_t))) {
-		auto* stack = reinterpret_cast<const uint64_t*>(info->rsp);
-		LOGF("stack:");
-		for (uint64_t i = 0; i < 16; i++) {
-			LOGF(" [%02" PRIu64 "]=%016" PRIx64, i, stack[i]);
-		}
-		LOGF("\n");
-	} else {
-		LOGF("stack: unavailable\n");
-	}
-
-	auto dump_guest_code = [](const char* name, uint64_t addr) {
-		auto* p = Common::Singleton<Loader::RuntimeLinker>::Instance()->FindProgramByAddr(addr);
-		if (p == nullptr || addr < p->base_vaddr) {
-			return;
-		}
-
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-		MEMORY_BASIC_INFORMATION mbi {};
-		auto* dump_ptr = reinterpret_cast<const uint8_t*>(addr >= 16 ? addr - 16 : addr);
-		if (VirtualQuery(dump_ptr, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
-		    (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
-			return;
-		}
-		const auto dump_start = reinterpret_cast<uint64_t>(dump_ptr);
-		const auto region_end = reinterpret_cast<uint64_t>(mbi.BaseAddress) + mbi.RegionSize;
-		const auto dump_size =
-		    (dump_start + 32 <= region_end ? 32u : static_cast<uint32_t>(region_end - dump_start));
-#else
-		auto*      dump_ptr  = reinterpret_cast<const uint8_t*>(addr >= 16 ? addr - 16 : addr);
-		const auto dump_size = 32u;
-		if (!IsReadableRange(reinterpret_cast<uint64_t>(dump_ptr), dump_size)) {
-			return;
-		}
-#endif
-
-		LOGF("%s code: addr=%016" PRIx64 ", off=%016" PRIx64 ", module=%s:", name, addr,
-		     addr - p->base_vaddr,
-		     Common::FilenameWithoutDirectory(Common::PathToGenericString(p->file_name)).c_str());
-		for (uint32_t i = 0; i < dump_size; i++) {
-			LOGF(" %02" PRIx32, static_cast<uint32_t>(dump_ptr[i]));
-		}
-		LOGF("\n");
-	};
-
-	dump_guest_code("guest rax[0]", info->rax);
-	dump_guest_code("guest rbx[0]", info->rbx);
-	dump_guest_code("guest rcx[0]", info->rcx);
-	dump_guest_code("guest rsi[0]", info->rsi);
-	if (IsDumpableRange(info->rsp, 16u * sizeof(uint64_t))) {
-		auto* stack = reinterpret_cast<const uint64_t*>(info->rsp);
-		for (uint64_t i = 0; i < 16; i++) {
-			char name[32] {};
-			std::snprintf(name, sizeof(name), "stack[%" PRIu64 "]", i);
-			dump_guest_code(name, stack[i]);
-		}
-	}
-
-	if (info->type == Common::HostException::ExceptionType::AccessViolation) {
-		if (info->rbp != 0) {
-			void* stack[20];
-			int   depth = 20;
-			SysStackWalkX86(info->rbp, info->rsp, stack, &depth);
-
-			LOGF("Stack trace [thread = %d]:\n", Common::Thread::GetThreadIdUnique());
-			for (int i = 0; i < depth; i++) {
-				auto  vaddr = reinterpret_cast<uint64_t>(stack[i]);
-				auto* p =
-				    Common::Singleton<Loader::RuntimeLinker>::Instance()->FindProgramByAddr(vaddr);
-				LOGF("[%d] %016" PRIx64 ", off=%016" PRIx64 ", %s\n", i, vaddr,
-				     (p == nullptr ? 0 : vaddr - p->base_vaddr),
-				     (p == nullptr ? "???"
-				                   : Common::FilenameWithoutDirectory(
-				                         Common::PathToGenericString(p->file_name))
-				                         .c_str()));
-			}
-		}
-
-		auto dump_guest_qwords = [](const char* name, uint64_t addr) {
-			if (addr == 0) {
-				LOGF("%s = 0\n", name);
-				return;
-			}
-
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-			MEMORY_BASIC_INFORMATION mbi {};
-			if (VirtualQuery(reinterpret_cast<const void*>(addr), &mbi, sizeof(mbi)) == 0 ||
-			    mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
-				LOGF("%s = %016" PRIx64 " (unmapped)\n", name, addr);
-				return;
-			}
-#endif
-
-			if (!IsReadableRange(addr, 8u * sizeof(uint64_t))) {
-				LOGF("%s = %016" PRIx64 " (unmapped)\n", name, addr);
-				return;
-			}
-
-			auto* q = reinterpret_cast<const uint64_t*>(addr);
-			LOGF("%s = %016" PRIx64 ": %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %016" PRIx64
-			     " %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n",
-			     name, addr, q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
-		};
-
-		dump_guest_qwords("guest rbx", info->rbx);
-		dump_guest_qwords("guest rax", info->rax);
-		dump_guest_qwords("guest rcx", info->rcx);
-		dump_guest_qwords("guest rsi", info->rsi);
-		dump_guest_qwords("guest rdi", info->rdi);
-		dump_guest_qwords("guest r8 ", info->r8);
-		dump_guest_qwords("guest r9 ", info->r9);
-		dump_guest_qwords("guest r10", info->r10);
-		dump_guest_qwords("guest r11", info->r11);
-		dump_guest_qwords("guest r12", info->r12);
-		dump_guest_qwords("guest r13", info->r13);
-		dump_guest_qwords("guest r14", info->r14);
-		dump_guest_qwords("guest r15", info->r15);
-
-		if (info->exception_address == 0x000000090064364e &&
-		    IsDumpableRange(info->rbx, sizeof(uint64_t))) {
-			auto* local = reinterpret_cast<const uint64_t*>(info->rbx);
-			dump_guest_qwords("vorbis obj", local[0]);
-			dump_guest_qwords("vorbis len", info->rcx);
-		}
-
-		EXIT("Access violation: %s [%016" PRIx64 "] %s\n",
-		     Common::EnumName(info->access_violation_type).c_str(), info->access_violation_vaddr,
-		     (info->access_violation_vaddr == g_invalid_memory ? "(Unpatched object)" : ""));
-		return false;
-	}
-
-	EXIT("Unknown exception!!! (%08" PRIx32 ")", info->native_code);
-	return false;
+	EXIT("Unhandled host exception: type=%u code=%u pc=0x%016" PRIx64
+	     " access=%u address=0x%016" PRIx64 "\n",
+	     static_cast<unsigned>(info->type), info->native_code, info->exception_address,
+	     static_cast<unsigned>(info->access_violation_type), info->access_violation_vaddr);
 }
 
 static void EncodeId64(uint16_t in_id, std::string* out_id) {
@@ -1518,6 +1289,9 @@ void RuntimeLinker::RelocateProgram(Program* program) {
 	EXIT_IF(std::find(m_programs.begin(), m_programs.end(), program) == m_programs.end());
 
 	Relocate(program);
+	if (!GamePatch::ApplyPending(program)) {
+		EXIT("Failed to apply pending game cheat\n");
+	}
 }
 
 void RuntimeLinker::UnloadProgram(Program* program) {
@@ -1641,7 +1415,10 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	RelocateAll();
 
 	if (!game_patch.empty()) {
-		GamePatch::Apply(game_patch, m_programs.empty() ? nullptr : m_programs.front());
+		if (!GamePatch::Apply(game_patch, m_programs.empty() ? nullptr : m_programs.front(),
+		                      m_programs)) {
+			EXIT("Failed to apply game cheat\n");
+		}
 	}
 	StartAllModules();
 
@@ -1665,6 +1442,7 @@ void RuntimeLinker::Clear() {
 	// EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 
 	Common::LockGuard lock(m_mutex);
+	GamePatch::Clear();
 
 	for (auto* p: m_programs) {
 		DeleteProgram(p);
@@ -1896,11 +1674,9 @@ Program* RuntimeLinker::FindProgramByAddr(uint64_t vaddr) {
 	return nullptr;
 }
 
-void RuntimeLinker::StackTrace(uint64_t frame_ptr) {
+void RuntimeLinker::StackTrace(uint64_t frame_ptr, uint64_t stack_ptr) {
 	void* stack[20];
-	int   depth = 20;
-
-	SysStackWalkX86(frame_ptr, stack, &depth);
+	int   depth = WalkGuestStack(frame_ptr, stack_ptr, stack, static_cast<int>(std::size(stack)));
 
 	LOGF("Stack trace [thread = %d]:\n", Common::Thread::GetThreadIdUnique());
 

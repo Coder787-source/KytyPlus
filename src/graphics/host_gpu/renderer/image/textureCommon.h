@@ -3,7 +3,7 @@
 
 #include "common/abi.h"
 #include "common/common.h"
-#include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
@@ -17,6 +17,15 @@ struct RenderTargetFormatInfo {
 	vk::Format                      format            = vk::Format::eUndefined;
 	uint32_t                        bytes_per_element = 0;
 	Prospero::ColorComponentMapping export_mapping;
+};
+
+struct SurfaceFormatInfo {
+	explicit constexpr SurfaceFormatInfo(vk::Format format,
+	                                     Prospero::BufferFormat conversion_format)
+	    : vk_format(format), conversion_format(conversion_format) {}
+
+	vk::Format             vk_format;
+	Prospero::BufferFormat conversion_format;
 };
 
 struct TextureUploadMipLayout {
@@ -35,12 +44,15 @@ struct TextureUploadLayout {
 };
 
 vk::ComponentMapping   TextureGetComponentMapping(uint32_t swizzle);
-vk::Format             TextureGetFormat(uint32_t fmt);
-RenderTargetFormatInfo TextureGetRenderTargetFormat(uint32_t layout, uint32_t type, uint32_t order);
-TextureUploadLayout    TextureCalcUploadLayout(uint32_t fmt, uint32_t width, uint32_t height,
-                                               uint32_t levels, uint32_t depth, uint32_t tile,
-                                               uint64_t upload_size, bool allow_depth_tile,
-                                               bool volume_texture, const char* owner);
+SurfaceFormatInfo      TextureGetSurfaceFormatInfo(Prospero::BufferFormat format);
+RenderTargetFormatInfo TextureGetRenderTargetFormat(Prospero::ChannelLayout layout,
+                                                    Prospero::ChannelType   type,
+                                                    Prospero::ChannelOrder  order);
+TextureUploadLayout    TextureCalcUploadLayout(Prospero::BufferFormat format, uint32_t width,
+                                               uint32_t height, uint32_t levels, uint32_t depth,
+                                               Prospero::TileMode tile, uint64_t upload_size,
+                                               bool allow_depth_tile, bool volume_texture,
+                                               const char* owner);
 std::vector<vk::BufferImageCopy> TextureBuildImageCopies(const TextureUploadLayout& layout);
 bool TextureBuildGpuTileInfos(uint64_t tiled_size, const std::vector<vk::BufferImageCopy>& regions,
                               const TextureUploadLayout& layout, uint32_t levels,

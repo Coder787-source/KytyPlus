@@ -933,7 +933,7 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 	connect(action_view_log, &QAction::triggered, this, [this, item]() {
 		LogViewerDialog::ShowForGame(item != nullptr ? &item->GetInfo() : nullptr, this);
 	});
-	QAction* action_patches = menu.addAction(tr("Patches (experimental)..."));
+	QAction* action_patches = menu.addAction(tr("Cheats (experimental)..."));
 	connect(action_patches, &QAction::triggered, this, [this, item]() {
 		if (item != nullptr) {
 			auto* dialog = new PatchesDialog(item->GetInfo(), this);

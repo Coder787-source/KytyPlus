@@ -60,10 +60,10 @@ void GpuResourceManager::UnmapMemory(uint64_t vaddr, uint64_t size) {
 	const auto unmap = [this, vaddr, size] {
 		if (m_scheduler.Active()) {
 			const auto tick = m_scheduler.CurrentTick();
-			m_scheduler.FinishCurrent();
+			m_scheduler.Finish();
 			m_scheduler.WaitPriorityOperations(tick);
 		}
-		m_buffer_cache.UnmapMemory(vaddr, size);
+		m_buffer_cache.InvalidateMemory(vaddr, size);
 		m_texture_cache.UnmapMemory(vaddr, size);
 		m_page_manager.OnGpuUnmap(vaddr, size);
 		std::lock_guard lock(m_mapped_ranges_mutex);
@@ -76,7 +76,19 @@ void GpuResourceManager::UnmapMemory(uint64_t vaddr, uint64_t size) {
 	m_gpu->SendCommandSync(unmap);
 }
 
+void GpuResourceManager::PrepareBda() {
+	std::shared_lock lock(m_mapped_ranges_mutex);
+	m_mapped_ranges.ForEach([this](uint64_t start, uint64_t end) {
+		m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
+	});
+	m_fault_process_pending = true;
+}
+
 void GpuResourceManager::RunGarbageCollector() {
+	if (m_fault_process_pending) {
+		m_fault_process_pending = false;
+		m_buffer_cache.ProcessFaultBuffer();
+	}
 	m_texture_cache.ProcessDownloadImages();
 	m_texture_cache.RunGarbageCollector();
 	m_buffer_cache.RunGarbageCollector();

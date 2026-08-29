@@ -867,6 +867,17 @@ bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 	       g_guest_address_space->TryReadBacking(vaddr, data, size);
 }
 
+bool TryReadGpuCleanBacking(uint64_t vaddr, void* data, uint64_t size) {
+	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
+		if (!Graphics::GuestGpu::IsGpuThread() ||
+		    GetGpuResources().GetBufferCache().HasGpuDirtyBytes(vaddr, size) ||
+		    GetGpuResources().GetTextureCache().QueryRegion(vaddr, size).gpu_image_bytes) {
+			return false;
+		}
+	}
+	return TryReadBacking(vaddr, data, size);
+}
+
 uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {
 	EXIT_IF(g_virtual_ranges == nullptr);
 
@@ -921,16 +932,37 @@ constexpr uint64_t PRT_APERTURE_END       = 0xfc00000000ull;
 static std::array<PrtAperture, PRT_APERTURE_MAX_INDEX + 1> g_prt_apertures {};
 static Common::Mutex                                       g_prt_aperture_mutex;
 
-static bool IsInPrtAperture(uint64_t address) {
+static bool IsInPrtAperture(uint64_t address, uint64_t size = 1) {
+	if (size == 0 || UINT64_MAX - address < size) {
+		return false;
+	}
 	Common::LockGuard lock(g_prt_aperture_mutex);
 
 	for (const auto& aperture: g_prt_apertures) {
-		if (address >= aperture.address && address < aperture.address + aperture.size) {
-			return true;
+		if (address >= aperture.address) {
+			const auto offset = address - aperture.address;
+			if (offset < aperture.size && size <= aperture.size - offset) {
+				return true;
+			}
 		}
 	}
 
 	return false;
+}
+
+bool TryReadPrtBacking(uint64_t vaddr, void* data, uint64_t size) {
+	std::vector<VirtualRanges::Range> ranges;
+	if (g_guest_address_space == nullptr || g_virtual_ranges == nullptr ||
+	    !IsInPrtAperture(vaddr, size) || !g_virtual_ranges->QuerySpan(vaddr, size, &ranges)) {
+		return false;
+	}
+	if (std::any_of(ranges.begin(), ranges.end(), [](const auto& range) {
+		    return !IsReservedRangeType(range.type) &&
+		           !g_guest_address_space->BackingContains(range.start, range.size);
+	    })) {
+		return false;
+	}
+	return g_guest_address_space->TryReadSparseBacking(vaddr, data, size);
 }
 
 static bool SelfTestSub64SharedPlaceholderAlias() {
@@ -976,7 +1008,7 @@ static bool SelfTestSub64SharedPlaceholderAlias() {
 
 static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size);
 
-KYTY_SUBSYSTEM_INIT(Memory) {
+void Initialize() {
 	g_flexible_memory_size_frozen = true;
 	VirtualMemory::Init();
 	g_guest_address_space = std::make_unique<GuestAddressSpace>(PhysicalMemory::TotalSize());
@@ -988,9 +1020,7 @@ KYTY_SUBSYSTEM_INIT(Memory) {
 	EXIT_IF(!SelfTestSub64SharedPlaceholderAlias());
 }
 
-KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Memory) {}
-
-KYTY_SUBSYSTEM_DESTROY(Memory) {
+void Shutdown() {
 	g_pooled_memory.reset();
 	g_flexible_memory.reset();
 	g_physical_memory.reset();
@@ -3416,17 +3446,6 @@ bool TestGuestFreeRangeBounds() {
 	       !GuestFreeRangeContains(UINT64_MAX - 0x1000, 0x2000, UINT64_MAX - 0x800, 0x400);
 }
 #endif
-
-bool KernelHandleReservedRangeAccessViolation(uint64_t vaddr) {
-	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
-
-	VirtualRanges::Range range {};
-	if (!g_virtual_ranges->Query(vaddr, 0, &range) ||
-	    std::strncmp(range.name, "AMM", KERNEL_MAXIMUM_NAME_LENGTH) != 0) {
-		return false;
-	}
-	EXIT("AMM virtual-memory unmap is unsupported: addr=0x%016" PRIx64 "\n", vaddr);
-}
 
 int KYTY_SYSV_ABI KernelVirtualQuery(const void* addr, int flags, VirtualQueryInfo* info,
                                      uint64_t info_size) {

@@ -35,7 +35,6 @@ constexpr auto MakeContextDispatchTable() {
 	}
 	g_hw_ctx_func[Pm4::CB_TARGET_MASK]                 = HwCtxSetRenderTargetMask;
 	g_hw_ctx_func[Pm4::PA_SC_GENERIC_SCISSOR_TL]       = HwCtxSetGenericScissor;
-	g_hw_ctx_func[Pm4::CB_BLEND_RED]                   = HwCtxSetBlendColor;
 	g_hw_ctx_func[Pm4::CB_DCC_CONTROL]                 = HwCtxSetCbDccControl;
 	g_hw_ctx_func[Pm4::DB_STENCIL_CONTROL]             = HwCtxSetStencilControl;
 	g_hw_ctx_func[Pm4::DB_STENCILREFMASK]              = HwCtxSetStencilMask;
@@ -82,7 +81,6 @@ constexpr auto MakeContextDispatchTable() {
 	g_hw_ctx_func[Pm4::VGT_PRIMITIVEID_RESET]                 = HwCtxSetPrimitiveIdReset;
 	g_hw_ctx_func[Pm4::PA_CL_OBJPRIM_ID_CNTL]                 = HwCtxSetObjprimIdControl;
 	g_hw_ctx_func[Pm4::VGT_SHADER_STAGES_EN]                  = HwCtxSetShaderStages;
-	g_hw_ctx_func[Pm4::PA_CL_GB_VERT_CLIP_ADJ]                = HwCtxSetGuardBands;
 
 	for (uint32_t slot = 0; slot < 8; slot++) {
 		g_hw_ctx_func[Pm4::CB_COLOR0_BASE + slot * 15] = HwCtxSetRenderTarget;
@@ -217,6 +215,7 @@ constexpr auto MakeOpcodeDispatchTable() {
 	g_cp_op_func[Pm4::IT_COND_EXEC]                 = CpOpCondExec;
 	g_cp_op_func[Pm4::IT_SET_PREDICATION]           = CpOpSetPredication;
 	g_cp_op_func[Pm4::IT_WRITE_DATA]                = CpOpWriteData;
+	g_cp_op_func[Pm4::IT_WAIT_REG_MEM]              = CpOpWaitRegMem32;
 	g_cp_op_func[Pm4::IT_INDIRECT_BUFFER]           = CpOpIndirectBuffer;
 	g_cp_op_func[Pm4::IT_COPY_DATA]                 = CpOpCopyData;
 	g_cp_op_func[Pm4::IT_EVENT_WRITE]               = CpOpEventWrite;
@@ -224,6 +223,7 @@ constexpr auto MakeOpcodeDispatchTable() {
 	g_cp_op_func[Pm4::IT_EVENT_WRITE_EOS]           = CpOpEventWriteEos;
 	g_cp_op_func[Pm4::IT_DMA_DATA]                  = CpOpDmaData;
 	g_cp_op_func[Pm4::IT_ACQUIRE_MEM]               = CpOpAcquireMem;
+	g_cp_op_func[Pm4::IT_REWIND]                    = CpOpRewind;
 	g_cp_op_func[Pm4::IT_SET_CONTEXT_REG]           = CpOpSetContextReg;
 	g_cp_op_func[Pm4::IT_SET_SH_REG]                = CpOpSetShaderReg;
 	g_cp_op_func[Pm4::IT_SET_UCONFIG_REG]           = CpOpSetUconfigReg;
@@ -238,6 +238,7 @@ constexpr auto MakeOpcodeDispatchTable() {
 	g_cp_op_func[Pm4::IT_WAIT_ON_CE_COUNTER]        = CpOpWaitOnCeCounter;
 	g_cp_op_func[Pm4::IT_WAIT_ON_DE_COUNTER_DIFF]   = CpOpWaitOnDeCounterDiff;
 	g_cp_op_func[Pm4::IT_GET_LOD_STATS]             = CpOpGetLodStats;
+	g_cp_op_func[Pm4::IT_WAIT_REG_MEM_64]           = CpOpWaitRegMem64;
 
 	return g_cp_op_func;
 }
@@ -246,12 +247,10 @@ constexpr auto MakeCustomOpcodeDispatchTable() {
 	std::array<cp_op_parser_func_t, Pm4::R_NUM> g_cp_op_custom_func {};
 
 	g_cp_op_custom_func[Pm4::R_DISPATCH_RESET] = CpOpDispatchReset;
-	g_cp_op_custom_func[Pm4::R_WAIT_MEM_32]    = CpOpWaitRegMem32;
 	g_cp_op_custom_func[Pm4::R_WAIT_FLIP_DONE] = CpOpWaitFlipDone;
 	g_cp_op_custom_func[Pm4::R_PUSH_MARKER]    = CpOpPushMarker;
 	g_cp_op_custom_func[Pm4::R_POP_MARKER]     = CpOpPopMarker;
 	g_cp_op_custom_func[Pm4::R_ACQUIRE_MEM]    = CpOpAcquireMem;
-	g_cp_op_custom_func[Pm4::R_WAIT_MEM_64]    = CpOpWaitRegMem64;
 	g_cp_op_custom_func[Pm4::R_FLIP]           = CpOpFlip;
 	g_cp_op_custom_func[Pm4::R_RELEASE_MEM]    = CpOpReleaseMem;
 	g_cp_op_custom_func[Pm4::R_CONTEXT_STATE]  = CpOpContextState;

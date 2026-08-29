@@ -4,8 +4,6 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 
-#include <mutex>
-
 namespace Libs::Graphics {
 
 namespace {
@@ -32,17 +30,6 @@ namespace {
 		case vk::Format::eS8Uint:
 		case vk::Format::eR8Uint:
 		case vk::Format::eR8Unorm: return true;
-		default: return false;
-	}
-}
-
-[[nodiscard]] bool IsDepthViewFormat(vk::Format format) {
-	switch (format) {
-		case vk::Format::eD16Unorm:
-		case vk::Format::eR16Unorm:
-		case vk::Format::eD32Sfloat:
-		case vk::Format::eR32Sfloat:
-		case vk::Format::eR32Uint: return true;
 		default: return false;
 	}
 }
@@ -327,13 +314,13 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	const auto& image      = backing;
 	auto        normalized = view_info;
 	const bool  is_storage = static_cast<bool>(normalized.usage & vk::ImageUsageFlagBits::eStorage);
-	normalized.aspect      = FullAspectMask(image.format);
-	if (normalized.aspect & vk::ImageAspectFlagBits::eDepth &&
-	    IsDepthViewFormat(normalized.format)) {
+	const auto  image_aspect = FullAspectMask(image.format);
+	if (image_aspect & vk::ImageAspectFlagBits::eDepth &&
+	    ImageViewOps::IsFormatDepthCompatible(normalized.format)) {
 		normalized.format = image.format;
 		normalized.aspect = vk::ImageAspectFlagBits::eDepth;
 	}
-	if (normalized.aspect & vk::ImageAspectFlagBits::eStencil &&
+	if (image_aspect & vk::ImageAspectFlagBits::eStencil &&
 	    IsStencilViewFormat(normalized.format)) {
 		normalized.format = image.format;
 		normalized.aspect = vk::ImageAspectFlagBits::eStencil;
@@ -368,8 +355,7 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 		     image.layers);
 	}
 
-	std::lock_guard lock(views.mutex);
-	for (const auto& cached: views.views) {
+	for (const auto& cached: views) {
 		if (cached.info == normalized) {
 			return cached.view;
 		}
@@ -405,7 +391,7 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 		     view_info.level_count, view_info.base_layer, view_info.layer_count,
 		     static_cast<vk::ImageUsageFlags::MaskType>(view_info.usage));
 	}
-	views.views.push_back({normalized, view});
+	views.push_back({normalized, view});
 	return view;
 }
 

@@ -27,7 +27,7 @@ static bool RenderTargetMaskHasMrt(uint32_t mask) {
 	return (mask & ~0x0fu) != 0;
 }
 
-static bool RenderTargetMaskHasBoundMrt(const RenderCommandBuffer& buffer) {
+static bool RenderTargetMaskHasBoundMrt(const CommandBuffer& buffer) {
 	const auto& hw   = buffer.GetRegisters();
 	const auto  mask = hw.GetRenderTargetMask();
 
@@ -45,7 +45,7 @@ static bool RenderTargetMaskHasBoundMrt(const RenderCommandBuffer& buffer) {
 	return bound_targets > 1;
 }
 
-uint32_t render_target_first_bound_slot(const RenderCommandBuffer& buffer) {
+uint32_t render_target_first_bound_slot(const CommandBuffer& buffer) {
 	const auto& hw   = buffer.GetRegisters();
 	const auto  mask = hw.GetRenderTargetMask();
 	for (uint32_t i = 0; i < 8; i++) {
@@ -71,31 +71,24 @@ void uc_print(const char* func, const HW::UserConfig& uc) {
 	LOGF("\t GetPrimType()         = 0x%08" PRIx32 "\n"
 	     "\t GetIndexOffset()      = 0x%08" PRIx32 "\n"
 	     "\t GetObjectId()         = 0x%08" PRIx32 "\n"
+	     "\t primitive_reset       = 0x%08" PRIx32 "\n"
 	     "\t primitive_group_size  = 0x%04" PRIx16 "\n"
 	     "\t vertex_group_size     = 0x%04" PRIx16 "\n"
 	     "\t en_user_vgpr1         = %s\n"
 	     "\t en_user_vgpr2         = %s\n"
 	     "\t en_user_vgpr3         = %s\n",
-	     uc.GetPrimType(), uc.GetIndexOffset(), uc.GetObjectId(), ge_cntl.primitive_group_size,
-	     ge_cntl.vertex_group_size, user_en.vgpr1 ? "true" : "false",
-	     user_en.vgpr2 ? "true" : "false", user_en.vgpr3 ? "true" : "false");
+	     static_cast<uint32_t>(uc.GetPrimType()), uc.GetIndexOffset(), uc.GetObjectId(),
+	     uc.GetPrimitiveResetControl(), ge_cntl.primitive_group_size, ge_cntl.vertex_group_size,
+	     user_en.vgpr1 ? "true" : "false", user_en.vgpr2 ? "true" : "false",
+	     user_en.vgpr3 ? "true" : "false");
 }
 
 void uc_check(const HW::UserConfig& uc) {
-	const auto& ge_cntl = uc.GetGeControl();
 	const auto& user_en = uc.GetGeUserVgprEn();
 
-	if (ge_cntl.primitive_group_size > 0x0040) {
-		LOGF("\t warning: unsupported GE_CNTL primitive_group_size = 0x%04" PRIx16 "\n",
-		     ge_cntl.primitive_group_size);
-	}
-	if (ge_cntl.vertex_group_size > 0x0040) {
-		LOGF("\t warning: unsupported GE_CNTL vertex_group_size = 0x%04" PRIx16 "\n",
-		     ge_cntl.vertex_group_size);
-	}
-	EXIT_NOT_IMPLEMENTED_MSG(user_en.vgpr1 != false, "shader debug: VGPR user_en.vgpr1 set (unsupported)");
-	EXIT_NOT_IMPLEMENTED_MSG(user_en.vgpr2 != false, "shader debug: VGPR user_en.vgpr2 set (unsupported)");
-	EXIT_NOT_IMPLEMENTED_MSG(user_en.vgpr3 != false, "shader debug: VGPR user_en.vgpr3 set (unsupported)");
+	EXIT_NOT_IMPLEMENTED(user_en.vgpr1 != false);
+	EXIT_NOT_IMPLEMENTED(user_en.vgpr2 != false);
+	EXIT_NOT_IMPLEMENTED(user_en.vgpr3 != false);
 }
 
 void sh_print(const char* func, const HW::Shader& /*uc*/) {
@@ -141,11 +134,12 @@ std::vector<std::string> rt_print(const char* func, const HW::RenderTarget& rt) 
 	    fmt::format("\t info.cmask_addr_type            = 0x{:08x}\n", rt.info.cmask_addr_type));
 	dst.push_back(fmt::format("\t info.alt_tile_mode              = {}\n",
 	                          rt.info.alt_tile_mode ? "true" : "false"));
-	dst.push_back(fmt::format("\t info.format                     = 0x{:08x}\n", rt.info.format));
-	dst.push_back(
-	    fmt::format("\t info.channel_type               = 0x{:08x}\n", rt.info.channel_type));
-	dst.push_back(
-	    fmt::format("\t info.channel_order              = 0x{:08x}\n", rt.info.channel_order));
+	dst.push_back(fmt::format("\t info.format                     = 0x{:08x}\n",
+	                          static_cast<uint32_t>(rt.info.format)));
+	dst.push_back(fmt::format("\t info.channel_type               = 0x{:08x}\n",
+	                          static_cast<uint32_t>(rt.info.channel_type)));
+	dst.push_back(fmt::format("\t info.channel_order              = 0x{:08x}\n",
+	                          static_cast<uint32_t>(rt.info.channel_order)));
 	dst.push_back(fmt::format("\t info.blend_bypa                 = {}\n",
 	                          rt.info.blend_bypass ? "true" : "false"));
 	dst.push_back(fmt::format("\t info.blend_clamp                = {}\n",
@@ -154,10 +148,10 @@ std::vector<std::string> rt_print(const char* func, const HW::RenderTarget& rt) 
 	                          rt.info.round_mode ? "true" : "false"));
 	dst.push_back(fmt::format("\t attrib.force_dest_alpha_to_one  = {}\n",
 	                          rt.attrib.force_dest_alpha_to_one ? "true" : "false"));
-	dst.push_back(
-	    fmt::format("\t attrib.tile_mode                = 0x{:08x}\n", rt.attrib.tile_mode));
-	dst.push_back(
-	    fmt::format("\t attrib.fmask_tile_mode          = 0x{:08x}\n", rt.attrib.fmask_tile_mode));
+	dst.push_back(fmt::format("\t attrib.tile_mode                = 0x{:08x}\n",
+	                          static_cast<uint32_t>(rt.attrib.tile_mode)));
+	dst.push_back(fmt::format("\t attrib.fmask_tile_mode          = 0x{:08x}\n",
+	                          static_cast<uint32_t>(rt.attrib.fmask_tile_mode)));
 	dst.push_back(
 	    fmt::format("\t attrib.num_samples              = 0x{:08x}\n", rt.attrib.num_samples));
 	dst.push_back(
@@ -168,8 +162,8 @@ std::vector<std::string> rt_print(const char* func, const HW::RenderTarget& rt) 
 	dst.push_back(
 	    fmt::format("\t attrib2.num_mip_levels          = 0x{:08x}\n", rt.attrib2.num_mip_levels));
 	dst.push_back(fmt::format("\t attrib3.depth                   = 0x{:08x}\n", rt.attrib3.depth));
-	dst.push_back(
-	    fmt::format("\t attrib3.tile_mode               = 0x{:08x}\n", rt.attrib3.tile_mode));
+	dst.push_back(fmt::format("\t attrib3.tile_mode               = 0x{:08x}\n",
+	                          static_cast<uint32_t>(rt.attrib3.tile_mode)));
 	dst.push_back(
 	    fmt::format("\t attrib3.dimension               = 0x{:08x}\n", rt.attrib3.dimension));
 	dst.push_back(fmt::format("\t attrib3.cmask_pipe_aligned      = {}\n",
@@ -212,22 +206,22 @@ std::vector<std::string> rt_print(const char* func, const HW::RenderTarget& rt) 
 	return dst;
 }
 
-static bool RenderIsColorTileMode(uint32_t tile_mode) {
+static bool RenderIsColorTileMode(Prospero::TileMode tile_mode) {
 	// AGC CxRenderTarget::TileMode shifted by CB_COLOR*_ATTRIB3.COLOR_SW_MODE.
 	switch (tile_mode) {
-		case Prospero::GpuEnumValue(Prospero::TileMode::kLinear):
-		case Prospero::GpuEnumValue(Prospero::TileMode::kStandard256B):
-		case Prospero::GpuEnumValue(Prospero::TileMode::kStandard4KB):
-		case Prospero::GpuEnumValue(Prospero::TileMode::kStandard64KB):
-		case Prospero::GpuEnumValue(Prospero::TileMode::kPrt):
-		case Prospero::GpuEnumValue(Prospero::TileMode::kDepth):
-		case Prospero::GpuEnumValue(Prospero::TileMode::kRenderTarget): return true;
+		case Prospero::TileMode::kLinear:
+		case Prospero::TileMode::kStandard256B:
+		case Prospero::TileMode::kStandard4KB:
+		case Prospero::TileMode::kStandard64KB:
+		case Prospero::TileMode::kPrt:
+		case Prospero::TileMode::kDepth:
+		case Prospero::TileMode::kRenderTarget: return true;
 		default: return false;
 	}
 }
 
-bool RenderIsColorTileModeLinear(uint32_t tile_mode) {
-	return tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kLinear);
+bool RenderIsColorTileModeLinear(Prospero::TileMode tile_mode) {
+	return tile_mode == Prospero::TileMode::kLinear;
 }
 
 static bool RenderIsColorDimension(uint32_t dimension) {
@@ -263,20 +257,23 @@ static void RtCheck(const HW::RenderTarget& rt) {
 				logged = true;
 			}
 		}
+		const bool native_2x_one_frag =
+		    rt.info.fmask_compression_enable && !rt.info.fmask_data_compression_disable &&
+		    rt.info.cmask_fast_clear_enable && rt.fmask.addr != 0 && rt.cmask.addr != 0 &&
+		    rt.attrib.num_samples == 1 && rt.attrib.num_fragments == 1;
+		EXIT_NOT_IMPLEMENTED(rt.info.fmask_one_frag_mode && !native_2x_one_frag);
 		if (rt.info.fmask_compression_enable) {
 			EXIT_NOT_IMPLEMENTED(rt.attrib.num_samples == 0 && rt.attrib.num_fragments == 0);
 			static bool logged = false;
 			if (!logged) {
-				LOGF("RenderTarget: temporary: ignoring PS5 FMASK metadata for single-sample MSAA "
-				     "fallback, fmask=0x%016" PRIx64 "\n",
+				LOGF("RenderTarget: using native Vulkan MSAA without guest FMASK metadata, "
+				     "fmask=0x%016" PRIx64 "\n",
 				     rt.fmask.addr);
 				logged = true;
 			}
 		}
 
-		// EXIT_NOT_IMPLEMENTED(rt.info.fmask_compression_mode != 0x00000000);
 		EXIT_NOT_IMPLEMENTED(rt.info.fmask_data_compression_disable != false);
-		EXIT_NOT_IMPLEMENTED(rt.info.fmask_one_frag_mode != false);
 
 		if (rt.info.cmask_fast_clear_enable || rt.info.dcc_compression_enable) {
 			static bool logged = false;
@@ -361,7 +358,8 @@ static void RtCheck(const HW::RenderTarget& rt) {
 			}
 		}
 		if (!RenderIsColorTileMode(rt.attrib3.tile_mode)) {
-			EXIT("unknown PS5 render-target tile mode: 0x%08" PRIx32 "\n", rt.attrib3.tile_mode);
+			EXIT("unknown PS5 render-target tile mode: 0x%08" PRIx32 "\n",
+			     static_cast<uint32_t>(rt.attrib3.tile_mode));
 		}
 		if (!RenderIsColorDimension(rt.attrib3.dimension)) {
 			EXIT("unknown PS5 render-target dimension: 0x%08" PRIx32 "\n", rt.attrib3.dimension);
@@ -456,13 +454,14 @@ static void ZPrint(const char* func, const HW::DepthRenderTarget& z) {
 	     "\t height                                = 0x%08" PRIx32 "\n"
 	     "\t size.x_max                            = 0x%04" PRIx16 "\n"
 	     "\t size.y_max                            = 0x%04" PRIx16 "\n",
-	     z.z_info.format, z.z_info.num_samples,
-	     Prospero::GpuEnumValue(z.z_info.texture_compatibility),
+	     static_cast<uint32_t>(z.z_info.format), z.z_info.num_samples,
+	     static_cast<uint32_t>(z.z_info.texture_compatibility),
 	     z.z_info.htile_acceleration ? "true" : "false",
 	     z.z_info.expclear_enabled ? "true" : "false",
-	     Prospero::GpuEnumValue(z.z_info.z_compare_base),
+	     static_cast<uint32_t>(z.z_info.z_compare_base),
 	     z.z_info.partially_resident ? "true" : "false", z.z_info.max_mip_level,
-	     z.stencil_info.format, Prospero::GpuEnumValue(z.stencil_info.texture_compatibility),
+	     static_cast<uint32_t>(z.stencil_info.format),
+	     static_cast<uint32_t>(z.stencil_info.texture_compatibility),
 	     z.stencil_info.htile_stencil_disabled ? "true" : "false",
 	     z.stencil_info.expclear_enabled ? "true" : "false",
 	     z.stencil_info.partially_resident ? "true" : "false", z.depth_info.addr5_swizzle_mask,
@@ -491,15 +490,16 @@ static void ZCheck(const HW::DepthRenderTarget& z, const HW::DepthControl& dc,
 
 	EXIT_NOT_IMPLEMENTED(!z.z_info.HasValidTextureCompatibility());
 	EXIT_NOT_IMPLEMENTED(!z.stencil_info.HasValidTextureCompatibility());
-	if (z.z_info.format == 0) {
-		EXIT_NOT_IMPLEMENTED(z.z_info.format != 0);
+	if (z.z_info.format == Prospero::DepthFormat::kInvalid) {
+		EXIT_NOT_IMPLEMENTED(z.z_info.format != Prospero::DepthFormat::kInvalid);
 		EXIT_NOT_IMPLEMENTED(z.z_info.num_samples != 0);
 		EXIT_NOT_IMPLEMENTED(z.z_info.htile_acceleration != false);
 		EXIT_NOT_IMPLEMENTED(z.z_info.expclear_enabled != false);
 		EXIT_NOT_IMPLEMENTED(z.z_info.partially_resident != false);
 		EXIT_NOT_IMPLEMENTED(z.z_info.max_mip_level != 0);
 	} else {
-		EXIT_NOT_IMPLEMENTED(z.z_info.format != 0x00000001 && z.z_info.format != 0x00000003);
+		EXIT_NOT_IMPLEMENTED(z.z_info.format != Prospero::DepthFormat::kZ16 &&
+		                     z.z_info.format != Prospero::DepthFormat::kZ32F);
 		if (z.z_info.num_samples != 0x00000000) {
 			static bool logged = false;
 			if (!logged) {
@@ -513,16 +513,17 @@ static void ZCheck(const HW::DepthRenderTarget& z, const HW::DepthControl& dc,
 		EXIT_NOT_IMPLEMENTED(z.z_info.max_mip_level != 0);
 	}
 
-	if (z.stencil_info.format == 0) {
+	if (z.stencil_info.format == Prospero::StencilFormat::kInvalid) {
 		EXIT_NOT_IMPLEMENTED(z.stencil_info.expclear_enabled != false);
 		EXIT_NOT_IMPLEMENTED(z.stencil_info.partially_resident != false);
 	} else {
-		EXIT_NOT_IMPLEMENTED(z.stencil_info.format != 0x00000001);
+		EXIT_NOT_IMPLEMENTED(z.stencil_info.format != Prospero::StencilFormat::k8UInt);
 		EXIT_NOT_IMPLEMENTED(z.stencil_info.expclear_enabled != false);
 		EXIT_NOT_IMPLEMENTED(z.stencil_info.partially_resident != false);
 	}
 
-	if (z.z_info.format != 0 || z.stencil_info.format != 0) {
+	if (z.z_info.format != Prospero::DepthFormat::kInvalid ||
+	    z.stencil_info.format != Prospero::StencilFormat::kInvalid) {
 
 		EXIT_NOT_IMPLEMENTED(z.depth_info.addr5_swizzle_mask != 0x00000000);
 		EXIT_NOT_IMPLEMENTED(z.depth_info.array_mode != 0x00000000);
@@ -554,13 +555,11 @@ static void ZCheck(const HW::DepthRenderTarget& z, const HW::DepthControl& dc,
 				     z.depth_view.stencil_write_disable ? "true" : "false");
 			}
 		}
-		EXIT_NOT_IMPLEMENTED(z.z_read_base_addr != z.z_write_base_addr);
-		EXIT_NOT_IMPLEMENTED(z.stencil_read_base_addr != z.stencil_write_base_addr);
-		EXIT_NOT_IMPLEMENTED(z.z_write_base_addr == 0);
-		if (z.stencil_info.format != 0 && z.stencil_write_base_addr == 0) {
-			LOGF("\t warning: stencil format is set without a stencil base address, continuing "
-			     "without stencil attachment\n");
-		}
+		EXIT_NOT_IMPLEMENTED(!z.depth_view.depth_write_disable &&
+		                     z.z_read_base_addr != z.z_write_base_addr);
+		EXIT_NOT_IMPLEMENTED(!z.depth_view.stencil_write_disable &&
+		                     z.stencil_read_base_addr != z.stencil_write_base_addr);
+		EXIT_NOT_IMPLEMENTED(!z.depth_view.depth_write_disable && z.z_write_base_addr == 0);
 		// EXIT_NOT_IMPLEMENTED(z.pitch_div8_minus1 != 0x000000ff);
 		// EXIT_NOT_IMPLEMENTED(z.height_div8_minus1 != 0x0000008f);
 		// EXIT_NOT_IMPLEMENTED(z.slice_div64_minus1 != 0x00008fff);
@@ -609,8 +608,7 @@ static void ClipCheck(const HW::ClipControl& c) {
 	// dx_linear_attr_clip_enable preserves linear (noperspective) attributes at clip-generated
 	// vertices, which Vulkan provides as part of clipping and interpolation.
 	EXIT_NOT_IMPLEMENTED(c.user_clip_planes != 0 || c.user_clip_plane_mode != 0 ||
-	                     c.vertex_kill_any || !c.IsZClipModeRepresentable() ||
-	                     c.user_clip_plane_negate_y || c.clip_disable ||
+	                     c.vertex_kill_any || c.user_clip_plane_negate_y || c.clip_disable ||
 	                     c.user_clip_plane_cull_only || c.cull_on_clipping_error_disable ||
 	                     c.force_viewport_index_from_vs_enable);
 }
@@ -634,17 +632,6 @@ static void RcPrint(const char* func, const HW::RenderControl& c) {
 static void RcCheck(const HW::RenderControl& c) {
 	// EXIT_NOT_IMPLEMENTED(c.depth_clear_enable != false);
 	// EXIT_NOT_IMPLEMENTED(c.stencil_clear_enable != false);
-	if ((c.resummarize_enable || c.copy_centroid || c.copy_sample != 0)) {
-		static std::atomic<uint32_t> log_count {0};
-		if (log_count.fetch_add(1) < 16) {
-			LOGF("\t warning: unsupported PS5 render-control metadata state, continuing: "
-			     "resummarize=%s copy_centroid=%s copy_sample=%" PRIu8 "\n",
-			     c.resummarize_enable ? "true" : "false", c.copy_centroid ? "true" : "false",
-			     c.copy_sample);
-		}
-		return;
-	}
-	EXIT_NOT_IMPLEMENTED(c.resummarize_enable != false);
 	// EXIT_NOT_IMPLEMENTED(c.stencil_compress_disable != false);
 	// EXIT_NOT_IMPLEMENTED(c.depth_compress_disable != false);
 	EXIT_NOT_IMPLEMENTED(c.copy_centroid != false);
@@ -892,12 +879,10 @@ void LogDrawPhase(const char* draw_name, const char* phase) {
 	}
 }
 
-void LogPipelineTrace(const char* phase, uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0,
-                      uint32_t ps_crc32) {
+void LogPipelineTrace(const char* phase, uint64_t vertex_program_id, uint64_t pixel_program_id) {
 	if (graphics_debug_dump_enabled()) {
-		LOGF("PipelineTrace: %s VS=0x%08" PRIx32 "/0x%08" PRIx32 " PS=0x%08" PRIx32 "/0x%08" PRIx32
-		     "\n",
-		     phase, vs_hash0, vs_crc32, ps_hash0, ps_crc32);
+		LOGF("PipelineTrace: %s VS=%" PRIu64 " PS=%" PRIu64 "\n", phase, vertex_program_id,
+		     pixel_program_id);
 	}
 }
 
@@ -1161,7 +1146,7 @@ ScissorRect calc_final_scissor(const HW::ScreenViewport& vp, const HW::ScanModeC
 	return ScissorRectClamp(final, extent.width, extent.height);
 }
 
-void hw_check(const RenderCommandBuffer& buffer) {
+void hw_check(const CommandBuffer& buffer) {
 	const auto& hw      = buffer.GetRegisters();
 	const auto  rt_slot = render_target_first_bound_slot(buffer);
 	const auto& rt      = hw.GetRenderTarget(rt_slot);
@@ -1218,8 +1203,9 @@ void hw_check(const RenderCommandBuffer& buffer) {
 			const auto& mrt = hw.GetRenderTarget(i);
 			LOGF("\t RT%u addr=0x%010" PRIx64 " mask=0x%x fmt=0x%08" PRIx32
 			     " width=%u height=%u tile=%u\n",
-			     i, mrt.base.addr, (hw.GetRenderTargetMask() >> (i * 4u)) & 0x0fu, mrt.info.format,
-			     mrt.attrib2.width + 1, mrt.attrib2.height + 1, mrt.attrib3.tile_mode);
+			     i, mrt.base.addr, (hw.GetRenderTargetMask() >> (i * 4u)) & 0x0fu,
+			     static_cast<uint32_t>(mrt.info.format), mrt.attrib2.width + 1,
+			     mrt.attrib2.height + 1, static_cast<uint32_t>(mrt.attrib3.tile_mode));
 		}
 	}
 	if (rc.depth_clear_enable && hw.GetDepthClearValue() != 0.0f &&
@@ -1233,7 +1219,7 @@ void hw_check(const RenderCommandBuffer& buffer) {
 	// EXIT_NOT_IMPLEMENTED(hw.GetStencilClearValue() != 0);
 }
 
-void hw_print(const RenderCommandBuffer& buffer) {
+void hw_print(const CommandBuffer& buffer) {
 	const auto& hw      = buffer.GetRegisters();
 	const auto  rt_slot = render_target_first_bound_slot(buffer);
 	const auto& rt      = hw.GetRenderTarget(rt_slot);
@@ -1258,9 +1244,10 @@ void hw_print(const RenderCommandBuffer& buffer) {
 		     "\t GetRenderTargetMask()   = 0x%08" PRIx32 "\n"
 		     "\t GetDepthClearValue()    = %f\n"
 		     "\t GetStencilClearValue()  = %" PRIu8 "\n"
-		     "\t GetLineWidth()          = %f\n",
+		     "\t GetLineWidth()          = %f\n"
+		     "\t primitive_reset_index   = 0x%08" PRIx32 "\n",
 		     hw.GetRenderTargetMask(), hw.GetDepthClearValue(), hw.GetStencilClearValue(),
-		     hw.GetLineWidth());
+		     hw.GetLineWidth(), hw.GetPrimitiveResetIndex());
 
 		LOGF("%s", Common::Concat(rt_print("RenderTraget:", rt), "").c_str());
 

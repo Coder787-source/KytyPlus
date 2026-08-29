@@ -56,7 +56,6 @@ uint32_t HwCtxSetWindowScissor(CommandProcessor&, uint32_t, uint32_t, const uint
 uint32_t HwCtxSetClipRect(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetRenderTargetMask(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetGenericScissor(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
-uint32_t HwCtxSetBlendColor(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetCbDccControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetStencilControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetStencilMask(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
@@ -90,7 +89,6 @@ uint32_t HwCtxSetDrawPayloadControl(CommandProcessor&, uint32_t, uint32_t, const
 uint32_t HwCtxSetPrimitiveIdReset(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetObjprimIdControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetShaderStages(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
-uint32_t HwCtxSetGuardBands(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetRenderTarget(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetColorInfo(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
 uint32_t HwCtxSetBlendControl(CommandProcessor&, uint32_t, uint32_t, const uint32_t*, uint32_t);
@@ -133,6 +131,7 @@ uint32_t CpOpDrawIndirectMulti(CommandProcessor&, uint32_t, const uint32_t*, uin
 uint32_t CpOpDrawIndex(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpDrawIndexOffset(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpPfpSyncMe(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
+uint32_t CpOpRewind(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpIndexType(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpNumInstances(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpDrawIndexAuto(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);

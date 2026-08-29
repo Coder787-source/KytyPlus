@@ -43,7 +43,7 @@ public:
 	};
 
 	MountPoints() { EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread()); }
-	virtual ~MountPoints() { KYTY_NOT_IMPLEMENTED; }
+	virtual ~MountPoints() = default;
 
 	KYTY_CLASS_NO_COPY(MountPoints);
 
@@ -76,7 +76,7 @@ struct File {
 class FileDescriptors {
 public:
 	FileDescriptors() { EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread()); }
-	virtual ~FileDescriptors() { KYTY_NOT_IMPLEMENTED; }
+	virtual ~FileDescriptors() = default;
 
 	KYTY_CLASS_NO_COPY(FileDescriptors);
 
@@ -193,8 +193,10 @@ void FileDescriptors::CloseAll() {
 	Common::LockGuard lock(m_mutex);
 
 	for (auto& f: m_files) {
-		if (f != nullptr && f->opened) {
-			f->f.Close();
+		if (f != nullptr) {
+			if (f->opened) {
+				f->f.Close();
+			}
 			delete f;
 			f = nullptr;
 		}
@@ -337,21 +339,23 @@ std::filesystem::path MountPoints::GetRealDirectory(const std::string& mounted_d
 	return mounted_directory;
 }
 
-KYTY_SUBSYSTEM_INIT(FileSystem) {
+void Initialize() {
 	g_mount_points = new MountPoints;
 	g_files        = new FileDescriptors;
 }
 
-KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(FileSystem) {
+void EmergencyShutdown() {
 	if (g_files != nullptr) {
 		g_files->CloseAll();
 	}
 }
 
-KYTY_SUBSYSTEM_DESTROY(FileSystem) {
-	if (g_files != nullptr) {
-		g_files->CloseAll();
-	}
+void Shutdown() {
+	EmergencyShutdown();
+	delete g_files;
+	delete g_mount_points;
+	g_files        = nullptr;
+	g_mount_points = nullptr;
 }
 
 void Mount(const std::filesystem::path& folder, const std::string& point) {
@@ -1052,9 +1056,6 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 	auto real_from = g_mount_points->GetRealFilename(from_path);
 	auto real_to   = g_mount_points->GetRealFilename(to_path);
 
-	EXIT_NOT_IMPLEMENTED(g_files->GetFile(real_from) != nullptr);
-	EXIT_NOT_IMPLEMENTED(g_files->GetFile(real_to) != nullptr);
-
 	if (!Common::File::IsFileExisting(real_from)) {
 		return KERNEL_ERROR_ENOENT;
 	}
@@ -1065,7 +1066,7 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 		Common::File::DeleteFile(real_to);
 	}
 
-	if (!Common::File::MoveFile(real_from, real_to)) {
+	if (!Common::File::RenameFile(real_from, real_to)) {
 		return KERNEL_ERROR_EIO;
 	}
 

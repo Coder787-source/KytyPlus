@@ -43,11 +43,7 @@ namespace Libs::Graphics {
 
 static RenderContext* g_renderer = nullptr;
 
-RenderContext* GetActiveRenderer() noexcept {
-	return g_renderer;
-}
-
-KYTY_SUBSYSTEM_INIT(Graphics) {
+void Initialize() {
 	// Some games lock up if this is not called first
 	if (Config::RenderDocEnabled()) {
 		RenderDocInit();
@@ -63,9 +59,7 @@ KYTY_SUBSYSTEM_INIT(Graphics) {
 	ShaderInit();
 }
 
-KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Graphics) {}
-
-KYTY_SUBSYSTEM_DESTROY(Graphics) {
+void Shutdown() {
 	EXIT_IF(g_renderer == nullptr);
 	g_renderer->ShutdownGpu();
 	VideoOut::VideoOutShutdown();
@@ -73,7 +67,7 @@ KYTY_SUBSYSTEM_DESTROY(Graphics) {
 	g_renderer = nullptr;
 }
 
-void GraphicsDbgDumpDcb(const char* type, uint32_t num_dw, uint32_t* cmd_buffer) {
+void GraphicsDbgDumpDcb(const char* type, uint32_t num_dw, const uint32_t* cmd_buffer) {
 	EXIT_IF(type == nullptr);
 
 	static std::atomic_int id = 0;
@@ -334,7 +328,7 @@ struct Label {
 	uint64_t          m_reserved[3];
 };
 
-int KYTY_SYSV_ABI GraphicsInit(uint32_t* state, uint32_t ver) {
+int KYTY_SYSV_ABI AgcInit(uint32_t* state, uint32_t ver) {
 	PRINT_NAME();
 
 	LOGF("\t state = 0x%016" PRIx64 "\n"
@@ -358,7 +352,7 @@ int KYTY_SYSV_ABI GraphicsInit(uint32_t* state, uint32_t ver) {
 	return OK;
 }
 
-void* KYTY_SYSV_ABI GraphicsGetRegisterDefaults2(uint32_t ver) {
+void* KYTY_SYSV_ABI AgcGetRegisterDefaults2(uint32_t ver) {
 	PRINT_NAME();
 
 	if (ver > GRAPHICS_REGISTER_DEFAULTS_MAX_VERSION) {
@@ -367,7 +361,7 @@ void* KYTY_SYSV_ABI GraphicsGetRegisterDefaults2(uint32_t ver) {
 	return get_public_register_defaults(ver);
 }
 
-void* KYTY_SYSV_ABI GraphicsGetRegisterDefaults2Internal(uint32_t ver) {
+void* KYTY_SYSV_ABI AgcGetRegisterDefaults2Internal(uint32_t ver) {
 	PRINT_NAME();
 
 	if (ver > GRAPHICS_REGISTER_DEFAULTS_MAX_VERSION) {
@@ -621,12 +615,12 @@ static void patch_shader_register_address(ShaderRegister* regs, uint32_t num_reg
 	hi->value |= static_cast<uint32_t>((address >> 40u) & 0xffu);
 }
 
-int KYTY_SYSV_ABI GraphicsCreateShader(Shader** dst, void* header, const volatile void* code) {
+int KYTY_SYSV_ABI AgcCreateShader(Shader** dst, void* header, const volatile void* code) {
 	PRINT_NAME();
 
-	EXIT_NOT_IMPLEMENTED_MSG(dst == nullptr, "AGC: null destination buffer");
-	EXIT_NOT_IMPLEMENTED_MSG(header == nullptr, "AGC: null header");
-	EXIT_NOT_IMPLEMENTED_MSG(code == nullptr, "AGC: null shader code");
+	EXIT_NOT_IMPLEMENTED(dst == nullptr);
+	EXIT_NOT_IMPLEMENTED(header == nullptr);
+	EXIT_NOT_IMPLEMENTED(code == nullptr);
 
 	LOGF("\t header = 0x%016" PRIx64 "\n"
 	     "\t code   = 0x%016" PRIx64 "\n",
@@ -669,6 +663,7 @@ int KYTY_SYSV_ABI GraphicsCreateShader(Shader** dst, void* header, const volatil
 	map.input_semantics     = h->input_semantics;
 	map.num_input_semantics = h->num_input_semantics;
 	map.code_size_bytes     = h->shader_size;
+	map.scratch_size_dwords = h->scratch_size_dw_per_thread;
 
 	ShaderMapUserData(base, map);
 
@@ -687,8 +682,8 @@ int KYTY_SYSV_ABI GraphicsCreateShader(Shader** dst, void* header, const volatil
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsUnknownGetFusedShaderSize(SizeAlign* dst, const Shader* front,
-                                                    const Shader* back) {
+int KYTY_SYSV_ABI AgcUnknownGetFusedShaderSize(SizeAlign* dst, const Shader* front,
+                                               const Shader* back) {
 	PRINT_NAME();
 
 	LOGF("\t dst   = 0x%016" PRIx64 "\n"
@@ -716,8 +711,8 @@ int KYTY_SYSV_ABI GraphicsUnknownGetFusedShaderSize(SizeAlign* dst, const Shader
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsUnknownFuseShaderHalves(Shader* fused_result, const Shader* front,
-                                                  const Shader* back, void* scratch_mem) {
+int KYTY_SYSV_ABI AgcUnknownFuseShaderHalves(Shader* fused_result, const Shader* front,
+                                             const Shader* back, void* scratch_mem) {
 	PRINT_NAME();
 
 	LOGF("\t fused_result = 0x%016" PRIx64 "\n"
@@ -798,8 +793,8 @@ static void merge_shader_register_max_field(ShaderRegister* dst, const ShaderReg
 	dst->value |= field << shift;
 }
 
-int KYTY_SYSV_ABI GraphicsUnknownNApJjpKNBl4(Shader* fused_result, const Shader* front,
-                                             const Shader* back, void* scratch_mem) {
+int KYTY_SYSV_ABI AgcUnknownNApJjpKNBl4(Shader* fused_result, const Shader* front,
+                                        const Shader* back, void* scratch_mem) {
 	PRINT_NAME();
 
 	LOGF("\t fused_result = 0x%016" PRIx64 "\n"
@@ -908,7 +903,7 @@ static bool is_native_reg_indirect_packet(const uint32_t* cmd, RegIndirectPacket
 }
 
 static uint32_t reg_indirect_pm4_r(RegIndirectPacket type) {
-	return (type == RegIndirectPacket::Uc && GraphicsGetIsTrinityMode() != 0 ? 1u : 0u);
+	return (type == RegIndirectPacket::Uc && AgcGetIsTrinityMode() != 0 ? 1u : 0u);
 }
 
 static void reg_indirect_write_packet(uint32_t* cmd, uint64_t vaddr, uint32_t num_regs,
@@ -957,8 +952,8 @@ static int reg_indirect_patch_add_registers(uint32_t* cmd, uint32_t num_regs,
 	return GRAPHICS5_ERROR_INVALID_PACKET;
 }
 
-int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchSetAddress(uint32_t*                      cmd,
-                                                          const volatile ShaderRegister* regs) {
+int KYTY_SYSV_ABI AgcSetCxRegIndirectPatchSetAddress(uint32_t*                      cmd,
+                                                     const volatile ShaderRegister* regs) {
 	PRINT_NAME();
 
 	LOGF("\t cmd  = 0x%016" PRIx64 "\n"
@@ -973,8 +968,8 @@ int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchSetAddress(uint32_t*             
 	return reg_indirect_patch_set_address(cmd, vaddr, RegIndirectPacket::Cx);
 }
 
-int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchSetAddress(uint32_t*                      cmd,
-                                                          const volatile ShaderRegister* regs) {
+int KYTY_SYSV_ABI AgcSetShRegIndirectPatchSetAddress(uint32_t*                      cmd,
+                                                     const volatile ShaderRegister* regs) {
 	PRINT_NAME();
 
 	LOGF("\t cmd  = 0x%016" PRIx64 "\n"
@@ -989,8 +984,8 @@ int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchSetAddress(uint32_t*             
 	return reg_indirect_patch_set_address(cmd, vaddr, RegIndirectPacket::Sh);
 }
 
-int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchSetAddress(uint32_t*                      cmd,
-                                                          const volatile ShaderRegister* regs) {
+int KYTY_SYSV_ABI AgcSetUcRegIndirectPatchSetAddress(uint32_t*                      cmd,
+                                                     const volatile ShaderRegister* regs) {
 	PRINT_NAME();
 
 	LOGF("\t cmd  = 0x%016" PRIx64 "\n"
@@ -1005,7 +1000,7 @@ int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchSetAddress(uint32_t*             
 	return reg_indirect_patch_set_address(cmd, vaddr, RegIndirectPacket::Uc);
 }
 
-int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
+int KYTY_SYSV_ABI AgcSetCxRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
@@ -1017,7 +1012,7 @@ int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchSetNumRegisters(uint32_t* cmd, ui
 	return reg_indirect_patch_set_num_registers(cmd, num_regs, RegIndirectPacket::Cx);
 }
 
-int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
+int KYTY_SYSV_ABI AgcSetShRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
@@ -1029,7 +1024,7 @@ int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchSetNumRegisters(uint32_t* cmd, ui
 	return reg_indirect_patch_set_num_registers(cmd, num_regs, RegIndirectPacket::Sh);
 }
 
-int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
+int KYTY_SYSV_ABI AgcSetUcRegIndirectPatchSetNumRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
@@ -1041,7 +1036,7 @@ int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchSetNumRegisters(uint32_t* cmd, ui
 	return reg_indirect_patch_set_num_registers(cmd, num_regs, RegIndirectPacket::Uc);
 }
 
-int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t num_regs) {
+int KYTY_SYSV_ABI AgcSetCxRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
@@ -1053,7 +1048,7 @@ int KYTY_SYSV_ABI GraphicsSetCxRegIndirectPatchAddRegisters(uint32_t* cmd, uint3
 	return reg_indirect_patch_add_registers(cmd, num_regs, RegIndirectPacket::Cx);
 }
 
-int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t num_regs) {
+int KYTY_SYSV_ABI AgcSetShRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
@@ -1065,7 +1060,7 @@ int KYTY_SYSV_ABI GraphicsSetShRegIndirectPatchAddRegisters(uint32_t* cmd, uint3
 	return reg_indirect_patch_add_registers(cmd, num_regs, RegIndirectPacket::Sh);
 }
 
-int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t num_regs) {
+int KYTY_SYSV_ABI AgcSetUcRegIndirectPatchAddRegisters(uint32_t* cmd, uint32_t num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t cmd      = 0x%016" PRIx64 "\n"
@@ -1080,23 +1075,23 @@ int KYTY_SYSV_ABI GraphicsSetUcRegIndirectPatchAddRegisters(uint32_t* cmd, uint3
 static uint32_t GraphicsPrimitiveTypeToGsOut(uint32_t prim_type) {
 	switch (static_cast<Prospero::PrimitiveType>(prim_type)) {
 		case Prospero::PrimitiveType::kPointList:
-			return Prospero::GpuEnumValue(Prospero::GsOutputPrimitiveType::kPoints);
+			return static_cast<uint32_t>(Prospero::GsOutputPrimitiveType::kPoints);
 		case Prospero::PrimitiveType::kLineList:
 		case Prospero::PrimitiveType::kLineStrip:
 		case Prospero::PrimitiveType::kLineListAdjacency:
 		case Prospero::PrimitiveType::kLineStripAdjacency:
 		case Prospero::PrimitiveType::kLineLoop:
-			return Prospero::GpuEnumValue(Prospero::GsOutputPrimitiveType::kLines);
+			return static_cast<uint32_t>(Prospero::GsOutputPrimitiveType::kLines);
 		case Prospero::PrimitiveType::kRectList:
-			return Prospero::GpuEnumValue(Prospero::GsOutputPrimitiveType::k2dRectangle);
+			return static_cast<uint32_t>(Prospero::GsOutputPrimitiveType::k2dRectangle);
 		case Prospero::PrimitiveType::kRectListLegacy:
-			return Prospero::GpuEnumValue(Prospero::GsOutputPrimitiveType::kRectList);
-		default: return Prospero::GpuEnumValue(Prospero::GsOutputPrimitiveType::kTriangles);
+			return static_cast<uint32_t>(Prospero::GsOutputPrimitiveType::kRectList);
+		default: return static_cast<uint32_t>(Prospero::GsOutputPrimitiveType::kTriangles);
 	}
 }
 
-int KYTY_SYSV_ABI GraphicsCreatePrimState(ShaderRegister* cx_regs, ShaderRegister* uc_regs,
-                                          const Shader* hs, const Shader* gs, uint32_t prim_type) {
+int KYTY_SYSV_ABI AgcCreatePrimState(ShaderRegister* cx_regs, ShaderRegister* uc_regs,
+                                     const Shader* hs, const Shader* gs, uint32_t prim_type) {
 	PRINT_NAME();
 
 	LOGF("\t cx_regs   = 0x%016" PRIx64 "\n"
@@ -1163,8 +1158,8 @@ int KYTY_SYSV_ABI GraphicsCreatePrimState(ShaderRegister* cx_regs, ShaderRegiste
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsUpdatePrimState(ShaderRegister* cx_regs, ShaderRegister* uc_regs,
-                                          uint32_t prim_type) {
+int KYTY_SYSV_ABI AgcUpdatePrimState(ShaderRegister* cx_regs, ShaderRegister* uc_regs,
+                                     uint32_t prim_type) {
 	PRINT_NAME();
 
 	LOGF("\t cx_regs   = 0x%016" PRIx64 "\n"
@@ -1222,8 +1217,8 @@ static GsOccupancyLimits get_gs_occupancy_limits(const Shader* gs, uint32_t vert
 	return {waves * (vertex_limit / output_words), waves * (export_limit / output_words)};
 }
 
-int KYTY_SYSV_ABI GraphicsGetGsOversubscription(ShaderRegister* regs, const Shader* gs,
-                                                uint32_t budget, float factor) {
+int KYTY_SYSV_ABI AgcGetGsOversubscription(ShaderRegister* regs, const Shader* gs, uint32_t budget,
+                                           float factor) {
 	PRINT_NAME();
 
 	constexpr uint32_t FULL_PC_OVERSUBSCRIPTION = 0x7ffu;
@@ -1258,15 +1253,15 @@ int KYTY_SYSV_ABI GraphicsGetGsOversubscription(ShaderRegister* regs, const Shad
 	if (target < base.export_count) {
 		const auto range = std::max(expanded.vertex - base.vertex, 1u);
 		auto       value = static_cast<uint32_t>(
-		    std::min<uint64_t>((static_cast<uint64_t>(target - base.vertex) << 10u) / range, 1024ull));
+		    std::min<uint64_t>((static_cast<uint64_t>(target - base.vertex) << 10u) / range, 1024));
 		value         = std::max(value, 1u);
 		regs[0].value = (regs[0].value & ~FULL_PC_OVERSUBSCRIPTION) |
 		                (((value << 1u) - 1u) & FULL_PC_OVERSUBSCRIPTION);
 		regs[1].value |= FULL_SH_OVERSUBSCRIPTION;
 	} else {
 		const auto range = std::max(expanded.export_count - base.export_count, 1u);
-		const auto value = static_cast<uint32_t>(
-		    std::min<uint64_t>((static_cast<uint64_t>(target - base.export_count) * 127u) / range, 127ull));
+		const auto value = static_cast<uint32_t>(std::min<uint64_t>(
+		    (static_cast<uint64_t>(target - base.export_count) * 127u) / range, 127));
 		regs[0].value |= FULL_PC_OVERSUBSCRIPTION;
 		regs[1].value = (regs[1].value & ~FULL_SH_OVERSUBSCRIPTION) | (value << 16u);
 	}
@@ -1358,9 +1353,7 @@ static const ShaderSemantic* find_interpolant_output_semantic(const Shader* gs, 
 }
 
 static void set_interpolant_register(ShaderRegister* regs, uint32_t index, uint32_t value) {
-	// Interpolant mappings contain encoded Cx descriptors. Indirect PM4 ingestion resolves
-	// this selector and slot to the physical SPI_PS_INPUT_CNTL register.
-	regs[index].offset = Pm4::CX_PS_SHADER_USAGE_BASE + index;
+	regs[index].offset = Pm4::SPI_PS_INPUT_CNTL_0 + index;
 	regs[index].value  = value;
 }
 
@@ -1370,8 +1363,8 @@ static void set_identity_interpolant_registers(ShaderRegister* regs, uint32_t fi
 	}
 }
 
-int KYTY_SYSV_ABI GraphicsCreateInterpolantMapping(ShaderRegister* regs, const Shader* gs,
-                                                   const Shader* ps) {
+int KYTY_SYSV_ABI AgcCreateInterpolantMapping(ShaderRegister* regs, const Shader* gs,
+                                              const Shader* ps) {
 	PRINT_NAME();
 
 	LOGF("\t regs = 0x%016" PRIx64 "\n"
@@ -1412,7 +1405,97 @@ int KYTY_SYSV_ABI GraphicsCreateInterpolantMapping(ShaderRegister* regs, const S
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsGetDataPacketPayloadAddress(uint32_t** addr, uint32_t* cmd, int type) {
+static uint32_t apply_interpolant_two_bit_field(uint32_t value, uint32_t field,
+                                                uint32_t shift) {
+	const auto mask = 0x3u << shift;
+	return (value & ~mask) | ((field & 0x3u) << shift);
+}
+
+static uint32_t apply_interpolant_final_mask(uint32_t flags, uint32_t source,
+                                             uint32_t mask) {
+	flags = (flags & 0xffffffe0u) | ((mask >> 8u) & 0x1fu);
+	flags = (flags & 0xfffffbffu) |
+	        ((source & 0x400000u) != 0 ? 0x400u : ((source >> 14u) & 0x400u));
+	return flags;
+}
+
+int KYTY_SYSV_ABI AgcCreateInterpolantMapping2(ShaderRegister* regs, const Shader* gs,
+                                               const Shader* ps) {
+	PRINT_NAME();
+
+	LOGF("\t regs = 0x%016" PRIx64 "\n"
+	     "\t gs   = 0x%016" PRIx64 "\n"
+	     "\t ps   = 0x%016" PRIx64 "\n",
+	     reinterpret_cast<uint64_t>(regs), reinterpret_cast<uint64_t>(gs),
+	     reinterpret_cast<uint64_t>(ps));
+
+	EXIT_NOT_IMPLEMENTED(regs == nullptr);
+	EXIT_NOT_IMPLEMENTED(ps != nullptr && ps->num_input_semantics != 0 &&
+	                     ps->input_semantics == nullptr);
+
+	if (ps == nullptr || ps->num_input_semantics == 0) {
+		set_identity_interpolant_registers(regs, 0);
+		return OK;
+	}
+
+	EXIT_NOT_IMPLEMENTED(gs == nullptr);
+	EXIT_NOT_IMPLEMENTED(gs->num_output_semantics != 0 && gs->output_semantics == nullptr);
+
+	for (uint32_t i = 0; i < ps->num_input_semantics; i++) {
+		const auto source     = shader_semantic_word(ps->input_semantics[i]);
+		auto       mask_index = static_cast<uint32_t>(gs->num_output_semantics);
+
+		for (uint32_t j = 0; j < gs->num_output_semantics; j++) {
+			if (gs->output_semantics[j].semantic == static_cast<uint8_t>(source)) {
+				mask_index = j;
+				break;
+			}
+		}
+
+		const bool has_mask = mask_index < gs->num_output_semantics;
+		const auto mask     = has_mask ? shader_semantic_word(gs->output_semantics[mask_index]) : 0u;
+		const auto mode     = (source >> 20u) & 0x3u;
+		auto       flags    = 0u;
+
+		if (mode == 0) {
+			flags = (((source >> 24u) & 0x1u) | (has_mask ? 0u : 1u)) << 5u;
+			flags = apply_interpolant_two_bit_field(flags, source >> 28u, 8u);
+		} else {
+			flags = ((source << 4u) & 0x03000000u) + 0x80000u;
+
+			if (mode == 2) {
+				flags &= 0xffefffdfu;
+				flags |= has_mask ? ((~(mask & source) >> 16u) & 0x20u) : 0x20u;
+				flags = apply_interpolant_two_bit_field(flags, source >> 30u, 8u);
+				flags = apply_interpolant_two_bit_field(flags, source >> 30u, 21u);
+			} else {
+				if (has_mask) {
+					const auto masked = mask & source;
+					flags = (flags & 0xffffffdfu) | ((masked >> 15u) & 0x20u);
+					flags ^= 0x20u;
+					flags = (flags & 0xffefffffu) | ((~masked >> 1u) & 0x100000u);
+					flags = apply_interpolant_two_bit_field(flags, source >> 28u, 8u);
+				} else {
+					flags |= 0x100020u;
+					flags = apply_interpolant_two_bit_field(flags, source >> 28u, 8u);
+				}
+				flags = apply_interpolant_two_bit_field(flags, source >> 30u, 21u);
+			}
+		}
+
+		flags = has_mask ? apply_interpolant_final_mask(flags, source, mask)
+		                 : (flags & 0xfffffbe0u);
+		set_interpolant_register(regs, i, flags);
+	}
+
+	if (ps->num_input_semantics < 32u) {
+		set_identity_interpolant_registers(regs, ps->num_input_semantics);
+	}
+
+	return OK;
+}
+
+int KYTY_SYSV_ABI AgcGetDataPacketPayloadAddress(uint32_t** addr, uint32_t* cmd, int type) {
 	PRINT_NAME();
 
 	static std::atomic<uint32_t> log_count {0};
@@ -1436,7 +1519,7 @@ int KYTY_SYSV_ABI GraphicsGetDataPacketPayloadAddress(uint32_t** addr, uint32_t*
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsGetDataPacketPayloadRange(MemoryRange* range, uint32_t* cmd, int type) {
+int KYTY_SYSV_ABI AgcGetDataPacketPayloadRange(MemoryRange* range, uint32_t* cmd, int type) {
 	PRINT_NAME();
 
 	static std::atomic<uint32_t> log_count {0};
@@ -1477,8 +1560,7 @@ int KYTY_SYSV_ABI GraphicsGetDataPacketPayloadRange(MemoryRange* range, uint32_t
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsWriteDataPatchSetAddressOrOffset(uint32_t* cmd,
-                                                           uint64_t  address_or_offset) {
+int KYTY_SYSV_ABI AgcWriteDataPatchSetAddressOrOffset(uint32_t* cmd, uint64_t address_or_offset) {
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
 	auto op = (cmd[0] >> 8u) & 0xffu;
@@ -1491,17 +1573,17 @@ int KYTY_SYSV_ABI GraphicsWriteDataPatchSetAddressOrOffset(uint32_t* cmd,
 	return GRAPHICS5_ERROR_INVALID_PACKET;
 }
 
-int KYTY_SYSV_ABI GraphicsUnknownJumpPatchSetTarget(uint32_t* cmd, const volatile uint32_t* target,
-                                                    uint32_t size_in_dwords) {
+int KYTY_SYSV_ABI AgcUnknownJumpPatchSetTarget(uint32_t* cmd, const volatile uint32_t* target,
+                                               uint32_t size_in_dwords) {
 	PRINT_NAME();
 
 	LOGF("Calling unknown stub");
 
-	return GraphicsJumpPatchSetTarget(cmd, target, size_in_dwords);
+	return AgcJumpPatchSetTarget(cmd, target, size_in_dwords);
 }
 
-int KYTY_SYSV_ABI GraphicsJumpPatchSetTarget(uint32_t* cmd, const volatile uint32_t* target,
-                                             uint32_t size_in_dwords) {
+int KYTY_SYSV_ABI AgcJumpPatchSetTarget(uint32_t* cmd, const volatile uint32_t* target,
+                                        uint32_t size_in_dwords) {
 	PRINT_NAME();
 
 	LOGF("\t cmd            = 0x%016" PRIx64 "\n"
@@ -1530,7 +1612,7 @@ int KYTY_SYSV_ABI GraphicsJumpPatchSetTarget(uint32_t* cmd, const volatile uint3
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsSuspendPoint() {
+int KYTY_SYSV_ABI AgcSuspendPoint() {
 	PRINT_NAME();
 
 	EXIT_IF(g_renderer == nullptr);
@@ -1549,7 +1631,7 @@ int KYTY_SYSV_ABI GraphicsSuspendPoint() {
 	}
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbContextStateOp(CommandBuffer* buf, uint32_t operation) {
+uint32_t* KYTY_SYSV_ABI AgcDcbContextStateOp(CommandBuffer* buf, uint32_t operation) {
 	PRINT_NAME();
 	LOGF("\t operation = 0x%08" PRIx32 "\n", operation);
 
@@ -1602,12 +1684,12 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbContextStateOp(CommandBuffer* buf, uint32_t o
 	return complete ? first : nullptr;
 }
 
-uint64_t KYTY_SYSV_ABI GraphicsDcbContextStateOpGetSize(uint32_t operation) {
+uint64_t KYTY_SYSV_ABI AgcDcbContextStateOpGetSize(uint32_t operation) {
 	PRINT_NAME();
 	return static_cast<uint64_t>(context_state_op_size_dw(operation)) * sizeof(uint32_t);
 }
 
-uint64_t KYTY_SYSV_ABI GraphicsGetIsTrinityMode() {
+uint64_t KYTY_SYSV_ABI AgcGetIsTrinityMode() {
 	// PS5 Pro?
 	return 0;
 }
@@ -1626,26 +1708,26 @@ static std::mutex g_workload_stream_mutex;
 static uint32_t   g_workload_stream_mask = 0;
 static uint8_t    g_workload_streams[WORKLOAD_STREAM_MAX_ID + 1][WORKLOAD_STREAM_RECORD_SIZE] {};
 
-uint32_t KYTY_SYSV_ABI GraphicsDriverGetDefaultOwner() {
+uint32_t KYTY_SYSV_ABI AgcDriverGetDefaultOwner() {
 	PRINT_NAME();
 
 	return 0x8a6c9018u;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDriverGetResourceRegistrationMaxNameLength() {
+uint32_t KYTY_SYSV_ABI AgcDriverGetResourceRegistrationMaxNameLength() {
 	PRINT_NAME();
 
 	return 0x8a6c9018u;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDriverInitResourceRegistration() {
+uint32_t KYTY_SYSV_ABI AgcDriverInitResourceRegistration() {
 	PRINT_NAME();
 
 	return 0x8a6c9018u;
 }
 
 uint32_t KYTY_SYSV_ABI
-GraphicsDriverQueryResourceRegistrationUserMemoryRequirements(uint64_t* size_in_bytes) {
+AgcDriverQueryResourceRegistrationUserMemoryRequirements(uint64_t* size_in_bytes) {
 	PRINT_NAME();
 
 	if (size_in_bytes != nullptr) {
@@ -1655,25 +1737,33 @@ GraphicsDriverQueryResourceRegistrationUserMemoryRequirements(uint64_t* size_in_
 	return 0x8a6c9018u;
 }
 
-int KYTY_SYSV_ABI GraphicsDriverRegisterOwner() {
+int KYTY_SYSV_ABI AgcDriverRegisterOwner() {
 	PRINT_NAME();
 
 	return static_cast<int>(0x8a6c9018u);
 }
 
-int KYTY_SYSV_ABI GraphicsDriverRegisterResource() {
+int KYTY_SYSV_ABI AgcDriverRegisterResource() {
 	PRINT_NAME();
 
 	return static_cast<int>(0x8a6c9018u);
 }
 
-int KYTY_SYSV_ABI GraphicsDriverUnregisterResource() {
+int KYTY_SYSV_ABI AgcDriverUnregisterOwnerAndResources(uint32_t owner_handle) {
+	PRINT_NAME();
+
+	(void)owner_handle;
+
+	return static_cast<int>(0x8a6c9018u);
+}
+
+int KYTY_SYSV_ABI AgcDriverUnregisterResource() {
 	PRINT_NAME();
 
 	return static_cast<int>(0x8a6c9018u);
 }
 
-int KYTY_SYSV_ABI GraphicsDriverRegisterWorkloadStream(uint32_t stream_id, const void* stream) {
+int KYTY_SYSV_ABI AgcDriverRegisterWorkloadStream(uint32_t stream_id, const void* stream) {
 	PRINT_NAME();
 
 	LOGF("\t stream_id = %" PRIu32 "\n"
@@ -1702,7 +1792,7 @@ int KYTY_SYSV_ABI GraphicsDriverRegisterWorkloadStream(uint32_t stream_id, const
 	return OK;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsCbNop(CommandBuffer* buf, uint32_t size_in_dwords) {
+uint32_t* KYTY_SYSV_ABI AgcCbNop(CommandBuffer* buf, uint32_t size_in_dwords) {
 	if (buf == nullptr || size_in_dwords < 2) {
 		return nullptr;
 	}
@@ -1721,13 +1811,13 @@ uint32_t* KYTY_SYSV_ABI GraphicsCbNop(CommandBuffer* buf, uint32_t size_in_dword
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsCbNopGetSize(uint32_t size_in_dwords) {
+uint32_t KYTY_SYSV_ABI AgcCbNopGetSize(uint32_t size_in_dwords) {
 	return 4u * size_in_dwords;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsCbDispatch(CommandBuffer* buf, uint32_t thread_group_x,
-                                           uint32_t thread_group_y, uint32_t thread_group_z,
-                                           uint32_t modifier) {
+uint32_t* KYTY_SYSV_ABI AgcCbDispatch(CommandBuffer* buf, uint32_t thread_group_x,
+                                      uint32_t thread_group_y, uint32_t thread_group_z,
+                                      uint32_t modifier) {
 	PRINT_NAME();
 
 	static std::atomic<uint32_t> log_count {0};
@@ -1758,18 +1848,18 @@ uint32_t* KYTY_SYSV_ABI GraphicsCbDispatch(CommandBuffer* buf, uint32_t thread_g
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsCbDispatchGetSize() {
+uint32_t KYTY_SYSV_ABI AgcCbDispatchGetSize() {
 	PRINT_NAME();
 
 	return 20;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsCbBranch(CommandBuffer* buf, uint8_t mode, uint8_t compare_function,
-                                         const volatile uint64_t* compare_addr, uint64_t mask,
-                                         uint64_t reference, uint8_t cache_policy1,
-                                         const volatile uint32_t* buffer1, uint32_t size_in_dwords1,
-                                         uint8_t cache_policy2, const volatile uint32_t* buffer2,
-                                         uint32_t size_in_dwords2) {
+uint32_t* KYTY_SYSV_ABI AgcCbBranch(CommandBuffer* buf, uint8_t mode, uint8_t compare_function,
+                                    const volatile uint64_t* compare_addr, uint64_t mask,
+                                    uint64_t reference, uint8_t cache_policy1,
+                                    const volatile uint32_t* buffer1, uint32_t size_in_dwords1,
+                                    uint8_t cache_policy2, const volatile uint32_t* buffer2,
+                                    uint32_t size_in_dwords2) {
 	PRINT_NAME();
 
 	LOGF("\t mode             = 0x%02" PRIx8 "\n"
@@ -1818,9 +1908,8 @@ uint32_t* KYTY_SYSV_ABI GraphicsCbBranch(CommandBuffer* buf, uint8_t mode, uint8
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsCbSetShRegisterRangeDirect(CommandBuffer* buf, uint32_t offset,
-                                                           const uint32_t* values,
-                                                           uint32_t        num_values) {
+uint32_t* KYTY_SYSV_ABI AgcCbSetShRegisterRangeDirect(CommandBuffer* buf, uint32_t offset,
+                                                      const uint32_t* values, uint32_t num_values) {
 	PRINT_NAME();
 
 	static std::atomic<uint32_t> log_count {0};
@@ -1854,7 +1943,7 @@ uint32_t* KYTY_SYSV_ABI GraphicsCbSetShRegisterRangeDirect(CommandBuffer* buf, u
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsCbSetShRegisterRangeDirectGetSize(uint32_t num_values) {
+uint32_t KYTY_SYSV_ABI AgcCbSetShRegisterRangeDirectGetSize(uint32_t num_values) {
 	PRINT_NAME();
 
 	LOGF("\t num_values = %" PRIu32 "\n", num_values);
@@ -1862,9 +1951,9 @@ uint32_t KYTY_SYSV_ABI GraphicsCbSetShRegisterRangeDirectGetSize(uint32_t num_va
 	return 4u * num_values + 8u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsCbSetShRegistersDirect(CommandBuffer*                 buf,
-                                                       const volatile ShaderRegister* regs,
-                                                       uint32_t                       num_regs) {
+uint32_t* KYTY_SYSV_ABI AgcCbSetShRegistersDirect(CommandBuffer*                 buf,
+                                                  const volatile ShaderRegister* regs,
+                                                  uint32_t                       num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t regs     = 0x%016" PRIx64 "\n"
@@ -1929,7 +2018,77 @@ uint32_t* KYTY_SYSV_ABI GraphicsCbSetShRegistersDirect(CommandBuffer*           
 	return first_cmd;
 }
 
-int KYTY_SYSV_ABI GraphicsDebugRaiseException(uint32_t exception_id) {
+uint32_t* KYTY_SYSV_ABI AgcCbSetUcRegistersDirect(CommandBuffer*                 buf,
+                                                  const volatile ShaderRegister* regs,
+                                                  uint32_t                       num_regs) {
+	PRINT_NAME();
+
+	LOGF("\t regs     = 0x%016" PRIx64 "\n"
+	     "\t num_regs = %" PRIu32 "\n",
+	     reinterpret_cast<uint64_t>(regs), num_regs);
+
+	if (num_regs == 0) {
+		return nullptr;
+	}
+
+	EXIT_NOT_IMPLEMENTED(buf == nullptr);
+	EXIT_NOT_IMPLEMENTED(regs == nullptr);
+
+	buf->DbgDump();
+
+	// Original implementation stages register values in a temporary DWORD array. It reads each new run only
+	// after the preceding run has been allocated, so preserve that ordering around grow callbacks.
+	std::vector<uint32_t> values(num_regs);
+	values[0] = regs[0].value;
+
+	uint32_t* first_cmd        = nullptr;
+	uint32_t  run_start_index  = 0;
+	uint32_t  run_start_offset = regs[0].offset;
+	uint32_t  prev_offset      = run_start_offset;
+	uint32_t  i                = 1;
+
+	for (;;) {
+		if (i < num_regs) {
+			const auto offset = regs[i].offset;
+			if (offset == prev_offset + 1u) {
+				values[i]   = regs[i].value;
+				prev_offset = offset;
+				i++;
+				continue;
+			}
+		}
+
+		const auto run_count = i - run_start_index;
+		auto*      cmd       = buf->AllocateDW(run_count + 2u);
+
+		if (cmd != nullptr) {
+			if (first_cmd == nullptr) {
+				first_cmd = cmd;
+			}
+
+			cmd[0] = KYTY_PM4(run_count + 2u, Pm4::IT_SET_UCONFIG_REG, 0u);
+			cmd[1] = run_start_offset & 0xffffu;
+			memcpy(cmd + 2, values.data() + run_start_index,
+			       static_cast<size_t>(run_count) * sizeof(uint32_t));
+		} else {
+			LOGF_COLOR(Log::Color::Red,
+			           "\t failed to allocate set-uc-registers-direct command\n");
+		}
+
+		if (i == num_regs) {
+			return first_cmd;
+		}
+
+		// Original implementation skips an intermediate run whose grow callback fails, then keeps scanning.
+		run_start_index  = i;
+		run_start_offset = regs[i].offset;
+		prev_offset      = run_start_offset;
+		values[i]        = regs[i].value;
+		i++;
+	}
+}
+
+int KYTY_SYSV_ABI AgcDebugRaiseException(uint32_t exception_id) {
 	PRINT_NAME();
 
 	LOGF("\t exception_id = 0x%08" PRIx32 "\n", exception_id);
@@ -1937,11 +2096,11 @@ int KYTY_SYSV_ABI GraphicsDebugRaiseException(uint32_t exception_id) {
 	return OK;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsCbReleaseMem(CommandBuffer* buf, uint8_t action, uint16_t gcr_cntl,
-                                             uint8_t dst, uint8_t cache_policy,
-                                             const volatile Label* address, uint8_t data_sel,
-                                             uint64_t data, uint16_t gds_offset, uint16_t gds_size,
-                                             uint8_t interrupt, uint32_t interrupt_ctx_id) {
+uint32_t* KYTY_SYSV_ABI AgcCbReleaseMem(CommandBuffer* buf, uint8_t action, uint16_t gcr_cntl,
+                                        uint8_t dst, uint8_t cache_policy,
+                                        const volatile Label* address, uint8_t data_sel,
+                                        uint64_t data, uint16_t gds_offset, uint16_t gds_size,
+                                        uint8_t interrupt, uint32_t interrupt_ctx_id) {
 	PRINT_NAME();
 
 	static std::atomic<uint32_t> log_count {0};
@@ -2007,13 +2166,13 @@ uint32_t* KYTY_SYSV_ABI GraphicsCbReleaseMem(CommandBuffer* buf, uint8_t action,
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsCbQueueEndOfPipeActionGetSize() {
+uint32_t KYTY_SYSV_ABI AgcCbQueueEndOfPipeActionGetSize() {
 	PRINT_NAME();
 
 	return 32;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbResetQueue(CommandBuffer* buf, uint32_t op) {
+uint32_t* KYTY_SYSV_ABI AgcAcbResetQueue(CommandBuffer* buf, uint32_t op) {
 	PRINT_NAME();
 
 	LOGF("\t op    = 0x%08" PRIx32 "\n", op);
@@ -2033,7 +2192,7 @@ uint32_t* KYTY_SYSV_ABI GraphicsAcbResetQueue(CommandBuffer* buf, uint32_t op) {
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbResetQueue(CommandBuffer* buf, uint32_t op, uint32_t state) {
+uint32_t* KYTY_SYSV_ABI AgcDcbResetQueue(CommandBuffer* buf, uint32_t op, uint32_t state) {
 	PRINT_NAME();
 
 	LOGF("\t op    = 0x%08" PRIx32 "\n"
@@ -2055,9 +2214,9 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbResetQueue(CommandBuffer* buf, uint32_t op, u
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbWaitUntilSafeForRendering(CommandBuffer* buf,
-                                                             uint32_t       video_out_handle,
-                                                             uint32_t       display_buffer_index) {
+uint32_t* KYTY_SYSV_ABI AgcDcbWaitUntilSafeForRendering(CommandBuffer* buf,
+                                                        uint32_t       video_out_handle,
+                                                        uint32_t       display_buffer_index) {
 	PRINT_NAME();
 
 	LOGF("\t video_out_handle     = %" PRIu32 "\n"
@@ -2083,9 +2242,9 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbWaitUntilSafeForRendering(CommandBuffer* buf,
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetWorkloadsActive(CommandBuffer* buf, uint32_t stream_id,
-                                                      const uint32_t* workload_ids,
-                                                      uint32_t        workload_count) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetWorkloadsActive(CommandBuffer* buf, uint32_t stream_id,
+                                                 const uint32_t* workload_ids,
+                                                 uint32_t        workload_count) {
 	PRINT_NAME();
 
 	LOGF("\t stream_id      = %" PRIu32 "\n"
@@ -2137,8 +2296,8 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetWorkloadsActive(CommandBuffer* buf, uint32
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetWorkloadComplete(CommandBuffer* buf, uint32_t stream_id,
-                                                       uint32_t workload_id) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetWorkloadComplete(CommandBuffer* buf, uint32_t stream_id,
+                                                  uint32_t workload_id) {
 	PRINT_NAME();
 
 	LOGF("\t stream_id   = %" PRIu32 "\n"
@@ -2177,7 +2336,7 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetWorkloadComplete(CommandBuffer* buf, uint3
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetShRegisterDirect(CommandBuffer* buf, ShaderRegister reg) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetShRegisterDirect(CommandBuffer* buf, ShaderRegister reg) {
 	PRINT_NAME();
 
 	EXIT_NOT_IMPLEMENTED(buf == nullptr);
@@ -2198,7 +2357,7 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetShRegisterDirect(CommandBuffer* buf, Shade
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetCxRegisterDirect(CommandBuffer* buf, ShaderRegister reg) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetCxRegisterDirect(CommandBuffer* buf, ShaderRegister reg) {
 	PRINT_NAME();
 
 	EXIT_NOT_IMPLEMENTED(buf == nullptr);
@@ -2219,13 +2378,13 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetCxRegisterDirect(CommandBuffer* buf, Shade
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbSetCxRegisterDirectGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbSetCxRegisterDirectGetSize() {
 	PRINT_NAME();
 
 	return 12;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetUcRegisterDirect(CommandBuffer* buf, ShaderRegister reg) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetUcRegisterDirect(CommandBuffer* buf, ShaderRegister reg) {
 	PRINT_NAME();
 
 	EXIT_NOT_IMPLEMENTED(buf == nullptr);
@@ -2246,9 +2405,9 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetUcRegisterDirect(CommandBuffer* buf, Shade
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetCxRegistersIndirect(CommandBuffer*                 buf,
-                                                          const volatile ShaderRegister* regs,
-                                                          uint32_t                       num_regs) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetCxRegistersIndirect(CommandBuffer*                 buf,
+                                                     const volatile ShaderRegister* regs,
+                                                     uint32_t                       num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t regs     = 0x%016" PRIx64 "\n"
@@ -2270,9 +2429,9 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetCxRegistersIndirect(CommandBuffer*        
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetShRegistersIndirect(CommandBuffer*                 buf,
-                                                          const volatile ShaderRegister* regs,
-                                                          uint32_t                       num_regs) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetShRegistersIndirect(CommandBuffer*                 buf,
+                                                     const volatile ShaderRegister* regs,
+                                                     uint32_t                       num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t regs     = 0x%016" PRIx64 "\n"
@@ -2294,9 +2453,9 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetShRegistersIndirect(CommandBuffer*        
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetUcRegistersIndirect(CommandBuffer*                 buf,
-                                                          const volatile ShaderRegister* regs,
-                                                          uint32_t                       num_regs) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetUcRegistersIndirect(CommandBuffer*                 buf,
+                                                     const volatile ShaderRegister* regs,
+                                                     uint32_t                       num_regs) {
 	PRINT_NAME();
 
 	LOGF("\t regs     = 0x%016" PRIx64 "\n"
@@ -2318,8 +2477,8 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetUcRegistersIndirect(CommandBuffer*        
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetIndexSize(CommandBuffer* buf, uint8_t index_size,
-                                                uint8_t cache_policy) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetIndexSize(CommandBuffer* buf, uint8_t index_size,
+                                           uint8_t cache_policy) {
 	PRINT_NAME();
 
 	LOGF("\t index_size   = 0x%" PRIx8 "\n"
@@ -2340,7 +2499,7 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetIndexSize(CommandBuffer* buf, uint8_t inde
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetIndexBuffer(CommandBuffer* buf, uint64_t index_addr) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetIndexBuffer(CommandBuffer* buf, uint64_t index_addr) {
 	PRINT_NAME();
 
 	LOGF("\t index_addr = 0x%016" PRIx64 "\n", index_addr);
@@ -2361,7 +2520,7 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetIndexBuffer(CommandBuffer* buf, uint64_t i
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetIndexCount(CommandBuffer* buf, uint32_t index_count) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetIndexCount(CommandBuffer* buf, uint32_t index_count) {
 	PRINT_NAME();
 
 	LOGF("\t index_count = 0x%" PRIx32 "\n", index_count);
@@ -2380,7 +2539,7 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetIndexCount(CommandBuffer* buf, uint32_t in
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetNumInstances(CommandBuffer* buf, uint32_t num_instances) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetNumInstances(CommandBuffer* buf, uint32_t num_instances) {
 	PRINT_NAME();
 
 	LOGF("\t num_instances = 0x%" PRIx32 "\n", num_instances);
@@ -2403,7 +2562,7 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetNumInstances(CommandBuffer* buf, uint32_t 
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbSetNumInstancesGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbSetNumInstancesGetSize() {
 	PRINT_NAME();
 
 	return 8;
@@ -2460,8 +2619,23 @@ static uint32_t decode_draw_index_initiator(uint64_t modifier) {
 	return (static_cast<uint32_t>(modifier) >> 3u) & 0x20u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndex(CommandBuffer* buf, uint32_t index_count,
-                                             const volatile void* index_addr, uint64_t modifier) {
+static constexpr uint32_t AGC_INTERNAL_DATA_REGISTER            = 0x342u;
+static constexpr uint32_t AGC_DRAW_INDIRECT_MULTI_BEGIN_TAG     = 0xc6000008u;
+static constexpr uint32_t AGC_DRAW_INDIRECT_MULTI_END_TAG       = 0xc6000000u;
+static constexpr uint32_t AGC_WAIT_USER_DATA_BEGIN_32_TAG       = 0xc8010000u;
+static constexpr uint32_t AGC_WAIT_USER_DATA_BEGIN_64_TAG       = 0xc8020000u;
+static constexpr uint32_t AGC_WAIT_USER_DATA_END_TAG            = 0xc8000000u;
+static constexpr uint32_t AGC_WAIT_USER_DATA_BEGIN_DW           = 4u;
+static constexpr uint32_t AGC_INTERNAL_DATA_PACKET_SIZE_DW      = 3u;
+
+static void write_agc_internal_data_packet(uint32_t* cmd, uint32_t tag) {
+	cmd[0] = KYTY_PM4(AGC_INTERNAL_DATA_PACKET_SIZE_DW, Pm4::IT_SET_UCONFIG_REG, 1u);
+	cmd[1] = AGC_INTERNAL_DATA_REGISTER;
+	cmd[2] = tag;
+}
+
+uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndex(CommandBuffer* buf, uint32_t index_count,
+                                        const volatile void* index_addr, uint64_t modifier) {
 	PRINT_NAME();
 
 	LOGF("\t index_count = 0x%" PRIx32 "\n"
@@ -2491,17 +2665,16 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndex(CommandBuffer* buf, uint32_t index_
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbDrawIndexGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbDrawIndexGetSize() {
 	PRINT_NAME();
 
 	return 6u * 4u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexMultiInstanced(CommandBuffer* buf, uint32_t index_count,
-                                                           const volatile void* index_addr,
-                                                           const volatile void* object_ids,
-                                                           uint32_t             instance_count,
-                                                           uint64_t             modifier) {
+uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexMultiInstanced(CommandBuffer* buf, uint32_t index_count,
+                                                      const volatile void* index_addr,
+                                                      const volatile void* object_ids,
+                                                      uint32_t instance_count, uint64_t modifier) {
 	PRINT_NAME();
 
 	LOGF("\t index_count    = 0x%" PRIx32 "\n"
@@ -2539,15 +2712,15 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexMultiInstanced(CommandBuffer* buf, u
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbDrawIndexMultiInstancedGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbDrawIndexMultiInstancedGetSize() {
 	PRINT_NAME();
 
 	return 9u * 4u;
 }
 
-int KYTY_SYSV_ABI GraphicsUnknownIkfdtRIqCE(uint32_t* cmd, uint64_t arg1,
-                                            const volatile uint32_t* target,
-                                            uint32_t size_in_dwords, uint64_t arg4, uint64_t arg5) {
+int KYTY_SYSV_ABI AgcUnknownIkfdtRIqCE(uint32_t* cmd, uint64_t arg1,
+                                       const volatile uint32_t* target, uint32_t size_in_dwords,
+                                       uint64_t arg4, uint64_t arg5) {
 	PRINT_NAME();
 
 	LOGF("\t cmd            = 0x%016" PRIx64 "\n"
@@ -2576,8 +2749,8 @@ int KYTY_SYSV_ABI GraphicsUnknownIkfdtRIqCE(uint32_t* cmd, uint64_t arg1,
 	return OK;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexAuto(CommandBuffer* buf, uint32_t index_count,
-                                                 uint64_t modifier) {
+uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexAuto(CommandBuffer* buf, uint32_t index_count,
+                                            uint64_t modifier) {
 	PRINT_NAME();
 
 	LOGF("\t index_count = 0x%" PRIx32 "\n"
@@ -2599,14 +2772,14 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexAuto(CommandBuffer* buf, uint32_t in
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbDrawIndexAutoGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbDrawIndexAutoGetSize() {
 	PRINT_NAME();
 
 	return 3u * 4u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexOffset(CommandBuffer* buf, uint32_t index_offset,
-                                                   uint32_t index_count, uint64_t modifier) {
+uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexOffset(CommandBuffer* buf, uint32_t index_offset,
+                                              uint32_t index_count, uint64_t modifier) {
 	PRINT_NAME();
 
 	LOGF("\t index_offset = 0x%" PRIx32 "\n"
@@ -2631,14 +2804,14 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexOffset(CommandBuffer* buf, uint32_t 
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbDrawIndexOffsetGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbDrawIndexOffsetGetSize() {
 	PRINT_NAME();
 
 	return 5u * 4u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetBaseIndirectArgs(CommandBuffer* buf, uint32_t shader_type,
-                                                       const volatile void* indirect_base_addr) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetBaseIndirectArgs(CommandBuffer* buf, uint32_t shader_type,
+                                                  const volatile void* indirect_base_addr) {
 	PRINT_NAME();
 
 	LOGF("\t shader_type        = %" PRIu32 "\n"
@@ -2663,9 +2836,8 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetBaseIndirectArgs(CommandBuffer* buf, uint3
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexIndirect(CommandBuffer* buf,
-                                                     uint32_t       data_offset_in_bytes,
-                                                     uint64_t       modifier) {
+uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexIndirect(CommandBuffer* buf, uint32_t data_offset_in_bytes,
+                                                uint64_t modifier) {
 	PRINT_NAME();
 
 	LOGF("\t data_offset = 0x%" PRIx32 "\n"
@@ -2691,8 +2863,8 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexIndirect(CommandBuffer* buf,
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndirect(CommandBuffer* buf, uint32_t data_offset_in_bytes,
-                                                uint64_t modifier) {
+uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndirect(CommandBuffer* buf, uint32_t data_offset_in_bytes,
+                                           uint64_t modifier) {
 	PRINT_NAME();
 
 	LOGF("\t data_offset = 0x%" PRIx32 "\n"
@@ -2718,10 +2890,75 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndirect(CommandBuffer* buf, uint32_t dat
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexIndirectMulti(
-    CommandBuffer* buf, uint32_t data_offset_in_bytes, uint32_t count_indirect,
-    uint32_t max_count_or_count, const volatile void* count_addr, uint32_t stride_in_bytes,
-    uint64_t modifier) {
+uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndirectMulti(CommandBuffer*       buf,
+                                                uint32_t             data_offset_in_bytes,
+                                                uint32_t             count_indirect,
+                                                uint32_t             max_count_or_count,
+                                                const volatile void* count_addr,
+                                                uint32_t stride_in_bytes, uint64_t modifier) {
+	PRINT_NAME();
+
+	LOGF("\t data_offset        = 0x%" PRIx32 "\n"
+	     "\t count_indirect     = 0x%" PRIx32 "\n"
+	     "\t max_count_or_count = 0x%" PRIx32 "\n"
+	     "\t count_addr         = 0x%016" PRIx64 "\n"
+	     "\t stride_in_bytes    = 0x%" PRIx32 "\n"
+	     "\t modifier           = 0x%016" PRIx64 "\n",
+	     data_offset_in_bytes, count_indirect, max_count_or_count,
+	     reinterpret_cast<uint64_t>(count_addr), stride_in_bytes, modifier);
+
+	if (buf == nullptr) {
+		return nullptr;
+	}
+
+	buf->DbgDump();
+
+	constexpr uint32_t draw_packet_size_dw = 10u;
+	constexpr uint32_t total_size_dw =
+	    AGC_INTERNAL_DATA_PACKET_SIZE_DW + draw_packet_size_dw +
+	    AGC_INTERNAL_DATA_PACKET_SIZE_DW;
+	auto* cmd = buf->AllocateDW(total_size_dw);
+	if (cmd == nullptr) {
+		return nullptr;
+	}
+
+	write_agc_internal_data_packet(cmd, AGC_DRAW_INDIRECT_MULTI_BEGIN_TAG);
+	auto* draw = cmd + AGC_INTERNAL_DATA_PACKET_SIZE_DW;
+	auto* end  = draw + draw_packet_size_dw;
+	write_agc_internal_data_packet(end, AGC_DRAW_INDIRECT_MULTI_END_TAG);
+
+	const auto low           = static_cast<uint32_t>(modifier);
+	const auto sgpr_base     = indirect_modifier_sgpr_base(low);
+	const auto patch_offsets = decode_indirect_modifier_patch_offsets(modifier, false);
+	const auto count_vaddr   = reinterpret_cast<uint64_t>(count_addr);
+
+	uint32_t draw_index_location = 0x280u;
+	if ((low & 0x8u) != 0) {
+		draw_index_location = sgpr_base + extract_modifier_bits(low, 24u, 5u);
+	}
+	const auto draw_control = draw_index_location | ((low & 0x10u) << 23u) |
+	                          ((count_indirect & 0x1u) << 30u) | ((low & 0x8u) << 28u);
+
+	draw[0] = KYTY_PM4(draw_packet_size_dw, Pm4::IT_DRAW_INDIRECT_MULTI, 0u);
+	draw[1] = data_offset_in_bytes;
+	draw[2] = static_cast<uint32_t>(patch_offsets);
+	draw[3] = static_cast<uint32_t>(patch_offsets >> 32u);
+	draw[4] = draw_control;
+	draw[5] = max_count_or_count;
+	draw[6] = static_cast<uint32_t>(count_vaddr) & ~0x3u;
+	draw[7] = static_cast<uint32_t>(count_vaddr >> 32u);
+	draw[8] = stride_in_bytes;
+	draw[9] = decode_indirect_draw_initiator(modifier);
+
+	return cmd;
+}
+
+uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexIndirectMulti(CommandBuffer*       buf,
+                                                     uint32_t             data_offset_in_bytes,
+                                                     uint32_t             count_indirect,
+                                                     uint32_t             max_count_or_count,
+                                                     const volatile void* count_addr,
+                                                     uint32_t stride_in_bytes, uint64_t modifier) {
 	PRINT_NAME();
 
 	LOGF("\t data_offset        = 0x%" PRIx32 "\n"
@@ -2759,14 +2996,14 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbDrawIndexIndirectMulti(
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbDrawIndirectGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbDrawIndirectGetSize() {
 	PRINT_NAME();
 
 	return 5u * 4u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbDispatchIndirect(CommandBuffer* buf,
-                                                    uint32_t data_offset_in_bytes, uint32_t flags) {
+uint32_t* KYTY_SYSV_ABI AgcDcbDispatchIndirect(CommandBuffer* buf, uint32_t data_offset_in_bytes,
+                                               uint32_t flags) {
 	PRINT_NAME();
 
 	LOGF("\t data_offset = 0x%" PRIx32 "\n"
@@ -2788,14 +3025,14 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbDispatchIndirect(CommandBuffer* buf,
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbDispatchIndirectGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbDispatchIndirectGetSize() {
 	PRINT_NAME();
 
 	return 3u * 4u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbEventWrite(CommandBuffer* buf, uint8_t event_type,
-                                              const volatile void* address) {
+uint32_t* KYTY_SYSV_ABI AgcDcbEventWrite(CommandBuffer* buf, uint8_t event_type,
+                                         const volatile void* address) {
 	PRINT_NAME();
 
 	static std::atomic<uint32_t> log_count {0};
@@ -2832,14 +3069,33 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbEventWrite(CommandBuffer* buf, uint8_t event_
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbEventWrite(CommandBuffer* buf, uint8_t event_type,
-                                              const volatile void* address) {
-	return GraphicsDcbEventWrite(buf, event_type, address);
+uint64_t KYTY_SYSV_ABI AgcDcbEventWriteGetSize(uint8_t event_type) {
+	PRINT_NAME();
+
+	return (event_type & 0xfeu) == 0x38u ? 16u : 8u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbAcquireMem(CommandBuffer* buf, uint8_t engine, uint32_t cb_db_op,
-                                              uint32_t gcr_cntl, const volatile void* base,
-                                              uint64_t size_bytes, uint32_t poll_cycles) {
+uint32_t* KYTY_SYSV_ABI AgcAcbEventWrite(CommandBuffer* buf, uint8_t event_type,
+                                         const volatile void* /*address*/) {
+	if (buf == nullptr) {
+		return nullptr;
+	}
+
+	auto* cmd = buf->AllocateDW(2);
+
+	if (cmd == nullptr) {
+		return nullptr;
+	}
+
+	cmd[0] = KYTY_PM4(2, Pm4::IT_EVENT_WRITE, 0u);
+	cmd[1] = (static_cast<uint32_t>(event_type) & 0x3fu) | (event_type == 7u ? 0x400u : 0u);
+
+	return cmd;
+}
+
+uint32_t* KYTY_SYSV_ABI AgcDcbAcquireMem(CommandBuffer* buf, uint8_t engine, uint32_t cb_db_op,
+                                         uint32_t gcr_cntl, const volatile void* base,
+                                         uint64_t size_bytes, uint32_t poll_cycles) {
 	PRINT_NAME();
 
 	static std::atomic<uint32_t> log_count {0};
@@ -2907,26 +3163,26 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbAcquireMem(CommandBuffer* buf, uint8_t engine
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbAcquireMemGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbAcquireMemGetSize() {
 	PRINT_NAME();
 
 	return 8u * 4u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbAcquireMem(CommandBuffer* buf, uint32_t gcr_cntl,
-                                              const volatile void* base, uint64_t size_bytes,
-                                              uint32_t poll_cycles) {
-	return GraphicsDcbAcquireMem(buf, 1, 0, gcr_cntl, base, size_bytes, poll_cycles);
+uint32_t* KYTY_SYSV_ABI AgcAcbAcquireMem(CommandBuffer* buf, uint32_t gcr_cntl,
+                                         const volatile void* base, uint64_t size_bytes,
+                                         uint32_t poll_cycles) {
+	return AgcDcbAcquireMem(buf, 1, 0, gcr_cntl, base, size_bytes, poll_cycles);
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsAcbAcquireMemGetSize() {
+uint32_t KYTY_SYSV_ABI AgcAcbAcquireMemGetSize() {
 	PRINT_NAME();
 
-	return GraphicsDcbAcquireMemGetSize();
+	return AgcDcbAcquireMemGetSize();
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbCondExec(CommandBuffer* buf, const volatile uint32_t* address,
-                                            uint32_t num_dwords) {
+uint32_t* KYTY_SYSV_ABI AgcDcbCondExec(CommandBuffer* buf, const volatile uint32_t* address,
+                                       uint32_t num_dwords) {
 	PRINT_NAME();
 
 	LOGF("\t address    = 0x%016" PRIx64 "\n"
@@ -2966,59 +3222,108 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbCondExec(CommandBuffer* buf, const volatile u
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbCondExecGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbCondExecGetSize() {
 	PRINT_NAME();
 
 	return 20;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbCondExec(CommandBuffer* buf, const volatile uint32_t* address,
-                                            uint32_t num_dwords) {
-	return GraphicsDcbCondExec(buf, address, num_dwords);
+uint32_t* KYTY_SYSV_ABI AgcAcbCondExec(CommandBuffer* buf, const volatile uint32_t* address,
+                                       uint32_t num_dwords) {
+	return AgcDcbCondExec(buf, address, num_dwords);
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsAcbCondExecGetSize() {
+uint32_t KYTY_SYSV_ABI AgcAcbCondExecGetSize() {
 	PRINT_NAME();
 
-	return GraphicsDcbCondExecGetSize();
+	return AgcDcbCondExecGetSize();
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsAcbJumpGetSize() {
+uint32_t KYTY_SYSV_ABI AgcAcbJumpGetSize() {
 	return 0x10u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbWaitRegMem(CommandBuffer* buf, uint8_t size,
-                                              uint8_t compare_function, uint8_t cache_policy,
-                                              const volatile void* address, uint64_t reference,
-                                              uint64_t mask, uint32_t poll_cycles) {
-	return GraphicsDcbWaitRegMem(buf, size, compare_function, 0, cache_policy, address, reference,
-	                             mask, poll_cycles);
+uint32_t* KYTY_SYSV_ABI AgcAcbWaitRegMem(CommandBuffer* buf, uint8_t size, uint8_t compare_function,
+                                         uint8_t cache_policy, const volatile void* address,
+                                         uint64_t reference, uint64_t mask, uint32_t poll_cycles) {
+	return AgcDcbWaitRegMem(buf, size, compare_function, 0, cache_policy, address, reference, mask,
+	                        poll_cycles);
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbDmaData(CommandBuffer* buf, uint8_t engine, uint8_t dst,
-                                           uint8_t dst_cache_policy, uint64_t dst_address_or_offset,
-                                           uint8_t src, uint8_t src_cache_policy,
-                                           uint64_t src_address_or_offset_or_immediate,
-                                           uint32_t num_bytes, uint8_t wait_for_previous,
-                                           uint8_t write_confirm, uint8_t block_engine) {
-	return GraphicsDcbDmaData(buf, engine, dst, dst_cache_policy, dst_address_or_offset, src,
-	                          src_cache_policy, src_address_or_offset_or_immediate, num_bytes,
-	                          wait_for_previous, write_confirm, block_engine);
+uint32_t* KYTY_SYSV_ABI AgcAcbDmaData(CommandBuffer* buf, uint8_t dst, uint8_t dst_cache_policy,
+                                      uint64_t dst_address_or_offset, uint8_t src,
+                                      uint8_t  src_cache_policy,
+                                      uint64_t src_address_or_offset_or_immediate,
+                                      uint32_t num_bytes, uint8_t wait_for_previous,
+                                      uint8_t write_confirm) {
+	if (buf == nullptr) {
+		return nullptr;
+	}
+
+	auto src_address = src_address_or_offset_or_immediate;
+	switch (src) {
+		case 0x14: src_address = 0x30174u; break;
+		case 0x24: src_address = 0x3017cu; break;
+		case 0x25: src_address = 0x30184u; break;
+		default: break;
+	}
+
+	auto* cmd = buf->AllocateDW(7);
+
+	if (cmd == nullptr) {
+		return nullptr;
+	}
+
+	cmd[0] = KYTY_PM4(7, Pm4::IT_DMA_DATA, 0u);
+	cmd[1] = ((static_cast<uint32_t>(src_cache_policy) & 0x3u) << 13u) |
+	         ((static_cast<uint32_t>(dst) & 0x3u) << 20u) |
+	         ((static_cast<uint32_t>(dst_cache_policy) & 0x3u) << 25u) |
+	         ((static_cast<uint32_t>(src) & 0x3u) << 29u);
+	cmd[2] = static_cast<uint32_t>(src_address & 0xffffffffu);
+	cmd[3] = static_cast<uint32_t>((src_address >> 32u) & 0xffffffffu);
+	cmd[4] = static_cast<uint32_t>(dst_address_or_offset & 0xffffffffu);
+	cmd[5] = static_cast<uint32_t>((dst_address_or_offset >> 32u) & 0xffffffffu);
+	cmd[6] = (num_bytes & 0x03ffffffu) | ((static_cast<uint32_t>(src) & 0x4u) << 24u) |
+	         ((static_cast<uint32_t>(dst) & 0x4u) << 25u) |
+	         ((static_cast<uint32_t>(src) & 0x8u) << 25u) |
+	         ((static_cast<uint32_t>(dst) & 0x8u) << 26u) |
+	         ((static_cast<uint32_t>(wait_for_previous) & 0x1u) << 30u) |
+	         ((static_cast<uint32_t>(write_confirm) & 0x1u) << 31u);
+
+	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbCopyData(CommandBuffer* buf, uint8_t dst,
-                                            uint8_t dst_cache_policy, uint64_t dst_address,
-                                            uint8_t src, uint8_t src_cache_policy,
-                                            uint64_t src_address_or_immediate, uint8_t item_size,
-                                            uint8_t write_confirm) {
-	const auto dcb_src = (src == 5 ? static_cast<uint8_t>(5u << 1u) : src);
-	return GraphicsDcbCopyData(buf, dst, dst_cache_policy, dst_address, dcb_src, src_cache_policy,
-	                           src_address_or_immediate, item_size, write_confirm);
+uint32_t* KYTY_SYSV_ABI AgcAcbCopyData(CommandBuffer* buf, uint8_t dst, uint8_t dst_cache_policy,
+                                       uint64_t dst_address, uint8_t src, uint8_t src_cache_policy,
+                                       uint64_t src_address_or_immediate, uint8_t item_size,
+                                       uint8_t write_confirm) {
+	if (buf == nullptr) {
+		return nullptr;
+	}
+
+	auto* cmd = buf->AllocateDW(6);
+
+	if (cmd == nullptr) {
+		return nullptr;
+	}
+
+	cmd[0] = KYTY_PM4(6, Pm4::IT_COPY_DATA, 0u);
+	cmd[1] = (static_cast<uint32_t>(src) & 0xfu) | ((static_cast<uint32_t>(dst) & 0xfu) << 8u) |
+	         ((static_cast<uint32_t>(src_cache_policy) & 0x3u) << 13u) |
+	         ((static_cast<uint32_t>(item_size) & 0x1u) << 16u) |
+	         ((static_cast<uint32_t>(write_confirm) & 0x1u) << 20u) |
+	         ((static_cast<uint32_t>(dst_cache_policy) & 0x3u) << 25u);
+	cmd[2] = static_cast<uint32_t>(src_address_or_immediate & 0xffffffffu);
+	cmd[3] = static_cast<uint32_t>((src_address_or_immediate >> 32u) & 0xffffffffu);
+	cmd[4] = static_cast<uint32_t>(dst_address & 0xffffffffu);
+	cmd[5] = static_cast<uint32_t>((dst_address >> 32u) & 0xffffffffu);
+
+	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbDispatchIndirect(CommandBuffer*       buf,
-                                                    const volatile void* indirect_args,
-                                                    uint32_t             modifier) {
+uint32_t* KYTY_SYSV_ABI AgcAcbDispatchIndirect(CommandBuffer*       buf,
+                                               const volatile void* indirect_args,
+                                               uint32_t             modifier) {
 	PRINT_NAME();
 
 	LOGF("\t indirect_args = 0x%016" PRIx64 "\n"
@@ -3047,15 +3352,34 @@ uint32_t* KYTY_SYSV_ABI GraphicsAcbDispatchIndirect(CommandBuffer*       buf,
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbWriteData(CommandBuffer* buf, uint8_t dst, uint8_t cache_policy,
-                                             uint64_t address_or_offset, const void* data,
-                                             uint32_t num_dwords, uint8_t increment,
-                                             uint8_t write_confirm) {
-	return GraphicsDcbWriteData(buf, dst, cache_policy, address_or_offset, data, num_dwords,
-	                            increment, write_confirm);
+uint32_t* KYTY_SYSV_ABI AgcAcbWriteData(CommandBuffer* buf, uint8_t dst, uint8_t cache_policy,
+                                        uint64_t address_or_offset, const void* data,
+                                        uint32_t num_dwords, uint8_t increment,
+                                        uint8_t write_confirm) {
+	if (buf == nullptr || data == nullptr || num_dwords == 0u || num_dwords > 0x3ffdu) {
+		return nullptr;
+	}
+
+	auto* cmd = buf->AllocateDW(4u + num_dwords);
+
+	if (cmd == nullptr) {
+		return nullptr;
+	}
+
+	cmd[0] = KYTY_PM4(4u + num_dwords, Pm4::IT_WRITE_DATA, 0u);
+	cmd[1] = ((static_cast<uint32_t>(dst) & 0xfu) << 8u) |
+	         ((static_cast<uint32_t>(increment) & 0x1u) << 16u) |
+	         ((dst == 0u ? 0u : static_cast<uint32_t>(write_confirm) & 0x1u) << 20u) |
+	         ((static_cast<uint32_t>(cache_policy) & 0x3u) << 25u);
+	cmd[2] = static_cast<uint32_t>(address_or_offset);
+	cmd[3] = static_cast<uint32_t>(address_or_offset >> 32u);
+
+	memcpy(cmd + 4, data, static_cast<size_t>(num_dwords) * 4u);
+
+	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbStallCommandBufferParser(CommandBuffer* buf) {
+uint32_t* KYTY_SYSV_ABI AgcDcbStallCommandBufferParser(CommandBuffer* buf) {
 	PRINT_NAME();
 
 	EXIT_NOT_IMPLEMENTED(buf == nullptr);
@@ -3072,11 +3396,10 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbStallCommandBufferParser(CommandBuffer* buf) 
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbCopyData(CommandBuffer* buf, uint8_t dst,
-                                            uint8_t dst_cache_policy, uint64_t dst_address,
-                                            uint8_t src, uint8_t src_cache_policy,
-                                            uint64_t src_address_or_immediate, uint8_t item_size,
-                                            uint8_t write_confirm) {
+uint32_t* KYTY_SYSV_ABI AgcDcbCopyData(CommandBuffer* buf, uint8_t dst, uint8_t dst_cache_policy,
+                                       uint64_t dst_address, uint8_t src, uint8_t src_cache_policy,
+                                       uint64_t src_address_or_immediate, uint8_t item_size,
+                                       uint8_t write_confirm) {
 	PRINT_NAME();
 
 	LOGF("\t dst                      = 0x%02" PRIx8 "\n"
@@ -3116,12 +3439,12 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbCopyData(CommandBuffer* buf, uint8_t dst,
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbDmaData(CommandBuffer* buf, uint8_t engine, uint8_t dst,
-                                           uint8_t dst_cache_policy, uint64_t dst_address_or_offset,
-                                           uint8_t src, uint8_t src_cache_policy,
-                                           uint64_t src_address_or_offset_or_immediate,
-                                           uint32_t num_bytes, uint8_t wait_for_previous,
-                                           uint8_t write_confirm, uint8_t block_engine) {
+uint32_t* KYTY_SYSV_ABI AgcDcbDmaData(CommandBuffer* buf, uint8_t engine, uint8_t dst,
+                                      uint8_t dst_cache_policy, uint64_t dst_address_or_offset,
+                                      uint8_t src, uint8_t src_cache_policy,
+                                      uint64_t src_address_or_offset_or_immediate,
+                                      uint32_t num_bytes, uint8_t wait_for_previous,
+                                      uint8_t write_confirm, uint8_t block_engine) {
 	if (buf == nullptr) {
 		return nullptr;
 	}
@@ -3161,8 +3484,8 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbDmaData(CommandBuffer* buf, uint8_t engine, u
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbJump(CommandBuffer* buf, uint8_t mode, uint8_t cache_policy,
-                                        const uint32_t* target, uint32_t size_in_dwords) {
+uint32_t* KYTY_SYSV_ABI AgcDcbJump(CommandBuffer* buf, uint8_t mode, uint8_t cache_policy,
+                                   const uint32_t* target, uint32_t size_in_dwords) {
 	PRINT_NAME();
 
 	LOGF("\t mode           = 0x%02" PRIx8 "\n"
@@ -3192,19 +3515,19 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbJump(CommandBuffer* buf, uint8_t mode, uint8_
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbJumpGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbJumpGetSize() {
 	PRINT_NAME();
 
 	return 16;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbRewindGetSize() {
+uint32_t KYTY_SYSV_ABI AgcDcbRewindGetSize() {
 	PRINT_NAME();
 
 	return 8;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbRewind(CommandBuffer* buf, uint32_t initial_state) {
+uint32_t* KYTY_SYSV_ABI AgcDcbRewind(CommandBuffer* buf, uint32_t initial_state) {
 	PRINT_NAME();
 
 	LOGF("\t initial_state = 0x%08" PRIx32 "\n", initial_state);
@@ -3225,9 +3548,9 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbRewind(CommandBuffer* buf, uint32_t initial_s
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetPredication(CommandBuffer* buf, uint8_t condition, uint8_t op,
-                                                  uint8_t wait_op, const volatile void* address,
-                                                  uint32_t count_in_dwords) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetPredication(CommandBuffer* buf, uint8_t condition, uint8_t op,
+                                             uint8_t wait_op, const volatile void* address,
+                                             uint32_t count_in_dwords) {
 	PRINT_NAME();
 
 	LOGF("\t condition       = 0x%02" PRIx8 "\n"
@@ -3261,8 +3584,8 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbSetPredication(CommandBuffer* buf, uint8_t co
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsUnknownKRzWekV120(CommandBuffer* buf, uint32_t arg1, uint32_t arg2,
-                                                  uint32_t arg3) {
+uint32_t* KYTY_SYSV_ABI AgcUnknownKRzWekV120(CommandBuffer* buf, uint32_t arg1, uint32_t arg2,
+                                             uint32_t arg3) {
 	PRINT_NAME();
 
 	LOGF("\t argc = 4\n"
@@ -3295,8 +3618,8 @@ uint32_t* KYTY_SYSV_ABI GraphicsUnknownKRzWekV120(CommandBuffer* buf, uint32_t a
 	return cmd;
 }
 
-int KYTY_SYSV_ABI GraphicsDmaDataPatchSetDstAddressOrOffset(uint32_t* cmd,
-                                                            uint64_t  dst_address_or_offset) {
+int KYTY_SYSV_ABI AgcDmaDataPatchSetDstAddressOrOffset(uint32_t* cmd,
+                                                       uint64_t  dst_address_or_offset) {
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
 	auto op = (cmd[0] >> 8u) & 0xffu;
@@ -3309,7 +3632,7 @@ int KYTY_SYSV_ABI GraphicsDmaDataPatchSetDstAddressOrOffset(uint32_t* cmd,
 	return GRAPHICS5_ERROR_INVALID_PACKET;
 }
 
-int KYTY_SYSV_ABI GraphicsDmaDataPatchSetSrcAddressOrOffsetOrImmediate(
+int KYTY_SYSV_ABI AgcDmaDataPatchSetSrcAddressOrOffsetOrImmediate(
     uint32_t* cmd, uint64_t src_address_or_offset_or_immediate) {
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
@@ -3323,7 +3646,7 @@ int KYTY_SYSV_ABI GraphicsDmaDataPatchSetSrcAddressOrOffsetOrImmediate(
 	return GRAPHICS5_ERROR_INVALID_PACKET;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsGetPacketSize(uint32_t* packet) {
+uint32_t KYTY_SYSV_ABI AgcGetPacketSize(uint32_t* packet) {
 	const auto cmd_id = packet[0];
 	if ((cmd_id & 0x3fffff00u) == 0x3fff1000u) {
 		return 1;
@@ -3332,7 +3655,7 @@ uint32_t KYTY_SYSV_ABI GraphicsGetPacketSize(uint32_t* packet) {
 	return KYTY_PM4_LEN(cmd_id);
 }
 
-int KYTY_SYSV_ABI GraphicsSetPacketPredication(uint32_t* packet, uint32_t predication) {
+int KYTY_SYSV_ABI AgcSetPacketPredication(uint32_t* packet, uint32_t predication) {
 	PRINT_NAME();
 
 	LOGF("\t packet      = 0x%016" PRIx64 "\n"
@@ -3341,16 +3664,15 @@ int KYTY_SYSV_ABI GraphicsSetPacketPredication(uint32_t* packet, uint32_t predic
 
 	LOGF("\t packet0     = 0x%08" PRIx32 ", op = 0x%02" PRIx32 ", r = 0x%02" PRIx32
 	     ", len = %" PRIu32 "\n",
-	     packet[0], (packet[0] >> 8u) & 0xffu, KYTY_PM4_R(packet[0]),
-	     GraphicsGetPacketSize(packet));
+	     packet[0], (packet[0] >> 8u) & 0xffu, KYTY_PM4_R(packet[0]), AgcGetPacketSize(packet));
 
 	packet[0] = (packet[0] & ~1u) | (static_cast<uint8_t>(predication) == 1 ? 1u : 0u);
 
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsSetRangePredication(uint32_t* start, const volatile uint32_t* end,
-                                              uint32_t predication) {
+int KYTY_SYSV_ABI AgcSetRangePredication(uint32_t* start, const volatile uint32_t* end,
+                                         uint32_t predication) {
 	PRINT_NAME();
 
 	LOGF("\t start       = 0x%016" PRIx64 "\n"
@@ -3384,7 +3706,7 @@ int KYTY_SYSV_ABI GraphicsSetRangePredication(uint32_t* start, const volatile ui
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsRewindPatchSetRewindState(uint32_t* cmd, uint8_t state) {
+int KYTY_SYSV_ABI AgcRewindPatchSetRewindState(uint32_t* cmd, uint8_t state) {
 	if (((cmd[0] >> 8u) & 0xffu) != Pm4::IT_REWIND) {
 		return GRAPHICS5_ERROR_INVALID_PACKET;
 	}
@@ -3393,7 +3715,7 @@ int KYTY_SYSV_ABI GraphicsRewindPatchSetRewindState(uint32_t* cmd, uint8_t state
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsCondExecPatchSetEnd(uint32_t* cmd, const volatile uint32_t* buffer) {
+int KYTY_SYSV_ABI AgcCondExecPatchSetEnd(uint32_t* cmd, const volatile uint32_t* buffer) {
 	PRINT_NAME();
 
 	LOGF("\t cmd    = 0x%016" PRIx64 "\n"
@@ -3424,8 +3746,8 @@ int KYTY_SYSV_ABI GraphicsCondExecPatchSetEnd(uint32_t* cmd, const volatile uint
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsCondExecPatchSetCommandAddress(uint32_t*                cmd,
-                                                         const volatile uint32_t* command) {
+int KYTY_SYSV_ABI AgcCondExecPatchSetCommandAddress(uint32_t*                cmd,
+                                                    const volatile uint32_t* command) {
 	PRINT_NAME();
 
 	LOGF("\t cmd     = 0x%016" PRIx64 "\n"
@@ -3448,10 +3770,10 @@ int KYTY_SYSV_ABI GraphicsCondExecPatchSetCommandAddress(uint32_t*              
 	return OK;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbWriteData(CommandBuffer* buf, uint8_t dst, uint8_t cache_policy,
-                                             uint64_t address_or_offset, const void* data,
-                                             uint32_t num_dwords, uint8_t increment,
-                                             uint8_t write_confirm) {
+uint32_t* KYTY_SYSV_ABI AgcDcbWriteData(CommandBuffer* buf, uint8_t dst, uint8_t cache_policy,
+                                        uint64_t address_or_offset, const void* data,
+                                        uint32_t num_dwords, uint8_t increment,
+                                        uint8_t write_confirm) {
 	PRINT_NAME();
 
 	LOGF("\t dst               = 0x%02" PRIx8 "\n"
@@ -3498,7 +3820,7 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbWriteData(CommandBuffer* buf, uint8_t dst, ui
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbWriteDataGetSize(uint32_t num_dwords) {
+uint32_t KYTY_SYSV_ABI AgcDcbWriteDataGetSize(uint32_t num_dwords) {
 	PRINT_NAME();
 
 	LOGF("\t num_dwords = %" PRIu32 "\n", num_dwords);
@@ -3506,11 +3828,11 @@ uint32_t KYTY_SYSV_ABI GraphicsDcbWriteDataGetSize(uint32_t num_dwords) {
 	return 4u * num_dwords + 16u;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbGetLodStats(CommandBuffer* buf, uint8_t cache_policy,
-                                               const volatile void* buffer,
-                                               uint32_t buffer_size_in_bytes, uint32_t reset_count,
-                                               uint8_t force_reset, uint8_t report_and_reset,
-                                               uint32_t reporting_interval_in_100k_clocks) {
+uint32_t* KYTY_SYSV_ABI AgcDcbGetLodStats(CommandBuffer* buf, uint8_t cache_policy,
+                                          const volatile void* buffer,
+                                          uint32_t buffer_size_in_bytes, uint32_t reset_count,
+                                          uint8_t force_reset, uint8_t report_and_reset,
+                                          uint32_t reporting_interval_in_100k_clocks) {
 	PRINT_NAME();
 
 	LOGF("\t cache_policy                      = 0x%02" PRIx8 "\n"
@@ -3549,56 +3871,70 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbGetLodStats(CommandBuffer* buf, uint8_t cache
 	return cmd;
 }
 
-int KYTY_SYSV_ABI GraphicsWaitRegMemPatchAddress(uint32_t* cmd, const volatile void* address) {
+static uint32_t* get_agc_wait_packet(uint32_t* cmd) {
+	if (cmd == nullptr || KYTY_PM4_LEN(cmd[0]) != AGC_WAIT_USER_DATA_BEGIN_DW ||
+	    !AgcIsInternalDataPacket(cmd[0], cmd + 1)) {
+		return nullptr;
+	}
+
+	auto*      wait = cmd + AGC_WAIT_USER_DATA_BEGIN_DW;
+	const auto op   = (wait[0] >> 8u) & 0xffu;
+	const auto len  = KYTY_PM4_LEN(wait[0]);
+	const auto tag  = cmd[2] & 0xffff0000u;
+	if (KYTY_PM4_R(wait[0]) != 0u ||
+	    !((op == Pm4::IT_WAIT_REG_MEM && len == 7u && tag == AGC_WAIT_USER_DATA_BEGIN_32_TAG) ||
+	      (op == Pm4::IT_WAIT_REG_MEM_64 && len == 9u &&
+	       tag == AGC_WAIT_USER_DATA_BEGIN_64_TAG))) {
+		return nullptr;
+	}
+
+	return wait;
+}
+
+int KYTY_SYSV_ABI AgcWaitRegMemPatchAddress(uint32_t* cmd, const volatile void* address) {
 	PRINT_NAME();
 
 	LOGF("\t cmd     = 0x%016" PRIx64 "\n"
 	     "\t address = 0x%016" PRIx64 "\n",
 	     reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(address));
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
-
-	auto vaddr = reinterpret_cast<uint64_t>(address);
-	auto op    = (cmd[0] >> 8u) & 0xffu;
-
-	if (op == Pm4::IT_NOP && KYTY_PM4_R(cmd[0]) == Pm4::R_WAIT_MEM_32) {
-		cmd[1] = static_cast<uint32_t>(vaddr) & ~0x3u;
-		cmd[2] = static_cast<uint32_t>(vaddr >> 32u) & 0x3ffffu;
-	} else if (op == Pm4::IT_NOP && KYTY_PM4_R(cmd[0]) == Pm4::R_WAIT_MEM_64) {
-		cmd[1] = static_cast<uint32_t>(vaddr) & ~0x7u;
-		cmd[2] = static_cast<uint32_t>(vaddr >> 32u) & 0x3ffffu;
-	} else {
-		EXIT("unsupported waitOnAddress packet for address patch: 0x%08" PRIx32 "\n", cmd[0]);
+	auto* wait = get_agc_wait_packet(cmd);
+	if (wait == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
 	}
+
+	const auto vaddr = reinterpret_cast<uint64_t>(address);
+	const auto op    = (wait[0] >> 8u) & 0xffu;
+	const auto align_mask = (op == Pm4::IT_WAIT_REG_MEM ? 0x3u : 0x7u);
+	cmd[2]           = (cmd[2] & 0xffff0000u) | static_cast<uint32_t>((vaddr >> 32u) & 0xffffu);
+	cmd[3]           = static_cast<uint32_t>(vaddr);
+	wait[2]          = (wait[2] & align_mask) | (static_cast<uint32_t>(vaddr) & ~align_mask);
+	wait[3]          = (wait[3] & 0xfffc0000u) |
+	          (static_cast<uint32_t>(vaddr >> 32u) & 0x3ffffu);
 
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsWaitRegMemPatchReference(uint32_t* cmd, uint64_t reference) {
+int KYTY_SYSV_ABI AgcWaitRegMemPatchReference(uint32_t* cmd, uint64_t reference) {
 	PRINT_NAME();
 
 	LOGF("\t cmd       = 0x%016" PRIx64 "\n"
 	     "\t reference = 0x%016" PRIx64 "\n",
 	     reinterpret_cast<uint64_t>(cmd), reference);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
-
-	auto op = (cmd[0] >> 8u) & 0xffu;
-
-	if (op == Pm4::IT_NOP && KYTY_PM4_R(cmd[0]) == Pm4::R_WAIT_MEM_32) {
-		cmd[4] = static_cast<uint32_t>(reference & 0xffffffffu);
-	} else if (op == Pm4::IT_NOP && KYTY_PM4_R(cmd[0]) == Pm4::R_WAIT_MEM_64) {
-		cmd[5] = static_cast<uint32_t>(reference & 0xffffffffu);
-		cmd[6] = static_cast<uint32_t>((reference >> 32u) & 0xffffffffu);
-	} else {
-		EXIT("unsupported waitOnAddress packet for reference patch: 0x%08" PRIx32 "\n", cmd[0]);
+	auto* wait = get_agc_wait_packet(cmd);
+	if (wait == nullptr) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
 	}
+
+	// The native patch helper changes only the low reference DWORD for both packet sizes.
+	wait[4] = static_cast<uint32_t>(reference);
 
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsQueueEndOfPipeActionPatchAddress(uint32_t*             cmd,
-                                                           const volatile Label* address) {
+int KYTY_SYSV_ABI AgcQueueEndOfPipeActionPatchAddress(uint32_t*             cmd,
+                                                      const volatile Label* address) {
 	PRINT_NAME();
 
 	// Not sure
@@ -3627,39 +3963,27 @@ int KYTY_SYSV_ABI GraphicsQueueEndOfPipeActionPatchAddress(uint32_t*            
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsQueueEndOfPipeActionPatchData(uint32_t* cmd, uint32_t context_id,
-                                                        uint32_t data_sel, uint64_t data) {
+int KYTY_SYSV_ABI AgcQueueEndOfPipeActionPatchData(uint32_t* cmd, uint64_t data) {
 	PRINT_NAME();
 
-	LOGF("\t cmd        = 0x%016" PRIx64 "\n"
-	     "\t context_id = 0x%08" PRIx32 "\n"
-	     "\t data_sel   = 0x%08" PRIx32 "\n"
-	     "\t data       = 0x%016" PRIx64 "\n",
-	     reinterpret_cast<uint64_t>(cmd), context_id, data_sel, data);
+	LOGF("\t cmd  = 0x%016" PRIx64 "\n"
+	     "\t data = 0x%016" PRIx64 "\n",
+	     reinterpret_cast<uint64_t>(cmd), data);
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
 
-	auto op = (cmd[0] >> 8u) & 0xffu;
+	const auto op             = (cmd[0] >> 8u) & 0xffu;
+	const bool is_release_mem = op == Pm4::IT_RELEASE_MEM ||
+	                            (op == Pm4::IT_NOP && KYTY_PM4_R(cmd[0]) == Pm4::R_RELEASE_MEM);
+	if (!is_release_mem) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
 
-	if ((op == Pm4::IT_NOP && KYTY_PM4_R(cmd[0]) == Pm4::R_RELEASE_MEM) ||
-	    op == Pm4::IT_RELEASE_MEM) {
-		uint64_t packet_data = data;
-		if (op == Pm4::IT_NOP && KYTY_PM4_R(cmd[0]) == Pm4::R_RELEASE_MEM && context_id > 1 &&
-		    data_sel == 1) {
-			// Agc Core ring-buffer release packets pack the segment generation
-			// into bits 24..31 and wrap that byte every 256 submissions. The
-			// patch context carries the monotonic generation, so expand the
-			// packed value before it reaches the command processor.
-			packet_data = (static_cast<uint64_t>(context_id - 2u) << 24u) | (data & 0x00ffffffull);
-		}
-
-		cmd[5] = static_cast<uint32_t>(packet_data & 0xffffffffu);
-		cmd[6] = static_cast<uint32_t>((packet_data >> 32u) & 0xffffffffu);
-	} else if (op == Pm4::IT_EVENT_WRITE_EOP) {
-		cmd[4] = static_cast<uint32_t>(data & 0xffffffffu);
-		cmd[5] = static_cast<uint32_t>((data >> 32u) & 0xffffffffu);
-	} else {
-		EXIT("unsupported queueEndOfPipeAction packet for data patch: 0x%08" PRIx32 "\n", cmd[0]);
+	const auto interrupt = (cmd[2] >> 24u) & 0x7u;
+	const auto data_sel  = (cmd[2] >> 29u) & 0x7u;
+	if (interrupt != 4u && data_sel != 5u) {
+		cmd[5] = static_cast<uint32_t>(data & 0xffffffffu);
+		cmd[6] = static_cast<uint32_t>((data >> 32u) & 0xffffffffu);
 	}
 
 	return OK;
@@ -3681,11 +4005,28 @@ static uint32_t wait_reg_mem64_control(uint8_t compare_function, uint8_t op, uin
 	       ((static_cast<uint32_t>(cache_policy) & 0x3u) << 25u);
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbWaitRegMem(CommandBuffer* buf, uint8_t size,
-                                              uint8_t compare_function, uint8_t op,
-                                              uint8_t cache_policy, const volatile void* address,
-                                              uint64_t reference, uint64_t mask,
-                                              uint32_t poll_cycles) {
+bool AgcIsInternalDataPacket(uint32_t cmd_id, const uint32_t* payload) {
+	if (payload == nullptr || ((cmd_id >> 8u) & 0xffu) != Pm4::IT_SET_UCONFIG_REG ||
+	    KYTY_PM4_R(cmd_id) != 1u || payload[0] != AGC_INTERNAL_DATA_REGISTER) {
+		return false;
+	}
+
+	const auto size_dw = KYTY_PM4_LEN(cmd_id);
+	if (size_dw == AGC_WAIT_USER_DATA_BEGIN_DW) {
+		const auto tag = payload[1] & 0xffff0000u;
+		return tag == AGC_WAIT_USER_DATA_BEGIN_32_TAG || tag == AGC_WAIT_USER_DATA_BEGIN_64_TAG;
+	}
+
+	return size_dw == AGC_INTERNAL_DATA_PACKET_SIZE_DW &&
+	       (payload[1] == AGC_WAIT_USER_DATA_END_TAG ||
+	        payload[1] == AGC_DRAW_INDIRECT_MULTI_BEGIN_TAG ||
+	        payload[1] == AGC_DRAW_INDIRECT_MULTI_END_TAG);
+}
+
+uint32_t* KYTY_SYSV_ABI AgcDcbWaitRegMem(CommandBuffer* buf, uint8_t size, uint8_t compare_function,
+                                         uint8_t op, uint8_t cache_policy,
+                                         const volatile void* address, uint64_t reference,
+                                         uint64_t mask, uint32_t poll_cycles) {
 	PRINT_NAME();
 
 	LOGF("\t size             = 0x%02" PRIx8 "\n"
@@ -3717,39 +4058,52 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbWaitRegMem(CommandBuffer* buf, uint8_t size,
 	auto address_value = reinterpret_cast<uint64_t>(address);
 	bool wait32        = (size == 0);
 	auto poll          = wait_reg_mem_poll_cycles_to_packet(poll_cycles);
+	const auto wait_dw  = wait32 ? 7u : 9u;
+	const auto total_dw =
+	    AGC_WAIT_USER_DATA_BEGIN_DW + wait_dw + AGC_INTERNAL_DATA_PACKET_SIZE_DW;
 
-	auto* cmd = buf->AllocateDW(wait32 ? 7 : 9);
+	auto* cmd = buf->AllocateDW(total_dw);
 
 	if (cmd == nullptr) {
 		return nullptr;
 	}
 
+	cmd[0] = KYTY_PM4(AGC_WAIT_USER_DATA_BEGIN_DW, Pm4::IT_SET_UCONFIG_REG, 1u);
+	cmd[1] = AGC_INTERNAL_DATA_REGISTER;
+	cmd[2] = (wait32 ? AGC_WAIT_USER_DATA_BEGIN_32_TAG : AGC_WAIT_USER_DATA_BEGIN_64_TAG) |
+	         static_cast<uint32_t>((address_value >> 32u) & 0xffffu);
+	cmd[3] = static_cast<uint32_t>(address_value);
+
+	auto* wait = cmd + AGC_WAIT_USER_DATA_BEGIN_DW;
+	auto* end  = wait + wait_dw;
+	write_agc_internal_data_packet(end, AGC_WAIT_USER_DATA_END_TAG);
+
 	if (wait32) {
-		cmd[0] = KYTY_PM4(7, Pm4::IT_NOP, Pm4::R_WAIT_MEM_32);
-		cmd[1] = static_cast<uint32_t>(address_value) & ~0x3u;
-		cmd[2] = static_cast<uint32_t>(address_value >> 32u) & 0x3ffffu;
-		cmd[3] = static_cast<uint32_t>(mask & 0xffffffffu);
-		cmd[4] = static_cast<uint32_t>(reference & 0xffffffffu);
-		cmd[5] = wait_reg_mem32_control(compare_function, op, cache_policy);
-		cmd[6] = poll;
+		wait[0] = KYTY_PM4(7, Pm4::IT_WAIT_REG_MEM, 0u);
+		wait[1] = wait_reg_mem32_control(compare_function, op, cache_policy);
+		wait[2] = static_cast<uint32_t>(address_value) & ~0x3u;
+		wait[3] = static_cast<uint32_t>(address_value >> 32u) & 0x3ffffu;
+		wait[4] = static_cast<uint32_t>(reference);
+		wait[5] = static_cast<uint32_t>(mask);
+		wait[6] = poll;
 
 		return cmd;
 	}
 
-	cmd[0] = KYTY_PM4(9, Pm4::IT_NOP, Pm4::R_WAIT_MEM_64);
-	cmd[1] = static_cast<uint32_t>(address_value) & ~0x7u;
-	cmd[2] = static_cast<uint32_t>(address_value >> 32u) & 0x3ffffu;
-	cmd[3] = static_cast<uint32_t>(reinterpret_cast<uint64_t>(mask) & 0xffffffffu);
-	cmd[4] = static_cast<uint32_t>((reinterpret_cast<uint64_t>(mask) >> 32u) & 0xffffffffu);
-	cmd[5] = static_cast<uint32_t>(reinterpret_cast<uint64_t>(reference) & 0xffffffffu);
-	cmd[6] = static_cast<uint32_t>((reinterpret_cast<uint64_t>(reference) >> 32u) & 0xffffffffu);
-	cmd[7] = wait_reg_mem64_control(compare_function, op, cache_policy);
-	cmd[8] = poll;
+	wait[0] = KYTY_PM4(9, Pm4::IT_WAIT_REG_MEM_64, 0u);
+	wait[1] = wait_reg_mem64_control(compare_function, op, cache_policy);
+	wait[2] = static_cast<uint32_t>(address_value) & ~0x7u;
+	wait[3] = static_cast<uint32_t>(address_value >> 32u) & 0x3ffffu;
+	wait[4] = static_cast<uint32_t>(reference);
+	wait[5] = static_cast<uint32_t>(reference >> 32u);
+	wait[6] = static_cast<uint32_t>(mask);
+	wait[7] = static_cast<uint32_t>(mask >> 32u);
+	wait[8] = poll;
 
 	return cmd;
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDcbWaitOnAddressGetSize(uint32_t size) {
+uint64_t KYTY_SYSV_ABI AgcDcbWaitOnAddressGetSize(uint32_t size) {
 	PRINT_NAME();
 
 	switch (size) {
@@ -3759,8 +4113,7 @@ uint32_t KYTY_SYSV_ABI GraphicsDcbWaitOnAddressGetSize(uint32_t size) {
 	}
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbPushMarker(CommandBuffer* buf, const char* str,
-                                              uint32_t /*color*/) {
+uint32_t* KYTY_SYSV_ABI AgcDcbPushMarker(CommandBuffer* buf, const char* str, uint32_t /*color*/) {
 	if (buf == nullptr) {
 		return nullptr;
 	}
@@ -3785,19 +4138,19 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbPushMarker(CommandBuffer* buf, const char* st
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetMarker(CommandBuffer* buf, const char* str, uint32_t color) {
-	return GraphicsDcbPushMarker(buf, str, color);
+uint32_t* KYTY_SYSV_ABI AgcDcbSetMarker(CommandBuffer* buf, const char* str, uint32_t color) {
+	return AgcDcbPushMarker(buf, str, color);
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbSetMarker(CommandBuffer* buf, const char* str, uint32_t color) {
-	return GraphicsDcbSetMarker(buf, str, color);
+uint32_t* KYTY_SYSV_ABI AgcAcbSetMarker(CommandBuffer* buf, const char* str, uint32_t color) {
+	return AgcDcbSetMarker(buf, str, color);
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbPushMarker(CommandBuffer* buf, const char* str, uint32_t color) {
-	return GraphicsDcbPushMarker(buf, str, color);
+uint32_t* KYTY_SYSV_ABI AgcAcbPushMarker(CommandBuffer* buf, const char* str, uint32_t color) {
+	return AgcDcbPushMarker(buf, str, color);
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbPopMarker(CommandBuffer* buf) {
+uint32_t* KYTY_SYSV_ABI AgcDcbPopMarker(CommandBuffer* buf) {
 	if (buf == nullptr) {
 		return nullptr;
 	}
@@ -3814,13 +4167,13 @@ uint32_t* KYTY_SYSV_ABI GraphicsDcbPopMarker(CommandBuffer* buf) {
 	return cmd;
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsAcbPopMarker(CommandBuffer* buf) {
-	return GraphicsDcbPopMarker(buf);
+uint32_t* KYTY_SYSV_ABI AgcAcbPopMarker(CommandBuffer* buf) {
+	return AgcDcbPopMarker(buf);
 }
 
-uint32_t* KYTY_SYSV_ABI GraphicsDcbSetFlip(CommandBuffer* buf, uint32_t video_out_handle,
-                                           int32_t display_buffer_index, uint32_t flip_mode,
-                                           int64_t flip_arg) {
+uint32_t* KYTY_SYSV_ABI AgcDcbSetFlip(CommandBuffer* buf, uint32_t video_out_handle,
+                                      int32_t display_buffer_index, uint32_t flip_mode,
+                                      int64_t flip_arg) {
 	PRINT_NAME();
 
 	LOGF("\t video_out_handle     = %" PRIu32 "\n"
@@ -3863,63 +4216,29 @@ struct TessellationDriverState {
 
 static TessellationDriverState g_tessellation_driver_state {};
 
-struct Packet {
-	uint32_t* addr;
-	uint32_t  dw_num;
-	uint8_t   pad[4];
-};
-
-static bool dcb_has_queued_interrupt(const uint32_t* dcb, uint32_t size_in_dwords) {
-	if (dcb == nullptr) {
-		return false;
-	}
-
-	for (uint32_t offset = 0; offset < size_in_dwords;) {
-		auto cmd_id = dcb[offset];
-		auto len    = KYTY_PM4_LEN(cmd_id);
-		if (len == 0 || len > size_in_dwords - offset) {
-			return false;
-		}
-
-		auto op = (cmd_id >> 8u) & 0xffu;
-		if (op == Pm4::IT_NOP && KYTY_PM4_R(cmd_id) == Pm4::R_RELEASE_MEM && len >= 6) {
-			auto interrupt = (dcb[offset + 2] >> 24u) & 0x7u;
-			if (interrupt == 1 || interrupt == 2 || interrupt >= 4) {
-				return true;
-			}
-		}
-
-		offset += len;
-	}
-
-	return false;
-}
-
 static void submit_dcb(uint32_t* dcb, uint32_t size_in_dwords) {
 	GraphicsDbgDumpDcb("d", size_in_dwords, dcb);
 	EXIT_IF(g_renderer == nullptr);
-	g_renderer->GetGpu().Submit(dcb, size_in_dwords, nullptr, 0,
-	                            !dcb_has_queued_interrupt(dcb, size_in_dwords));
+	g_renderer->GetGpu().Submit(std::span {dcb, size_in_dwords}, {});
 }
 
-int KYTY_SYSV_ABI GraphicsDriverSubmitDcb(const Packet* packet) {
+int KYTY_SYSV_ABI AgcDriverSubmitDcb(const Packet* packet) {
 	PRINT_NAME();
 
 	EXIT_NOT_IMPLEMENTED(packet == nullptr);
-	EXIT_NOT_IMPLEMENTED(packet->pad[0] != 0);
 
 	LOGF("\t addr   = 0x%016" PRIx64 "\n"
-	     "\t dw_num = 0x%08" PRIx32 "\n",
-	     reinterpret_cast<uint64_t>(packet->addr), packet->dw_num);
+	     "\t dw_num = 0x%08" PRIx32 "\n"
+	     "\t flags  = 0x%02" PRIx8 "\n",
+	     reinterpret_cast<uint64_t>(packet->addr), packet->dw_num, packet->flags);
 
 	submit_dcb(packet->addr, packet->dw_num);
 
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsDriverSubmitMultiDcbs(uint32_t* const* dcb_gpu_addrs,
-                                                const uint32_t*  dcb_sizes_in_dwords,
-                                                uint32_t         count) {
+int KYTY_SYSV_ABI AgcDriverSubmitMultiDcbs(uint32_t* const* dcb_gpu_addrs,
+                                           const uint32_t* dcb_sizes_in_dwords, uint32_t count) {
 	PRINT_NAME();
 
 	LOGF("\t count = %" PRIu32 "\n", count);
@@ -3939,74 +4258,15 @@ int KYTY_SYSV_ABI GraphicsDriverSubmitMultiDcbs(uint32_t* const* dcb_gpu_addrs,
 		     "\t size[%" PRIu32 "] = 0x%08" PRIx32 "\n",
 		     i, reinterpret_cast<uint64_t>(dcb), i, size_in_dwords);
 
-		if (dcb == nullptr) {
-			continue;
+		if (dcb != nullptr) {
+			submit_dcb(dcb, size_in_dwords);
 		}
-		submit_dcb(dcb, size_in_dwords);
-	}
-
-	return OK;
-}
-
-int KYTY_SYSV_ABI GraphicsDriverSubmitCommandBuffer(uint32_t queue, uint32_t* dcb,
-                                                    uint32_t size_in_dwords) {
-	PRINT_NAME();
-
-	LOGF("\t queue = 0x%08" PRIx32 "\n"
-	     "\t dcb   = 0x%016" PRIx64 "\n"
-	     "\t size  = 0x%08" PRIx32 "\n",
-	     queue, reinterpret_cast<uint64_t>(dcb), size_in_dwords);
-
-	if (dcb == nullptr || size_in_dwords == 0) {
-		return OK;
-	}
-
-	submit_dcb(dcb, size_in_dwords);
-
-	return OK;
-}
-
-int KYTY_SYSV_ABI GraphicsDriverSubmitMultiCommandBuffers(uint32_t queue, uint32_t* const* dcbs,
-                                                          const uint32_t* sizes_in_dwords,
-                                                          uint32_t        count) {
-	PRINT_NAME();
-
-	LOGF("\t queue = 0x%08" PRIx32 "\n"
-	     "\t count = %" PRIu32 "\n",
-	     queue, count);
-
-	if (count == 0) {
-		return OK;
-	}
-	if (dcbs == nullptr || sizes_in_dwords == nullptr) {
-		return LibKernel::KERNEL_ERROR_EINVAL;
-	}
-
-	for (uint32_t i = 0; i < count; i++) {
-		GraphicsDriverSubmitCommandBuffer(queue, dcbs[i], sizes_in_dwords[i]);
 	}
 
 	return OK;
 }
 
 static void submit_acb(uint32_t queue, uint32_t* acb, uint32_t size_in_dwords) {
-	if (acb != nullptr && size_in_dwords >= 5) {
-		auto descriptor_addr =
-		    static_cast<uint64_t>(acb[0]) | (static_cast<uint64_t>(acb[1]) << 32u);
-		auto descriptor_size  = acb[2];
-		auto descriptor_flags = acb[3];
-		auto descriptor_magic = acb[4];
-		if (descriptor_addr != 0 && descriptor_size != 0 && descriptor_flags == 0 &&
-		    descriptor_magic == 0x5533ccaau) {
-			LOGF("\t descriptor addr = 0x%016" PRIx64 "\n"
-			     "\t descriptor size = 0x%08" PRIx32 "\n"
-			     "\t descriptor magic = 0x%08" PRIx32 "\n",
-			     descriptor_addr, descriptor_size, descriptor_magic);
-			acb            = reinterpret_cast<uint32_t*>(descriptor_addr);
-			size_in_dwords = descriptor_size;
-		}
-	}
-
 	if (acb == nullptr || size_in_dwords == 0) {
 		return;
 	}
@@ -4017,15 +4277,78 @@ static void submit_acb(uint32_t queue, uint32_t* acb, uint32_t size_in_dwords) {
 
 	GraphicsDbgDumpDcb("a", size_in_dwords, acb);
 
-	const bool trigger_interrupt_on_done = !dcb_has_queued_interrupt(acb, size_in_dwords);
 	EXIT_IF(g_renderer == nullptr);
-	g_renderer->GetGpu().SubmitCompute(queue, acb, size_in_dwords, trigger_interrupt_on_done);
+	g_renderer->GetGpu().SubmitCompute(queue, std::span {acb, size_in_dwords});
 }
 
-int KYTY_SYSV_ABI GraphicsDriverSubmitAcb(uint32_t queue, const Packet* packet) {
+static uint32_t get_driver_queue(const void* queue_context) {
+	uint32_t queue = 0;
+	std::memcpy(&queue, static_cast<const uint8_t*>(queue_context) + 4, sizeof(queue));
+	return queue;
+}
+
+static void submit_command_buffer(uint32_t queue, uint32_t* commands, uint32_t size_in_dwords) {
+	if (commands == nullptr || size_in_dwords == 0) {
+		return;
+	}
+
+	if (queue >= 0x20 && queue < 0x58) {
+		submit_acb(queue, commands, size_in_dwords);
+	} else {
+		submit_dcb(commands, size_in_dwords);
+	}
+}
+
+int KYTY_SYSV_ABI AgcDriverSubmitCommandBuffer(void* queue_context, const Packet* packet) {
 	PRINT_NAME();
 
+	LOGF("\t queue_context = 0x%016" PRIx64 "\n"
+	     "\t packet        = 0x%016" PRIx64 "\n",
+	     reinterpret_cast<uint64_t>(queue_context), reinterpret_cast<uint64_t>(packet));
+
+	if (queue_context == nullptr || packet == nullptr) {
+		return LibKernel::KERNEL_ERROR_EINVAL;
+	}
+
+	const uint32_t queue = get_driver_queue(queue_context);
 	LOGF("\t queue = 0x%08" PRIx32 "\n"
+	     "\t addr  = 0x%016" PRIx64 "\n"
+	     "\t size  = 0x%08" PRIx32 "\n"
+	     "\t flags = 0x%02" PRIx8 "\n",
+	     queue, reinterpret_cast<uint64_t>(packet->addr), packet->dw_num, packet->flags);
+
+	submit_command_buffer(queue, packet->addr, packet->dw_num);
+	return OK;
+}
+
+int KYTY_SYSV_ABI AgcDriverSubmitMultiCommandBuffers(void*            queue_context,
+                                                     uint32_t* const* command_buffers,
+                                                     const uint32_t*  sizes_in_dwords,
+                                                     uint32_t         count) {
+	PRINT_NAME();
+
+	LOGF("\t queue_context = 0x%016" PRIx64 "\n"
+	     "\t count         = %" PRIu32 "\n",
+	     reinterpret_cast<uint64_t>(queue_context), count);
+
+	if (count == 0) {
+		return OK;
+	}
+	if (queue_context == nullptr || command_buffers == nullptr || sizes_in_dwords == nullptr) {
+		return LibKernel::KERNEL_ERROR_EINVAL;
+	}
+
+	const uint32_t queue = get_driver_queue(queue_context);
+	for (uint32_t i = 0; i < count; i++) {
+		submit_command_buffer(queue, command_buffers[i], sizes_in_dwords[i]);
+	}
+	return OK;
+}
+
+int KYTY_SYSV_ABI AgcDriverSubmitAcb(uint32_t queue, const Packet* packet) {
+	PRINT_NAME();
+
+	LOGF("\t queue  = 0x%08" PRIx32 "\n"
 	     "\t packet = 0x%016" PRIx64 "\n",
 	     queue, reinterpret_cast<uint64_t>(packet));
 
@@ -4035,15 +4358,14 @@ int KYTY_SYSV_ABI GraphicsDriverSubmitAcb(uint32_t queue, const Packet* packet) 
 	LOGF("\t acb   = 0x%016" PRIx64 "\n"
 	     "\t size  = 0x%08" PRIx32 "\n"
 	     "\t flags = 0x%02" PRIx8 "\n",
-	     reinterpret_cast<uint64_t>(packet->addr), packet->dw_num, packet->pad[0]);
+	     reinterpret_cast<uint64_t>(packet->addr), packet->dw_num, packet->flags);
 
 	submit_acb(queue, packet->addr, packet->dw_num);
-
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsDriverSubmitMultiAcbs(uint32_t queue, uint32_t* const* acbs,
-                                                const uint32_t* sizes_in_dwords, uint32_t count) {
+int KYTY_SYSV_ABI AgcDriverSubmitMultiAcbs(uint32_t queue, uint32_t* const* acbs,
+                                           const uint32_t* sizes_in_dwords, uint32_t count) {
 	PRINT_NAME();
 
 	LOGF("\t queue = 0x%08" PRIx32 "\n"
@@ -4064,8 +4386,7 @@ int KYTY_SYSV_ABI GraphicsDriverSubmitMultiAcbs(uint32_t queue, uint32_t* const*
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsDriverAddEqEvent(LibKernel::EventQueue::KernelEqueue eq, int id,
-                                           void* udata) {
+int KYTY_SYSV_ABI AgcDriverAddEqEvent(LibKernel::EventQueue::KernelEqueue eq, int id, void* udata) {
 	PRINT_NAME();
 
 	if (eq == LibKernel::EventQueue::KERNEL_EQUEUE_INVALID) {
@@ -4076,17 +4397,18 @@ int KYTY_SYSV_ABI GraphicsDriverAddEqEvent(LibKernel::EventQueue::KernelEqueue e
 	return Sync::AddEqEvent(*g_renderer, eq, id, udata);
 }
 
-int KYTY_SYSV_ABI GraphicsDriverDeleteEqEvent(LibKernel::EventQueue::KernelEqueue eq, int id) {
+int KYTY_SYSV_ABI AgcDriverDeleteEqEvent(LibKernel::EventQueue::KernelEqueue eq, int id) {
 	PRINT_NAME();
 
 	if (eq == LibKernel::EventQueue::KERNEL_EQUEUE_INVALID) {
 		return LibKernel::KERNEL_ERROR_EBADF;
 	}
 
-	return Sync::DeleteEqEvent(eq, id);
+	EXIT_IF(g_renderer == nullptr);
+	return Sync::DeleteEqEvent(*g_renderer, eq, id);
 }
 
-int KYTY_SYSV_ABI GraphicsDriverGetEqEventType(const LibKernel::EventQueue::KernelEvent* ev) {
+int KYTY_SYSV_ABI AgcDriverGetEqEventType(const LibKernel::EventQueue::KernelEvent* ev) {
 	PRINT_NAME();
 
 	if (ev == nullptr) {
@@ -4100,7 +4422,7 @@ int KYTY_SYSV_ABI GraphicsDriverGetEqEventType(const LibKernel::EventQueue::Kern
 	return static_cast<int>(ev->data);
 }
 
-uint32_t KYTY_SYSV_ABI GraphicsDriverGetEqContextId(const LibKernel::EventQueue::KernelEvent* ev) {
+uint32_t KYTY_SYSV_ABI AgcDriverGetEqContextId(const LibKernel::EventQueue::KernelEvent* ev) {
 	PRINT_NAME();
 
 	if (ev == nullptr) {
@@ -4114,7 +4436,7 @@ uint32_t KYTY_SYSV_ABI GraphicsDriverGetEqContextId(const LibKernel::EventQueue:
 	return static_cast<uint32_t>(ev->ident);
 }
 
-int KYTY_SYSV_ABI GraphicsDriverSetTFRing(const volatile void* base, uint32_t size) {
+int KYTY_SYSV_ABI AgcDriverSetTFRing(const volatile void* base, uint32_t size) {
 	PRINT_NAME();
 
 	g_tessellation_driver_state.tf_ring_base = reinterpret_cast<uint64_t>(base);
@@ -4127,8 +4449,7 @@ int KYTY_SYSV_ABI GraphicsDriverSetTFRing(const volatile void* base, uint32_t si
 	return OK;
 }
 
-int KYTY_SYSV_ABI GraphicsDriverSetHsOffchipParam(uint64_t value0, uint64_t value1,
-                                                  uint64_t value2) {
+int KYTY_SYSV_ABI AgcDriverSetHsOffchipParam(uint64_t value0, uint64_t value1, uint64_t value2) {
 	PRINT_NAME();
 
 	g_tessellation_driver_state.hs_offchip_value0 = value0;
@@ -4143,13 +4464,13 @@ int KYTY_SYSV_ABI GraphicsDriverSetHsOffchipParam(uint64_t value0, uint64_t valu
 	return OK;
 }
 
-bool KYTY_SYSV_ABI GraphicsDriverIsCaptureInProgress() {
+bool KYTY_SYSV_ABI AgcDriverIsCaptureInProgress() {
 	PRINT_NAME();
 
 	return false;
 }
 
-int KYTY_SYSV_ABI GraphicsDriverUnknownU9ueyEhSkF4() {
+int KYTY_SYSV_ABI AgcDriverUnknownU9ueyEhSkF4() {
 	PRINT_NAME();
 
 	return static_cast<int>(0x8a6c9018u);

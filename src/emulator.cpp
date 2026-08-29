@@ -2,7 +2,6 @@
 
 #include "common/abi.h"
 #include "common/assert.h"
-#include "common/commonSubsystem.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -16,6 +15,7 @@
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
+#include "kytyGitVersion.h"
 #include "libs/agc.h"
 #include "libs/audio.h"
 #include "libs/controller.h"
@@ -27,13 +27,31 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <thread>
 
 namespace Emulator {
 
 static void PrintSystemInfo() {
-	Common::SystemInfo info = Common::GetSystemInfo();
+	const Common::SystemInfo info = Common::GetSystemInfo();
 
-	LOGF("ProcessorName = %s\n", info.ProcessorName.c_str());
+#if defined(__APPLE__)
+	static constexpr auto platform_name = "macOS";
+#elif KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	static constexpr auto platform_name = "Windows";
+#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+	static constexpr auto platform_name = "Linux";
+#else
+	static constexpr auto platform_name = "Unknown";
+#endif
+
+	LOGF("Build\n"
+	     "  version: %s\n\n"
+	     "Host\n"
+	     "  os:      %s\n"
+	     "  cpu:     %s\n"
+	     "  threads: %u\n\n",
+	     KYTY_BUILD_LABEL, platform_name, info.ProcessorName.c_str(),
+	     std::thread::hardware_concurrency());
 }
 
 static void KytyClose() {
@@ -43,7 +61,7 @@ static void KytyClose() {
 
 	LOGF("done!\n");
 
-	Common::SubsystemsListSingleton::Instance()->ShutdownAll();
+	Common::Subsystems::EmergencyShutdownActive();
 }
 
 static void MountOrCreateDir(const std::filesystem::path& dir, const std::string& point) {
@@ -105,30 +123,13 @@ static void ClearDebugTextureFolder() {
 	}
 }
 
-static void Init(const Config::ConfigOptions& cfg, const std::filesystem::path& param_json) {
+static void Init(const Config::ConfigOptions& cfg, const std::filesystem::path& param_json,
+                 Common::Subsystems& subsystems) {
 	EXIT_IF(!Common::Thread::IsMainThread());
 
-	auto* slist = Common::SubsystemsList::Instance();
-
-	auto* audio       = Libs::Audio::AudioSubsystem::Instance();
-	auto* config      = Config::ConfigSubsystem::Instance();
-	auto* controller  = Libs::Controller::ControllerSubsystem::Instance();
-	auto* core        = Common::CommonSubsystem::Instance();
-	auto* file_system = Libs::LibKernel::FileSystem::FileSystemSubsystem::Instance();
-	auto* graphics    = Libs::Graphics::GraphicsSubsystem::Instance();
-	auto* log         = Log::LogSubsystem::Instance();
-	auto* memory      = Libs::LibKernel::Memory::MemorySubsystem::Instance();
-	auto* network     = Libs::Network::NetworkSubsystem::Instance();
-	auto* profiler    = Profiler::ProfilerSubsystem::Instance();
-	auto* pthread     = Libs::LibKernel::PthreadSubsystem::Instance();
-	auto* timer       = Loader::Timer::TimerSubsystem::Instance();
-
-	slist->Add(config, {core});
-	slist->InitAll(true);
-
+	subsystems.Initialize<Config::Lifecycle>();
 	Config::Load(cfg);
-	slist->Add(log, {core, config});
-	slist->InitAll(true);
+	subsystems.Initialize<Log::Lifecycle>();
 
 	if (Common::File::IsFileExisting(param_json)) {
 		Loader::SystemContentLoadParamSfo(param_json);
@@ -138,17 +139,16 @@ static void Init(const Config::ConfigOptions& cfg, const std::filesystem::path& 
 		}
 	}
 
-	slist->Add(audio, {core, log, pthread, memory});
-	slist->Add(controller, {core, log, config});
-	slist->Add(file_system, {core, log, pthread});
-	slist->Add(graphics, {core, log, pthread, memory, config, profiler, controller});
-	slist->Add(memory, {core, log});
-	slist->Add(network, {core, log, pthread});
-	slist->Add(profiler, {core, config});
-	slist->Add(pthread, {core, log, timer});
-	slist->Add(timer, {core, log});
-
-	slist->InitAll(true);
+	// Initialization order is explicit; destruction is automatic and reversed.
+	subsystems.Initialize<Loader::Timer::Lifecycle>();
+	subsystems.Initialize<Libs::LibKernel::PthreadLifecycle>();
+	subsystems.Initialize<Profiler::Lifecycle>();
+	subsystems.Initialize<Libs::Network::Lifecycle>();
+	subsystems.Initialize<Libs::LibKernel::Memory::Lifecycle>();
+	subsystems.Initialize<Libs::LibKernel::FileSystem::Lifecycle>();
+	subsystems.Initialize<Libs::Controller::Lifecycle>();
+	subsystems.Initialize<Libs::Audio::Lifecycle>();
+	subsystems.Initialize<Libs::Graphics::Lifecycle>();
 }
 
 static void LoadElf(const std::filesystem::path& elf, bool dbg_print_reloc = false,
@@ -189,14 +189,19 @@ void Run(const RunOptions& options) {
 		EXIT("ELF is required\n");
 	}
 
-	const auto param_json = options.app0_dir / "sce_sys" / "param.json";
-	Init(options.config, param_json);
+	const auto         param_json = options.app0_dir / "sce_sys" / "param.json";
+	Common::Subsystems subsystems(true);
+	Init(options.config, param_json, subsystems);
 
 	ClearDebugTextureFolder();
 
 	PrintSystemInfo();
 
 	int ok = atexit(KytyClose);
+	EXIT_NOT_IMPLEMENTED(ok != 0);
+
+	// Guest threads are still running, so skip KytyClose() and only flush emergency state.
+	ok = at_quick_exit(Common::Subsystems::EmergencyShutdownActive);
 	EXIT_NOT_IMPLEMENTED(ok != 0);
 
 	Libs::LibKernel::FileSystem::Mount(options.app0_dir, "/app0");

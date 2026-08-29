@@ -21,6 +21,8 @@
 #include <limits>
 #include <vector>
 
+#include "libatrac9.h"
+
 namespace Libs::Audio {
 
 namespace {
@@ -181,15 +183,13 @@ uint32_t AudioOutOutputs(const OutputParam* params, uint32_t num, bool blocking)
 
 } // namespace AudioInternal
 
-KYTY_SUBSYSTEM_INIT(Audio) {
+void Initialize() {
 	EXIT_IF(g_audio != nullptr);
 
 	g_audio = new Audio;
 }
 
-KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Audio) {}
-
-KYTY_SUBSYSTEM_DESTROY(Audio) {
+void Shutdown() {
 	delete g_audio;
 	g_audio = nullptr;
 }
@@ -798,6 +798,8 @@ namespace AudioIn {
 
 LIB_NAME("AudioIn", "AudioIn");
 
+constexpr int AUDIO_IN_SILENT_STATE_DEVICE_NONE = 0x1;
+
 int KYTY_SYSV_ABI AudioInOpen(int user_id, uint32_t type, uint32_t index, uint32_t len,
                               uint32_t freq, uint32_t param) {
 	PRINT_NAME();
@@ -852,6 +854,19 @@ int KYTY_SYSV_ABI AudioInInput(int handle, void* dest) {
 	}
 
 	return static_cast<int>(g_audio->AudioInInput(Audio::Id(handle), dest));
+}
+
+int KYTY_SYSV_ABI AudioInGetSilentState(int handle) {
+	PRINT_NAME();
+
+	EXIT_IF(g_audio == nullptr);
+
+	if (!g_audio->AudioInValid(Audio::Id(handle))) {
+		return AUDIO_IN_ERROR_INVALID_HANDLE;
+	}
+
+	// Audio input has no device backend yet, so every valid port receives silence.
+	return AUDIO_IN_SILENT_STATE_DEVICE_NONE;
 }
 
 } // namespace AudioIn
@@ -1347,6 +1362,17 @@ namespace Ngs2 {
 
 LIB_NAME("Ngs2", "Ngs2");
 
+constexpr int32_t NGS2_ERROR_INVALID_OUT_ADDRESS =
+    static_cast<int32_t>(0x804a8010u);
+constexpr int32_t NGS2_ERROR_INVALID_WAVEFORM_DATA =
+    static_cast<int32_t>(0x804a8430u);
+constexpr int32_t NGS2_ERROR_INVALID_WAVEFORM_FORMAT =
+    static_cast<int32_t>(0x804a8431u);
+constexpr int32_t NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT =
+    static_cast<int32_t>(0x804a8432u);
+
+constexpr uint32_t NGS2_WAVEFORM_TYPE_ATRAC9 = 0x40;
+
 struct Ngs2SystemOption {
 	size_t    size                     = 0;
 	char      name[64]                 = {};
@@ -1461,14 +1487,14 @@ struct Ngs2CustomSamplerRackOption {
 };
 
 union Ngs2RackOptionUnion {
-	Ngs2RackOption               common;
-	Ngs2SamplerRackOption        sampler;
-	Ngs2MasteringRackOption      mastering;
-	Ngs2SubmixerRackOption       submixer;
-	Ngs2ReverbRackOption         reverb;
-	Ngs2CustomSubmixerRackOption custom_submixer;
+	Ngs2RackOption                common;
+	Ngs2SamplerRackOption         sampler;
+	Ngs2MasteringRackOption       mastering;
+	Ngs2SubmixerRackOption        submixer;
+	Ngs2ReverbRackOption          reverb;
+	Ngs2CustomSubmixerRackOption  custom_submixer;
 	Ngs2CustomMasteringRackOption custom_mastering;
-	Ngs2CustomSamplerRackOption  custom_sampler;
+	Ngs2CustomSamplerRackOption   custom_sampler;
 };
 
 struct Ngs2ContextBufferInfo {
@@ -1476,6 +1502,22 @@ struct Ngs2ContextBufferInfo {
 	size_t    host_buffer_size = 0;
 	uintptr_t reserved[5]      = {};
 	uintptr_t user_data        = 0;
+};
+
+struct Ngs2SystemInfo {
+	char                  name[64]      = {};
+	uintptr_t             system_handle = 0;
+	Ngs2ContextBufferInfo buffer_info;
+	uint32_t              uid               = 0;
+	uint32_t              min_grain_samples = 0;
+	uint32_t              max_grain_samples = 0;
+	uint32_t              state_flags       = 0;
+	uint32_t              rack_count        = 0;
+	float                 last_render_ratio = 0.0f;
+	uint64_t              last_render_tick  = 0;
+	uint64_t              render_count      = 0;
+	uint32_t              sample_rate       = 0;
+	uint32_t              num_grain_samples = 0;
 };
 
 struct Ngs2RenderBufferInfo {
@@ -1611,10 +1653,13 @@ struct Ngs2BufferAllocator {
 };
 
 struct Ngs2Internal {
-	Ngs2SystemOption    option;
-	Ngs2BufferAllocator allocator;
-	Ngs2Internal*       next = nullptr;
-	Common::Mutex       mutex;
+	Ngs2SystemOption      option;
+	Ngs2ContextBufferInfo buffer_info;
+	Ngs2BufferAllocator   allocator;
+	Ngs2Internal*         next         = nullptr;
+	uint64_t              render_count = 0;
+	uint32_t              uid          = 0;
+	Common::Mutex         mutex;
 };
 
 enum class Ngs2RackType {
@@ -1628,11 +1673,12 @@ enum class Ngs2RackType {
 };
 
 struct Ngs2RackInternal {
-	Ngs2Internal*       ngs  = nullptr;
-	Ngs2RackInternal*   next = nullptr;
-	Ngs2RackType        type = Ngs2RackType::Sampler;
-	Ngs2RackOptionUnion option;
-	Ngs2BufferAllocator allocator;
+	Ngs2Internal*         ngs  = nullptr;
+	Ngs2RackInternal*     next = nullptr;
+	Ngs2RackType          type = Ngs2RackType::Sampler;
+	Ngs2RackOptionUnion   option;
+	Ngs2ContextBufferInfo buffer_info;
+	Ngs2BufferAllocator   allocator;
 };
 
 enum class Ngs2VoicePlayState { Empty, Playing, Paused, Stopped };
@@ -1728,15 +1774,21 @@ struct Ngs2SamplerVoiceState {
 	const void*    waveform_data;
 };
 
-static Ngs2Internal*     g_ngs_list   = nullptr;
-static Ngs2RackInternal* g_racks_list = nullptr;
+static Ngs2Internal*        g_ngs_list     = nullptr;
+static Ngs2RackInternal*    g_racks_list   = nullptr;
+static std::atomic_uint32_t g_next_ngs_uid = 1;
+static Common::Mutex        g_racks_mutex;
 
 static_assert(sizeof(Ngs2SystemOption) == 144);
+static_assert(sizeof(Ngs2SystemInfo) == 184);
 static_assert(sizeof(Ngs2RackOption) == 176);
 static_assert(sizeof(Ngs2VoiceState) == 8);
 static_assert(sizeof(Ngs2SubmixerVoiceState) == 20);
 static_assert(sizeof(Ngs2CustomMasteringVoiceState) == 16);
 static_assert(sizeof(Ngs2SamplerVoiceState) == 56);
+static_assert(sizeof(Ngs2WaveformFormat) == 24);
+static_assert(sizeof(Ngs2WaveformBlock) == 40);
+static_assert(sizeof(Ngs2WaveformInfo) == 232);
 
 static uint32_t Ngs2GetStateFlags(const Ngs2VoiceInternal* voice) {
 	switch (voice->state) {
@@ -1767,12 +1819,15 @@ int KYTY_SYSV_ABI Ngs2SystemResetOption(Ngs2SystemOption* option) {
 	return OK;
 }
 
-static Ngs2Internal* Ngs2CreateSystemInternal(const Ngs2SystemOption* option, void* host_buffer) {
-	auto* ngs = new (host_buffer) Ngs2Internal;
+static Ngs2Internal* Ngs2CreateSystemInternal(const Ngs2SystemOption*      option,
+                                              const Ngs2ContextBufferInfo* buffer_info) {
+	auto* ngs = new (buffer_info->host_buffer) Ngs2Internal;
 
-	ngs->option = *option;
-	ngs->next   = g_ngs_list;
-	g_ngs_list  = ngs;
+	ngs->option      = *option;
+	ngs->buffer_info = *buffer_info;
+	ngs->uid         = g_next_ngs_uid.fetch_add(1, std::memory_order_relaxed);
+	ngs->next        = g_ngs_list;
+	g_ngs_list       = ngs;
 
 	return ngs;
 }
@@ -1823,7 +1878,7 @@ int KYTY_SYSV_ABI Ngs2SystemCreate(const Ngs2SystemOption*      option,
 
 	EXIT_NOT_IMPLEMENTED(option->size != sizeof(Ngs2SystemOption));
 
-	auto* ngs = Ngs2CreateSystemInternal(option, buffer_info->host_buffer);
+	auto* ngs = Ngs2CreateSystemInternal(option, buffer_info);
 
 	*handle = reinterpret_cast<uintptr_t>(ngs);
 
@@ -1986,10 +2041,56 @@ int KYTY_SYSV_ABI Ngs2SystemCreateWithAllocator(const Ngs2SystemOption*    optio
 	EXIT_NOT_IMPLEMENTED(result != OK);
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer == nullptr);
 
-	auto* ngs      = Ngs2CreateSystemInternal(option, buf.host_buffer);
+	auto* ngs      = Ngs2CreateSystemInternal(option, &buf);
 	ngs->allocator = *allocator;
 
 	*handle = reinterpret_cast<uintptr_t>(ngs);
+
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ngs2SystemGetInfo(uintptr_t system_handle, Ngs2SystemInfo* info,
+                                    size_t info_size) {
+	constexpr int32_t ERROR_INVALID_OUT_ADDRESS   = static_cast<int32_t>(0x804a8010u);
+	constexpr int32_t ERROR_INVALID_OUT_SIZE      = static_cast<int32_t>(0x804a8011u);
+	constexpr int32_t ERROR_INVALID_SYSTEM_HANDLE = static_cast<int32_t>(0x804a8201u);
+
+	if (info == nullptr) {
+		return ERROR_INVALID_OUT_ADDRESS;
+	}
+	if (info_size != sizeof(Ngs2SystemInfo)) {
+		return ERROR_INVALID_OUT_SIZE;
+	}
+
+	auto* ngs     = reinterpret_cast<Ngs2Internal*>(system_handle);
+	auto* current = g_ngs_list;
+	while (current != nullptr && current != ngs) {
+		current = current->next;
+	}
+	if (current == nullptr) {
+		return ERROR_INVALID_SYSTEM_HANDLE;
+	}
+
+	Common::LockGuard lock(ngs->mutex);
+
+	*info = {};
+	std::memcpy(info->name, ngs->option.name, sizeof(info->name));
+	info->system_handle     = system_handle;
+	info->buffer_info       = ngs->buffer_info;
+	info->uid               = ngs->uid;
+	info->min_grain_samples = 64;
+	info->max_grain_samples = ngs->option.max_grain_samples;
+	info->state_flags       = 1;
+	info->render_count      = ngs->render_count;
+	info->sample_rate       = ngs->option.sample_rate;
+	info->num_grain_samples = ngs->option.num_grain_samples;
+
+	Common::LockGuard racks_lock(g_racks_mutex);
+	for (auto* rack = g_racks_list; rack != nullptr; rack = rack->next) {
+		if (rack->ngs == ngs) {
+			info->rack_count++;
+		}
+	}
 
 	return OK;
 }
@@ -2109,11 +2210,15 @@ int KYTY_SYSV_ABI Ngs2RackCreate(uintptr_t system_handle, uint32_t rack_id,
 
 	LOGF("\t type                   = %s\n", Common::EnumName(rack->type).c_str());
 
-	rack->allocator = Ngs2BufferAllocator();
-	rack->ngs       = ngs;
+	rack->allocator   = Ngs2BufferAllocator();
+	rack->buffer_info = *buffer_info;
+	rack->ngs         = ngs;
 
-	rack->next   = g_racks_list;
-	g_racks_list = rack;
+	{
+		Common::LockGuard racks_lock(g_racks_mutex);
+		rack->next   = g_racks_list;
+		g_racks_list = rack;
+	}
 
 	for (uint32_t i = 0; i < option->max_voices; i++) {
 		voices[i].rack  = rack;
@@ -2194,11 +2299,59 @@ int KYTY_SYSV_ABI Ngs2RackCreateWithAllocator(uintptr_t system_handle, uint32_t 
 }
 
 int KYTY_SYSV_ABI Ngs2RackDestroy(uintptr_t rack_handle, Ngs2ContextBufferInfo* buffer_info) {
+	constexpr int32_t ERROR_INVALID_RACK_HANDLE = static_cast<int32_t>(0x804a8202u);
+
 	PRINT_NAME();
 	LOGF("\t rack_handle = 0x%016" PRIx64 "\n", static_cast<uint64_t>(rack_handle));
 
 	if (buffer_info != nullptr) {
-		std::memset(buffer_info, 0, sizeof(Ngs2ContextBufferInfo));
+		*buffer_info = {};
+	}
+	if (rack_handle == 0) {
+		return ERROR_INVALID_RACK_HANDLE;
+	}
+
+	auto*         rack = reinterpret_cast<Ngs2RackInternal*>(rack_handle);
+	Ngs2Internal* ngs  = nullptr;
+	{
+		Common::LockGuard racks_lock(g_racks_mutex);
+		for (auto* current = g_racks_list; current != nullptr; current = current->next) {
+			if (current == rack) {
+				ngs = current->ngs;
+				break;
+			}
+		}
+	}
+	if (ngs == nullptr) {
+		return ERROR_INVALID_RACK_HANDLE;
+	}
+
+	Ngs2ContextBufferInfo context_buffer;
+	Ngs2BufferAllocator   allocator;
+	{
+		Common::LockGuard lock(ngs->mutex);
+		Common::LockGuard racks_lock(g_racks_mutex);
+
+		auto** link = &g_racks_list;
+		while (*link != nullptr && *link != rack) {
+			link = &(*link)->next;
+		}
+		if (*link == nullptr) {
+			return ERROR_INVALID_RACK_HANDLE;
+		}
+
+		*link          = rack->next;
+		context_buffer = rack->buffer_info;
+		allocator      = rack->allocator;
+		rack->ngs      = nullptr;
+		rack->next     = nullptr;
+	}
+
+	if (allocator.free_handler != nullptr) {
+		return allocator.free_handler(&context_buffer);
+	}
+	if (buffer_info != nullptr) {
+		*buffer_info = context_buffer;
 	}
 
 	return OK;
@@ -2259,6 +2412,7 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 		}
 	}
 
+	Common::LockGuard racks_lock(g_racks_mutex);
 	for (auto* rack = g_racks_list; rack != nullptr; rack = rack->next) {
 		if (rack->ngs == ngs) {
 			auto* voices = reinterpret_cast<Ngs2VoiceInternal*>(rack + 1);
@@ -2300,6 +2454,133 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 		}
 	}
 
+	ngs->render_count++;
+
+	return OK;
+}
+
+static uint16_t Ngs2ReadLe16(const uint8_t* data) {
+	return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8u);
+}
+
+static uint32_t Ngs2ReadLe32(const uint8_t* data) {
+	return static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8u) |
+	       (static_cast<uint32_t>(data[2]) << 16u) | (static_cast<uint32_t>(data[3]) << 24u);
+}
+
+static bool Ngs2FourCcEquals(const uint8_t* data, const char* four_cc) {
+	return std::memcmp(data, four_cc, 4) == 0;
+}
+
+static int Ngs2ParseAtrac9Riff(const void* data, size_t data_size, Ngs2WaveformInfo* info) {
+	static constexpr uint8_t ATRAC9_GUID[16] = {0xd2, 0x42, 0xe1, 0x47, 0xba, 0x36,
+	                                            0x8d, 0x4d, 0x88, 0xfc, 0x61, 0x65,
+	                                            0x4f, 0x8c, 0x83, 0x6c};
+	const auto* bytes = static_cast<const uint8_t*>(data);
+	if (bytes == nullptr || data_size < 12) {
+		return NGS2_ERROR_INVALID_WAVEFORM_DATA;
+	}
+	if (!Ngs2FourCcEquals(bytes, "RIFF") || !Ngs2FourCcEquals(bytes + 8, "WAVE")) {
+		return NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+	}
+
+	const uint64_t riff_end64 = 8ull + Ngs2ReadLe32(bytes + 4);
+	if (riff_end64 < 12 || riff_end64 > data_size) {
+		return NGS2_ERROR_INVALID_WAVEFORM_DATA;
+	}
+	const auto riff_end = static_cast<size_t>(riff_end64);
+
+	const uint8_t* format           = nullptr;
+	const uint8_t* fact             = nullptr;
+	size_t         waveform_offset  = 0;
+	uint32_t       waveform_size    = 0;
+
+	for (size_t offset = 12; offset + 8 <= riff_end;) {
+		const auto* chunk       = bytes + offset;
+		const auto  chunk_size  = static_cast<size_t>(Ngs2ReadLe32(chunk + 4));
+		const auto  payload     = offset + 8;
+		if (chunk_size > riff_end - payload) {
+			return NGS2_ERROR_INVALID_WAVEFORM_DATA;
+		}
+
+		if (Ngs2FourCcEquals(chunk, "fmt ")) {
+			if (chunk_size < 52) {
+				return NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+			}
+			format = bytes + payload;
+		} else if (Ngs2FourCcEquals(chunk, "fact")) {
+			if (chunk_size < 12) {
+				return NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+			}
+			fact = bytes + payload;
+		} else if (Ngs2FourCcEquals(chunk, "data")) {
+			if (payload > std::numeric_limits<uint32_t>::max()) {
+				return NGS2_ERROR_INVALID_WAVEFORM_DATA;
+			}
+			waveform_offset = payload;
+			waveform_size   = static_cast<uint32_t>(chunk_size);
+		}
+
+		const uint64_t next = static_cast<uint64_t>(payload) + chunk_size + (chunk_size & 1u);
+		if (next > riff_end) {
+			return NGS2_ERROR_INVALID_WAVEFORM_DATA;
+		}
+		offset = static_cast<size_t>(next);
+	}
+
+	if (format == nullptr || fact == nullptr || waveform_offset == 0) {
+		return NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+	}
+	if (Ngs2ReadLe16(format) != 0xfffe ||
+	    std::memcmp(format + 24, ATRAC9_GUID, sizeof(ATRAC9_GUID)) != 0) {
+		return NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+	}
+
+	std::array<uint8_t, ATRAC9_CONFIG_DATA_SIZE> config {};
+	std::memcpy(config.data(), format + 44, config.size());
+	if (config[0] != 0xfe || (config[1] & 1u) != 0 || ((config[1] >> 1u) & 7u) >= 6u) {
+		return NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+	}
+
+	Atrac9CodecInfo codec {};
+	void*           decoder = Atrac9GetHandle();
+	const bool valid_codec =
+	    decoder != nullptr && Atrac9InitDecoder(decoder, config.data()) == 0 &&
+	    Atrac9GetCodecInfo(decoder, &codec) == 0 && codec.channels > 0 &&
+	    codec.samplingRate > 0 && codec.superframeSize > 0 && codec.framesInSuperframe > 0 &&
+	    codec.frameSamples > 0 && codec.superframeSize % codec.framesInSuperframe == 0;
+	if (decoder != nullptr) {
+		Atrac9ReleaseHandle(decoder);
+	}
+	const uint64_t frame_samples =
+	    static_cast<uint64_t>(codec.frameSamples) * static_cast<uint64_t>(codec.framesInSuperframe);
+	if (!valid_codec || codec.channels != Ngs2ReadLe16(format + 2) ||
+	    codec.samplingRate != static_cast<int>(Ngs2ReadLe32(format + 4)) ||
+	    codec.superframeSize != Ngs2ReadLe16(format + 12) ||
+	    frame_samples != Ngs2ReadLe16(format + 18) ||
+	    frame_samples > std::numeric_limits<uint32_t>::max()) {
+		return NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+	}
+
+	info->format.waveform_type = NGS2_WAVEFORM_TYPE_ATRAC9;
+	info->format.num_channels  = static_cast<uint32_t>(codec.channels);
+	info->format.sample_rate   = static_cast<uint32_t>(codec.samplingRate);
+	std::memcpy(&info->format.config_data, config.data(), config.size());
+	info->data_offset              = static_cast<uint32_t>(waveform_offset);
+	info->data_size                = waveform_size;
+	info->num_samples              = Ngs2ReadLe32(fact);
+	info->audio_unit_size          = static_cast<uint32_t>(codec.superframeSize /
+	                                                       codec.framesInSuperframe);
+	info->num_audio_unit_samples   = static_cast<uint32_t>(codec.frameSamples);
+	info->num_audio_unit_per_frame = static_cast<uint32_t>(codec.framesInSuperframe);
+	info->audio_frame_size         = static_cast<uint32_t>(codec.superframeSize);
+	info->num_audio_frame_samples  = static_cast<uint32_t>(frame_samples);
+	info->num_delay_samples        = Ngs2ReadLe32(fact + 4);
+	info->num_blocks               = 1;
+	info->blocks[0].data_offset    = waveform_offset;
+	info->blocks[0].data_size      = waveform_size;
+	info->blocks[0].num_skip_samples = Ngs2ReadLe32(fact + 8);
+	info->blocks[0].num_samples      = info->num_samples;
 	return OK;
 }
 
@@ -2309,18 +2590,12 @@ int KYTY_SYSV_ABI Ngs2ParseWaveformData(const void* data, size_t data_size,
 	LOGF("\t data = 0x%016" PRIx64 ", data_size = 0x%016" PRIx64 "\n",
 	     reinterpret_cast<uint64_t>(data), static_cast<uint64_t>(data_size));
 
-	EXIT_NOT_IMPLEMENTED(info == nullptr);
+	if (info == nullptr) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
 
 	std::memset(info, 0, sizeof(Ngs2WaveformInfo));
-	info->format.waveform_type = 0x80;
-	info->format.num_channels  = 1;
-	info->format.sample_rate   = 48000;
-	info->data_size =
-	    static_cast<uint32_t>(std::min<size_t>(data_size, std::numeric_limits<uint32_t>::max()));
-	info->num_audio_unit_samples   = 1;
-	info->num_audio_unit_per_frame = 1;
-	info->num_audio_frame_samples  = 1;
-	return OK;
+	return Ngs2ParseAtrac9Riff(data, data_size, info);
 }
 
 int KYTY_SYSV_ABI Ngs2CalcWaveformBlock(const Ngs2WaveformFormat* format, uint32_t sample_pos,
@@ -2653,8 +2928,8 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
 	switch (voice->rack->type) {
 		case Ngs2RackType::Submixer: {
 			EXIT_NOT_IMPLEMENTED(state_size != sizeof(Ngs2SubmixerVoiceState));
-			auto* submixer = reinterpret_cast<Ngs2SubmixerVoiceState*>(state);
-			*submixer     = {};
+			auto* submixer                    = reinterpret_cast<Ngs2SubmixerVoiceState*>(state);
+			*submixer                         = {};
 			submixer->voice_state.state_flags = Ngs2GetStateFlags(voice);
 			LOGF("\t state_flags = %u\n", submixer->voice_state.state_flags);
 			break;

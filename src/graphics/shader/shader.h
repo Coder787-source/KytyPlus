@@ -10,9 +10,21 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Libs::Graphics {
+
+namespace ShaderError {
+
+[[nodiscard]] inline bool Fail(std::string* error, std::string_view message) {
+	if (error != nullptr) {
+		error->assign(message.data(), message.size());
+	}
+	return false;
+}
+
+} // namespace ShaderError
 
 namespace HW {
 struct VertexShaderInfo;
@@ -22,8 +34,6 @@ struct ShaderRegisters;
 } // namespace HW
 
 enum class ShaderType { Unknown, Vertex, Pixel, Fetch, Compute };
-
-enum class ShaderLaneMaskMode { NativeWave, PerInvocation };
 
 namespace ShaderRecompiler::IR {
 struct Program;
@@ -39,22 +49,16 @@ struct ShaderStageRuntime {
 	}
 };
 
+using ShaderSpecializationMemoryReader = bool (*)(void* userdata, uint64_t address,
+                                                  uint32_t* value);
+
 // Resolves an immutable native shader plan against current user data. The prior stage is preserved
 // if any ReadConst, snapshot, or specialization check fails.
-bool ShaderMaterializeStageRuntime(std::shared_ptr<const ShaderRecompiler::IR::Program> program,
-                                   std::span<const uint32_t> user_data, uint64_t shader_base,
-                                   ShaderStageRuntime& stage, std::string* error);
-
-struct ShaderId {
-	uint32_t              hash0 = 0;
-	uint32_t              crc32 = 0;
-	std::vector<uint32_t> ids;
-
-	bool operator==(const ShaderId& other) const {
-		return hash0 == other.hash0 && crc32 == other.crc32 && ids == other.ids;
-	}
-	bool operator!=(const ShaderId& other) const { return !(*this == other); }
-};
+bool ShaderMaterializeStageRuntime(
+    std::shared_ptr<const ShaderRecompiler::IR::Program> program,
+    std::span<const uint32_t> user_data, uint64_t shader_base, ShaderStageRuntime& stage,
+    std::string* error, ShaderSpecializationMemoryReader read_specialization_memory = nullptr,
+    void* read_memory_data = nullptr);
 
 constexpr uint32_t DstSel(uint32_t x, uint32_t y = 0, uint32_t z = 0, uint32_t w = 0) {
 	return x | (y << 3u) | (z << 6u) | (w << 9u);
@@ -69,25 +73,29 @@ struct ShaderVertexInputInfo {
 
 	ShaderBufferResource    resources[RES_MAX];
 	ShaderVertexDestination resources_dst[RES_MAX];
-	int                     resource_fetch_components[RES_MAX] = {};
 	ShaderVertexInputBuffer buffers[RES_MAX];
 	ShaderStageRuntime      stage;
-	int                     resources_num     = 0;
-	int                     fetch_shader_reg  = 0;
-	int                     fetch_attrib_reg  = 0;
-	int                     fetch_buffer_reg  = 0;
-	int                     buffers_num       = 0;
-	int                     export_count      = 0;
-	uint32_t                param_export_mask = 0;
-	bool                    fetch_external    = false;
-	bool                    fetch_embedded    = false;
+	int                     resources_num       = 0;
+	int                     fetch_shader_reg    = 0;
+	int                     fetch_attrib_reg    = 0;
+	int                     fetch_buffer_reg    = 0;
+	int                     buffers_num         = 0;
+	int                     export_count        = 0;
+	uint32_t                scratch_size_dwords = 0;
+	uint32_t                param_export_mask   = 0;
+	uint32_t                pa_cl_vs_out_cntl    = 0;
+	bool                    fetch_external      = false;
+	bool                    fetch_embedded      = false;
 };
 
 struct ShaderComputeInputInfo {
 	uint32_t           threads_num[3]             = {0, 0, 0};
 	uint32_t           dispatch_threads_num[3]    = {0, 0, 0};
+	uint32_t           lds_size_dwords            = 0;
+	uint32_t           scratch_size_dwords        = 0;
 	bool               group_id[3]                = {false, false, false};
 	bool               dispatch_thread_dimensions = false;
+	bool               needs_lds_barriers          = false;
 	uint32_t           wave_size                  = 64;
 	int                thread_ids_num             = 0;
 	int                workgroup_register         = 0;
@@ -99,11 +107,13 @@ struct ShaderPixelInputInfo {
 	uint32_t                                       interpolator_settings[32]    = {0};
 	uint32_t                                       input_num                    = 0;
 	uint32_t                                       ps_system_input_base         = 0;
+	uint32_t                                       custom_interpolation_mask    = 0;
+	uint32_t                                       ps_perspective_center_vgpr   = UINT32_MAX;
 	uint8_t                                        target_output_mode[8]        = {};
 	std::array<Prospero::ColorComponentMapping, 8> target_export_mapping        = {};
 	uint32_t                                       mrt_output_mask              = 0;
-	uint32_t                                       descriptor_set               = 0;
 	uint32_t                                       push_constant_offset         = 0;
+	uint32_t                                       scratch_size_dwords          = 0;
 	bool                                           ps_pos_x                     = false;
 	bool                                           ps_pos_y                     = false;
 	bool                                           ps_pos_xy                    = false;
@@ -122,10 +132,17 @@ struct ShaderPixelInputInfo {
 	bool HasPositionInput() const { return ps_pos_x || ps_pos_y || ps_pos_z || ps_pos_w; }
 };
 
+union ShaderStageInputInfo {
+	const ShaderVertexInputInfo*  vertex;
+	const ShaderPixelInputInfo*   pixel;
+	const ShaderComputeInputInfo* compute = nullptr;
+};
+
 uint32_t ShaderPixelParameterMappedLocation(const ShaderPixelInputInfo& info, uint32_t input);
 uint32_t ShaderPixelParameterLocation(const ShaderPixelInputInfo& info,
                                       std::span<const uint32_t> active_inputs, uint32_t input);
 bool     ShaderPixelParameterIsFlat(const ShaderPixelInputInfo& info, uint32_t input);
+bool     ShaderPixelParameterIsCustom(const ShaderPixelInputInfo& info, uint32_t input);
 
 struct ShaderSharp {
 	uint16_t offset_dw : 15;
@@ -217,6 +234,7 @@ struct ShaderMappedData {
 	ShaderSemantic* input_semantics     = nullptr;
 	uint32_t        num_input_semantics = 0;
 	uint32_t        code_size_bytes     = 0;
+	uint32_t        scratch_size_dwords = 0;
 };
 
 void ShaderInit();
@@ -225,30 +243,6 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
 void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);
 void     ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info);
 void     ShaderDbgDumpInputInfo(const ShaderComputeInputInfo& info);
-ShaderId ShaderGetIdVS(const HW::VertexShaderInfo& regs, const ShaderVertexInputInfo& input_info,
-                       bool include_bind_specialization);
-ShaderId ShaderGetIdPS(const HW::PixelShaderInfo& regs, const ShaderPixelInputInfo& input_info,
-                       bool include_bind_specialization);
-ShaderId ShaderGetIdCS(const HW::ComputeShaderInfo& regs, const ShaderComputeInputInfo& input_info,
-                       bool include_bind_specialization);
-// Returned SPIR-V spans are read-only views backed by the shader program cache.
-bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
-                         ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& input_info,
-                         std::span<const uint32_t>& spirv);
-bool ShaderCompileInfoPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
-                         ShaderLaneMaskMode lane_mask_mode, const ShaderVertexInputInfo& vs_info,
-                         std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
-                         ShaderPixelInputInfo& input_info, std::span<const uint32_t>& spirv);
-bool ShaderCompileInfoCS(const HW::ComputeShaderInfo& regs, const HW::ShaderRegisters& sh,
-                         ShaderComputeInputInfo& input_info, std::span<const uint32_t>& spirv);
-bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
-                          ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& input_info,
-                          std::vector<uint32_t>& spirv);
-bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
-                          ShaderLaneMaskMode lane_mask_mode, ShaderPixelInputInfo& input_info,
-                          std::vector<uint32_t>& spirv);
-bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderRegisters& sh,
-                          ShaderComputeInputInfo& input_info, std::vector<uint32_t>& spirv);
 bool ShaderAddressValid(uint64_t addr);
 
 } // namespace Libs::Graphics

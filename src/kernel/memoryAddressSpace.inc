@@ -44,9 +44,9 @@ public:
 
 	explicit GuestBackingStore(uint64_t size): m_size(size) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-		m_handle = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE,
-		                              static_cast<DWORD>(m_size >> 32u),
-		                              static_cast<DWORD>(m_size & 0xffffffffu), nullptr);
+		m_handle = CreateFileMappingA(
+		    INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE | SEC_COMMIT,
+		    static_cast<DWORD>(m_size >> 32u), static_cast<DWORD>(m_size & 0xffffffffu), nullptr);
 		if (m_handle == nullptr) {
 			LOGF_COLOR(Log::Color::Red,
 			           "\t direct-memory backing: CreateFileMapping failed: 0x%08" PRIx32 "\n",
@@ -186,6 +186,43 @@ public:
 		    vaddr, size, [destination](uint8_t* backing, uint64_t data_offset, size_t bytes) {
 			    std::memcpy(destination + data_offset, backing, bytes);
 		    });
+	}
+
+	bool TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size) {
+		if (!IsAvailable() || data == nullptr || size == 0 || UINT64_MAX - vaddr < size) {
+			return false;
+		}
+
+		std::lock_guard lock(m_mutex);
+		const auto      end   = vaddr + size;
+		auto            first = m_maps.lower_bound(vaddr);
+		if (first != m_maps.begin()) {
+			auto previous = std::prev(first);
+			if (previous->second.vaddr + previous->second.size > vaddr) {
+				first = previous;
+			}
+		}
+		for (auto mapping = first; mapping != m_maps.end() && mapping->second.vaddr < end;
+		     ++mapping) {
+			const auto& entry = mapping->second;
+			const auto  start = std::max(vaddr, entry.vaddr);
+			const auto  bytes = std::min(end, entry.vaddr + entry.size) - start;
+			if (!RangeOk(entry.backing_offset + start - entry.vaddr, bytes)) {
+				return false;
+			}
+		}
+
+		auto* destination = static_cast<uint8_t*>(data);
+		std::memset(destination, 0, size);
+		for (auto mapping = first; mapping != m_maps.end() && mapping->second.vaddr < end;
+		     ++mapping) {
+			const auto& entry  = mapping->second;
+			const auto  start  = std::max(vaddr, entry.vaddr);
+			const auto  bytes  = std::min(end, entry.vaddr + entry.size) - start;
+			const auto  offset = entry.backing_offset + start - entry.vaddr;
+			std::memcpy(destination + start - vaddr, m_backing_base + offset, bytes);
+		}
+		return true;
 	}
 
 	bool MapExistingPlaceholderFixed(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
@@ -622,7 +659,16 @@ public:
 #endif
 		ReserveGuestRegions();
 		m_backing = new GuestBackingStore(backing_size);
-		EXIT_IF(!m_backing->IsAvailable());
+		if (!m_backing->IsAvailable()) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+			EXIT("could not reserve %" PRIu64 " MB for guest direct memory. Windows commits\n"
+			     "this up front, so the paging file is usually what needs to be larger.\n",
+			     backing_size / (1024U * 1024U));
+#else
+			EXIT("could not reserve %" PRIu64 " MB for guest direct memory\n",
+			     backing_size / (1024U * 1024U));
+#endif
+		}
 	}
 
 	~GuestAddressSpace() {
@@ -692,6 +738,10 @@ public:
 
 	bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 		return m_backing->TryReadBacking(vaddr, data, size);
+	}
+
+	bool TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size) {
+		return m_backing->TryReadSparseBacking(vaddr, data, size);
 	}
 
 	bool BackingContains(uint64_t vaddr, uint64_t size) { return m_backing->Contains(vaddr, size); }

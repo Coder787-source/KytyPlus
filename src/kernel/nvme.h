@@ -12,7 +12,8 @@
 
 namespace Libs::LibKernel::Nvme {
 
-KYTY_SUBSYSTEM_DEFINE(NvmeStorage);
+// NVMe 1.4 register/constant definitions only (no subsystem registration).
+// The MMIO-attached NVMe LLE device lives in common/ps5_nvme_lle.{h,cpp}.
 
 // =============================================================================
 // NVMe 1.4 Constants

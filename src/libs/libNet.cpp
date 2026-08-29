@@ -113,6 +113,10 @@ int KYTY_SYSV_ABI NetResolverCreate(const char* name, int memid, int flags) {
 	return NET_CALL(Net::NetResolverCreate(name, memid, flags));
 }
 
+int KYTY_SYSV_ABI NetResolverDestroy(int rid) {
+	return NET_CALL(Net::NetResolverDestroy(rid));
+}
+
 int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr, int timeout,
                                        int retry, int flags) {
 	return NET_CALL(Net::NetResolverStartNtoa(rid, hostname, addr, timeout, retry, flags));
@@ -194,6 +198,7 @@ LIB_DEFINE(InitNet_1_Net) {
 	LIB_FUNC("dgJBaeJnGpo", LibNet::NetPoolCreate);
 	LIB_FUNC("K7RlrTkI-mw", LibNet::NetPoolDestroy);
 	LIB_FUNC("C4UgDHHPvdw", LibNet::NetResolverCreate);
+	LIB_FUNC("kJlYH5uMAWI", LibNet::NetResolverDestroy);
 	LIB_FUNC("Nd91WaWmG2w", LibNet::NetResolverStartNtoa);
 	LIB_FUNC("8Kcp5d-q1Uo", LibNet::NetInetPton);
 	LIB_FUNC("9vA2aW+CHuA", LibNet::NetInetNtop);
@@ -1403,6 +1408,22 @@ LIB_DEFINE(InitNet_1_NetCtl) {
 }
 
 } // namespace LibNetCtl
+
+namespace LibNpCommerce {
+
+LIB_VERSION("NpCommerce", 1, "NpCommerce", 1, 1);
+
+static int KYTY_SYSV_ABI NpCommerceDialogUpdateStatus() {
+	PRINT_NAME();
+
+	return 0; // SCE_COMMON_DIALOG_STATUS_NONE
+}
+
+LIB_DEFINE(InitNet_1_NpCommerce) {
+	LIB_FUNC("LR5cwFMMCVE", NpCommerceDialogUpdateStatus);
+}
+
+} // namespace LibNpCommerce
 
 namespace LibNpManager {
 
@@ -3935,6 +3956,7 @@ LIB_DEFINE(InitNet_1) {
 	LibHttp::InitNet_1_Http(s);
 	LibHttp2::InitNet_1_Http2(s);
 	LibNetCtl::InitNet_1_NetCtl(s);
+	LibNpCommerce::InitNet_1_NpCommerce(s);
 	LibNpManager::InitNet_1_NpManager(s);
 	LibNpSessionSignaling::InitNet_1_NpSessionSignaling(s);
 	LibNpEntitlementAccess::InitNet_1_NpEntitlementAccess(s);

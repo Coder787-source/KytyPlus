@@ -1,6 +1,4 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
-#include "graphics/host_gpu/renderer/pipeline/asyncPipelineCompiler.h"
-#include "common/emulatorConfig.h"
 
 #include "common/assert.h"
 #include "common/file.h"
@@ -11,26 +9,66 @@
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
-#include "graphics/host_gpu/renderer/pipelineCacheData.h"
-#include "graphics/host_gpu/renderer/polyOffsetBias.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/shader/shaderCompiler.h"
+#include "kytyGitVersion.h"
+#include "loader/systemContent.h"
 
+#include <algorithm>
 #include <atomic>
-#include <cmath>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <limits>
 #include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
+
+#include <fmt/format.h>
+#include <xxhash.h>
 
 namespace Libs::Graphics {
 
 namespace {
 
-constexpr auto   kDriverCachePath    = "_Cache/vulkan_pipeline_cache.bin";
-constexpr size_t kMaxDriverCacheSize = 64u * 1024u * 1024u;
+std::string DriverCacheSignature(const vk::PhysicalDeviceProperties& properties) {
+	constexpr char hex[] = "0123456789abcdef";
+	std::string    uuid(VK_UUID_SIZE * 2, '0');
+	for (size_t i = 0; i < VK_UUID_SIZE; i++) {
+		uuid[i * 2]     = hex[properties.pipelineCacheUUID[i] >> 4u];
+		uuid[i * 2 + 1] = hex[properties.pipelineCacheUUID[i] & 0xfu];
+	}
+	return fmt::format("KytyPC1:{}:{:08x}:{:08x}:{:08x}:{}\n", KYTY_GIT_REVISION,
+	                   properties.vendorID, properties.deviceID, properties.driverVersion, uuid);
+}
+
+std::string PipelineCacheTitleId() {
+	std::string title_id;
+	if ((!Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) || title_id.empty()) &&
+	    (!Loader::SystemContentParamSfoGetString("CONTENT_ID", &title_id) || title_id.empty())) {
+		return {};
+	}
+	if (!std::ranges::all_of(title_id, [](unsigned char c) {
+		    return std::isalnum(c) != 0 || c == '-' || c == '_';
+	    })) {
+		return {};
+	}
+	return title_id;
+}
+
+template <typename... Args>
+void PipelineCacheLog(fmt::format_string<Args...> format, Args&&... args) {
+	auto message = fmt::format(format, std::forward<Args>(args)...);
+	message += '\n';
+	if (Log::GetDirection() != Log::Direction::Console) {
+		std::fwrite(message.data(), 1, message.size(), stdout);
+		std::fflush(stdout);
+	}
+	Log::Write(message);
+	Log::Flush();
+}
 
 void NormalizeStaticParamsForDynamicState(PipelineStaticParameters& static_params) {
 	static_params.viewport_scale[0]  = 0.5f;
@@ -48,111 +86,283 @@ void NormalizeStaticParamsForDynamicState(PipelineStaticParameters& static_param
 
 } // namespace
 
-PipelineCache::PipelineCache(GraphicContext& graphics, DescriptorCache& descriptor_cache)
-    : m_graphics(graphics), m_descriptor_cache(descriptor_cache) {
+struct PipelineCache::ProgramCache {
+	struct SourceKey {
+		ShaderType stage = ShaderType::Unknown;
+		uint64_t   hash  = 0;
+
+		bool operator==(const SourceKey&) const = default;
+	};
+
+	struct Permutation {
+		std::vector<uint32_t>                               static_key;
+		std::shared_ptr<const ShaderRecompiler::IR::Program> program;
+		ShaderProgram                                       handle;
+	};
+
+	struct SourceKeyHash {
+		std::size_t operator()(const SourceKey& key) const {
+			std::size_t hash = static_cast<std::size_t>(key.stage);
+			PipelineKeyHash::Mix(hash, static_cast<std::size_t>(key.hash));
+			if constexpr (sizeof(std::size_t) < sizeof(uint64_t)) {
+				PipelineKeyHash::Mix(hash, static_cast<std::size_t>(key.hash >> 32u));
+			}
+			return hash;
+		}
+	};
+
+	static uint64_t MixId(uint64_t hash, uint64_t value) {
+		return hash ^ (value + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u));
+	}
+
+	static constexpr std::size_t MaxStaticKeyWords =
+	    5 + ShaderVertexInputInfo::RES_MAX * 17;
+
+	template <typename InputInfo>
+	ShaderProgram Get(const ShaderParams& params, InputInfo& input_info) {
+		constexpr ShaderType stage = [] {
+			if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
+				return ShaderType::Vertex;
+			} else if constexpr (std::is_same_v<InputInfo, ShaderPixelInputInfo>) {
+				return ShaderType::Pixel;
+			} else {
+				static_assert(std::is_same_v<InputInfo, ShaderComputeInputInfo>);
+				return ShaderType::Compute;
+			}
+		}();
+
+		BuildStageStaticKey(input_info, key_scratch);
+		auto& permutations = programs[{stage, params.hash}];
+		for (const auto& permutation: permutations) {
+			if (permutation.static_key == key_scratch &&
+			    MaterializeProgram(permutation.program, params, input_info)) {
+				return permutation.handle;
+			}
+		}
+
+		const auto module = CompileProgram(device, params, input_info);
+		EXIT_IF(module == nullptr || !input_info.stage);
+		uint64_t id = MixId(MixId(params.hash, static_cast<uint64_t>(stage)), permutations.size());
+		if (id == 0) {
+			id = 1;
+		}
+		const ShaderProgram handle {.id = id, .module = module};
+		permutations.push_back({key_scratch, input_info.stage.program, handle});
+
+		std::printf("Num compiled %u shaders\n", ++num_compiled);
+		return handle;
+	}
+
+	explicit ProgramCache(vk::Device device): device(device) {
+		key_scratch.reserve(MaxStaticKeyWords);
+	}
+
+	std::unordered_map<SourceKey, std::vector<Permutation>, SourceKeyHash> programs;
+	std::vector<uint32_t> key_scratch;
+	vk::Device device;
+	uint32_t   num_compiled = 0;
+};
+
+PipelineCache::PipelineCache(GraphicContext& graphics)
+    : m_graphics(graphics), m_program_cache(std::make_unique<ProgramCache>(graphics.device)) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-	LoadDriverCache();
+	InitializeDriverCache();
 }
 
 PipelineCache::~PipelineCache() {
-	SaveDriverCache();
-
-	// Stop worker threads before destroying any Vulkan handles they might be
-	// compiling into. Shutdown() drains the queue and joins all workers on the
-	// main thread, so no worker outlives the device.
-	m_async_compiler.reset();
-
+	Save();
 	auto destroy = [this](const auto& pipelines) {
 		for (const auto& [key, pipeline]: pipelines) {
 			(void)key;
 			m_graphics.device.destroyPipeline(pipeline->pipeline, nullptr);
 			m_graphics.device.destroyPipelineLayout(pipeline->pipeline_layout, nullptr);
+			m_graphics.device.destroyDescriptorSetLayout(pipeline->descriptor_set_layout, nullptr);
 		}
 	};
 	destroy(m_graphics_pipelines);
 	destroy(m_compute_pipelines);
-
+	for (const auto& [key, permutations]: m_program_cache->programs) {
+		(void)key;
+		for (const auto& permutation: permutations) {
+			m_graphics.device.destroyShaderModule(permutation.handle.module, nullptr);
+		}
+	}
 	if (m_driver_cache != nullptr) {
 		m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
-		m_driver_cache = nullptr;
 	}
 }
 
-void PipelineCache::LoadDriverCache() {
+void PipelineCache::InitializeDriverCache() {
+	const auto title_id = PipelineCacheTitleId();
+	if (title_id.empty()) {
+		return;
+	}
+	if (KYTY_BUILD != KYTY_BUILD_RELEASE) {
+		PipelineCacheLog("Vulkan pipeline cache: disabled (non-Release build)");
+		return;
+	}
+	const std::string_view git_hash     = KYTY_GIT_HASH;
+	const std::string_view git_revision = KYTY_GIT_REVISION;
+	if (git_hash == "unknown" || git_revision == "unknown") {
+		PipelineCacheLog("Vulkan pipeline cache: disabled (unknown git revision)");
+		return;
+	}
+	if (git_hash.ends_with("-dirty")) {
+		PipelineCacheLog("Vulkan pipeline cache: disabled (dirty build)");
+		return;
+	}
+
+	m_driver_cache_path = std::filesystem::path("_PipelineCache") / (title_id + ".bin");
+	const auto path         = Common::PathToString(m_driver_cache_path);
+	const bool cache_exists = Common::File::IsFileExisting(m_driver_cache_path);
+	if (cache_exists) {
+		PipelineCacheLog("Vulkan pipeline cache: loading {}", path);
+	} else {
+		PipelineCacheLog("Vulkan pipeline cache: initializing {}", path);
+	}
 	std::vector<uint8_t> initial_data;
-	if (Common::File::IsFileExisting(kDriverCachePath)) {
-		Common::File file(kDriverCachePath, Common::File::Mode::Read);
-		if (!file.IsInvalid() && file.Size() <= kMaxDriverCacheSize) {
-			auto buffer = file.ReadWholeBuffer();
-			initial_data.resize(buffer.Size());
-			if (!initial_data.empty()) {
-				std::memcpy(initial_data.data(), buffer.GetDataConst(), buffer.Size());
-			}
-			if (!PipelineCacheDataIsCompatible(initial_data,
-			                                   m_graphics.GetPhysicalDeviceProperties())) {
-				LOGF("PipelineCache: ignoring incompatible driver cache\n");
+	if (cache_exists) {
+		Common::File file(m_driver_cache_path, Common::File::Mode::Read);
+		const auto   file_size = file.IsInvalid() ? 0 : file.Size();
+		const auto signature = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties());
+		if (file_size >= signature.size() + sizeof(uint64_t) &&
+		    file_size <= std::numeric_limits<uint32_t>::max()) {
+			std::string cached_signature(signature.size(), '\0');
+			uint64_t    payload_hash = 0;
+			initial_data.resize(file_size - signature.size() - sizeof(payload_hash));
+			uint32_t signature_read = 0;
+			uint32_t hash_read      = 0;
+			uint32_t payload_read   = 0;
+			file.Read(cached_signature.data(), static_cast<uint32_t>(cached_signature.size()),
+			          &signature_read);
+			file.Read(&payload_hash, sizeof(payload_hash), &hash_read);
+			file.Read(initial_data.data(), static_cast<uint32_t>(initial_data.size()), &payload_read);
+			file.Close();
+			if (signature_read != cached_signature.size() || hash_read != sizeof(payload_hash) ||
+			    payload_read != initial_data.size() || cached_signature != signature ||
+			    XXH3_64bits(initial_data.data(), initial_data.size()) != payload_hash) {
 				initial_data.clear();
+				PipelineCacheLog(
+				    "Vulkan pipeline cache: invalidating {} (driver, emulator, or data mismatch)",
+				    path);
 			}
+		} else {
+			file.Close();
+			PipelineCacheLog("Vulkan pipeline cache: invalidating {} (invalid file size)",
+			                 path);
 		}
 	}
 
-	vk::PipelineCacheCreateInfo create_info {};
-	create_info.initialDataSize = initial_data.size();
-	create_info.pInitialData    = initial_data.empty() ? nullptr : initial_data.data();
-
-	auto result = m_graphics.device.createPipelineCache(&create_info, nullptr, &m_driver_cache);
+	vk::PipelineCacheCreateInfo create {};
+	create.sType           = vk::StructureType::ePipelineCacheCreateInfo;
+	create.initialDataSize = initial_data.size();
+	create.pInitialData    = initial_data.empty() ? nullptr : initial_data.data();
+	auto result = m_graphics.device.createPipelineCache(&create, nullptr, &m_driver_cache);
 	if (result != vk::Result::eSuccess && !initial_data.empty()) {
-		LOGF("PipelineCache: cached data rejected (%s), retrying empty\n",
-		     VulkanToString(result).c_str());
-		create_info.initialDataSize = 0;
-		create_info.pInitialData    = nullptr;
-		result = m_graphics.device.createPipelineCache(&create_info, nullptr, &m_driver_cache);
+		PipelineCacheLog("Vulkan pipeline cache: driver rejected {} ({}); starting empty", path,
+		                 VulkanToString(result));
+		initial_data.clear();
+		create.initialDataSize = 0;
+		create.pInitialData    = nullptr;
+		result = m_graphics.device.createPipelineCache(&create, nullptr, &m_driver_cache);
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess || m_driver_cache == nullptr);
+	if (result != vk::Result::eSuccess) {
+		PipelineCacheLog("Vulkan pipeline cache: disabled ({})", VulkanToString(result));
+		m_driver_cache = nullptr;
+		return;
+	}
+	if (!initial_data.empty()) {
+		PipelineCacheLog("Vulkan pipeline cache: loaded {} bytes from {}", initial_data.size(),
+		                 path);
+	} else {
+		PipelineCacheLog("Vulkan pipeline cache: initialized empty");
+	}
 }
 
-void PipelineCache::SaveDriverCache() const {
+void PipelineCache::Save() {
+	Common::LockGuard lock(m_mutex);
 	if (m_driver_cache == nullptr) {
 		return;
 	}
 
-	size_t size   = 0;
-	auto   result = m_graphics.device.getPipelineCacheData(m_driver_cache, &size, nullptr);
-	if (result != vk::Result::eSuccess || size == 0 || size > kMaxDriverCacheSize ||
+	size_t               size = 0;
+	vk::Result           result;
+	std::vector<uint8_t> payload;
+	for (uint32_t attempt = 0; attempt < 3; attempt++) {
+		size   = 0;
+		result = m_graphics.device.getPipelineCacheData(m_driver_cache, &size, nullptr);
+		if (result != vk::Result::eSuccess || size == 0 ||
+		    size > std::numeric_limits<uint32_t>::max()) {
+			break;
+		}
+		payload.resize(size);
+		result = m_graphics.device.getPipelineCacheData(m_driver_cache, &size, payload.data());
+		if (result != vk::Result::eIncomplete) {
+			break;
+		}
+	}
+	if (result != vk::Result::eSuccess || size == 0 ||
 	    size > std::numeric_limits<uint32_t>::max()) {
-		LOGF("PipelineCache: could not query driver cache (%s, size=%" PRIu64 ")\n",
-		     VulkanToString(result).c_str(), static_cast<uint64_t>(size));
+		PipelineCacheLog("Vulkan pipeline cache: save failed ({}, {} bytes)",
+		                 VulkanToString(result), size);
 		return;
 	}
-
-	std::vector<uint8_t> data(size);
-	result = m_graphics.device.getPipelineCacheData(m_driver_cache, &size, data.data());
-	if (result != vk::Result::eSuccess || size == 0) {
-		LOGF("PipelineCache: could not read driver cache (%s)\n", VulkanToString(result).c_str());
+	payload.resize(size);
+	auto prefix = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties());
+	const auto payload_hash = XXH3_64bits(payload.data(), payload.size());
+	prefix.append(reinterpret_cast<const char*>(&payload_hash), sizeof(payload_hash));
+	if (!Common::File::CreateDirectories(m_driver_cache_path.parent_path())) {
+		PipelineCacheLog("Vulkan pipeline cache: failed to create cache directory");
 		return;
 	}
-	data.resize(size);
-
-	const auto path = std::filesystem::path(kDriverCachePath);
-	if (!Common::File::CreateDirectories(path.parent_path())) {
-		LOGF("PipelineCache: could not create cache directory\n");
+	auto temp_path = m_driver_cache_path;
+	temp_path += ".tmp";
+	Common::File file;
+	uint32_t     prefix_written  = 0;
+	uint32_t     payload_written = 0;
+	if (file.Create(temp_path)) {
+		file.Write(prefix.data(), static_cast<uint32_t>(prefix.size()), &prefix_written);
+		file.Write(payload.data(), static_cast<uint32_t>(payload.size()), &payload_written);
+	}
+	const bool flushed = !file.IsInvalid() && file.Flush();
+	file.Close();
+	if (prefix_written != prefix.size() || payload_written != payload.size() || !flushed ||
+	    !Common::File::RenameFile(temp_path, m_driver_cache_path)) {
+		PipelineCacheLog("Vulkan pipeline cache: failed to write {}",
+		                 Common::PathToString(m_driver_cache_path));
 		return;
 	}
-	Common::File file(path, Common::File::Mode::Write);
-	if (file.IsInvalid()) {
-		LOGF("PipelineCache: could not open cache file for writing\n");
-		return;
-	}
-	file.Write(data.data(), static_cast<uint32_t>(data.size()));
+	PipelineCacheLog("Vulkan pipeline cache: saved {} bytes to {}", payload.size(),
+	                 Common::PathToString(m_driver_cache_path));
+	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
+	m_driver_cache = nullptr;
 }
 
-void PipelineCache::MaybeSaveDriverCache() {
-	m_new_pipeline_count++;
-	// Persist at 1, 2, 4, 8... new pipelines. This survives quick_exit without adding disk I/O
-	// to every pipeline compilation.
-	if ((m_new_pipeline_count & (m_new_pipeline_count - 1u)) == 0) {
-		SaveDriverCache();
-	}
+ShaderProgram PipelineCache::GetVertexProgram(const HW::VertexShaderInfo& regs,
+                                              const HW::ShaderRegisters&  sh,
+                                              ShaderVertexInputInfo&      input_info) {
+	const auto params = PrepareProgram(regs, sh, input_info);
+	Common::LockGuard lock(m_mutex);
+	return m_program_cache->Get(params, input_info);
+}
+
+ShaderProgram PipelineCache::GetPixelProgram(
+    const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
+    const ShaderVertexInputInfo&                        vertex_info,
+    std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
+    ShaderPixelInputInfo&                               input_info) {
+	const auto params = PrepareProgram(regs, sh, vertex_info, target_export_mapping, input_info);
+	Common::LockGuard lock(m_mutex);
+	return m_program_cache->Get(params, input_info);
+}
+
+ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs,
+                                               const HW::ShaderRegisters&   sh,
+                                               ShaderComputeInputInfo&      input_info) {
+	input_info.needs_lds_barriers = !m_graphics.compute_wave64_supported;
+	const auto params             = PrepareProgram(regs, sh, input_info);
+	Common::LockGuard lock(m_mutex);
+	return m_program_cache->Get(params, input_info);
 }
 
 bool PipelineStaticParameters::operator==(const PipelineStaticParameters& other) const noexcept {
@@ -160,23 +370,22 @@ bool PipelineStaticParameters::operator==(const PipelineStaticParameters& other)
 }
 
 PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
-    RenderColorInfo* colors, uint32_t color_count, RenderDepthInfo& depth,
-    ShaderVertexInputInfo& vs_input_info, RenderCommandBuffer& command,
-    ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology, bool ps_active,
-    std::span<const uint32_t> vs_spirv, std::span<const uint32_t> ps_spirv) {
+    std::span<const RenderColorInfo> colors, const RenderDepthInfo& depth,
+    const ShaderVertexInputInfo& vs_input_info, CommandBuffer& command,
+    const ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
+    bool primitive_restart_enable, const ShaderProgram& vertex_program,
+    const ShaderProgram& pixel_program) {
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Gfx)", profiler::colors::DeepOrangeA200);
 
-	EXIT_IF(colors == nullptr);
-	EXIT_IF(color_count > RENDER_COLOR_ATTACHMENTS_MAX);
-	EXIT_IF(vs_spirv.empty());
-	EXIT_IF(ps_active && ps_spirv.empty());
+	EXIT_IF(colors.size() > RENDER_COLOR_ATTACHMENTS_MAX);
+	EXIT_IF(!vertex_program);
+	const bool ps_active = ps_input_info != nullptr;
+	EXIT_IF(ps_active && !pixel_program);
+	const auto color_count = static_cast<uint32_t>(colors.size());
 
 	Common::LockGuard lock(m_mutex);
-	auto&             ctx    = command.GetRegisters();
-	auto&             sh_ctx = command.GetShaders();
+	auto&             ctx = command.GetRegisters();
 
-	const auto&           vertex_info                              = sh_ctx.GetVs();
-	const auto&           ps_regs                                  = sh_ctx.GetPs();
 	const HW::BlendColor& bclr                                     = ctx.GetBlendColor();
 	uint32_t              color_mask[RENDER_COLOR_ATTACHMENTS_MAX] = {};
 	for (uint32_t i = 0; i < color_count; i++) {
@@ -186,13 +395,9 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 		                        : 0);
 	}
 	const HW::ModeControl& mc = ctx.GetModeControl();
-	const HW::PolyOffset& po = ctx.GetPolyOffset();
 
-	auto     vs_id = ShaderGetIdVS(vertex_info, vs_input_info, true);
-	ShaderId ps_id {};
-	if (ps_active) {
-		ps_id = ShaderGetIdPS(ps_regs, *ps_input_info, true);
-	}
+	const auto vs_id = vertex_program.id;
+	const auto ps_id = ps_active ? pixel_program.id : 0;
 
 	PipelineStaticParameters static_params {};
 	GraphicsPipeline         p {};
@@ -228,6 +433,12 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 			     depth.samples);
 		}
 	}
+	if (color_count == 0 && !with_depth) {
+		attachment_samples = render_sample_count(ctx.GetAaConfig().msaa_num_samples);
+		EXIT_IF(!static_cast<bool>(
+		    m_graphics.GetPhysicalDeviceProperties().limits.framebufferNoAttachmentsSampleCounts &
+		    vulkan_sample_count(attachment_samples)));
+	}
 	EXIT_IF(attachment_samples == 0 ||
 	        vulkan_sample_count(attachment_samples) == vk::SampleCountFlagBits {});
 
@@ -238,12 +449,12 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 		}
 	}
 
-	const auto& clip_control = ctx.GetClipControl();
-	EXIT_NOT_IMPLEMENTED(!clip_control.IsZClipModeRepresentable());
-	static_params.negative_one_to_one = !clip_control.dx_clip_space;
-	static_params.depth_clip_enable   = clip_control.IsZClipEnabled();
-	static_params.topology            = topology;
-	static_params.samples             = attachment_samples;
+	const auto& clip_control               = ctx.GetClipControl();
+	static_params.negative_one_to_one      = !clip_control.dx_clip_space;
+	static_params.depth_clip_enable        = clip_control.IsZClipEnabled();
+	static_params.topology                 = topology;
+	static_params.primitive_restart_enable = primitive_restart_enable;
+	static_params.samples                  = attachment_samples;
 	static_params.sample_shading_enable =
 	    ps_active && attachment_samples > 1 && ps_input_info->ps_sample_shading;
 	if (static_params.sample_shading_enable && !m_graphics.sample_rate_shading_enabled) {
@@ -259,25 +470,12 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	static_params.stencil_test_enable      = depth.stencil_test_enable;
 	static_params.stencil_front            = depth.stencil_static_front;
 	static_params.stencil_back             = depth.stencil_static_back;
-	PolyOffsetBias bias {};
-	switch (ResolvePolyOffsetBias(mc, po, bias)) {
-		case PolyOffsetBiasResult::UnsupportedPerFace:
-			EXIT("per-face polygon offset cannot be represented by Vulkan core depth bias\n");
-		case PolyOffsetBiasResult::NonFinite:
-			EXIT("polygon offset contains a non-finite value\n");
-		case PolyOffsetBiasResult::Enabled:
-			static_params.depth_bias_enable   = true;
-			static_params.depth_bias_constant = bias.constant;
-			static_params.depth_bias_clamp    = bias.clamp;
-			static_params.depth_bias_slope    = bias.slope;
-			break;
-		case PolyOffsetBiasResult::Disabled: break;
-	}
 	for (uint32_t i = 0; i < RENDER_COLOR_ATTACHMENTS_MAX; i++) {
 		static_params.color_mask[i] = color_mask[i];
 	}
-	static_params.cull_back  = mc.cull_back;
-	static_params.cull_front = mc.cull_front;
+	const bool rect_list     = topology == vk::PrimitiveTopology::ePatchList;
+	static_params.cull_back  = !rect_list && mc.cull_back;
+	static_params.cull_front = !rect_list && mc.cull_front;
 	static_params.face       = mc.face;
 
 	for (uint32_t i = 0; i < color_count; i++) {
@@ -306,35 +504,8 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 	key.ps_shader_id  = p.ps_shader_id;
 	key.static_params = static_params;
 
-	// Last-pipeline cache: consecutive draws frequently reuse the same pipeline.
-	// Compute the hash and compare against the last-used key to skip the map lookup.
-	const std::size_t key_hash = GraphicsPipelineKeyHash {}(key);
-	if (key_hash == m_last_gfx_hash && key == m_last_gfx_key && m_last_gfx_pipeline != nullptr) {
-		return *m_last_gfx_pipeline;
-	}
-
 	if (auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
-		m_last_gfx_hash     = key_hash;
-		m_last_gfx_key      = key;
-		m_last_gfx_pipeline = iter->second.get();
 		return *iter->second;
-	}
-
-	// --- Async fast path: if async compilation is enabled and this pipeline is not
-	//     already cached or in-flight, hand the (already-built) key/rendering/static
-	//     params + copies of the SPIR-V and input info to the worker pool and return a
-	//     sentinel so the draw path skips recording until the worker publishes the
-	//     finished pipeline. Falls through to the synchronous compile below when async
-	//     is disabled or the job is already pending (rare double-submit guard).
-	if (AsyncCompilationEnabled()) {
-		if (m_async_compiler != nullptr && m_async_compiler->IsPending(key)) {
-			// Still compiling on a worker; skip this draw until it lands.
-			return AsyncPendingSentinel();
-		}
-		SubmitAsyncCompile(key, rendering, static_params, vs_input_info, ps_input_info,
-		                   vs_spirv, ps_spirv, vs_id.hash0, vs_id.crc32, ps_id.hash0,
-		                   ps_id.crc32, ps_active);
-		return AsyncPendingSentinel();
 	}
 
 	if (graphics_debug_dump_enabled()) {
@@ -342,51 +513,38 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 		if (ps_active) {
 			ShaderDbgDumpInputInfo(*ps_input_info);
 		}
-		LOGF("PipelineTrace: shader binaries VS=0x%08" PRIx32 "/0x%08" PRIx32 " words=%" PRIu64
-		     " PS=0x%08" PRIx32 "/0x%08" PRIx32 " words=%" PRIu64 "\n",
-		     vs_id.hash0, vs_id.crc32, static_cast<uint64_t>(vs_spirv.size()), ps_id.hash0,
-		     ps_id.crc32, static_cast<uint64_t>(ps_spirv.size()));
+		LOGF("PipelineTrace: shader modules VS=%" PRIu64 " module=%p PS=%" PRIu64
+		     " module=%p\n",
+		     vs_id, static_cast<void*>(vertex_program.module), ps_id,
+		     static_cast<void*>(pixel_program.module));
 	}
 
 	auto cached = std::make_unique<GraphicsPipeline>(p);
-	LogPipelineTrace("CreatePipelineInternal begin", vs_id.hash0, vs_id.crc32, ps_id.hash0,
-	                 ps_id.crc32);
-	CreatePipelineInternal(m_graphics, m_descriptor_cache, *cached, m_driver_cache, rendering,
-	                       vs_input_info, vs_spirv, ps_input_info, ps_spirv, static_params,
-	                       vs_id.hash0, vs_id.crc32, ps_id.hash0, ps_id.crc32, ps_active);
-	LogPipelineTrace("CreatePipelineInternal done", vs_id.hash0, vs_id.crc32, ps_id.hash0,
-	                 ps_id.crc32);
+	LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
+	CreatePipelineInternal(m_graphics, *cached, rendering, vs_input_info, vertex_program.module,
+	                       ps_input_info, pixel_program.module, static_params, m_driver_cache);
+	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 
-	// Cache the newly created pipeline for fast consecutive-draw lookup.
-	const std::size_t new_hash = GraphicsPipelineKeyHash {}(key);
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
-	MaybeSaveDriverCache();
-
-	m_last_gfx_hash     = new_hash;
-	m_last_gfx_key      = iter->first;
-	m_last_gfx_pipeline = iter->second.get();
 
 	return *iter->second;
 }
 
 PipelineCache::ComputePipeline&
-PipelineCache::CreateComputePipeline(ShaderComputeInputInfo&      input_info,
-                                     const HW::ComputeShaderInfo& cs_regs,
-                                     std::span<const uint32_t>    cs_spirv) {
+PipelineCache::CreateComputePipeline(ShaderComputeInputInfo& input_info,
+                                     const ShaderProgram&    compute_program) {
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Compute)", profiler::colors::RedA100);
 
-	EXIT_IF(cs_spirv.empty());
+	EXIT_IF(!compute_program);
 
 	Common::LockGuard lock(m_mutex);
 
-	auto cs_id = ShaderGetIdCS(cs_regs, input_info, true);
-
 	ComputePipeline p {};
-	p.cs_shader_id = cs_id;
+	p.cs_shader_id = compute_program.id;
 
 	ComputePipelineKey key {};
 	key.cs_shader_id = p.cs_shader_id;
@@ -400,111 +558,14 @@ PipelineCache::CreateComputePipeline(ShaderComputeInputInfo&      input_info,
 	}
 
 	auto cached = std::make_unique<ComputePipeline>(p);
-	CreatePipelineInternal(m_graphics, m_descriptor_cache, *cached, m_driver_cache, input_info,
-	                       cs_spirv);
+	CreatePipelineInternal(m_graphics, *cached, input_info, compute_program.module, m_driver_cache);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 
 	auto [iter, inserted] = m_compute_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
-	MaybeSaveDriverCache();
 
 	return *iter->second;
-}
-
-PipelineCache::GraphicsPipeline& PipelineCache::AsyncPendingSentinel() noexcept {
-	static GraphicsPipeline sentinel {};
-	sentinel.pipeline        = nullptr;
-	sentinel.pipeline_layout = nullptr;
-	return sentinel;
-}
-
-bool PipelineCache::AsyncCompilationEnabled() const noexcept {
-	return Config::AsyncPipelineCompilationEnabled();
-}
-
-bool PipelineCache::IsAsyncPending(const GraphicsPipelineKey& key) const {
-	if (!AsyncCompilationEnabled() || m_async_compiler == nullptr) {
-		return false;
-	}
-	return m_async_compiler->IsPending(key);
-}
-
-PipelineCache::PipelineLookupResult
-PipelineCache::TryGetGraphicsPipeline(const GraphicsPipelineKey& key, GraphicsPipeline*& out) {
-	Common::LockGuard lock(m_mutex);
-	if (const auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
-		out = iter->second.get();
-		return PipelineLookupResult::Ready;
-	}
-	if (AsyncCompilationEnabled() && m_async_compiler != nullptr &&
-	    m_async_compiler->IsPending(key)) {
-		out = nullptr;
-		return PipelineLookupResult::Pending;
-	}
-	out = nullptr;
-	return PipelineLookupResult::Absent;
-}
-
-void PipelineCache::PublishCompiledPipeline(GraphicsPipelineKey key,
-                                             std::unique_ptr<GraphicsPipeline> pipeline) {
-	Common::LockGuard lock(m_mutex);
-	// A synchronous CreateGraphicsPipeline call may have raced ahead and inserted
-	// the same key (e.g. if async was disabled mid-flight, or the GPU thread fell
-	// back to sync compile). Drop the duplicate rather than overwrite the live one.
-	if (m_graphics_pipelines.find(key) != m_graphics_pipelines.end()) {
-		// Destroy the losing pipeline immediately on this (worker) thread. The Vulkan
-		// device is alive (Shutdown hasn't run) and device.destroyPipeline is safe to
-		// call from a non-main thread.
-		if (pipeline && pipeline->pipeline != nullptr) {
-			m_graphics.device.destroyPipeline(pipeline->pipeline, nullptr);
-		}
-		if (pipeline && pipeline->pipeline_layout != nullptr) {
-			m_graphics.device.destroyPipelineLayout(pipeline->pipeline_layout, nullptr);
-		}
-		return;
-	}
-	auto [iter, inserted] =
-	    m_graphics_pipelines.emplace(std::move(key), std::move(pipeline));
-	(void)iter;
-	EXIT_IF(!inserted);
-	// Driver cache writes are throttled elsewhere; avoid spamming disk from workers.
-}
-
-void PipelineCache::SubmitAsyncCompile(GraphicsPipelineKey                key,
-                                        PipelineRenderingState            rendering,
-                                        PipelineStaticParameters          static_params,
-                                        const ShaderVertexInputInfo&      vs_input_info,
-                                        const ShaderPixelInputInfo*      ps_input_info,
-                                        std::span<const uint32_t>         vs_spirv,
-                                        std::span<const uint32_t>         ps_spirv,
-                                        uint32_t vs_hash0, uint32_t vs_crc32,
-                                        uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active) {
-	if (!AsyncCompilationEnabled()) {
-		return;
-	}
-	if (m_async_compiler == nullptr) {
-		m_async_compiler = std::make_unique<AsyncPipelineCompiler>(
-		    m_graphics, m_descriptor_cache, m_driver_cache, *this);
-	}
-	AsyncPipelineCompiler::CompileRequest req {};
-	req.key          = key;
-	req.rendering    = rendering;
-	req.static_params = static_params;
-	req.vs_input_info = vs_input_info;
-	if (ps_active && ps_input_info != nullptr) {
-		req.ps_input_info_storage = std::make_unique<ShaderPixelInputInfo>(*ps_input_info);
-	}
-	req.vs_spirv.assign(vs_spirv.begin(), vs_spirv.end());
-	if (ps_active) {
-		req.ps_spirv.assign(ps_spirv.begin(), ps_spirv.end());
-	}
-	req.vs_hash0  = vs_hash0;
-	req.vs_crc32  = vs_crc32;
-	req.ps_hash0  = ps_hash0;
-	req.ps_crc32  = ps_crc32;
-	req.ps_active = ps_active;
-	m_async_compiler->Submit(std::move(req));
 }
 } // namespace Libs::Graphics

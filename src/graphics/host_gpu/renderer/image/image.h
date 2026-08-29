@@ -2,12 +2,12 @@
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_IMAGE_H_
 
 #include "common/assert.h"
+#include "common/slotVector.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 
 #include <compare>
 #include <limits>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <utility>
@@ -19,27 +19,11 @@ class Buffer;
 class CommandScheduler;
 struct ImageTestAccess;
 
-struct ImageId {
-	uint32_t index      = std::numeric_limits<uint32_t>::max();
-	uint32_t generation = 0;
-
-	[[nodiscard]] explicit operator bool() const noexcept {
-		return index != std::numeric_limits<uint32_t>::max();
-	}
-	auto operator<=>(const ImageId&) const = default;
-};
+using ImageId = Common::SlotId;
 
 struct CachedImageView {
 	ImageViewInfo info;
 	vk::ImageView view = nullptr;
-};
-
-struct ImageViewCache {
-	ImageViewCache() = default;
-	KYTY_CLASS_NO_COPY(ImageViewCache);
-
-	std::mutex                   mutex;
-	std::vector<CachedImageView> views;
 };
 
 struct ImageUsage {
@@ -55,6 +39,7 @@ struct ImageBinding {
 	bool is_target     = false;
 	bool needs_rebind  = false;
 	bool force_general = false;
+	bool shader_write  = false;
 };
 
 class Image final {
@@ -156,7 +141,7 @@ public:
 
 	ImageInfo        info;
 	VulkanImage      backing;
-	ImageViewCache   views;
+	std::vector<CachedImageView> views;
 	ImageUsage       usage;
 	ImageBinding     binding;
 	bool             registered     = false;
@@ -188,8 +173,8 @@ private:
 
 namespace ImageOps {
 
-void                   Validate(const ImageInfo& info);
-[[nodiscard]] uint32_t RenderTargetTransferFormat(uint32_t bytes_per_element);
+void                                 Validate(const ImageInfo& info);
+[[nodiscard]] Prospero::BufferFormat RenderTargetTransferFormat(uint32_t bytes_per_element);
 
 } // namespace ImageOps
 

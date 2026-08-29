@@ -11,8 +11,6 @@
 
 namespace Libs::Graphics {
 
-class RenderCommandBuffer;
-
 enum class RenderColorType {
 	NoColorOutput,
 	RenderTexture,
@@ -34,7 +32,9 @@ struct RenderColorInfo {
 	uint32_t                        target_slot      = 0;
 	uint32_t                        samples          = 1;
 	Prospero::ColorComponentMapping export_mapping;
-	bool                            color_clear_enable = false;
+	bool                            color_clear_enable             = false;
+	bool                            metadata_clear_supported       = false;
+	bool                            metadata_fixed_clear_supported = false;
 	vk::ClearColorValue             color_clear_value {};
 };
 

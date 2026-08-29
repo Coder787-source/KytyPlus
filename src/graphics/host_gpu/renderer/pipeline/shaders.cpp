@@ -6,12 +6,11 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/debug.h"
-#include "graphics/host_gpu/renderer/pipeline/descriptorCache.h"
+#include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
-#include "graphics/host_gpu/renderer/pipeline/shaderSubgroup.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/rectListShader.h"
@@ -20,10 +19,13 @@
 #include <algorithm>
 #include <limits>
 #include <span>
+#include <vector>
 
 namespace Libs::Graphics {
 
 // IDK: maybe we can remove it?
+constexpr uint8_t kTemporaryVertexAttribFormat113 =
+    static_cast<uint8_t>(Prospero::VertexAttribFormat::k16_16SInt);
 constexpr uint32_t kTemporaryPs5BufferFormat121 = 121u;
 
 static bool NarrowInputFormat(vk::Format& format, uint32_t& size, uint32_t used_components) {
@@ -88,8 +90,9 @@ static bool NarrowInputFormat(vk::Format& format, uint32_t& size, uint32_t used_
 
 static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, uint32_t& size,
                            uint32_t used_components) {
-	auto fmt = res.Format();
-	if (fmt == Prospero::GpuEnumValue(Prospero::VertexAttribFormat::k16_16SInt)) {
+	const auto fmt        = res.Format();
+	const auto raw_format = res.RawFormat();
+	if (raw_format == kTemporaryVertexAttribFormat113) {
 		static bool logged_113 = false;
 		if (!logged_113) {
 			LOGF("InputFormat: temporary: accepting invalid PS5 buffer format 113 as "
@@ -99,12 +102,12 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, 
 		format = vk::Format::eR32G32B32A32Sfloat;
 		size   = 4;
 		if (NarrowInputFormat(format, size, used_components)) {
-			LOGF("InputFormat: narrowing fmt=%u to %s for used_components=%u\n", fmt,
+			LOGF("InputFormat: narrowing fmt=%u to %s for used_components=%u\n", raw_format,
 			     VulkanToString(format).c_str(), used_components);
 		}
 		return;
 	}
-	if (fmt == kTemporaryPs5BufferFormat121) {
+	if (raw_format == kTemporaryPs5BufferFormat121) {
 		static bool logged_121 = false;
 		if (!logged_121) {
 			LOGF("InputFormat: accepting PS5 buffer format 121 as vk::Format::eR16G16Sfloat\n");
@@ -113,13 +116,13 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, 
 		format = vk::Format::eR16G16Sfloat;
 		size   = 2;
 		if (NarrowInputFormat(format, size, used_components)) {
-			LOGF("InputFormat: narrowing fmt=%u to %s for used_components=%u\n", fmt,
+			LOGF("InputFormat: narrowing fmt=%u to %s for used_components=%u\n", raw_format,
 			     VulkanToString(format).c_str(), used_components);
 		}
 		return;
 	}
 
-	switch (static_cast<Prospero::BufferFormat>(fmt)) {
+	switch (fmt) {
 		case Prospero::BufferFormat::k32_32_32_32Float:
 			format = vk::Format::eR32G32B32A32Sfloat;
 			size   = 4;
@@ -329,7 +332,7 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, 
 			size   = 1;
 			break;
 		default:
-			EXIT("unknown format: fmt = %u\n", fmt);
+			EXIT("unknown format: fmt = %u\n", raw_format);
 			format = vk::Format::eUndefined;
 			size   = 4;
 			break;
@@ -386,116 +389,53 @@ static vk::BlendOp GetBlendOp(uint32_t op) {
 	return vk::BlendOp::eAdd;
 }
 
-static void CreateLayout(DescriptorCache&                   descriptor_cache,
-                         std::span<vk::DescriptorSetLayout> set_layouts, uint32_t& set_layouts_num,
-                         std::span<vk::PushConstantRange>     push_constant_info,
-                         uint32_t&                            push_constant_info_num,
-                         const ShaderRecompiler::IR::Program& program,
-                         vk::ShaderStageFlags vk_stage, DescriptorCache::Stage stage) {
-	const auto& bindings        = program.bindings;
-	const bool  need_descriptor = !bindings.descriptors.empty();
-
-	if (bindings.push_constant_size != 0) {
-		auto index = push_constant_info_num;
-
-		push_constant_info[index].stageFlags = vk_stage;
-		push_constant_info[index].offset     = bindings.push_constant_offset;
-		push_constant_info[index].size       = bindings.push_constant_size;
-		push_constant_info_num++;
-	}
-
-	if (need_descriptor) {
-		EXIT_IF(bindings.descriptor_set != set_layouts_num);
-
-		set_layouts[set_layouts_num] = descriptor_cache.GetDescriptorSetLayout(stage, program);
-		set_layouts_num++;
+static void AddLayoutBindings(std::vector<vk::DescriptorSetLayoutBinding>& descriptor_bindings,
+                              const ShaderRecompiler::IR::Program& program,
+                              vk::ShaderStageFlagBits              stage) {
+	for (const auto& binding: program.bindings.descriptors) {
+		descriptor_bindings.push_back(
+		    {ShaderRecompiler::IR::NativeBinding(program.stage, binding.kind),
+		     NativeDescriptorType(binding.kind), NativeDescriptorCount(binding), stage, nullptr});
 	}
 }
 
-static void ConfigureSubgroupSize(const GraphicContext& graphics, vk::ShaderStageFlagBits vk_stage,
-                                  const ShaderRecompiler::IR::Program&                   program,
-                                  vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo& required,
-                                  vk::PipelineShaderStageCreateInfo&                     stage) {
-	const auto config =
-	    ConfigureShaderSubgroup(ShaderSubgroupCapabilities {graphics}, vk_stage, program);
-	switch (config.mode) {
-		case ShaderSubgroupMode::Natural: return;
-		case ShaderSubgroupMode::PerInvocationGraphics: {
-			static std::atomic<uint32_t> log_count {0};
-			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-				LOGF("Vulkan running %u-lane graphics shader stage 0x%08x with per-invocation "
-				     "EXEC/VCC on the host-native subgroup\n",
-				     program.wave_size, static_cast<uint32_t>(vk_stage));
-			}
-			return;
-		}
-		case ShaderSubgroupMode::FlattenedMasks: {
-			static std::atomic<uint32_t> log_count {0};
-			if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-				LOGF("Vulkan running %u-lane shader stage 0x%08x with flattened per-invocation "
-				     "EXEC/VCC\n",
-				     program.wave_size, static_cast<uint32_t>(vk_stage));
-			}
-			return;
-		}
-		case ShaderSubgroupMode::Controlled: break;
-		case ShaderSubgroupMode::Unsupported:
-		default:
-			EXIT("Vulkan cannot run %u-lane shader stage 0x%08x: default=%u min=%u max=%u "
-			     "controlled_stages=0x%08x\n",
-			     program.wave_size, static_cast<uint32_t>(vk_stage), graphics.subgroup_size,
-			     graphics.min_subgroup_size, graphics.max_subgroup_size,
-			     static_cast<vk::ShaderStageFlags::MaskType>(
-			         graphics.required_subgroup_size_stages));
+static void CreateDescriptorLayout(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
+                                   std::span<const vk::DescriptorSetLayoutBinding> bindings) {
+	uint32_t descriptor_count = 0;
+	for (const auto& binding: bindings) {
+		descriptor_count += binding.descriptorCount;
 	}
+	pipeline.uses_push_descriptors = descriptor_count <= graphics.max_push_descriptors;
 
-	required.sType = vk::StructureType::ePipelineShaderStageRequiredSubgroupSizeCreateInfo;
-	required.requiredSubgroupSize = config.required_size;
-	stage.pNext                   = &required;
+	vk::DescriptorSetLayoutCreateInfo create {};
+	create.sType        = vk::StructureType::eDescriptorSetLayoutCreateInfo;
+	create.flags        = pipeline.uses_push_descriptors
+	                          ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+	                          : vk::DescriptorSetLayoutCreateFlags {};
+	create.bindingCount = static_cast<uint32_t>(bindings.size());
+	create.pBindings    = bindings.data();
+	EXIT_IF(graphics.device.createDescriptorSetLayout(
+	            &create, nullptr, &pipeline.descriptor_set_layout) != vk::Result::eSuccess);
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(
-    GraphicContext& graphics, DescriptorCache& descriptor_cache,
-    PipelineCache::GraphicsPipeline& pipeline, vk::PipelineCache driver_cache,
+    GraphicContext& graphics, PipelineCache::GraphicsPipeline& pipeline,
     const PipelineRenderingState& rendering, const ShaderVertexInputInfo& vs_input_info,
-    std::span<const uint32_t> vs_shader, const ShaderPixelInputInfo* ps_input_info,
-    std::span<const uint32_t> ps_shader, const PipelineStaticParameters& static_params,
-    uint32_t vs_hash0, uint32_t vs_crc32, uint32_t ps_hash0, uint32_t ps_crc32, bool ps_active) {
-	EXIT_IF(ps_active && ps_input_info == nullptr);
+    vk::ShaderModule vertex_module, const ShaderPixelInputInfo* ps_input_info,
+	vk::ShaderModule pixel_module, const PipelineStaticParameters& static_params,
+	vk::PipelineCache driver_cache) {
+	const bool ps_active = ps_input_info != nullptr;
+	EXIT_IF(vertex_module == nullptr || (ps_active && pixel_module == nullptr));
 
 	const bool rect_list = static_params.topology == vk::PrimitiveTopology::ePatchList;
 
-	vk::ShaderModule vert_shader_module         = nullptr;
 	vk::ShaderModule tess_control_shader_module = nullptr;
 	vk::ShaderModule tess_eval_shader_module    = nullptr;
-	vk::ShaderModule frag_shader_module         = nullptr;
 
 	vk::ShaderModuleCreateInfo create_info {};
-
 	create_info.sType = vk::StructureType::eShaderModuleCreateInfo;
-	create_info.pNext = nullptr;
-	create_info.flags = {};
-
-	create_info.codeSize = vs_shader.size() * 4;
-	create_info.pCode    = vs_shader.data();
-	auto result = graphics.device.createShaderModule(&create_info, nullptr, &vert_shader_module);
-	if (graphics_debug_dump_enabled()) {
-		LOGF("PipelineTrace: vkCreateShaderModule VS done result=%s module=%p\n",
-		     VulkanToString(result).c_str(), static_cast<void*>(vert_shader_module));
-	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
-
-	if (ps_active) {
-		create_info.codeSize = ps_shader.size() * 4;
-		create_info.pCode    = ps_shader.data();
-		result = graphics.device.createShaderModule(&create_info, nullptr, &frag_shader_module);
-		if (graphics_debug_dump_enabled()) {
-			LOGF("PipelineTrace: vkCreateShaderModule PS done result=%s module=%p\n",
-			     VulkanToString(result).c_str(), static_cast<void*>(frag_shader_module));
-		}
-		EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
-	}
+	vk::Result result {};
 	if (rect_list) {
 		const auto shaders =
 		    BuildRectListShaders(vs_input_info, ps_active ? ps_input_info : nullptr);
@@ -520,40 +460,27 @@ void CreatePipelineInternal(
 		EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 	}
 
-	EXIT_NOT_IMPLEMENTED(vert_shader_module == nullptr);
 	EXIT_NOT_IMPLEMENTED(
 	    rect_list && (tess_control_shader_module == nullptr || tess_eval_shader_module == nullptr));
-	EXIT_NOT_IMPLEMENTED(ps_active && frag_shader_module == nullptr);
 
-	vk::PipelineShaderStageCreateInfo                     vert_shader_stage_info {};
-	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo vert_subgroup_size {};
+	vk::PipelineShaderStageCreateInfo vert_shader_stage_info {};
 
 	vert_shader_stage_info.sType               = vk::StructureType::ePipelineShaderStageCreateInfo;
 	vert_shader_stage_info.pNext               = nullptr;
 	vert_shader_stage_info.flags               = {};
 	vert_shader_stage_info.stage               = vk::ShaderStageFlagBits::eVertex;
-	vert_shader_stage_info.module              = vert_shader_module;
+	vert_shader_stage_info.module              = vertex_module;
 	vert_shader_stage_info.pName               = "main";
 	vert_shader_stage_info.pSpecializationInfo = nullptr;
-	EXIT_IF(!vs_input_info.stage);
-	ConfigureSubgroupSize(graphics, vk::ShaderStageFlagBits::eVertex, *vs_input_info.stage.program,
-	                      vert_subgroup_size, vert_shader_stage_info);
 
-	vk::PipelineShaderStageCreateInfo                     frag_shader_stage_info {};
-	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo frag_subgroup_size {};
+	vk::PipelineShaderStageCreateInfo frag_shader_stage_info {};
 	frag_shader_stage_info.sType               = vk::StructureType::ePipelineShaderStageCreateInfo;
 	frag_shader_stage_info.pNext               = nullptr;
 	frag_shader_stage_info.flags               = {};
 	frag_shader_stage_info.stage               = vk::ShaderStageFlagBits::eFragment;
-	frag_shader_stage_info.module              = frag_shader_module;
+	frag_shader_stage_info.module              = pixel_module;
 	frag_shader_stage_info.pName               = "main";
 	frag_shader_stage_info.pSpecializationInfo = nullptr;
-	if (ps_active) {
-		EXIT_IF(!ps_input_info->stage);
-		ConfigureSubgroupSize(graphics, vk::ShaderStageFlagBits::eFragment,
-		                      *ps_input_info->stage.program, frag_subgroup_size,
-		                      frag_shader_stage_info);
-	}
 
 	vk::PipelineShaderStageCreateInfo tess_control_shader_stage_info {};
 	tess_control_shader_stage_info.sType  = vk::StructureType::ePipelineShaderStageCreateInfo;
@@ -596,9 +523,10 @@ void CreatePipelineInternal(
 
 			uint32_t attr_size       = 4;
 			auto     registers_num   = vs_input_info.resources_dst[index].registers_num;
-			auto     used_components = (vs_input_info.resource_fetch_components[index] > 0
-			                                ? vs_input_info.resource_fetch_components[index]
-			                                : registers_num);
+			const auto compiled_components =
+			    vs_input_info.stage.program->info.vertex_fetch_components[index];
+			auto used_components =
+			    compiled_components > 0 ? static_cast<int>(compiled_components) : registers_num;
 			GetInputFormat(vs_input_info.resources[index], input_attr[index].format, attr_size,
 			               static_cast<uint32_t>(used_components));
 
@@ -723,7 +651,8 @@ void CreatePipelineInternal(
 	input_assembly.pNext    = nullptr;
 	input_assembly.flags    = {};
 	input_assembly.topology = static_params.topology;
-	input_assembly.primitiveRestartEnable = VK_FALSE;
+	input_assembly.primitiveRestartEnable =
+	    static_params.primitive_restart_enable ? VK_TRUE : VK_FALSE;
 
 	vk::Viewport viewport {};
 	viewport.x        = static_params.viewport_offset[0] - static_params.viewport_scale[0];
@@ -771,13 +700,13 @@ void CreatePipelineInternal(
 	clip_ext.depthClipEnable = static_params.depth_clip_enable ? VK_TRUE : VK_FALSE;
 
 	vk::PipelineRasterizationStateCreateInfo rasterizer {};
-	rasterizer.sType                   = vk::StructureType::ePipelineRasterizationStateCreateInfo;
+	rasterizer.sType = vk::StructureType::ePipelineRasterizationStateCreateInfo;
 	// MoltenVK lacks VK_EXT_depth_clip_enable; omit the depth-clip struct on macOS and accept
 	// Vulkan's default depth clipping (enabled) instead of the PS5's clamp behavior.
 #if defined(__APPLE__)
-	rasterizer.pNext                   = nullptr;
+	rasterizer.pNext = nullptr;
 #else
-	rasterizer.pNext                   = &clip_ext;
+	rasterizer.pNext = &clip_ext;
 #endif
 	rasterizer.flags                   = {};
 	rasterizer.depthClampEnable        = VK_FALSE;
@@ -785,10 +714,10 @@ void CreatePipelineInternal(
 	rasterizer.polygonMode             = vk::PolygonMode::eFill;
 	rasterizer.cullMode                = cull_mode;
 	rasterizer.frontFace               = front_face;
-	rasterizer.depthBiasEnable = static_params.depth_bias_enable ? VK_TRUE : VK_FALSE;
-	rasterizer.depthBiasConstantFactor = static_params.depth_bias_constant;
-	rasterizer.depthBiasClamp          = static_params.depth_bias_clamp;
-	rasterizer.depthBiasSlopeFactor    = static_params.depth_bias_slope;
+	rasterizer.depthBiasEnable         = VK_FALSE;
+	rasterizer.depthBiasConstantFactor = 0.0f;
+	rasterizer.depthBiasClamp          = 0.0f;
+	rasterizer.depthBiasSlopeFactor    = 0.0f;
 	rasterizer.lineWidth               = 1.0f;
 
 	vk::PipelineMultisampleStateCreateInfo multisampling {};
@@ -855,13 +784,13 @@ void CreatePipelineInternal(
 	color_write.pColorWriteEnables = color_write_enable;
 
 	vk::PipelineColorBlendStateCreateInfo color_blending {};
-	color_blending.sType             = vk::StructureType::ePipelineColorBlendStateCreateInfo;
+	color_blending.sType = vk::StructureType::ePipelineColorBlendStateCreateInfo;
 	// MoltenVK lacks VK_EXT_color_write_enable; drop the dynamic color-write struct on macOS
 	// and rely on each attachment's static colorWriteMask (all channels enabled by default).
 #if defined(__APPLE__)
-	color_blending.pNext             = nullptr;
+	color_blending.pNext = nullptr;
 #else
-	color_blending.pNext             = &color_write;
+	color_blending.pNext = &color_write;
 #endif
 	color_blending.flags             = {};
 	color_blending.logicOpEnable     = VK_FALSE;
@@ -873,40 +802,36 @@ void CreatePipelineInternal(
 	color_blending.blendConstants[2] = static_params.blend_color_blue;
 	color_blending.blendConstants[3] = static_params.blend_color_alpha;
 
-	vk::DescriptorSetLayout set_layouts[2]  = {};
-	uint32_t                set_layouts_num = 0;
-
-	vk::PushConstantRange push_constant_info[2];
-	uint32_t              push_constant_info_num = 0;
-
 	EXIT_IF(!vs_input_info.stage);
-	CreateLayout(descriptor_cache, set_layouts, set_layouts_num, push_constant_info,
-	             push_constant_info_num, *vs_input_info.stage.program,
-	             vk::ShaderStageFlagBits::eVertex, DescriptorCache::Stage::Vertex);
+	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
+	AddLayoutBindings(descriptor_bindings, *vs_input_info.stage.program,
+	                  vk::ShaderStageFlagBits::eVertex);
 	if (ps_active) {
 		EXIT_IF(!ps_input_info->stage);
-		CreateLayout(descriptor_cache, set_layouts, set_layouts_num, push_constant_info,
-		             push_constant_info_num, *ps_input_info->stage.program,
-		             vk::ShaderStageFlagBits::eFragment, DescriptorCache::Stage::Pixel);
+		AddLayoutBindings(descriptor_bindings, *ps_input_info->stage.program,
+		                  vk::ShaderStageFlagBits::eFragment);
 	}
+	CreateDescriptorLayout(graphics, pipeline, descriptor_bindings);
+	constexpr auto GraphicsStages =
+	    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+	const vk::PushConstantRange push_constants {
+	    GraphicsStages, 0, ShaderRecompiler::IR::NativePushConstantSize};
 
 	vk::PipelineLayoutCreateInfo pipeline_layout_info {};
 	pipeline_layout_info.sType                  = vk::StructureType::ePipelineLayoutCreateInfo;
 	pipeline_layout_info.pNext                  = nullptr;
 	pipeline_layout_info.flags                  = {};
-	pipeline_layout_info.setLayoutCount         = set_layouts_num;
-	pipeline_layout_info.pSetLayouts            = (set_layouts_num > 0 ? set_layouts : nullptr);
-	pipeline_layout_info.pushConstantRangeCount = push_constant_info_num;
-	pipeline_layout_info.pPushConstantRanges =
-	    push_constant_info_num > 0 ? push_constant_info : nullptr;
+	pipeline_layout_info.setLayoutCount         = 1;
+	pipeline_layout_info.pSetLayouts            = &pipeline.descriptor_set_layout;
+	pipeline_layout_info.pushConstantRangeCount = 1;
+	pipeline_layout_info.pPushConstantRanges    = &push_constants;
 
 	EXIT_IF(pipeline.pipeline_layout != nullptr);
 
 	if (graphics_debug_dump_enabled()) {
-		LOGF("PipelineTrace: vkCreatePipelineLayout begin VS=0x%08" PRIx32 "/0x%08" PRIx32
-		     " PS=0x%08" PRIx32 "/0x%08" PRIx32 " set_layouts=%" PRIu32 " push_constants=%" PRIu32
-		     "\n",
-		     vs_hash0, vs_crc32, ps_hash0, ps_crc32, set_layouts_num, push_constant_info_num);
+		LOGF("PipelineTrace: vkCreatePipelineLayout begin VS=%" PRIu64 " PS=%" PRIu64
+		     " set_layouts=1 push_constants=%" PRIu32 "\n",
+		     pipeline.vs_shader_id, pipeline.ps_shader_id, 1u);
 	}
 	result = graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr,
 	                                              &pipeline.pipeline_layout);
@@ -953,6 +878,7 @@ void CreatePipelineInternal(
 	    vk::DynamicState::eStencilReference,
 	    vk::DynamicState::eStencilWriteMask,
 #if !defined(__APPLE__)
+	    // Keep last so depth-only pipelines can omit this dynamic state.
 	    vk::DynamicState::eColorWriteEnableEXT, // unsupported by MoltenVK; static mask instead
 #endif
 	};
@@ -983,15 +909,15 @@ void CreatePipelineInternal(
 	pipeline_info.flags                    = {};
 	pipeline_info.stageCount               = shader_stage_count;
 	pipeline_info.pStages                  = shader_stages;
-	pipeline_info.pVertexInputState    = &vertex_input_info;
-	pipeline_info.pInputAssemblyState  = &input_assembly;
+	pipeline_info.pVertexInputState        = &vertex_input_info;
+	pipeline_info.pInputAssemblyState      = &input_assembly;
 	vk::PipelineTessellationStateCreateInfo tessellation_state {};
 	tessellation_state.sType              = vk::StructureType::ePipelineTessellationStateCreateInfo;
 	tessellation_state.patchControlPoints = 3;
 	pipeline_info.pTessellationState      = (rect_list ? &tessellation_state : nullptr);
-	pipeline_info.pViewportState           = &viewport_state;
-	pipeline_info.pRasterizationState      = &rasterizer;
-	pipeline_info.pMultisampleState        = &multisampling;
+	pipeline_info.pViewportState          = &viewport_state;
+	pipeline_info.pRasterizationState     = &rasterizer;
+	pipeline_info.pMultisampleState       = &multisampling;
 	pipeline_info.pDepthStencilState = (static_params.with_depth ? &depth_stencil_info : nullptr);
 	pipeline_info.pColorBlendState   = &color_blending;
 	pipeline_info.pDynamicState      = &dynamic_state;
@@ -1004,11 +930,12 @@ void CreatePipelineInternal(
 	EXIT_IF(pipeline.pipeline != nullptr);
 
 	if (graphics_debug_dump_enabled()) {
-		LOGF("PipelineTrace: vkCreateGraphicsPipelines begin VS=0x%08" PRIx32 "/0x%08" PRIx32
-		     " PS=0x%08" PRIx32 "/0x%08" PRIx32 " topology=%" PRIu32 " color_mask=0x%08" PRIx32
+		LOGF("PipelineTrace: vkCreateGraphicsPipelines begin VS=%" PRIu64 " PS=%" PRIu64
+		     " topology=%" PRIu32 " color_mask=0x%08" PRIx32
 		     " depth=%s blend=%s dyn_states=%" PRIu32 " viewport=%f,%f %fx%f"
 		     " scissor=%d,%d %ux%u\n",
-		     vs_hash0, vs_crc32, ps_hash0, ps_crc32, static_cast<uint32_t>(static_params.topology),
+		     pipeline.vs_shader_id, pipeline.ps_shader_id,
+		     static_cast<uint32_t>(static_params.topology),
 		     static_params.color_mask[0], (static_params.with_depth ? "true" : "false"),
 		     (static_params.blend_enable[0] ? "true" : "false"), dynamic_states_count, viewport.x,
 		     viewport.y, viewport.width, viewport.height, scissor.offset.x, scissor.offset.y,
@@ -1024,41 +951,19 @@ void CreatePipelineInternal(
 
 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
 
-	if (frag_shader_module != nullptr) {
-		graphics.device.destroyShaderModule(frag_shader_module, nullptr);
-	}
 	if (tess_control_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(tess_control_shader_module, nullptr);
 	}
 	if (tess_eval_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
 	}
-	graphics.device.destroyShaderModule(vert_shader_module, nullptr);
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descriptor_cache,
-                            PipelineCache::ComputePipeline& pipeline,
-                            vk::PipelineCache               driver_cache,
-                            const ShaderComputeInputInfo&   input_info,
-                            std::span<const uint32_t>       cs_shader) {
-	vk::ShaderModule comp_shader_module = nullptr;
-
-	vk::ShaderModuleCreateInfo create_info {};
-
-	create_info.sType    = vk::StructureType::eShaderModuleCreateInfo;
-	create_info.pNext    = nullptr;
-	create_info.flags    = {};
-	create_info.codeSize = cs_shader.size() * 4;
-	create_info.pCode    = cs_shader.data();
-	LOGF("PipelineTrace: vkCreateShaderModule CS begin words=%" PRIu64 "\n",
-	     static_cast<uint64_t>(cs_shader.size()));
-	auto result = graphics.device.createShaderModule(&create_info, nullptr, &comp_shader_module);
-	LOGF("PipelineTrace: vkCreateShaderModule CS done result=%s module=%p\n",
-	     VulkanToString(result).c_str(), static_cast<void*>(comp_shader_module));
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
-
-	EXIT_NOT_IMPLEMENTED(comp_shader_module == nullptr);
+void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::ComputePipeline& pipeline,
+                            const ShaderComputeInputInfo& input_info,
+	vk::ShaderModule compute_module, vk::PipelineCache driver_cache) {
+	EXIT_IF(compute_module == nullptr);
 
 	vk::PipelineShaderStageCreateInfo                     comp_shader_stage_info {};
 	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo comp_subgroup_size {};
@@ -1066,40 +971,41 @@ void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descripto
 	comp_shader_stage_info.pNext               = nullptr;
 	comp_shader_stage_info.flags               = {};
 	comp_shader_stage_info.stage               = vk::ShaderStageFlagBits::eCompute;
-	comp_shader_stage_info.module              = comp_shader_module;
+	comp_shader_stage_info.module              = compute_module;
 	comp_shader_stage_info.pName               = "main";
 	comp_shader_stage_info.pSpecializationInfo = nullptr;
 	EXIT_IF(!input_info.stage);
-	ConfigureSubgroupSize(graphics, vk::ShaderStageFlagBits::eCompute, *input_info.stage.program,
-	                      comp_subgroup_size, comp_shader_stage_info);
+	const auto wave_size = input_info.stage.program->wave_size;
+	if (graphics.compute_subgroup_size_control_enabled &&
+	    wave_size >= graphics.min_subgroup_size && wave_size <= graphics.max_subgroup_size) {
+		comp_subgroup_size.sType =
+		    vk::StructureType::ePipelineShaderStageRequiredSubgroupSizeCreateInfo;
+		comp_subgroup_size.requiredSubgroupSize = wave_size;
+		comp_shader_stage_info.pNext            = &comp_subgroup_size;
+	}
 
-	vk::DescriptorSetLayout set_layouts[1]  = {};
-	uint32_t                set_layouts_num = 0;
-
-	vk::PushConstantRange push_constant_info[1];
-	uint32_t              push_constant_info_num = 0;
-
-	EXIT_IF(!input_info.stage);
-	CreateLayout(descriptor_cache, set_layouts, set_layouts_num, push_constant_info,
-	             push_constant_info_num, *input_info.stage.program,
-	             vk::ShaderStageFlagBits::eCompute, DescriptorCache::Stage::Compute);
+	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
+	AddLayoutBindings(descriptor_bindings, *input_info.stage.program,
+	                  vk::ShaderStageFlagBits::eCompute);
+	CreateDescriptorLayout(graphics, pipeline, descriptor_bindings);
+	const vk::PushConstantRange push_constants {vk::ShaderStageFlagBits::eCompute, 0,
+	                                            ShaderRecompiler::IR::NativePushConstantSize};
 
 	vk::PipelineLayoutCreateInfo pipeline_layout_info {};
 	pipeline_layout_info.sType                  = vk::StructureType::ePipelineLayoutCreateInfo;
 	pipeline_layout_info.pNext                  = nullptr;
 	pipeline_layout_info.flags                  = {};
-	pipeline_layout_info.setLayoutCount         = set_layouts_num;
-	pipeline_layout_info.pSetLayouts            = (set_layouts_num > 0 ? set_layouts : nullptr);
-	pipeline_layout_info.pushConstantRangeCount = push_constant_info_num;
-	pipeline_layout_info.pPushConstantRanges =
-	    push_constant_info_num > 0 ? push_constant_info : nullptr;
+	pipeline_layout_info.setLayoutCount         = 1;
+	pipeline_layout_info.pSetLayouts            = &pipeline.descriptor_set_layout;
+	pipeline_layout_info.pushConstantRangeCount = 1;
+	pipeline_layout_info.pPushConstantRanges    = &push_constants;
 
 	EXIT_IF(pipeline.pipeline_layout != nullptr);
 
-	LOGF("PipelineTrace: vkCreatePipelineLayout CS begin set_layouts=%u push_constants=%u\n",
-	     set_layouts_num, push_constant_info_num);
-	result = graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr,
-	                                              &pipeline.pipeline_layout);
+	LOGF("PipelineTrace: vkCreatePipelineLayout CS begin set_layouts=1 push_constants=%u\n",
+	     1u);
+	auto result = graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr,
+	                                                  &pipeline.pipeline_layout);
 	LOGF("PipelineTrace: vkCreatePipelineLayout CS done result=%s layout=%p\n",
 	     VulkanToString(result).c_str(), static_cast<void*>(pipeline.pipeline_layout));
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
@@ -1119,15 +1025,13 @@ void CreatePipelineInternal(GraphicContext& graphics, DescriptorCache& descripto
 
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
-	result =
-	    graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr, &pipeline.pipeline);
+	result = graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr,
+	                                                &pipeline.pipeline);
 	LOGF("PipelineTrace: vkCreateComputePipelines done result=%s pipeline=%p\n",
 	     VulkanToString(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
-
-	graphics.device.destroyShaderModule(comp_shader_module, nullptr);
 }
 
 } // namespace Libs::Graphics

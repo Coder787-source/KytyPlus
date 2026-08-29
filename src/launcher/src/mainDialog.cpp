@@ -190,10 +190,10 @@ void MainDialogPrivate::FindInterpreter() {
 		return;
 	}
 
-	if (!m_ui->widget->EnsureGameDirectory()) {
-		QApplication::quit();
-		return;
-	}
+	// Prompt for a game folder when none are configured, but keep the launcher
+	// open if the user dismisses the dialog (quitting here can segfault during
+	// nested modal shutdown / background compatibility load).
+	m_ui->widget->EnsureGameDirectory();
 
 	m_ui->label_settings_file->setText(tr("Settings file: ") + m_ui->widget->GetSettingsFile());
 
@@ -214,6 +214,9 @@ static QStringList CreateEmulatorArgs(const Configuration& info) {
 
 	args << "--screen-width" << r.at(0);
 	args << "--screen-height" << r.at(1);
+	args << "--user-name" << info.user_name;
+	args << "--user-id" << QString::number(info.user_id);
+	args << "--present-mode" << EnumToText(info.present_mode);
 	if (info.fullscreen_enabled) {
 		args << "--fullscreen";
 	}
@@ -353,6 +356,23 @@ static bool FindTerminal(QString* program, QStringList* prefix) {
 }
 #endif
 
+#if defined(_WIN32)
+// Quote one token for cmd.exe so paths with spaces survive /K parsing.
+static QString WinCmdQuote(QString value) {
+	value.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+	return QLatin1Char('"') + value + QLatin1Char('"');
+}
+
+static QString BuildWinCmdKCommand(const QString& interpreter, const QStringList& args) {
+	QString command = WinCmdQuote(QDir::toNativeSeparators(interpreter));
+	for (const auto& arg: args) {
+		command += QLatin1Char(' ');
+		command += WinCmdQuote(arg);
+	}
+	return command;
+}
+#endif
+
 void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 	const auto& interpreter = m_p->GetInterpreter();
 
@@ -377,22 +397,23 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 	{
 		QString     terminal;
 		QStringList terminal_prefix;
+		// Pass the script as a file argument (not bash -c) so paths with spaces work.
 		if (FindTerminal(&terminal, &terminal_prefix)) {
 			process->setProgram(terminal);
-			process->setArguments(terminal_prefix + QStringList {"bash", "-c", bash_file_name});
+			process->setArguments(terminal_prefix + QStringList {"bash", bash_file_name});
 		} else {
 			// Run without a terminal as a fallback.
 			process->setProgram(QStringLiteral("bash"));
-			process->setArguments({QStringLiteral("-c"), bash_file_name});
+			process->setArguments({bash_file_name});
 		}
 	}
 #elif defined(_WIN32)
 	{
+		// Use nativeArguments so Qt does not re-quote the /K command string.
 		process->setProgram(CMD_EXE);
-		QStringList process_args;
-		process_args << QStringLiteral("/K") << interpreter;
-		process_args += args;
-		process->setArguments(process_args);
+		process->setArguments({});
+		process->setNativeArguments(QStringLiteral("/K \"") +
+		                            BuildWinCmdKCommand(interpreter, args) + QLatin1Char('"'));
 	}
 #else
 	process->setProgram(interpreter);
