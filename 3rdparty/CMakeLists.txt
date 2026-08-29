@@ -1,5 +1,13 @@
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
+# zlib is required for PFSC (compressed PFS) decompression. Vendored and built
+# statically from source so every platform build gets PFSC support without
+# a system dependency.
+set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(ZLIB_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(zlib EXCLUDE_FROM_ALL)
+
 add_subdirectory(cpuinfo)
 
 # The Windows guest red-zone patcher needs a decoder/encoder and a small
