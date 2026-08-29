@@ -189,6 +189,13 @@ jobs:
         run: |
           cmake --install _Build/macos --prefix _Build/macos/install
 
+      - name: Re-sign installed emulator (RPATH fixup invalidates POST_BUILD signature)
+        shell: bash
+        run: |
+          codesign -s - --force --options runtime \
+            --entitlements src/macos_jit.entitlements \
+            _Build/macos/install/kyty_emulator
+
       - name: Bundle MoltenVK
         shell: bash
         env:
