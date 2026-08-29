@@ -27,7 +27,8 @@ If you have a decrypted PS4 or PS5 game file (eboot.bin/ELF, or .PKG):
 
 ## See it in action
 
-Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX 4060 Ti, external HDD). Tested and recorded by [@CorpseSlayer](https://github.com/KytyPS5/KytyPS5/issues/127).
+Video of **Dead Cells booting to the main menu** on KytyPlus v1.8 (i7-9700K, RTX 4060 Ti, external HDD).
+Tested and recorded by **@CorpseSlayer** — full report and system specs in [KytyPlus issue #3](https://github.com/Coder787-source/KytyPlus/issues/3).
 
 [▶ Watch on YouTube](https://www.youtube.com/watch?v=1vXa9zByq68) (CC-BY 4.0 — reuse with credit to @CorpseSlayer)
 [▶ Watch on Google Drive](https://drive.google.com/file/d/1_7IoA9B2iV-H1VUGtYyxEGiN6PYI2vbu/view?pli=1)
