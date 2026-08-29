@@ -70,7 +70,13 @@ void GraphicContext::LoadHardwareRayTracingFunctions() const {
 	    dispatcher.vkGetAccelerationStructureBuildSizesKHR == nullptr ||
 	    dispatcher.vkCmdBuildAccelerationStructuresKHR == nullptr ||
 	    dispatcher.vkGetAccelerationStructureDeviceAddressKHR == nullptr) {
-		EXIT("Vulkan RT: failed to load required device functions\n");
+		LOGF("Vulkan RT: required device functions unavailable; hardware ray tracing disabled\n");
+		// A driver can advertise the extensions but fail to expose their
+		// functions (broken or quirky drivers, notably some iGPU drivers).
+		// RT is an optional capability: degrade gracefully instead of killing
+		// the process before the user ever loads a game.
+		rt_extensions_enabled = false;
+		return;
 	}
 }
 

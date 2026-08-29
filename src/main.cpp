@@ -409,7 +409,13 @@ int main(int argc, char* argv[]) {
 			slist.DestroyAll(false);
 			return 1;
 		}
-		const auto out_dir = std::filesystem::path(options.install_pkg).parent_path().string() + "/pkg_out";
+		// Build the extraction directory from the PKG's parent directory.
+		// A relative PKG path has an empty parent_path(), so use "." to stay
+		// in the working directory (a leading "/" would be a drive-root path
+		// on Windows and write to C:\pkg_out).
+		auto out_dir_path = std::filesystem::path(options.install_pkg).parent_path();
+		if (out_dir_path.empty()) out_dir_path = ".";
+		const auto out_dir = (out_dir_path / "pkg_out").string();
 		const uint32_t n = Libs::Firmware::PkgParser::ExtractAll(pr, options.install_pkg.string(), out_dir);
 		::printf("PKG '%s' parsed OK. Extracted %u file(s) to %s\n",
 		         pr.content_id.c_str(), n, out_dir.c_str());

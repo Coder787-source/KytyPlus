@@ -7,6 +7,7 @@
 #include <fstream>
 #include <filesystem>
 #include <sstream>
+#include <unordered_set>
 
 #ifdef KYTY_HAS_ZLIB
 #include <zlib.h>
@@ -135,6 +136,36 @@ static void GfMul128(uint8_t* out, const uint8_t* in) {
     if (carry) {
         out[0] ^= 0x87;
     }
+}
+
+// Returns true if a PFS file path is safe to extract under the output
+// directory. File names come from the package and are untrusted: reject
+// absolute paths, "."/".." components, empty components, backslashes and
+// Windows drive letters so a hostile package cannot write outside output_dir.
+bool IsSafeRelativePath(const std::string& name) {
+    if (name.empty() || name.front() == '/') {
+        return false;
+    }
+    size_t pos = 0;
+    while (true) {
+        const size_t next = name.find('/', pos);
+        const size_t end  = (next == std::string::npos) ? name.size() : next;
+        if (end == pos) {
+            return false; // empty component (leading/double/trailing slash)
+        }
+        const std::string comp = name.substr(pos, end - pos);
+        if (comp == "." || comp == "..") {
+            return false;
+        }
+        if (comp.find('\\') != std::string::npos || comp.find(':') != std::string::npos) {
+            return false;
+        }
+        if (next == std::string::npos) {
+            break;
+        }
+        pos = next + 1;
+    }
+    return true;
 }
 
 } // anonymous namespace
@@ -276,16 +307,24 @@ std::vector<uint8_t> PfsParser::ReadBlock(
     uint32_t num_blocks, const PfsEkpfsKey* ekpfs_key) {
 
     if (block_num < 0 || static_cast<uint32_t>(block_num) >= num_blocks) {
+        LOGF("PFS: block %lld out of range (num_blocks=%u)",
+             static_cast<long long>(block_num), num_blocks);
         return {};
     }
 
     const uint64_t offset = static_cast<uint64_t>(block_num) * block_size;
+    f.clear();
     f.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
 
     std::vector<uint8_t> raw(block_size);
     f.read(reinterpret_cast<char*>(raw.data()), block_size);
     const auto got = static_cast<size_t>(f.gcount());
     raw.resize(got);
+
+    if (raw.empty()) {
+        LOGF("PFS: short read at block %lld", static_cast<long long>(block_num));
+        return raw;
+    }
 
     if (ekpfs_key && !raw.empty()) {
         // Decrypt each XTS sector within the block
@@ -378,6 +417,7 @@ bool PfsParser::ReadInode(std::ifstream& f, uint32_t block_number,
     if (block_number == 0) return false;
 
     const uint64_t offset = static_cast<uint64_t>(block_number) * block_size;
+    f.clear();
     f.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
 
     const bool is_64bit = (mode & PFS_MODE_64BIT_INODES) != 0;
@@ -431,6 +471,7 @@ PfsParser::InodeInfo PfsParser::ExtractInodeInfo(const PfsInodeD32& d32,
             info.mode = s64.mode;
             info.flags = s64.flags;
             info.size = s64.size;
+            info.is_64bit = true; // 64-bit block pointers (S64 variant only)
             for (size_t i = 0; i < MAX_DIRECT_BLOCKS; ++i) info.db[i] = s64.db[i];
             for (size_t i = 0; i < MAX_INDIRECT_BLOCKS; ++i) info.ib[i] = s64.ib[i];
             break;
@@ -448,24 +489,31 @@ std::vector<int64_t> PfsParser::GetIndirectBlocks(
 
     std::vector<int64_t> all_blocks;
 
-    // Direct blocks (0-11)
+    // Direct blocks (0-11).
+    // Slot 0 is never a valid data block (it holds the superblock), and a
+    // zeroed slot means "unused" in images that do not terminate the direct
+    // block list with -1. Either way: stop at db[i] <= 0.
     for (size_t i = 0; i < MAX_DIRECT_BLOCKS; ++i) {
-        if (inode.db[i] < 0) break;
+        if (inode.db[i] <= 0) break;
         all_blocks.push_back(inode.db[i]);
     }
 
     // Indirect blocks (ib[0-4])
     // Each indirect block contains block_size / sizeof(int32_t or int64_t) block pointers
-    const bool is_64bit = (inode.flags >> 24) & 1; // heuristic — really should check mode
+    const bool is_64bit = inode.is_64bit; // true only for the S64 inode variant
     const size_t ptr_size = is_64bit ? 8 : 4;
     const size_t ptrs_per_block = block_size / ptr_size;
 
     for (size_t level = 0; level < MAX_INDIRECT_BLOCKS; ++level) {
-        if (inode.ib[level] < 0) break;
+        if (inode.ib[level] <= 0) break; // 0 = unused (superblock), -1 = terminator
         if (static_cast<uint32_t>(inode.ib[level]) >= num_blocks) break;
 
         auto block_data = ReadBlock(f, inode.ib[level], block_size, num_blocks, ekpfs_key);
-        if (block_data.empty()) break;
+        if (block_data.empty()) {
+            LOGF("PFS: indirect block %lld of inode %u unreadable, truncating block list",
+                 static_cast<long long>(inode.ib[level]), inode.number);
+            break;
+        }
 
         // Read pointers from the indirect block
         for (size_t j = 0; j < ptrs_per_block; ++j) {
@@ -481,7 +529,11 @@ std::vector<int64_t> PfsParser::GetIndirectBlocks(
             }
 
             if (ptr < 0) break;
-            if (static_cast<uint32_t>(ptr) >= num_blocks) break;
+            if (static_cast<uint32_t>(ptr) >= num_blocks) {
+                LOGF("PFS: block pointer %lld in indirect table of inode %u out of range, truncating",
+                     static_cast<long long>(ptr), inode.number);
+                break;
+            }
             all_blocks.push_back(ptr);
         }
     }
@@ -505,35 +557,54 @@ std::vector<std::pair<std::string, uint32_t>> PfsParser::ReadDirectory(
         auto block_data = ReadBlock(f, blk, block_size, num_blocks, ekpfs_key);
         if (block_data.empty()) continue;
 
-        // Parse dirent entries from the block
+        // Parse dirent entries from the block.
+        // On-disk format (verified against MkPFS Dirent.to_bytes):
+        //   u32 inode, i32 type, i32 name_len, i32 ent_size,
+        //   then name_len ASCII bytes, then zero padding to ent_size.
+        // ent_size = align8(name_len + 17) and is the record stride.
         size_t pos = 0;
         while (pos + sizeof(PfsDirent) <= block_data.size()) {
             PfsDirent dirent;
             std::memcpy(&dirent, block_data.data() + pos, sizeof(PfsDirent));
 
-            if (dirent.type == 0 || dirent.type > DIRENT_TYPE_DOTDOT) {
+            if (dirent.type <= 0 || dirent.type > DIRENT_TYPE_DOTDOT) {
                 break; // end of entries
             }
 
+            if (dirent.name_len <= 0 || dirent.name_len > 0x200) {
+                LOGF("PFS: dirent name length %d invalid, truncating directory listing",
+                     dirent.name_len);
+                break;
+            }
+
+            const size_t rec = pos; // record start
             pos += sizeof(PfsDirent);
-            if (pos + dirent.name_size > block_data.size()) break;
-
-            std::string name;
-            for (uint32_t j = 0; j < dirent.name_size && pos < block_data.size(); ++j) {
-                if (block_data[pos] == '\0') { pos++; break; }
-                name += static_cast<char>(block_data[pos++]);
+            const size_t name_len = static_cast<size_t>(dirent.name_len);
+            if (pos + name_len > block_data.size()) {
+                LOGF("PFS: dirent name (len %d) exceeds block bounds, truncating directory listing",
+                     dirent.name_len);
+                break;
             }
 
-            // Skip null terminator + 8-byte padding to align next dirent
-            while (pos < block_data.size() && (pos % 8) != 0) {
-                if (block_data[pos] != '\0') break;
-                pos++;
+            std::string name(reinterpret_cast<const char*>(block_data.data() + pos), name_len);
+            pos += name_len;
+
+            // Advance to the next record: ent_size from the record start.
+            const int64_t ent_size = static_cast<int64_t>(dirent.ent_size);
+            if (ent_size < static_cast<int64_t>(sizeof(PfsDirent)) ||
+                ent_size > static_cast<int64_t>(sizeof(PfsDirent)) + 0x200) {
+                LOGF("PFS: dirent entry size %d invalid, truncating directory listing", ent_size);
+                break;
             }
-            // Align to 8-byte boundary for next entry
-            while (pos < block_data.size() && (pos % 8) != 0) pos++;
+            const size_t next = static_cast<size_t>(rec + ent_size);
+            if (next <= rec || next > block_data.size()) {
+                LOGF("PFS: dirent entry size overruns block, truncating directory listing");
+                break;
+            }
+            pos = next;
 
             if (dirent.type != DIRENT_TYPE_DOT && dirent.type != DIRENT_TYPE_DOTDOT) {
-                entries.emplace_back(name, dirent.inode);
+                entries.emplace_back(std::move(name), dirent.inode);
             }
         }
     }
@@ -665,9 +736,13 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
         return result;
     }
 
-    // Recursively walk the directory tree starting from root
-    std::function<void(const InodeInfo&, const std::string&)> walkDir =
-        [&](const InodeInfo& dir_info, const std::string& path_prefix) {
+    // Recursively walk the directory tree starting from root.
+    // Corrupt or hostile images can contain directory cycles (A -> B -> A)
+    // or runaway nesting; without guards that overflows the stack.
+    constexpr int kMaxWalkDepth = 32; // real PFS trees are shallow (less than 16)
+    std::unordered_set<uint32_t> visited_inodes;
+    std::function<void(const InodeInfo&, const std::string&, int)> walkDir =
+        [&](const InodeInfo& dir_info, const std::string& path_prefix, int depth) {
         auto dir_entries = ReadDirectory(f, dir_info, result.block_size, result.num_blocks, nullptr);
         if (path_prefix.empty()) {
             LOGF("PFS: root directory has %zu entries", dir_entries.size());
@@ -702,15 +777,26 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
                      static_cast<unsigned long long>(file.size),
                      file.is_compressed ? "yes" : "no");
 
-                // Recurse into subdirectories
+                // Recurse into subdirectories (cycle and depth guards)
                 if (file.is_directory) {
-                    walkDir(info, file.name);
+                    if (depth >= kMaxWalkDepth) {
+                        LOGF("PFS: directory nesting exceeds %d levels at '%s', skipping",
+                             kMaxWalkDepth, file.name.c_str());
+                    } else if (!visited_inodes.insert(info.number).second) {
+                        LOGF("PFS: directory inode %u revisited (cycle), skipping '%s'",
+                             info.number, file.name.c_str());
+                    } else {
+                        walkDir(info, file.name, depth + 1);
+                    }
                 }
+            } else {
+                LOGF("PFS: failed to read inode %u ('%s'), skipping", inode_num, name.c_str());
             }
         }
     };
 
-    walkDir(root_info, "");
+    visited_inodes.insert(root_info.number);
+    walkDir(root_info, "", 1);
 
     result.ok = true;
     return result;
@@ -761,8 +847,13 @@ uint32_t PfsParser::ExtractAll(const PfsParseResult& result,
     uint32_t extracted = 0;
 
     for (const auto& file : result.files) {
-        if (file.name.empty() || file.name == "." || file.name == "..") continue;
         if (file.is_directory) continue; // skip directories, only extract files
+
+        if (!IsSafeRelativePath(file.name)) {
+            LOGF("PFS: refusing unsafe file name '%s', possible path traversal, skipping",
+                 file.name.c_str());
+            continue;
+        }
 
         const std::filesystem::path out_path = std::filesystem::path(output_dir) / file.name;
         // Create parent directories for nested files (e.g. sce_sys/param.json)
@@ -790,6 +881,9 @@ uint32_t PfsParser::ExtractAll(const PfsParseResult& result,
                       static_cast<std::streamsize>(data.size()));
             extracted++;
             LOGF("PFS: extracted %s (%zu bytes)", file.name.c_str(), data.size());
+        } else {
+            LOGF("PFS: failed to re-read inode %u for '%s', skipping",
+                 static_cast<unsigned>(file.inode), file.name.c_str());
         }
 
         out.close();

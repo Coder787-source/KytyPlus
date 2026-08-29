@@ -108,13 +108,16 @@ struct PfsInodeS64 {
     uint8_t  pad[0x310 - 0x90 - 40]; // padding to 0x310
 };
 
-// PFS directory entry
+// PFS directory entry (verified against MkPFS Dirent.to_bytes):
+// u32 inode, i32 type (2=file, 3=dir, 4=dot, 5=dotdot), i32 name_len
+// (ASCII name length, no null), i32 ent_size (total record size including
+// header and 8-byte-aligned padding). Name bytes follow the header.
 struct PfsDirent {
-    uint32_t type;            // 2=file, 3=directory, 4=dot, 5=dotdot
     uint32_t inode;           // inode number this entry points to
-    uint32_t name_size;       // length of the name string (including null)
-    uint32_t pad;              // padding
-    // Followed by name_size bytes of name (null-terminated)
+    int32_t  type;            // 2=file, 3=directory, 4=dot, 5=dotdot
+    int32_t  name_len;        // length of the name string (no null)
+    int32_t  ent_size;        // total record size (header + name + padding)
+    // Followed by name_len bytes of ASCII name, then zero padding
 };
 
 #pragma pack(pop)
@@ -226,6 +229,7 @@ private:
         uint16_t mode;
         uint32_t flags;
         uint64_t size;
+        bool     is_64bit;  // true only for the S64 variant (64-bit block pointers)
         int64_t  db[MAX_DIRECT_BLOCKS];
         int64_t  ib[MAX_INDIRECT_BLOCKS];
     };
