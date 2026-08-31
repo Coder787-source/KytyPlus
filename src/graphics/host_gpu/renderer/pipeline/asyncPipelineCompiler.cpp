@@ -11,14 +11,9 @@
 namespace Libs::Graphics {
 
 AsyncPipelineCompiler::AsyncPipelineCompiler(GraphicContext& graphics,
-                                             DescriptorCache& descriptor_cache,
                                              vk::PipelineCache driver_cache,
                                              PipelineCache& owner)
-    : m_graphics(graphics),
-      m_descriptor_cache(descriptor_cache),
-      m_driver_cache(driver_cache),
-      m_owner(owner) {
-	// Workers are created up front and idle until jobs arrive. Using std::jthread
+    : m_graphics(graphics), m_driver_cache(driver_cache), m_owner(owner) {
 	// means the threads are joined automatically on destruction, but we still
 	// implement explicit Shutdown() so the Vulkan device is guaranteed alive for
 	// any in-flight createGraphicsPipelines calls before PipelineCache's members
@@ -108,14 +103,11 @@ void AsyncPipelineCompiler::WorkerLoop() {
 		    req.ps_active && req.ps_input_info_storage ? req.ps_input_info_storage.get()
 		                                                : nullptr;
 
-		LogPipelineTrace("AsyncWorker CreatePipelineInternal begin", req.vs_hash0,
-		                 req.vs_crc32, req.ps_hash0, req.ps_crc32);
-		CreatePipelineInternal(m_graphics, m_descriptor_cache, *cached, m_driver_cache,
-		                        req.rendering, req.vs_input_info, req.vs_spirv, ps_input_ptr,
-		                        req.ps_spirv, req.static_params, req.vs_hash0, req.vs_crc32,
-		                        req.ps_hash0, req.ps_crc32, req.ps_active);
-		LogPipelineTrace("AsyncWorker CreatePipelineInternal done", req.vs_hash0,
-		                 req.vs_crc32, req.ps_hash0, req.ps_crc32);
+		LogPipelineTrace("AsyncWorker CreatePipelineInternal begin", req.vs_id, req.ps_id);
+		CreatePipelineInternal(m_graphics, *cached, req.rendering, req.vs_input_info,
+		                       req.vertex_program.module, ps_input_ptr,
+		                       req.pixel_program.module, req.static_params, m_driver_cache);
+		LogPipelineTrace("AsyncWorker CreatePipelineInternal done", req.vs_id, req.ps_id);
 
 		// If the driver failed to produce a pipeline, drop the request so the GPU
 		// thread can fall back to synchronous compile on the next draw (rather than
@@ -133,9 +125,9 @@ void AsyncPipelineCompiler::WorkerLoop() {
 
 
 		if (!produced) {
-			LOGF("AsyncPipelineCompiler: vkCreateGraphicsPipelines did not produce a pipeline VS=0x%08x/0x%08x PS=0x%08x/0x%08x -- leaving for synchronous fallback\n",
-			         static_cast<unsigned>(req.vs_hash0), static_cast<unsigned>(req.vs_crc32),
-			         static_cast<unsigned>(req.ps_hash0), static_cast<unsigned>(req.ps_crc32));
+			LOGF("AsyncPipelineCompiler: vkCreateGraphicsPipelines did not produce a pipeline VS=%llu PS=%llu -- leaving for synchronous fallback\n",
+			     static_cast<unsigned long long>(req.vs_id),
+			     static_cast<unsigned long long>(req.ps_id));
 			continue;
 		}
 

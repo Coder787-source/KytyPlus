@@ -45,6 +45,8 @@ bool                       IsFmaskTextureFormat(BufferFormat format);
 bool                       IsSampledTextureFormat(BufferFormat format);
 bool                       IsUintTextureFormat(BufferFormat format);
 BufferFormat               RemapTextureFormat(BufferFormat format);
+bool                      IsBlockCompressedFormat(BufferFormat format);
+bool                      IsASTCTextureFormat(BufferFormat format);
 
 } // namespace Libs::Graphics::Prospero
 

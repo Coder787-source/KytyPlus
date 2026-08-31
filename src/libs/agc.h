@@ -7,6 +7,12 @@
 
 namespace Libs::Graphics {
 
+// KytyPlus: forward declaration - the definition lives in
+// graphics/host_gpu/renderer/renderContext.h, which is too heavy to include
+// from this ABI header. Callers that dereference the renderer include it
+// themselves (libGnmDriver, agc.cpp).
+class RenderContext;
+
 struct Shader;
 struct ShaderRegister;
 
@@ -30,6 +36,12 @@ struct Lifecycle {
 };
 
 void GraphicsDbgDumpDcb(const char* type, uint32_t num_dw, const uint32_t* cmd_buffer);
+
+// KytyPlus: returns the active host renderer (RenderContext) established during
+// Graphics subsystem init, or nullptr before init / after destroy. libGnmDriver
+// (PS4 dispatch) routes command buffers through this accessor instead of
+// holding its own copy of the renderer pointer.
+[[nodiscard]] RenderContext* GetActiveRenderer() noexcept;
 
 namespace Gen5 {
 

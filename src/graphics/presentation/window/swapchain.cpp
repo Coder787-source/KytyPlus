@@ -765,8 +765,6 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 		}
 
 	}
-
-	command.End();
 }
 
 uint64_t Swapchain::Submit(CommandScheduler& scheduler) {

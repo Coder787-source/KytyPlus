@@ -22,6 +22,10 @@ struct GraphicContext;
 struct RenderColorInfo;
 struct RenderDepthInfo;
 class CommandBuffer;
+class AsyncPipelineCompiler;
+class AsyncPipelineCompiler;
+struct ShaderPixelInputInfo;
+struct ShaderVertexInputInfo;
 
 namespace HW {
 class Context;
@@ -148,10 +152,6 @@ public:
 	    const ShaderProgram& pixel_program);
 	ComputePipeline& CreateComputePipeline(ShaderComputeInputInfo& input_info,
 	                                       const ShaderProgram&    compute_program);
-
-private:
-	struct ProgramCache;
-
 	struct GraphicsPipelineKey {
 		PipelineRenderingState   rendering;
 		uint64_t                 vs_shader_id = 0;
@@ -214,6 +214,26 @@ private:
 		}
 	};
 
+
+	// Publish a worker-compiled pipeline into the cache (called on a worker).
+	void PublishCompiledPipeline(GraphicsPipelineKey key,
+	                             std::unique_ptr<GraphicsPipeline> pipeline);
+
+	[[nodiscard]] bool AsyncCompilationEnabled() const noexcept;
+	[[nodiscard]] bool IsAsyncPending(const GraphicsPipelineKey& key) const;
+
+	[[nodiscard]] AsyncPipelineCompiler& GetOrCreateAsyncCompiler();
+	void ShutdownAsyncCompiler();
+
+	// Sentinel returned while an async compile is pending. Recognized by
+	// pipeline == nullptr; callers must not record with it.
+	static GraphicsPipeline& AsyncPendingSentinel() noexcept;
+private:
+	struct ProgramCache;
+
+
+
+
 	GraphicContext&                m_graphics;
 	std::unique_ptr<ProgramCache> m_program_cache;
 	vk::PipelineCache             m_driver_cache = nullptr;
@@ -224,6 +244,10 @@ private:
 	std::unordered_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>, ComputePipelineKeyHash>
 	              m_compute_pipelines;
 	Common::Mutex m_mutex;
+
+	// KytyPlus: optional async compile pool. Created lazily when async is enabled
+	// and the first miss would otherwise stall the GPU thread.
+	std::unique_ptr<AsyncPipelineCompiler> m_async_compiler;
 
 	void InitializeDriverCache();
 };

@@ -175,7 +175,7 @@ add_subdirectory("${KYTY_THIRD_PARTY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/3rdparty
 add_subdirectory(common)
 add_subdirectory(package)
 
-add_subdirectory(graphics/shader/recompiler/decompiler/gcn)
+add_subdirectory(graphics/shader/recompiler/frontend/decode/gcn)
 
 file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	libs/*.cpp
@@ -202,14 +202,23 @@ file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	graphics/shader/*.h
 	graphics/shader/recompiler/*.cpp
 	graphics/shader/recompiler/*.h
-	graphics/shader/recompiler/cfg/*.cpp
-	graphics/shader/recompiler/cfg/*.h
-	graphics/shader/recompiler/decompiler/*.cpp
-	graphics/shader/recompiler/decompiler/*.h
-	graphics/shader/recompiler/emitter/*.cpp
-	graphics/shader/recompiler/emitter/*.h
+	graphics/shader/recompiler/frontend/cfg/*.cpp
+	graphics/shader/recompiler/frontend/cfg/*.h
+	graphics/shader/recompiler/frontend/decode/*.cpp
+	graphics/shader/recompiler/frontend/decode/*.h
+	graphics/shader/recompiler/frontend/decode/gcn/*.cpp
+	graphics/shader/recompiler/frontend/decode/gcn/*.h
+	graphics/shader/recompiler/frontend/translate/*.cpp
+	graphics/shader/recompiler/frontend/translate/*.h
+	graphics/shader/recompiler/backend/spirv/*.cpp
+	graphics/shader/recompiler/backend/spirv/*.h
 	graphics/shader/recompiler/ir/*.cpp
 	graphics/shader/recompiler/ir/*.h
+	graphics/shader/recompiler/ir/opcodes/*.cpp
+	graphics/shader/recompiler/ir/opcodes/*.h
+	graphics/shader/recompiler/ir/opcodes/*.inc
+	graphics/shader/recompiler/ir/passes/*.cpp
+	graphics/shader/recompiler/ir/passes/*.h
 	graphics/presentation/*.cpp
 	graphics/presentation/*.h
 	graphics/presentation/window/*.cpp
@@ -246,7 +255,7 @@ foreach(shader_name IN LISTS gpu_tiler_shader_names)
 	add_custom_command(
 		OUTPUT "${shader_header}"
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_tiler_generated_dir}"
-		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
 		        "-I${gpu_tiler_shader_dir}" -o "${shader_spv}" "${shader_source}"
 		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
 		        -DSYMBOL=${shader_symbol} -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
@@ -255,6 +264,21 @@ foreach(shader_name IN LISTS gpu_tiler_shader_names)
 	)
 	list(APPEND gpu_tiler_shader_headers "${shader_header}")
 endforeach()
+set(fault_buffer_shader_source "${gpu_tiler_shader_dir}/fault_buffer_process.comp")
+set(fault_buffer_shader_spv "${gpu_tiler_generated_dir}/fault_buffer_process.spv")
+set(fault_buffer_shader_header "${gpu_tiler_generated_dir}/fault_buffer_process_spv.h")
+add_custom_command(
+	OUTPUT "${fault_buffer_shader_header}"
+	COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_tiler_generated_dir}"
+	COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
+	        -DCACHING_PAGEBITS=14 -DMAX_PAGE_FAULTS=1024
+	        -o "${fault_buffer_shader_spv}" "${fault_buffer_shader_source}"
+	COMMAND ${CMAKE_COMMAND} -DINPUT=${fault_buffer_shader_spv} -DOUTPUT=${fault_buffer_shader_header}
+	        -DSYMBOL=FAULT_BUFFER_PROCESS_SPV -P "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+	DEPENDS "${fault_buffer_shader_source}"
+	VERBATIM
+)
+list(APPEND kyty_emulator_src "${fault_buffer_shader_header}")
 list(APPEND kyty_emulator_src ${gpu_tiler_shader_headers})
 
 set(gpu_blit_generated_dir "${PROJECT_BINARY_DIR}/gpu_blit_shaders")
@@ -270,7 +294,7 @@ foreach(shader_source IN LISTS gpu_blit_shader_sources)
 	add_custom_command(
 		OUTPUT "${shader_header}"
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_blit_generated_dir}"
-		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
 		        "-I${gpu_tiler_shader_dir}" -o "${shader_spv}" "${shader_source}"
 		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
 		        -DSYMBOL=${shader_symbol} -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
@@ -295,7 +319,7 @@ foreach(shader_source IN LISTS fsr_shader_sources)
 	add_custom_command(
 		OUTPUT "${shader_header}"
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${fsr_generated_dir}"
-		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
 		        "-I${gpu_tiler_shader_dir}" -o "${shader_spv}" "${shader_source}"
 		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
 		        -DSYMBOL=${shader_symbol} -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
@@ -321,7 +345,7 @@ foreach(shader_source IN LISTS fsr_shader_sources)
 		message(FATAL_ERROR "Failed to create FSR shader output dir ${fsr_generated_dir}")
 	endif()
 	execute_process(
-		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
 		        "-I${gpu_tiler_shader_dir}" -o "${shader_spv}" "${shader_source}"
 		RESULT_VARIABLE fsr_compile_result
 		OUTPUT_VARIABLE fsr_compile_out
@@ -356,12 +380,17 @@ endif()
 
 set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL2-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak)
 
-# zlib is required by rpfArchiveReader on all platforms.
-find_package(ZLIB)
-if(ZLIB_FOUND)
-	list(APPEND kyty_emulator_link_libraries ZLIB::ZLIB)
-	list(APPEND kyty_emulator_compile_definitions KYTY_HAS_ZLIB=1)
-endif()
+# zlib is required by rpfArchiveReader on all platforms. Always link the
+# vendored static build (3rdparty/zlib) — never make this optional; the previous
+# optional find_package(ZLIB) silently compiled zlib support out on Windows
+# (the v1.8-v3.0 PFSC bug).
+list(APPEND kyty_emulator_link_libraries ZLIB::ZLIBSTATIC)
+list(APPEND kyty_emulator_compile_definitions KYTY_HAS_ZLIB=1)
+
+# mbed TLS powers libSsl/libHttp HTTPS. Link all three vendored libraries.
+list(APPEND kyty_emulator_link_libraries mbedtls mbedx509 mbedcrypto)
+list(APPEND kyty_emulator_compile_definitions KYTY_HAS_MBEDTLS=1)
+
 
 # Linux system libraries required by the static FFmpeg archive.
 if(LINUX)
@@ -387,6 +416,7 @@ set(inc_headers
 	${KYTY_THIRD_PARTY_DIR}/fmt/include
 	${KYTY_THIRD_PARTY_DIR}/xxhash
 	${KYTY_THIRD_PARTY_DIR}/cpuinfo/include
+	${KYTY_THIRD_PARTY_DIR}/renderdoc
 	${KYTY_THIRD_PARTY_DIR}/stb
 )
 
@@ -409,8 +439,8 @@ add_kyty_full_emulator_test(shader_cfg_tests ../tests/shaderCfgTests.cpp)
 add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 	../tests/ScalarProvenanceTests.cpp
 	graphics/host_gpu/hostMemory.cpp
-	graphics/shader/recompiler/ir/ScalarProvenance.cpp
-	graphics/shader/recompiler/ir/SrtWalker.cpp
+	graphics/shader/recompiler/ir/passes/ReadLaneElimination.cpp
+	graphics/shader/recompiler/ir/passes/SrtWalker.cpp
 )
 target_link_libraries(scalar_provenance_tests fmt::fmt)
 target_include_directories(scalar_provenance_tests PRIVATE ${inc_headers})
@@ -419,6 +449,7 @@ add_executable(page_manager_tests EXCLUDE_FROM_ALL
 	../tests/PageManagerTests.cpp
 	graphics/host_gpu/pageManager.cpp
 )
+target_link_libraries(page_manager_tests common)
 target_include_directories(page_manager_tests PRIVATE ${inc_headers})
 
 add_executable(memory_tracker_tests EXCLUDE_FROM_ALL
@@ -456,14 +487,15 @@ add_kyty_full_emulator_test(pm4_ngs2_fuzz_tests ../tests/Pm4Ngs2FuzzTests.cpp)
 
 add_kyty_full_emulator_test(soft_ignore_evidence_tests ../tests/SoftIgnoreEvidenceTests.cpp)
 
+add_kyty_full_emulator_test(http_wait_request_tests ../tests/HttpWaitRequestTests.cpp)
+
 add_executable(shader_stage_runtime_tests EXCLUDE_FROM_ALL
 	../tests/ShaderStageRuntimeTests.cpp
 	graphics/guest_gpu/gpu_format.cpp
 	graphics/host_gpu/hostMemory.cpp
 	graphics/shader/shaderStageRuntime.cpp
-	graphics/shader/recompiler/ir/ResourceMaterialization.cpp
-	graphics/shader/recompiler/ir/ScalarProvenance.cpp
-	graphics/shader/recompiler/ir/SrtWalker.cpp
+	graphics/shader/recompiler/ir/passes/ResourceMaterialization.cpp
+	graphics/shader/recompiler/ir/passes/SrtWalker.cpp
 )
 target_link_libraries(shader_stage_runtime_tests fmt::fmt)
 target_include_directories(shader_stage_runtime_tests PRIVATE ${inc_headers})
@@ -472,13 +504,12 @@ add_executable(resource_tracking_tests EXCLUDE_FROM_ALL
 	../tests/ResourceTrackingTests.cpp
 	graphics/guest_gpu/gpu_format.cpp
 	graphics/host_gpu/hostMemory.cpp
-	graphics/shader/recompiler/ir/ScalarProvenance.cpp
-	graphics/shader/recompiler/ir/SrtWalker.cpp
-	graphics/shader/recompiler/ir/SrtPatcher.cpp
-	graphics/shader/recompiler/ir/ResourceTracking.cpp
-	graphics/shader/recompiler/ir/ResourceMaterialization.cpp
-	graphics/shader/recompiler/ir/ShaderInfoCollection.cpp
-	graphics/shader/recompiler/ir/BindingLayout.cpp
+	graphics/shader/shaderPixelParameter.cpp
+	graphics/shader/recompiler/ir/passes/SrtWalker.cpp
+	graphics/shader/recompiler/ir/passes/ResourceTracking.cpp
+	graphics/shader/recompiler/ir/passes/ResourceMaterialization.cpp
+	graphics/shader/recompiler/ir/passes/ShaderInfoCollection.cpp
+	graphics/shader/recompiler/ir/passes/BindingLayout.cpp
 )
 target_link_libraries(resource_tracking_tests fmt::fmt)
 target_include_directories(resource_tracking_tests PRIVATE ${inc_headers})
@@ -504,6 +535,8 @@ add_executable(image_page_table_tests EXCLUDE_FROM_ALL
 target_link_libraries(image_page_table_tests common fmt::fmt)
 target_include_directories(image_page_table_tests PRIVATE ${inc_headers})
 
+add_kyty_full_emulator_test(network_udp_loopback_tests ../tests/NetworkUdpLoopbackTests.cpp)
+
 add_kyty_full_emulator_test(shader_recompiler_compute_tests ../tests/ShaderRecompilerComputeTests.cpp)
 
 set(gpu_test_generated_dir "${PROJECT_BINARY_DIR}/gpu_test_shaders")
@@ -516,7 +549,7 @@ set(gpu_test_ms_depth_header
 add_custom_command(
 	OUTPUT "${gpu_test_ms_depth_header}"
 	COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_test_generated_dir}"
-	COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0 -Os
+	COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
 	        -o "${gpu_test_ms_depth_spv}" "${gpu_test_ms_depth_source}"
 	COMMAND ${CMAKE_COMMAND} -DINPUT=${gpu_test_ms_depth_spv}
 	        -DOUTPUT=${gpu_test_ms_depth_header} -DSYMBOL=GPU_TEST_MS_DEPTH_SPV
@@ -541,6 +574,7 @@ endif()
 
 if(BUILD_TESTING)
 	add_test(NAME image_page_table COMMAND $<TARGET_FILE:image_page_table_tests>)
+	add_test(NAME network_udp_loopback COMMAND $<TARGET_FILE:network_udp_loopback_tests>)
 	add_test(NAME memory_tracker COMMAND $<TARGET_FILE:memory_tracker_tests>)
 	add_test(NAME page_manager COMMAND $<TARGET_FILE:page_manager_tests>)
 	add_test(NAME pipeline_cache_data COMMAND $<TARGET_FILE:pipeline_cache_data_tests>)
@@ -596,6 +630,8 @@ if (WIN32)
 	target_link_libraries(kyty_emulator opengl32)
 	target_link_libraries(kyty_emulator iphlpapi)
 	target_link_libraries(kyty_emulator ws2_32)
+	# crypt32: TLS system-trust-store export (mbedtls/libSsl HTTPS)
+	target_link_libraries(kyty_emulator crypt32)
 endif()
 if (KYTY_CLANG_CL)
 	target_link_libraries(kyty_emulator onecore)
@@ -610,8 +646,8 @@ target_include_directories(kyty_emulator PRIVATE ${inc_headers})
 # include root with precedence over src/ so the ported headers resolve to
 # the local compatibility shims (common/types.h, common/assert.h, ...) and
 # not to Kyty's own src/common headers, which define different macros.
-set_source_files_properties(graphics/shader/recompiler/decompiler/GcnBridge.cpp
-	PROPERTIES COMPILE_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/graphics/shader/recompiler/decompiler/gcn")
+set_source_files_properties(graphics/shader/recompiler/frontend/decode/GcnBridge.cpp
+	PROPERTIES COMPILE_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/graphics/shader/recompiler/frontend/decode/gcn")
 
 clang_tidy_check(kyty_emulator "" "${check_headers}" "${inc_headers}")
 

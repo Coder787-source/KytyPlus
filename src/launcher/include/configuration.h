@@ -82,9 +82,6 @@ public:
 	enum class IgpuOptimization { Off, Auto, Force };
 	Q_ENUM(IgpuOptimization)
 
-	enum class PresentMode { Fifo, Mailbox, Immediate };
-	Q_ENUM(PresentMode)
-
 	enum class PresentFilter { Nearest, Linear, Cubic };
 	Q_ENUM(PresentFilter)
 
@@ -135,8 +132,7 @@ public:
 	float upscaler_sharpness          = 0.5f;
 	IgpuOptimization igpu_optimization  = IgpuOptimization::Auto;
 	int  texture_lod_bias               = 0;
-	PresentMode    present_mode    = PresentMode::Fifo;
-	PresentFilter  present_filter  = PresentFilter::Linear;
+	PresentFilter  present_filter        = PresentFilter::Linear;
 	AspectRatio    aspect_ratio    = AspectRatio::Stretch;
 	QStringList host_input_mapping;
 

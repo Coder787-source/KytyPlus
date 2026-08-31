@@ -156,10 +156,19 @@ endmacro()
 # (the merged tree had it declared in both top-level and src/CMakeLists.txt).
 function(add_kyty_full_emulator_test target source)
 	add_executable(${target} EXCLUDE_FROM_ALL ${source} ${kyty_emulator_src})
-	target_link_libraries(${target} ${kyty_emulator_link_libraries})
+	# Match kyty_emulator's own link set: component libraries that live outside
+	# the kyty_emulator_src glob (gcn_decoder, pkg_parser) must also be linked
+	# here or full-emulator test executables fail at link time with undefined
+	# symbols from those TUs.
+	target_link_libraries(${target} ${kyty_emulator_link_libraries} gcn_decoder pkg_parser)
+	# Propagate the emulator's compile definitions (e.g. KYTY_HAS_ZLIB,
+	# KYTY_HAS_MBEDTLS) so test TUs see the same feature set as kyty_emulator.
+	target_compile_definitions(${target} PRIVATE ${kyty_emulator_compile_definitions})
 	target_include_directories(${target} PRIVATE ${inc_headers})
 	if (WIN32)
 		target_link_libraries(${target} iphlpapi)
+		# crypt32: TLS system-trust-store export (mbedtls/libSsl HTTPS)
+		target_link_libraries(${target} crypt32)
 	endif()
 	if (KYTY_CLANG_CL)
 		target_link_libraries(${target} onecore)

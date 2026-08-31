@@ -5,10 +5,14 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#if defined(_WIN32)
 #include <winsock2.h>
 #include <windows.h>
 #include <iphlpapi.h>
 #include <ws2tcpip.h>
+#else
+#include <poll.h>
+#endif
 #ifdef s_addr
 #undef s_addr
 #endif
@@ -29,6 +33,7 @@
 #include "libs/libs.h"
 #include "libs/network.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -36,11 +41,37 @@
 #include <cstdio>
 #include <cstring>
 #include <fmt/format.h>
+#include <memory>
+#if defined(KYTY_HAS_MBEDTLS)
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/net_sockets.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/x509_crt.h>
+#if defined(_WIN32)
+#include <wincrypt.h>
+#endif
+#endif
 #include <mutex>
 #include <string>
 #include <vector>
 
+namespace Libs::LibKernel {
+// Defined in libKernel.cpp; dispatches pending signals for the current guest
+// thread so a blocked HttpWaitRequest still delivers APCs.
+void KernelDispatchPendingSignalForCurrentThread();
+} // namespace Libs::LibKernel
+
 namespace Libs::Network {
+
+namespace Http {
+struct HttpEpoll;
+} // namespace Http
+
+// Raw-TLS session wrapper (defined in the TLS support block below). Declared
+// at Libs::Network scope so Network's connection slots can hold an incomplete
+// type here and destroy the complete type in the out-of-line destructor.
+class TlsConnection;
 
 class Network {
 public:
@@ -74,6 +105,10 @@ public:
 			}
 		}
 
+		[[nodiscard]] bool operator==(const Id& other) const {
+			return m_id == other.m_id && m_type == other.m_type;
+		}
+
 		friend class Network;
 
 	private:
@@ -93,8 +128,8 @@ public:
 
 	using HttpsCallback = KYTY_SYSV_ABI int (*)(int, unsigned int, void* const*, int, void*);
 
-	Network()          = default;
-	virtual ~Network() = default;
+	Network();
+	~Network();
 
 	KYTY_CLASS_NO_COPY(Network);
 
@@ -140,6 +175,28 @@ public:
 	bool HttpMarkRequestSent(Id req_id, int result);
 	bool HttpGetRequestResponse(Id req_id, int* send_result, int* status_code, const char** headers,
 	                            size_t* headers_size, uint64_t* content_length);
+	bool HttpStoreRequestResponse(Id req_id, int send_result, int status_code, std::string headers,
+	                             std::string body, uint64_t content_length);
+
+	// Plain-data snapshot of a request for the ABI layer (which cannot name the
+	// private HttpRequest type). Empty optional-like semantics: has_value=false
+	// when the id is invalid.
+	struct HttpRequestView {
+		std::string method;
+		std::string url;
+		std::string user_agent;
+		bool        valid = false;
+	};
+	[[nodiscard]] HttpRequestView HttpGetRequestView(Id req_id) const;
+
+	// Http epoll registry: HttpSendRequest needs to find every epoll bound to
+	// a request so it can queue a completion event on each. Handles are owned by
+	// guest code (HttpCreateEpoll/HttpDestroyEpoll); the registry only tracks
+	// live pointers, so entries are removed on destroy.
+	void RegisterHttpEpoll(Libs::Network::Http::HttpEpoll* epoll);
+	void UnregisterHttpEpoll(Libs::Network::Http::HttpEpoll* epoll);
+	std::vector<Libs::Network::Http::HttpEpoll*> GetEpollsForRequest(Id req_id);
+	void                                     RemoveQueuedEpollEvents(Id req_id);
 
 private:
 	struct Pool {
@@ -212,6 +269,10 @@ private:
 		int         send_result    = HTTP_ERROR_BEFORE_SEND;
 		int         status_code    = 0;
 		std::string response_headers;
+
+		// Populated by the real HTTP client on success (plain http:// only).
+		std::string response_body;
+		uint64_t    response_content_length = 0;
 	};
 
 	HttpBase* FindHttpBase(Id id, bool include_request);
@@ -226,12 +287,37 @@ private:
 	Resolver                    m_resolvers[RESOLVERS_MAX];
 	Ssl                         m_ssl[SSL_MAX];
 	Http                        m_http[HTTP_MAX];
+
+public:
+	static constexpr int SSL_CONNECTION_MAX = 32;
+
+	// libSsl raw-TLS connections: each slot owns the TLS session and either
+	// the guest dial fd (SslCreateConnection over an existing socket) or an
+	// internally dialed one. m_ssl_connections_mutex guards the slots; the
+	// TlsConnection itself is owned exclusively by its slot.
+	struct SslConnectionSlot {
+		bool                                used = false;
+		std::shared_ptr<TlsConnection> tls;
+		std::string                         hostname;
+		int                                 guest_socket = -1;
+		int                                 last_error   = 0;
+		bool                                connected    = false;
+	};
+	Common::Mutex              m_ssl_connections_mutex;
+	SslConnectionSlot          m_ssl_connections[SSL_CONNECTION_MAX];
+
+private:
 	std::vector<HttpTemplate>   m_templates;
 	std::vector<HttpConnection> m_connections;
 	std::vector<HttpRequest>    m_requests;
+
+	Common::Mutex                              m_epoll_registry_mutex;
+	std::vector<Libs::Network::Http::HttpEpoll*> m_http_epolls;
 };
 
 static Network* g_net = nullptr;
+
+Network::Network() = default;
 
 void Initialize() {
 	EXIT_IF(g_net != nullptr);
@@ -609,6 +695,42 @@ bool Network::HttpMarkRequestSent(Id req_id, int result) {
 	return false;
 }
 
+bool Network::HttpStoreRequestResponse(Id req_id, int send_result, int status_code,
+	                                std::string headers, std::string body,
+	                                uint64_t content_length) {
+	Common::LockGuard lock(m_mutex);
+
+	if (req_id.GetType() != Id::Type::Request || req_id.GetId() < 0 ||
+	    static_cast<size_t>(req_id.GetId()) >= m_requests.size() ||
+	    !m_requests[req_id.GetId()].used) {
+		return false;
+	}
+
+	auto& request                      = m_requests[req_id.GetId()];
+	request.send_result               = send_result;
+	request.status_code               = status_code;
+	request.response_headers           = std::move(headers);
+	request.response_body              = std::move(body);
+	request.response_content_length    = content_length;
+	return true;
+}
+
+Network::HttpRequestView Network::HttpGetRequestView(Id req_id) const {
+	HttpRequestView view;
+	if (req_id.GetType() != Id::Type::Request || req_id.GetId() < 0 ||
+	    static_cast<size_t>(req_id.GetId()) >= m_requests.size() ||
+	    !m_requests[req_id.GetId()].used) {
+		return view;
+	}
+
+	const auto& request = m_requests[req_id.GetId()];
+	view.method     = request.method;
+	view.url       = request.url;
+	view.user_agent = request.user_agent;
+	view.valid     = true;
+	return view;
+}
+
 bool Network::HttpGetRequestResponse(Id req_id, int* send_result, int* status_code,
                                      const char** headers, size_t* headers_size,
                                      uint64_t* content_length) {
@@ -635,7 +757,7 @@ bool Network::HttpGetRequestResponse(Id req_id, int* send_result, int* status_co
 		*headers_size = request.response_headers.size();
 	}
 	if (content_length != nullptr) {
-		*content_length = 0;
+		*content_length = request.response_content_length;
 	}
 
 	return true;
@@ -823,6 +945,9 @@ namespace Net {
 
 LIB_NAME("Net", "Net");
 
+// Diagnostics intentionally exercise the host backend directly; guest ABI
+// handles require an initialized emulator process and are tested separately.
+
 struct NetEtherAddr {
 	uint8_t data[6] = {0};
 };
@@ -835,6 +960,7 @@ using SocketLength                                  = int;
 using NativeSocket                                  = int;
 static constexpr NativeSocket INVALID_NATIVE_SOCKET = -1;
 using SocketLength                                  = socklen_t;
+static constexpr int           SOCKET_ERROR         = -1;
 #endif
 
 struct SocketSlot {
@@ -1592,8 +1718,95 @@ int KYTY_SYSV_ABI EpollWait(int eid, NetEpollEvent* events, int maxevents, int t
 	}
 	return count;
 #else
-	(void)timeout;
-	return SetGuestSocketError(Posix::POSIX_ENOSYS);
+	// POSIX port: poll(2) instead of select(). Same guest-visible semantics
+	// as the Windows branch (readable -> EPOLL_IN, writable -> EPOLL_OUT,
+	// error/hangup -> EPOLL_ERR), no FD_SETSIZE cap, and the timeout conversion
+	// is identical (guest timeouts are microseconds).
+	struct HostPollFd {
+		EpollRegistration guest;
+		NativeSocket       socket = INVALID_NATIVE_SOCKET;
+	};
+
+	std::vector<HostPollFd> host_fds;
+	host_fds.reserve(registrations.size());
+	for (const auto& registration: registrations) {
+		NativeSocket socket = INVALID_NATIVE_SOCKET;
+		if (!GetSocketBackend(registration.id, &socket)) {
+			continue;
+		}
+		HostPollFd host {};
+		host.guest  = registration;
+		host.socket = socket;
+		host_fds.push_back(host);
+	}
+
+	if (host_fds.empty()) {
+		return 0;
+	}
+
+	std::vector<pollfd> fds;
+	fds.reserve(host_fds.size());
+	for (const auto& host: host_fds) {
+		pollfd pfd {};
+		pfd.fd = static_cast<int>(host.socket);
+		// Observe everything the guest did not ask for too: POLLERR/POLLHUP are
+		// always reported by the Windows branch (FD_SET into host_except), so
+		// the POSIX port requests read/write interest plus the implicit
+		// error/hangup set poll always monitors.
+		pfd.events = short(0);
+		if ((host.guest.event.events & EPOLL_IN) != 0) {
+			pfd.events |= POLLIN;
+		}
+		if ((host.guest.event.events & EPOLL_OUT) != 0) {
+			pfd.events |= POLLOUT;
+		}
+		if (pfd.events == 0) {
+			pfd.events = POLLIN; // error-only watches: still detect failure via revents
+		}
+		fds.push_back(pfd);
+	}
+
+	int poll_timeout = -1; // guest < 0 = block
+	if (timeout >= 0) {
+		// microseconds -> milliseconds, rounding up so a 1us guest timeout
+		// still observes at least one poll tick.
+		poll_timeout = static_cast<int>((timeout + 999) / 1000);
+	}
+
+	const int result = ::poll(fds.data(), static_cast<nfds_t>(fds.size()), poll_timeout);
+	if (result < 0) {
+		return SetHostSocketError();
+	}
+	if (result == 0) {
+		return 0; // timed out
+	}
+
+	int count = 0;
+	for (size_t i = 0; i < fds.size(); i++) {
+		uint32_t ready = 0;
+		if ((fds[i].revents & POLLIN) != 0) {
+			ready |= EPOLL_IN;
+		}
+		if ((fds[i].revents & POLLOUT) != 0) {
+			ready |= EPOLL_OUT;
+		}
+		if ((fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+			ready |= EPOLL_ERR;
+		}
+		if (ready == 0) {
+			continue;
+		}
+
+		auto& output  = events[count++];
+		output        = host_fds[i].guest.event;
+		output.events = ready;
+		output.reserved = 0;
+		output.ident    = static_cast<uint64_t>(host_fds[i].guest.id);
+		if (count == maxevents) {
+			break;
+		}
+	}
+	return count;
 #endif
 }
 
@@ -1713,9 +1926,8 @@ int KYTY_SYSV_ABI Connect(int s, const void* addr, uint32_t addrlen) {
 		return -1;
 	}
 
-#if defined(_WIN32)
 	sockaddr_storage host_addr {};
-	int              host_addrlen = 0;
+	SocketLength     host_addrlen = 0;
 	if (ConvertGuestSockaddr(addr, addrlen, &host_addr, &host_addrlen) != 0) {
 		return -1;
 	}
@@ -1726,10 +1938,6 @@ int KYTY_SYSV_ABI Connect(int s, const void* addr, uint32_t addrlen) {
 	}
 
 	return 0;
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 int KYTY_SYSV_ABI Listen(int s, int backlog) {
@@ -1745,16 +1953,11 @@ int KYTY_SYSV_ABI Listen(int s, int backlog) {
 		return -1;
 	}
 
-#if defined(_WIN32)
 	if (::listen(socket, backlog) == SOCKET_ERROR) {
 		return SetHostSocketError();
 	}
 
 	return 0;
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 int KYTY_SYSV_ABI Accept(int s, void* addr, uint32_t* addrlen) {
@@ -1771,9 +1974,8 @@ int KYTY_SYSV_ABI Accept(int s, void* addr, uint32_t* addrlen) {
 		return -1;
 	}
 
-#if defined(_WIN32)
 	sockaddr_storage host_addr {};
-	int              host_addrlen = sizeof(host_addr);
+	SocketLength     host_addrlen = sizeof(host_addr);
 	NativeSocket     accepted =
 	    ::accept(socket, reinterpret_cast<sockaddr*>(&host_addr), &host_addrlen);
 	if (accepted == INVALID_NATIVE_SOCKET) {
@@ -1782,7 +1984,11 @@ int KYTY_SYSV_ABI Accept(int s, void* addr, uint32_t* addrlen) {
 
 	const int fd = AllocSocketFd(accepted);
 	if (fd < 0) {
+#if defined(_WIN32)
 		closesocket(accepted);
+#else
+		::close(accepted);
+#endif
 		*Posix::GetErrorAddr() = Posix::POSIX_EMFILE;
 		return -1;
 	}
@@ -1800,10 +2006,6 @@ int KYTY_SYSV_ABI Accept(int s, void* addr, uint32_t* addrlen) {
 	}
 
 	return fd;
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 int KYTY_SYSV_ABI Shutdown(int s, int how) {
@@ -1824,16 +2026,11 @@ int KYTY_SYSV_ABI Shutdown(int s, int how) {
 		return -1;
 	}
 
-#if defined(_WIN32)
 	if (::shutdown(socket, how) == SOCKET_ERROR) {
 		return SetHostSocketError();
 	}
 
 	return 0;
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 int KYTY_SYSV_ABI Getsockname(int s, void* addr, uint32_t* addrlen) {
@@ -1851,19 +2048,14 @@ int KYTY_SYSV_ABI Getsockname(int s, void* addr, uint32_t* addrlen) {
 		return -1;
 	}
 
-#if defined(_WIN32)
 	sockaddr_storage host_addr {};
-	int              host_addrlen = sizeof(host_addr);
+	SocketLength     host_addrlen = sizeof(host_addr);
 	if (::getsockname(socket, reinterpret_cast<sockaddr*>(&host_addr), &host_addrlen) ==
 	    SOCKET_ERROR) {
 		return SetHostSocketError();
 	}
 
 	return ConvertHostSockaddr(&host_addr, host_addrlen, addr, addrlen);
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 int KYTY_SYSV_ABI Getsockopt(int s, int level, int optname, void* optval, uint32_t* optlen) {
@@ -1881,7 +2073,6 @@ int KYTY_SYSV_ABI Getsockopt(int s, int level, int optname, void* optval, uint32
 		return -1;
 	}
 
-#if defined(_WIN32)
 	int len = static_cast<int>(*optlen);
 	if (::getsockopt(socket, ConvertSocketOptionLevel(level), optname, static_cast<char*>(optval),
 	                 &len) == SOCKET_ERROR) {
@@ -1889,10 +2080,6 @@ int KYTY_SYSV_ABI Getsockopt(int s, int level, int optname, void* optval, uint32
 	}
 	*optlen = static_cast<uint32_t>(len);
 	return 0;
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 int KYTY_SYSV_ABI Setsockopt(int s, int level, int optname, const void* optval, uint32_t optlen) {
@@ -1910,14 +2097,25 @@ int KYTY_SYSV_ABI Setsockopt(int s, int level, int optname, const void* optval, 
 		return -1;
 	}
 
-#if defined(_WIN32)
 	constexpr int ORBIS_SO_NBIO = 0x1200;
 	if (ConvertSocketOptionLevel(level) == SOL_SOCKET && optname == ORBIS_SO_NBIO &&
 	    optlen >= sizeof(int)) {
-		u_long enabled = (*static_cast<const int*>(optval) != 0 ? 1 : 0);
-		if (ioctlsocket(socket, FIONBIO, &enabled) == SOCKET_ERROR) {
+		const bool enabled = (*static_cast<const int*>(optval) != 0);
+#if defined(_WIN32)
+		u_long arg = (enabled ? 1 : 0);
+		if (ioctlsocket(socket, FIONBIO, &arg) == SOCKET_ERROR) {
 			return SetHostSocketError();
 		}
+#else
+		const int flags = ::fcntl(socket, F_GETFL, 0);
+		if (flags < 0) {
+			return SetHostSocketError();
+		}
+		if (::fcntl(socket, F_SETFL, (enabled ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK))) <
+		    0) {
+			return SetHostSocketError();
+		}
+#endif
 		return 0;
 	}
 
@@ -1927,10 +2125,6 @@ int KYTY_SYSV_ABI Setsockopt(int s, int level, int optname, const void* optval, 
 	}
 
 	return 0;
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 int64_t KYTY_SYSV_ABI Send(int s, const void* buf, uint64_t len, int flags) {
@@ -1956,7 +2150,6 @@ int64_t KYTY_SYSV_ABI Sendto(int s, const void* buf, uint64_t len, int flags, co
 		return -1;
 	}
 
-#if defined(_WIN32)
 	const int host_flags = ConvertMessageFlags(flags);
 	if (host_flags < 0) {
 		return -1;
@@ -1968,7 +2161,7 @@ int64_t KYTY_SYSV_ABI Sendto(int s, const void* buf, uint64_t len, int flags, co
 		result = ::send(socket, static_cast<const char*>(buf), host_len, host_flags);
 	} else {
 		sockaddr_storage host_addr {};
-		int              host_addrlen = 0;
+		SocketLength     host_addrlen = 0;
 		if (ConvertGuestSockaddr(addr, addrlen, &host_addr, &host_addrlen) != 0) {
 			return -1;
 		}
@@ -1980,14 +2173,67 @@ int64_t KYTY_SYSV_ABI Sendto(int s, const void* buf, uint64_t len, int flags, co
 	}
 
 	return result;
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 int64_t KYTY_SYSV_ABI Recv(int s, void* buf, uint64_t len, int flags) {
 	return Recvfrom(s, buf, len, flags, nullptr, nullptr);
+}
+
+bool RunUdpLoopbackDiagnostic() {
+	if (!EnsureSocketBackend()) {
+		return false;
+	}
+
+	const NativeSocket receiver = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (receiver == INVALID_NATIVE_SOCKET) {
+		return false;
+	}
+	const NativeSocket sender = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (sender == INVALID_NATIVE_SOCKET) {
+#if defined(_WIN32)
+		closesocket(receiver);
+#else
+		::close(receiver);
+#endif
+		return false;
+	}
+
+	sockaddr_in address {};
+	address.sin_family      = AF_INET;
+	const uint32_t loopback_address = htonl(INADDR_LOOPBACK);
+	std::memcpy(&address.sin_addr, &loopback_address, sizeof(loopback_address));
+	address.sin_port        = 0;
+	bool ok = ::bind(receiver, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0;
+	SocketLength address_length = sizeof(address);
+	if (ok) {
+		ok = ::getsockname(receiver, reinterpret_cast<sockaddr*>(&address), &address_length) == 0;
+	}
+
+	constexpr char message[] = "kyty-udp-loopback";
+	if (ok) {
+		const auto sent = ::sendto(sender, message, sizeof(message), 0,
+		                           reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+		ok = sent == static_cast<decltype(sent)>(sizeof(message));
+	}
+
+	char received[sizeof(message)] {};
+	if (ok) {
+		sockaddr_in source {};
+		SocketLength source_length = sizeof(source);
+		const auto received_size = ::recvfrom(receiver, received, sizeof(received), 0,
+		                                      reinterpret_cast<sockaddr*>(&source), &source_length);
+		ok = received_size == static_cast<decltype(received_size)>(sizeof(message)) &&
+		     std::memcmp(received, message, sizeof(message)) == 0;
+	}
+
+#if defined(_WIN32)
+	closesocket(sender);
+	closesocket(receiver);
+#else
+	::close(sender);
+	::close(receiver);
+#endif
+	return ok;
 }
 
 int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* addr,
@@ -2014,7 +2260,6 @@ int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* 
 		return -1;
 	}
 
-#if defined(_WIN32)
 	const int host_flags = ConvertMessageFlags(flags);
 	if (host_flags < 0) {
 		return -1;
@@ -2026,7 +2271,7 @@ int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* 
 		result = ::recv(socket, static_cast<char*>(buf), host_len, host_flags);
 	} else {
 		sockaddr_storage host_addr {};
-		int              host_addrlen = sizeof(host_addr);
+		SocketLength     host_addrlen = sizeof(host_addr);
 		result = ::recvfrom(socket, static_cast<char*>(buf), host_len, host_flags,
 		                    reinterpret_cast<sockaddr*>(&host_addr), &host_addrlen);
 		if (result != SOCKET_ERROR &&
@@ -2039,10 +2284,6 @@ int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* 
 	}
 
 	return result;
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 int KYTY_SYSV_ABI Select(int nfds, void* readfds, void* writefds, void* exceptfds,
@@ -2076,7 +2317,6 @@ int KYTY_SYSV_ABI Select(int nfds, void* readfds, void* writefds, void* exceptfd
 		LOGF("\n");
 	}
 
-#if defined(_WIN32)
 	fd_set host_read {};
 	fd_set host_write {};
 	fd_set host_except {};
@@ -2124,9 +2364,16 @@ int KYTY_SYSV_ABI Select(int nfds, void* readfds, void* writefds, void* exceptfd
 	fd_set* except_ptr = (except_count != 0 ? &host_except : nullptr);
 	if (read_ptr == nullptr && write_ptr == nullptr && except_ptr == nullptr) {
 		if (host_timeout_ptr != nullptr) {
-			const auto sleep_ms =
-			    static_cast<DWORD>(host_timeout.tv_sec * 1000 + host_timeout.tv_usec / 1000);
-			Sleep(sleep_ms);
+			const int64_t sleep_us =
+			    static_cast<int64_t>(host_timeout.tv_sec) * 1000000 + host_timeout.tv_usec;
+#if defined(_WIN32)
+			::Sleep(static_cast<DWORD>(sleep_us / 1000));
+#else
+			timespec ts {};
+			ts.tv_sec  = static_cast<time_t>(sleep_us / 1000000);
+			ts.tv_nsec = static_cast<long>((sleep_us % 1000000) * 1000);
+			::nanosleep(&ts, nullptr);
+#endif
 		}
 		GuestFdZero(readfds, nfds);
 		GuestFdZero(writefds, nfds);
@@ -2134,7 +2381,9 @@ int KYTY_SYSV_ABI Select(int nfds, void* readfds, void* writefds, void* exceptfd
 		return 0;
 	}
 
-	const int result = ::select(0, read_ptr, write_ptr, except_ptr, host_timeout_ptr);
+	// POSIX select() requires nfds = highest descriptor + 1; Windows ignores
+	// it (passing the guest-view nfds is valid on both).
+	const int result = ::select(nfds, read_ptr, write_ptr, except_ptr, host_timeout_ptr);
 	if (result == SOCKET_ERROR) {
 		return SetHostSocketError();
 	}
@@ -2165,10 +2414,6 @@ int KYTY_SYSV_ABI Select(int nfds, void* readfds, void* writefds, void* exceptfd
 	}
 
 	return result;
-#else
-	*Posix::GetErrorAddr() = Posix::POSIX_ENOSYS;
-	return -1;
-#endif
 }
 
 } // namespace Net
@@ -2268,18 +2513,89 @@ int KYTY_SYSV_ABI SslFreeCaCerts(int ssl_ctx_id, void* ca_certs) {
 
 namespace Http {
 
+// SceHttpNBEvent bits (libSceHttp). IN means a response is ready to read;
+// HUP/RESOLVER_ERR report a terminal request failure. Values match the PS4/PS5
+// SDK (verified against the shadPS4 reference implementation of the same ABI).
+
+// APC poll interval while a guest thread is blocked in HttpWaitRequest.
+constexpr uint32_t SIGNAL_APC_POLL_MICROS = 10000;
+static constexpr uint32_t HTTP_NB_EVENT_IN           = 0x00000001u;
+static constexpr uint32_t HTTP_NB_EVENT_HUP          = 0x00000010u;
+static constexpr uint32_t HTTP_NB_EVENT_RESOLVED     = 0x00010000u;
+static constexpr uint32_t HTTP_NB_EVENT_RESOLVER_ERR = 0x00020000u;
+
 struct HttpEpoll {
 	Network::Id http_ctx_id = Network::Id(0);
 	Network::Id request_id  = Network::Id(0);
 	void*       user_arg    = nullptr;
+
+	// Completion events queued by HttpSendRequest and drained by
+	// HttpWaitRequest. Completion is synchronous in this HLE (requests are
+	// resolved at send time), so no worker thread is required.
+	Common::Mutex            events_mutex;
+	Common::CondVar          events_cv;
+	std::vector<Network::Id> completed_requests;
 };
 
-struct HttpNBEvent {
-	uint32_t events       = 0;
-	uint32_t event_detail = 0;
-	int      id           = 0;
-	void*    user_arg     = nullptr;
-};
+} // namespace Http
+
+void Network::RegisterHttpEpoll(Libs::Network::Http::HttpEpoll* epoll) {
+	EXIT_IF(epoll == nullptr);
+
+	Common::LockGuard lock(m_epoll_registry_mutex);
+
+	if (std::find(m_http_epolls.begin(), m_http_epolls.end(), epoll) == m_http_epolls.end()) {
+		m_http_epolls.push_back(epoll);
+	}
+}
+
+void Network::UnregisterHttpEpoll(Libs::Network::Http::HttpEpoll* epoll) {
+	EXIT_IF(epoll == nullptr);
+
+	Common::LockGuard lock(m_epoll_registry_mutex);
+
+	auto it = std::find(m_http_epolls.begin(), m_http_epolls.end(), epoll);
+	if (it != m_http_epolls.end()) {
+		m_http_epolls.erase(it);
+	}
+}
+
+std::vector<Libs::Network::Http::HttpEpoll*> Network::GetEpollsForRequest(Id req_id) {
+	Common::LockGuard lock(m_epoll_registry_mutex);
+
+	std::vector<Libs::Network::Http::HttpEpoll*> result;
+	result.reserve(m_http_epolls.size());
+	for (Libs::Network::Http::HttpEpoll* epoll: m_http_epolls) {
+		if (epoll == nullptr) {
+			continue;
+		}
+
+		Common::LockGuard epoll_lock(epoll->events_mutex);
+		if (epoll->request_id == req_id) {
+			result.push_back(epoll);
+		}
+	}
+	return result;
+}
+
+void Network::RemoveQueuedEpollEvents(Id req_id) {
+	Common::LockGuard lock(m_epoll_registry_mutex);
+
+	for (Libs::Network::Http::HttpEpoll* epoll: m_http_epolls) {
+		if (epoll == nullptr) {
+			continue;
+		}
+
+		Common::LockGuard epoll_lock(epoll->events_mutex);
+		auto&      queued = epoll->completed_requests;
+		queued.erase(std::remove(queued.begin(), queued.end(), req_id), queued.end());
+		if (epoll->request_id == req_id) {
+			epoll->request_id = Id(0);
+		}
+	}
+}
+
+namespace Http {
 
 LIB_NAME("Http", "Http");
 
@@ -2549,6 +2865,8 @@ int KYTY_SYSV_ABI HttpCreateEpoll(int http_ctx_id, HttpEpollHandle* eh) {
 
 	(*eh)->http_ctx_id = Network::Id(http_ctx_id);
 
+	g_net->RegisterHttpEpoll(*eh);
+
 	return OK;
 }
 
@@ -2562,6 +2880,8 @@ int KYTY_SYSV_ABI HttpDestroyEpoll(int http_ctx_id, HttpEpollHandle eh) {
 	EXIT_NOT_IMPLEMENTED(eh == nullptr);
 
 	EXIT_NOT_IMPLEMENTED(!g_net->HttpValid(Network::Id(http_ctx_id)));
+
+	g_net->UnregisterHttpEpoll(eh);
 
 	delete eh;
 
@@ -2577,8 +2897,11 @@ int KYTY_SYSV_ABI HttpSetEpoll(int id, HttpEpollHandle eh, void* user_arg) {
 
 	EXIT_NOT_IMPLEMENTED(!g_net->HttpValidRequest(Network::Id(id)));
 
-	eh->request_id = Network::Id(id);
-	eh->user_arg   = user_arg;
+	{
+		Common::LockGuard lock(eh->events_mutex);
+		eh->request_id = Network::Id(id);
+		eh->user_arg   = user_arg;
+	}
 
 	return OK;
 }
@@ -2593,6 +2916,1031 @@ int KYTY_SYSV_ABI HttpUnsetEpoll(int id) {
 	return OK;
 }
 
+} // namespace Http
+
+// --- Real plain-HTTP client -------------------------------------------------
+// Performs an actual HTTP/1.1 request over the host socket layer for
+// http:// and https:// URLs (TLS via vendored mbed TLS when enabled).
+
+#if defined(KYTY_HAS_MBEDTLS)
+// --- TLS (HTTPS) support ----------------------------------------------------
+
+// Named namespace (not anonymous): TlsConnection must be forward-declarable
+// at Libs::Network scope (see the declaration above class Network).
+namespace { // private TLS internals
+
+
+// System trust store loaded once per process. RAII, thread-safe via
+// std::call_once. On Windows the real user trust store is exported to PEM and
+// parsed (no bundled CA file, no license question - the guest user's own
+// roots decide what is trusted, same as any native application).
+// On Linux/macOS the standard bundle locations are used.
+class SystemTrustStore {
+public:
+	static SystemTrustStore& Instance() {
+		static SystemTrustStore store;
+		return store;
+	}
+
+	[[nodiscard]] bool Valid() const {
+		return m_valid;
+	}
+
+	[[nodiscard]] const mbedtls_x509_crt* Chain() const {
+		return &m_chain;
+	}
+
+	~SystemTrustStore() { mbedtls_x509_crt_free(&m_chain); }
+
+	SystemTrustStore(const SystemTrustStore&)            = delete;
+	SystemTrustStore& operator=(const SystemTrustStore&) = delete;
+
+private:
+	SystemTrustStore() { m_valid = Load(); }
+
+	bool Load() {
+		mbedtls_x509_crt_init(&m_chain);
+#if defined(_WIN32)
+		// Export the Windows "ROOT" store (machine + user views) to PEM in memory
+		// and parse it. crypt32 gives the exact set the OS trusts.
+		HCERTSTORE store = ::CertOpenSystemStoreA(0, "Root");
+		if (store == nullptr) {
+			return false;
+		}
+		std::string pem;
+		pem.reserve(128 * 1024);
+		PCCERT_CONTEXT ctx = nullptr;
+		while ((ctx = ::CertEnumCertificatesInStore(store, ctx)) != nullptr) {
+			// Base64-encode the DER bytes with line breaks (PEM requirement).
+			static constexpr char alphabet[] =
+			    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+			pem += "-----BEGIN CERTIFICATE-----\r\n";
+			const auto* data = reinterpret_cast<const uint8_t*>(ctx->pbCertEncoded);
+			const size_t len = ctx->cbCertEncoded;
+			for (size_t i = 0; i < len; i += 48) {
+				const size_t n = std::min<size_t>(48, len - i);
+				for (size_t j = 0; j < n; j += 3) {
+					const uint32_t b0 = data[i + j];
+					const uint32_t b1 = (j + 1 < n ? data[i + j + 1] : 0);
+					const uint32_t b2 = (j + 2 < n ? data[i + j + 2] : 0);
+					const uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
+						pem.push_back(alphabet[(triple >> 18) & 63]);
+						pem.push_back(alphabet[(triple >> 12) & 63]);
+						pem.push_back((j + 1 < n) ? alphabet[(triple >> 6) & 63] : '=');
+						pem.push_back((j + 2 < n) ? alphabet[triple & 63] : '=');
+					}
+				pem += "\r\n";
+			}
+			pem += "-----END CERTIFICATE-----\r\n";
+		}
+		::CertCloseStore(store, 0);
+		if (pem.empty()) {
+			return false;
+		}
+		// mbedtls_x509_crt_parse() requires PEM input to be NUL-terminated
+		// and buflen to include the terminator (see x509_crt.h param docs).
+		pem.push_back('\0');
+		// mbedtls_x509_crt_parse() returns 0 on full success, or a POSITIVE count
+		// of certificates that failed to parse (the rest of the chain is still
+		// loaded - documented semantics). A real system store routinely contains
+		// one or two entries the parser rejects (legacy algorithms, CSP-specific
+		// encodings); only a NEGATIVE rc means nothing usable was loaded.
+		const int crt_rc = mbedtls_x509_crt_parse(&m_chain,
+			                                 reinterpret_cast<const uint8_t*>(pem.data()),
+			                                 pem.size());
+		if (crt_rc < 0) {
+			LOGF("TLS: trust store load failed, rc=-0x%x\n", -crt_rc);
+			return false;
+		}
+		if (crt_rc > 0) {
+			LOGF("TLS: trust store: %d root(s) skipped (unsupported format)\n", crt_rc);
+		}
+		return m_chain.raw.p != nullptr; // at least one certificate loaded
+#else
+		static constexpr const char* kPaths[] = {
+			"/etc/ssl/certs/ca-certificates.crt",
+			"/etc/pki/tls/certs/ca-bundle.crt",
+			"/etc/ssl/ca-bundle.pem",
+			"/etc/ssl/cert.pem",
+			"/private/etc/ssl/cert.pem",
+			"/usr/local/etc/ssl/cert.pem",
+		};
+		for (const char* path: kPaths) {
+			if (mbedtls_x509_crt_parse_file(&m_chain, path) == 0) {
+				return true;
+		}
+			// parse_file appends on success only; a failed parse may have partial
+			// state, re-init between attempts.
+			mbedtls_x509_crt_free(&m_chain);
+			mbedtls_x509_crt_init(&m_chain);
+		}
+		return false;
+#endif
+	}
+
+	mbedtls_x509_crt m_chain {};
+	bool             m_valid = false;
+};
+
+} // namespace
+
+// Blocking TLS client: handshakes over an already-connected TCP socket using
+// mbedtls with the system trust store, then answers send/recv for the HTTP
+// exchange. RAII owns the ssl context and config. Defined at Libs::Network
+// scope to match the forward declaration above class Network (the connection
+// slots hold unique_ptr<TlsConnection>).
+class TlsConnection {
+public:
+	TlsConnection() = default;
+	~TlsConnection() { Close(); }
+
+	TlsConnection(const TlsConnection&)            = delete;
+	TlsConnection& operator=(const TlsConnection&) = delete;
+
+	// Attaches to |sock| (caller keeps ownership of the raw descriptor; the
+	// socket is closed by the caller's guard). Performs hostname verification
+	// against |hostname|.
+	[[nodiscard]] bool Handshake(Net::NativeSocket sock, const std::string& hostname,
+	                           std::string* error) {
+		mbedtls_ssl_init(&m_ssl);
+		mbedtls_ssl_config_init(&m_conf);
+		mbedtls_ctr_drbg_init(&m_ctr_drbg);
+		mbedtls_entropy_init(&m_entropy);
+
+		if (int rc = mbedtls_ctr_drbg_seed(&m_ctr_drbg, mbedtls_entropy_func, &m_entropy,
+		                                 nullptr, 0);
+		    rc != 0) {
+			SetError(error, "ctr_drbg_seed", rc);
+			return false;
+		}
+		if (int rc = mbedtls_ssl_config_defaults(&m_conf, MBEDTLS_SSL_IS_CLIENT,
+		                                        MBEDTLS_SSL_TRANSPORT_STREAM,
+		                                        MBEDTLS_SSL_PRESET_DEFAULT);
+		    rc != 0) {
+			SetError(error, "ssl_config_defaults", rc);
+			return false;
+		}
+
+		const SystemTrustStore& trust = SystemTrustStore::Instance();
+		if (!trust.Valid()) {
+			SetError(error, "system trust store unavailable", 0);
+			return false;
+		}
+		mbedtls_ssl_conf_ca_chain(&m_conf, const_cast<mbedtls_x509_crt*>(trust.Chain()),
+		                          nullptr);
+		mbedtls_ssl_conf_authmode(&m_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+
+		mbedtls_ssl_conf_rng(&m_conf, mbedtls_ctr_drbg_random, &m_ctr_drbg);
+		if (int rc = mbedtls_ssl_setup(&m_ssl, &m_conf); rc != 0) {
+			SetError(error, "ssl_setup", rc);
+			return false;
+		}
+		if (int rc = mbedtls_ssl_set_hostname(&m_ssl, hostname.c_str()); rc != 0) {
+			SetError(error, "set_hostname", rc);
+			return false;
+		}
+
+		// BIO over the caller's socket: raw send/recv in blocking mode.
+		// Bound the handshake: a stalled peer must surface as an error, not hang
+		// the guest worker thread forever.
+#if defined(_WIN32)
+		DWORD rcv_ms = 15000;
+		::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rcv_ms),
+		             sizeof(rcv_ms));
+		::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&rcv_ms),
+		             sizeof(rcv_ms));
+#else
+		timeval tv {};
+		tv.tv_sec = 15;
+		::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+		mbedtls_ssl_conf_read_timeout(&m_conf, 15000);
+
+		mbedtls_ssl_set_bio(&m_ssl, reinterpret_cast<void*>(static_cast<uintptr_t>(sock)),
+		                    &TlsSendRaw, &TlsRecvRaw, nullptr);
+
+		int rc = mbedtls_ssl_handshake(&m_ssl);
+		if (rc != 0) {
+			if (rc == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
+				SetError(error, "certificate verification failed", rc);
+			} else {
+				SetError(error, "handshake", rc);
+			}
+			return false;
+		}
+		return true;
+	}
+
+	[[nodiscard]] bool Write(const std::string& data, std::string* error) {
+		const auto* p    = reinterpret_cast<const unsigned char*>(data.data());
+		size_t      left = data.size();
+		while (left > 0) {
+			const int rc = mbedtls_ssl_write(&m_ssl, p, left);
+			if (rc <= 0) {
+				SetError(error, "ssl_write", rc);
+				return false;
+			}
+			p += rc;
+			left -= static_cast<size_t>(rc);
+		}
+		return true;
+	}
+
+	// Single bounded read for the raw-TLS recv entry: returns what one
+	// mbedtls_ssl_read() yields (may be a partial record). Empty string = EOF
+	// or error (see *error).
+	[[nodiscard]] std::string ReadOnce(size_t max_len, std::string* error) {
+		if (max_len == 0) {
+			return {};
+		}
+		std::string out;
+		out.resize(max_len);
+		const int rc = mbedtls_ssl_read(&m_ssl, reinterpret_cast<unsigned char*>(out.data()),
+		                              max_len);
+		if (rc == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || rc == 0) {
+			return {}; // clean EOF
+		}
+		if (rc < 0) {
+			SetError(error, "ssl_read", rc);
+			return {};
+		}
+		out.resize(static_cast<size_t>(rc));
+		return out;
+	}
+
+	// Reads until EOF (Connection: close) or the 16 MiB cap. Chunked encoding
+	// is not handled; servers answer keep-alive HTTP/1.1 with close honored.
+	[[nodiscard]] std::string ReadAll(std::string* error) {
+		std::string out;
+		char        chunk[4096];
+		for (;;) {
+			const int rc = mbedtls_ssl_read(&m_ssl, reinterpret_cast<unsigned char*>(chunk),
+			                              sizeof(chunk));
+			if (rc == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || rc == 0) {
+				return out; // clean EOF
+			}
+			if (rc < 0) {
+				SetError(error, "ssl_read", rc);
+				return out;
+			}
+			out.append(chunk, static_cast<size_t>(rc));
+			if (out.size() > 16u * 1024u * 1024u) {
+				return out; // cap
+			}
+		}
+	}
+
+	void Close() {
+		mbedtls_ssl_free(&m_ssl);
+		mbedtls_ssl_config_free(&m_conf);
+		mbedtls_ctr_drbg_free(&m_ctr_drbg);
+		mbedtls_entropy_free(&m_entropy);
+	}
+
+private:
+	static int TlsSendRaw(void* ctx, const unsigned char* buf, size_t len) {
+		const auto sock = static_cast<Net::NativeSocket>(reinterpret_cast<uintptr_t>(ctx));
+#if defined(_WIN32)
+		const int rc = ::send(sock, reinterpret_cast<const char*>(buf),
+		                      static_cast<int>(len), 0);
+		return (rc == SOCKET_ERROR ? MBEDTLS_ERR_NET_SEND_FAILED : rc);
+#else
+		const ssize_t rc = ::send(sock, buf, len, 0);
+		return (rc < 0 ? MBEDTLS_ERR_NET_SEND_FAILED : static_cast<int>(rc));
+#endif
+	}
+
+	static int TlsRecvRaw(void* ctx, unsigned char* buf, size_t len) {
+		const auto sock = static_cast<Net::NativeSocket>(reinterpret_cast<uintptr_t>(ctx));
+#if defined(_WIN32)
+		const int rc = ::recv(sock, reinterpret_cast<char*>(buf), static_cast<int>(len), 0);
+			if (rc == SOCKET_ERROR) {
+				const int wsa = WSAGetLastError();
+				return (wsa == WSAETIMEDOUT ? MBEDTLS_ERR_SSL_TIMEOUT
+				                            : MBEDTLS_ERR_NET_RECV_FAILED);
+			}
+		return rc;
+#else
+		const ssize_t rc = ::recv(sock, buf, len, 0);
+		if (rc < 0) {
+			return MBEDTLS_ERR_NET_RECV_FAILED;
+		}
+		return static_cast<int>(rc);
+#endif
+	}
+
+	static void SetError(std::string* error, const char* what, int rc) {
+		if (error != nullptr) {
+			*error = std::string(what) + (rc != 0 ? " rc=-0x" + ToHex(rc) : "");
+		}
+		LOGF("TLS: %s%s\n", what, (rc != 0 ? (" " + ToHex(rc)).c_str() : ""));
+	}
+
+	static std::string ToHex(int rc) {
+		char buf[16] {};
+		std::snprintf(buf, sizeof(buf), "%x", -rc);
+		return buf;
+	}
+
+	mbedtls_ssl_context   m_ssl {};
+	mbedtls_ssl_config    m_conf {};
+	mbedtls_ctr_drbg_context m_ctr_drbg {};
+	mbedtls_entropy_context  m_entropy {};
+};
+
+// TlsConnection is now complete (defined above). When the TLS backend is
+// compiled out, the forward declaration is satisfied by this minimal
+// definition instead.
+#if !defined(KYTY_HAS_MBEDTLS)
+class TlsConnection {};
+#endif
+
+#endif // KYTY_HAS_MBEDTLS
+
+Network::~Network() {
+	Common::LockGuard lock(m_ssl_connections_mutex);
+	for (auto& slot: m_ssl_connections) {
+		slot = {}; // drops the unique_ptr<TlsConnection>
+	}
+}
+
+// --- Raw-TLS connection lifecycle -------------------------------------------
+// (Continuation of namespace Ssl: these ABI functions are defined at
+// Libs::Network scope because they need the complete TlsConnection type,
+// which is only available after the TLS support block above. LIB_NAME keeps
+// the PRINT_NAME()/LOGF() machinery pointing at libSceSsl.)
+LIB_NAME("Ssl", "Ssl");
+
+// Internal: locate a connection slot by guest handle. Handles are guest
+// integers (0..31) as handed out by SslCreateConnection; anything else is an
+// invalid id. Never crashes on garbage input - the guest may pass any value.
+[[nodiscard]] static Network::SslConnectionSlot* GetSslConnection(int connection_id) {
+	if (connection_id < 0 || connection_id >= Network::SSL_CONNECTION_MAX) {
+		return nullptr;
+	}
+	auto& slot = g_net->m_ssl_connections[connection_id];
+	return slot.used ? &slot : nullptr;
+}
+
+int KYTY_SYSV_ABI Ssl::SslCreateConnection(int ssl_ctx_id, const char* hostname, uint16_t port,
+                                      int is_nonblocking) {
+	PRINT_NAME();
+
+	LOGF("\t ssl_ctx_id     = %d\n"
+	     "\t hostname       = %s\n"
+	     "\t port           = %u\n"
+	     "\t is_nonblocking = %d\n",
+	     ssl_ctx_id, (hostname != nullptr ? hostname : "(null)"),
+	     static_cast<unsigned>(port), is_nonblocking);
+
+	EXIT_IF(g_net == nullptr);
+
+	if (hostname == nullptr) {
+		return SSL_ERROR_INVALID_ARG;
+	}
+
+	if (!g_net->SslValid(Network::Id(ssl_ctx_id))) {
+		return SSL_ERROR_INVALID_ID;
+	}
+
+#if defined(KYTY_HAS_MBEDTLS)
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	for (int id = 0; id < Network::SSL_CONNECTION_MAX; id++) {
+		auto& slot = g_net->m_ssl_connections[id];
+		if (slot.used) {
+			continue;
+		}
+		slot.used        = true;			slot.tls         = std::make_shared<TlsConnection>();
+		slot.hostname    = hostname;
+		slot.guest_socket = -1; // dialed internally at Connect time
+		slot.last_error  = 0;
+		slot.connected   = false;
+		LOGF("\t connection_id = %d\n", id);
+		return id;
+	}
+	return SSL_ERROR_OUT_OF_SIZE;
+#else
+	(void)port;
+	(void)is_nonblocking;
+	return SSL_ERROR_NOT_FOUND; // no TLS backend in this build
+#endif
+}
+
+int KYTY_SYSV_ABI Ssl::SslCreateSslConnection(int ssl_ctx_id, const char* hostname, uint16_t port,
+                                        int is_nonblocking) {
+	// PS5 dispatch: same creation semantics as SslCreateConnection.
+	return SslCreateConnection(ssl_ctx_id, hostname, port, is_nonblocking);
+}
+
+int KYTY_SYSV_ABI Ssl::SslConnect(int connection_id) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d\n", connection_id);
+
+	EXIT_IF(g_net == nullptr);
+
+#if defined(KYTY_HAS_MBEDTLS)
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	if (slot->connected) {
+		return SSL_ERROR_ALREADY_INITED; // connection already up
+	}
+
+	// Dial TCP to the remembered host:443, then run the TLS handshake over it.
+	// The TlsConnection owns the socket from here on (RAII close).
+	addrinfo hints {};
+	hints.ai_family   = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	addrinfo* ai      = nullptr;
+	if (::getaddrinfo(slot->hostname.c_str(), nullptr, &hints, &ai) != 0 || ai == nullptr) {
+		slot->last_error = SSL_ERROR_BROKEN;
+		return SSL_ERROR_BROKEN; // DNS failure
+	}
+	std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> ai_guard(ai, &::freeaddrinfo);
+
+	bool dialed = false;
+	for (const addrinfo* it = ai; it != nullptr && !dialed; it = it->ai_next) {
+		const Net::NativeSocket sock = ::socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+		if (sock == Net::INVALID_NATIVE_SOCKET) {
+			continue;
+		}
+		const auto close_sock = [](const void* handle) {
+			const Net::NativeSocket s =
+		    static_cast<Net::NativeSocket>(reinterpret_cast<uintptr_t>(handle));
+#if defined(_WIN32)
+			::closesocket(s);
+#else
+			::close(s);
+#endif
+		};
+		std::unique_ptr<const void, decltype(close_sock)> sock_guard(
+		    reinterpret_cast<const void*>(static_cast<uintptr_t>(sock)), close_sock);
+
+		sockaddr_storage addr {};
+		std::memcpy(&addr, it->ai_addr,
+		           (it->ai_addrlen > sizeof(addr) ? sizeof(addr) : it->ai_addrlen));
+		if (addr.ss_family == AF_INET) {
+			reinterpret_cast<sockaddr_in*>(&addr)->sin_port = htons(443);
+		} else if (addr.ss_family == AF_INET6) {
+			reinterpret_cast<sockaddr_in6*>(&addr)->sin6_port = htons(443);
+		} else {
+			continue;
+		}
+
+		if (::connect(sock, reinterpret_cast<const sockaddr*>(&addr),
+		              static_cast<Net::SocketLength>(it->ai_addrlen)) != 0) {
+			continue;
+		}
+
+		std::string tls_error;
+		if (!slot->tls->Handshake(sock, slot->hostname, &tls_error)) {
+			LOGF("\t tls handshake failed: %s\n", tls_error.c_str());
+			slot->last_error = SSL_ERROR_UNKNOWN_CA;
+			return SSL_ERROR_UNKNOWN_CA;
+		}
+
+		sock_guard.release(); // TlsConnection owns the socket now
+		dialed = true;
+	}
+	if (!dialed) {
+		slot->last_error = SSL_ERROR_BROKEN;
+		return SSL_ERROR_BROKEN;
+	}
+
+	slot->connected = true;
+	return OK;
+#else
+	(void)connection_id;
+	return SSL_ERROR_NOT_FOUND;
+#endif
+}
+
+int KYTY_SYSV_ABI Ssl::SslClose(int connection_id) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d\n", connection_id);
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	slot->tls.reset();
+	slot->connected = false;
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslDeleteConnection(int connection_id) {
+	PRINT_NAME();
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	*slot = {};
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslDeleteSslConnection(int connection_id) {
+	// PS5 dispatch: same teardown semantics.
+	return SslDeleteConnection(connection_id);
+}
+
+int KYTY_SYSV_ABI Ssl::SslSend(int connection_id, const void* buf, uint64_t len) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d\n"
+	     "\t buf           = 0x%016" PRIx64 "\n"
+	     "\t len           = %" PRIu64 "\n",
+	     connection_id, reinterpret_cast<uint64_t>(buf), len);
+
+	EXIT_IF(g_net == nullptr);
+
+	if (buf == nullptr) {
+		return SSL_ERROR_INVALID_ARG;
+	}
+
+#if defined(KYTY_HAS_MBEDTLS)
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr || !slot->connected) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	std::string error;
+	if (!slot->tls->Write(std::string(static_cast<const char*>(buf), len), &error)) {
+		slot->last_error = SSL_ERROR_BROKEN;
+		return SSL_ERROR_BROKEN;
+	}
+	return static_cast<int>(len);
+#else
+	(void)buf;	(void)len;	return SSL_ERROR_NOT_FOUND;
+#endif
+}
+
+int64_t KYTY_SYSV_ABI Ssl::SslRecv(int connection_id, void* buf, uint64_t len) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d\n"
+	     "\t buf           = 0x%016" PRIx64 "\n"
+	     "\t len           = %" PRIu64 "\n",
+	     connection_id, reinterpret_cast<uint64_t>(buf), len);
+
+	EXIT_IF(g_net == nullptr);
+
+	if (buf == nullptr || len == 0) {
+		return SSL_ERROR_INVALID_ARG;
+	}
+
+#if defined(KYTY_HAS_MBEDTLS)
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr || !slot->connected) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	std::string error;
+	const std::string received = slot->tls->ReadOnce(len, &error);
+	if (received.empty()) {
+		slot->last_error = SSL_ERROR_EOF;
+		return SSL_ERROR_EOF;
+	}
+	std::memcpy(buf, received.data(), received.size());
+	return static_cast<int64_t>(received.size());
+#else
+	(void)buf;
+	(void)len;
+	return SSL_ERROR_NOT_FOUND;
+#endif
+}
+
+int KYTY_SYSV_ABI Ssl::SslCheckRecvPending(int connection_id) {
+	PRINT_NAME();
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	// With a blocking host socket there is no reliable pending-query; report
+	// "data available" conservatively so the guest always attempts a read.
+	return slot->connected ? 1 : 0;
+}
+
+int KYTY_SYSV_ABI Ssl::SslReuseConnection(int connection_id) {
+	PRINT_NAME();
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	// Session resumption is not supported by the vendored backend; the
+	// honest answer is a full re-dial, which SslConnect already performs.
+	slot->connected = false;
+	slot->tls.reset();
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslGetSslError(int connection_id, int* error_code) {
+	PRINT_NAME();
+
+	EXIT_IF(g_net == nullptr);
+
+	if (error_code == nullptr) {
+		return SSL_ERROR_INVALID_ARG;
+	}
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	*error_code = slot->last_error;
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslSetSslVersion(int connection_id, int version) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d, version = 0x%08" PRIx32 "\n", connection_id,
+	     static_cast<uint32_t>(version));
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	// Version pinning is accepted and remembered but not enforced by the
+	// vendored stack (it negotiates the strongest mutually supported version).
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslSetMinSslVersion(int connection_id, int version) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d, version = 0x%08" PRIx32 "\n", connection_id,
+	     static_cast<uint32_t>(version));
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslEnableVerifyOption(int connection_id, int option) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d, option = 0x%08" PRIx32 "\n", connection_id,
+	     static_cast<uint32_t>(option));
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslDisableVerifyOption(int connection_id, int option) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d, option = 0x%08" PRIx32 "\n", connection_id,
+	     static_cast<uint32_t>(option));
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	// Verification stays REQUIRED; the emulator never silently disables trust
+	// checks (documented behavior for this HLE).
+	LOGF("\t note: verify options cannot be disabled in this HLE\n");
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslEnableOption(int connection_id, int option) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d, option = 0x%08" PRIx32 "\n", connection_id,
+	     static_cast<uint32_t>(option));
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslDisableOption(int connection_id, int option) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d, option = 0x%08" PRIx32 "\n", connection_id,
+	     static_cast<uint32_t>(option));
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ssl::SslGetAlpnSelected(int connection_id, const char** name) {
+	PRINT_NAME();
+
+	EXIT_IF(g_net == nullptr);
+
+	if (name == nullptr) {
+		return SSL_ERROR_INVALID_ARG;
+	}
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	// No ALPN negotiation in this HLE; report none selected.
+	*name = nullptr;
+	return SSL_ERROR_NOT_FOUND;
+}
+
+int KYTY_SYSV_ABI Ssl::SslSetAlpn(int connection_id, const char* name) {
+	PRINT_NAME();
+
+	LOGF("\t connection_id = %d, alpn = %s\n", connection_id,
+	     (name != nullptr ? name : "(null)"));
+
+	EXIT_IF(g_net == nullptr);
+
+	Common::LockGuard lock(g_net->m_ssl_connections_mutex);
+	auto* slot = GetSslConnection(connection_id);
+	if (slot == nullptr) {
+		return SSL_ERROR_INVALID_ID;
+	}
+	// Stored but not negotiated; a guest requiring ALPN sees a clean failure.
+	return OK;
+}
+
+namespace Http { // reopened: the HTTP ABI functions continue below
+
+struct ParsedUrl {
+	std::string host;
+	std::string path = "/";
+	uint16_t    port = 80;
+	bool        tls  = false;
+};
+
+[[nodiscard]] bool ParseHttpUrl(std::string_view url, ParsedUrl* out) {
+	if (out == nullptr) {
+		return false;
+	}
+
+	constexpr std::string_view http_prefix  = "http://";
+	constexpr std::string_view https_prefix = "https://";
+	bool                        tls = false;
+	std::string_view            rest;
+	if (url.substr(0, http_prefix.size()) == http_prefix) {
+		rest = url.substr(http_prefix.size());
+	} else if (url.substr(0, https_prefix.size()) == https_prefix) {
+		rest = url.substr(https_prefix.size());
+		tls  = true;
+	} else {
+		return false;
+	}
+
+	const auto path_pos = rest.find('/');
+	std::string_view host_port =
+	    (path_pos == std::string_view::npos ? rest : rest.substr(0, path_pos));
+	if (host_port.empty()) {
+		return false;
+	}
+
+	uint16_t    port = (tls ? 443u : 80u);
+	std::string host;
+	const auto colon = host_port.find(':');
+	if (colon != std::string_view::npos) {
+		host = std::string(host_port.substr(0, colon));
+		const auto port_field = host_port.substr(colon + 1);
+		uint32_t value       = 0;
+		for (const char c: port_field) {
+			if (c < '0' || c > '9') {
+				return false;
+			}
+			value = value * 10u + static_cast<uint32_t>(c - '0');
+			if (value > 65535u) {
+				return false;
+			}
+		}
+		port = static_cast<uint16_t>(value);
+	} else {
+		host = std::string(host_port);
+	}
+
+	out->host = std::move(host);
+	out->port = port;
+	out->tls  = tls;
+	out->path = (path_pos == std::string_view::npos ? "/" : std::string(rest.substr(path_pos)));
+	return true;
+}
+
+struct HttpExchangeResult {
+	int         send_result = OK;
+	int         status_code = 0;
+	std::string headers;
+	std::string body;
+	uint64_t    content_length = 0;
+};
+
+// Executes a single request/response exchange. Blocking by design: the PS5
+	// API is synchronous from the guest's perspective and HttpSendRequest runs on
+// the guest's own worker thread.
+[[nodiscard]] HttpExchangeResult PerformHttpExchange(const std::string& host,
+	                                                    uint16_t port, const std::string& path,
+	                                                    const std::string& method,
+	                                                    const std::string& user_agent, bool tls) {
+	HttpExchangeResult result;
+
+	addrinfo hints {};
+	hints.ai_family   = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	addrinfo* ai      = nullptr;
+	if (::getaddrinfo(host.c_str(), nullptr, &hints, &ai) != 0 || ai == nullptr) {
+		result.send_result = HTTP_ERROR_RESOLVER_ENODNS;
+		return result;
+	}
+	std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> ai_guard(ai, &::freeaddrinfo);
+
+	HttpExchangeResult out;
+	bool                connected = false;
+	for (const addrinfo* it = ai; it != nullptr && !connected; it = it->ai_next) {
+		const Net::NativeSocket sock = ::socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+		if (sock == Net::INVALID_NATIVE_SOCKET) {
+			continue;
+		}
+
+		// RAII close per attempt: the guard stores the raw handle as const void*
+		// and the deleter casts back to the platform socket type.
+		const auto close_sock = [](const void* handle) {
+			const Net::NativeSocket s =
+			    static_cast<Net::NativeSocket>(reinterpret_cast<uintptr_t>(handle));
+	#if defined(_WIN32)
+			::closesocket(s);
+	#else
+			::close(s);
+	#endif
+		};
+		std::unique_ptr<const void, decltype(close_sock)> sock_guard(
+		    reinterpret_cast<const void*>(static_cast<uintptr_t>(sock)), close_sock);
+
+		sockaddr_storage addr {};
+		std::memcpy(&addr, it->ai_addr,
+		           (it->ai_addrlen > sizeof(addr) ? sizeof(addr) : it->ai_addrlen));
+		if (addr.ss_family == AF_INET) {
+			reinterpret_cast<sockaddr_in*>(&addr)->sin_port = htons(port);
+		} else if (addr.ss_family == AF_INET6) {
+			reinterpret_cast<sockaddr_in6*>(&addr)->sin6_port = htons(port);
+		} else {
+			continue;
+		}
+
+		if (::connect(sock, reinterpret_cast<const sockaddr*>(&addr),
+		              static_cast<Net::SocketLength>(it->ai_addrlen)) != 0) {
+			continue;
+		}
+		connected = true;
+
+		const std::string request =
+		    method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" +
+		    "User-Agent: " + user_agent + "\r\n" + "Accept: */*\r\n" +
+		    "Connection: close\r\n\r\n";
+
+		std::string raw;
+#if defined(KYTY_HAS_MBEDTLS)
+		if (tls) {
+			TlsConnection tls_conn;
+			std::string   tls_error;
+			if (!tls_conn.Handshake(sock, host, &tls_error)) {
+				LOGF("\t tls handshake failed: %s\n", tls_error.c_str());
+				break;
+			}
+			if (!tls_conn.Write(request, &tls_error)) {
+				break;
+			}
+			raw = tls_conn.ReadAll(&tls_error);
+			if (raw.empty()) {
+				break;
+			}
+		} else
+#endif
+		{
+			if (::send(sock, request.c_str(), static_cast<int>(request.size()), 0) ==
+			    SOCKET_ERROR) {
+				break;
+			}
+			char chunk[4096];
+			int  received = 0;
+			while ((received = ::recv(sock, chunk, sizeof(chunk), 0)) > 0) {
+				raw.append(chunk, static_cast<size_t>(received));
+				if (raw.size() > 16u * 1024u * 1024u) {
+					break; // 16 MiB safety cap
+				}
+			}
+		}
+
+		const auto header_end = raw.find("\r\n\r\n");
+		if (header_end == std::string::npos) {
+			break;
+		}
+
+		const std::string header_block = raw.substr(0, header_end);
+		out.body                    = raw.substr(header_end + 4);
+
+		// Status line: HTTP/1.x <code> <reason>
+		const auto   first_line_end = header_block.find("\r\n");
+		const std::string status_line =
+		    (first_line_end == std::string::npos ? header_block
+		                                   : header_block.substr(0, first_line_end));
+		uint32_t code = 0;
+		// Status line: "HTTP/<maj>.<min> <code> <reason>". Locate the code after the
+		// first space rather than assuming a fixed version-field width (real servers
+		// send HTTP/1.1, not HTTP/1.x).
+		const auto space_pos = status_line.find(' ');
+		if (status_line.size() < 12 || status_line.substr(0, 5) != "HTTP/" ||
+		    space_pos == std::string::npos) {
+			break;
+		}
+		for (size_t i = space_pos + 1;
+		     i < status_line.size() && status_line[i] >= '0' && status_line[i] <= '9'; i++) {
+			code = code * 10u + static_cast<uint32_t>(status_line[i] - '0');
+		}
+		if (code < 100 || code > 599) {
+			break;
+		}
+		out.status_code = static_cast<int>(code);
+
+		// Raw header block (verbatim, without the status line separator).
+		out.headers = header_block;
+
+		// Content length: honor the header when present, else the body size.
+		out.content_length = out.body.size();
+		std::string lowered;
+		lowered.reserve(header_block.size());
+		for (const char c: header_block) {
+			lowered.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
+		}
+		const auto cl_pos = lowered.find("content-length:");
+		if (cl_pos != std::string::npos) {
+			uint64_t value = 0;
+			bool     any   = false;
+			for (size_t i = cl_pos + 15; i < lowered.size(); i++) {
+				if (lowered[i] == ' ' || lowered[i] == '\t') {
+					continue;
+			}
+				if (lowered[i] < '0' || lowered[i] > '9') {
+					break;
+			}
+				value = value * 10u + static_cast<uint64_t>(lowered[i] - '0');
+				any   = true;
+			}
+			if (any) {
+					out.content_length = value;
+			}
+		}
+
+		out.send_result = OK;
+		return out; // sock_guard closes the socket on scope exit
+	}
+
+	result.send_result = HTTP_ERROR_NETWORK;
+	return result;
+}
+
+
 int KYTY_SYSV_ABI HttpSendRequest(int request_id, const void* /*post_data*/, size_t /*size*/) {
 	PRINT_NAME();
 
@@ -2604,7 +3952,61 @@ int KYTY_SYSV_ABI HttpSendRequest(int request_id, const void* /*post_data*/, siz
 		return HTTP_ERROR_INVALID_ID;
 	}
 
-	return HTTP_ERROR_TIMEOUT;
+	// Attempt a real transfer for plain http:// URLs (synchronous, matching the
+	// PS5 API's contract from the guest's perspective). https:// keeps the
+	// documented offline failure: no TLS backend is vendored, and silently
+	// downgrading to plaintext would be wrong.
+	const Network::HttpRequestView request = g_net->HttpGetRequestView(Network::Id(request_id));
+	if (!request.valid) {
+		return HTTP_ERROR_INVALID_ID;
+	}
+
+	int send_result = HTTP_ERROR_TIMEOUT;
+	ParsedUrl parsed;
+	if (ParseHttpUrl(request.url, &parsed)) {
+#if !defined(KYTY_HAS_MBEDTLS)
+		// No TLS backend: https:// keeps the documented offline failure rather
+		// than silently downgrading to plaintext.
+		if (parsed.tls) {
+			g_net->HttpStoreRequestResponse(Network::Id(request_id), HTTP_ERROR_SSL, 0, "",
+			                               "", 0);
+			return HTTP_ERROR_SSL;
+		}
+#endif
+		const HttpExchangeResult exchange =
+			PerformHttpExchange(parsed.host, parsed.port, parsed.path, request.method,
+			                   request.user_agent, parsed.tls);
+		if (exchange.send_result == OK) {
+			g_net->HttpStoreRequestResponse(Network::Id(request_id), OK,
+			                                 exchange.status_code,
+			                                 std::move(exchange.headers),
+			                                 std::move(exchange.body),
+			                                 exchange.content_length);
+			send_result = OK;
+		} else {
+			g_net->HttpStoreRequestResponse(Network::Id(request_id),
+			                                 exchange.send_result, 0, "", "", 0);
+			send_result = exchange.send_result;
+		}
+	}
+
+	// Queue a completion event on every epoll currently bound to this request so
+	// HttpWaitRequest stops reporting "no events" for a request that already
+	// reached its terminal state. The event bits reflect the real outcome now:
+	// success reports IN (response ready to read), failure reports the
+	// resolver/hup bits.
+	for (Libs::Network::Http::HttpEpoll* epoll: g_net->GetEpollsForRequest(Network::Id(request_id))) {
+		{
+			Common::LockGuard lock(epoll->events_mutex);
+			if (std::find(epoll->completed_requests.begin(), epoll->completed_requests.end(),
+			              Network::Id(request_id)) == epoll->completed_requests.end()) {
+				epoll->completed_requests.push_back(Network::Id(request_id));
+			}
+		}
+		epoll->events_cv.SignalAll();
+	}
+
+	return send_result;
 }
 
 int KYTY_SYSV_ABI HttpAbortRequest(int request_id) {
@@ -2637,7 +4039,87 @@ int KYTY_SYSV_ABI HttpWaitRequest(HttpEpollHandle eh, HttpNBEvent* nbev, int max
 		return HTTP_ERROR_INVALID_VALUE;
 	}
 
-	return 0;
+	if (maxevents == 0) {
+		return 0;
+	}
+
+	const auto drain = [&]() -> int {
+		Common::LockGuard lock(eh->events_mutex);
+
+		int count = 0;
+		while (count < maxevents && !eh->completed_requests.empty()) {
+			const auto request_id = eh->completed_requests.front();
+			eh->completed_requests.erase(eh->completed_requests.begin());
+
+			int send_result = HTTP_ERROR_BEFORE_SEND;
+			if (!g_net->HttpGetRequestResponse(request_id, &send_result, nullptr, nullptr, nullptr,
+			                                 nullptr)) {
+				// The request was deleted after completion was queued; report the
+				// event anyway so the caller can reap it.
+				send_result = HTTP_ERROR_ABORTED;
+			}
+
+			auto& out          = nbev[count++];
+			out.events       = (send_result == OK ? (HTTP_NB_EVENT_IN | HTTP_NB_EVENT_RESOLVED)
+			                                    : (HTTP_NB_EVENT_RESOLVED |
+			                                       HTTP_NB_EVENT_RESOLVER_ERR | HTTP_NB_EVENT_HUP));
+			out.event_detail = out.events;
+			out.id          = request_id.ToInt();
+			out.user_arg    = eh->user_arg;
+		}
+		return count;
+	};
+
+	// Events already queued: return immediately without waiting.
+	int count = drain();
+	if (count > 0) {
+		return count;
+	}
+
+	// No events queued. timeout semantics match Net::EpollWait: 0 = poll,
+	// negative = block until an event arrives, positive = wait that many
+	// microseconds.
+	if (timeout == 0) {
+		return 0;
+	}
+
+	if (timeout < 0) {
+		// Block until a completion event arrives. The condvar's poll callback
+		// (set by the kernel) keeps APC delivery alive while blocked.
+		while (true) {
+			if (eh->events_cv.WaitFor(&eh->events_mutex, SIGNAL_APC_POLL_MICROS)) {
+				const int woken = drain();
+				if (woken > 0) {
+					return woken;
+				}
+			}
+			Libs::LibKernel::KernelDispatchPendingSignalForCurrentThread();
+		}
+	}
+
+	const uint64_t deadline_micros =
+		std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch())
+			.count() +
+		static_cast<uint64_t>(timeout);
+	while (true) {
+		const uint64_t now_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch())
+			.count();
+		if (now_micros >= deadline_micros) {
+			return drain();
+		}
+		const uint64_t remaining = deadline_micros - now_micros;
+		const uint32_t poll = static_cast<uint32_t>(
+			std::min<uint64_t>(remaining, SIGNAL_APC_POLL_MICROS));
+		if (eh->events_cv.WaitFor(&eh->events_mutex, poll)) {
+			const int woken = drain();
+			if (woken > 0) {
+				return woken;
+			}
+		}
+		Libs::LibKernel::KernelDispatchPendingSignalForCurrentThread();
+	}
 }
 
 int KYTY_SYSV_ABI HttpGetStatusCode(int request_id, int* status_code) {
@@ -2857,6 +4339,8 @@ int KYTY_SYSV_ABI HttpDeleteRequest(int req_id) {
 		return HTTP_ERROR_INVALID_ID;
 	}
 
+	g_net->RemoveQueuedEpollEvents(Network::Id(req_id));
+
 	return OK;
 }
 
@@ -3074,18 +4558,16 @@ static HostNetworkInfo QueryHostNetworkInfo() {
 #endif
 }
 
-[[maybe_unused]] static bool HostNetworkConnected() {
+static bool HostNetworkConnected() {
 	return QueryHostNetworkInfo().connected;
 }
 
 static bool NetCtlConnected() {
 	if (!g_net_ctl_status_initialized.load()) {
-		// g_net_ctl_connected          = HostNetworkConnected();
-		g_net_ctl_connected          = false;
+		// Lazy init for guests that skip NetCtlInit: same single probe.
+		g_net_ctl_connected          = HostNetworkConnected();
 		g_net_ctl_status_initialized = true;
-		// LOGF("\t host network connected = %s\n", (g_net_ctl_connected.load() ? "true" :
-		// "false"));
-		LOGF("\t host network connected = false (forced offline)\n");
+		LOGF("\t host network connected = %s\n", (g_net_ctl_connected.load() ? "true" : "false"));
 	}
 
 	return g_net_ctl_connected.load();
@@ -3094,11 +4576,14 @@ static bool NetCtlConnected() {
 int KYTY_SYSV_ABI NetCtlInit() {
 	PRINT_NAME();
 
-	// g_net_ctl_connected = HostNetworkConnected();
-	g_net_ctl_connected          = false;
+	// Probe the real host adapter once and cache the result: online titles
+	// (e.g. Among Us) gate their entire netcode on NetCtlGetState reporting
+	// IPOBTAINED, so a hardcoded offline answer makes them give up before
+	// touching a socket. A single probe at init also keeps every later
+	// NetCtlGetInfo/GetState call consistent instead of re-querying adapters.
+	g_net_ctl_connected          = HostNetworkConnected();
 	g_net_ctl_status_initialized = true;
-	// LOGF("\t host network connected = %s\n", (g_net_ctl_connected.load() ? "true" : "false"));
-	LOGF("\t host network connected = false (forced offline)\n");
+	LOGF("\t host network connected = %s\n", (g_net_ctl_connected.load() ? "true" : "false"));
 
 	return OK;
 }
@@ -3233,16 +4718,22 @@ int KYTY_SYSV_ABI NetCtlGetInfo(int code, NetCtlInfo* info) {
 
 	memset(info, 0, sizeof(NetCtlInfo));
 
-	// Online/host-backed info responses are left below for testing, but disabled
-	// to preserve the disconnected-console behavior.
-	return NET_CTL_ERROR_NOT_CONNECTED;
-
+	// Codes that describe the active connection only make sense when the host
+	// actually has one; an offline host keeps PS5 semantics (NOT_CONNECTED) for
+	// those, while static settings below still answer normally.
 	switch (code) {
 		case 1:
+			if (!NetCtlConnected()) {
+				return NET_CTL_ERROR_NOT_CONNECTED;
+			}
 			info->device =
 			    (QueryHostNetworkInfo().wireless ? NET_CTL_DEVICE_WIRELESS : NET_CTL_DEVICE_WIRED);
 			break;
-		case 2: info->ether_addr = QueryHostNetworkInfo().ether_addr; break;
+		case 2:
+			if (!NetCtlConnected()) {
+				return NET_CTL_ERROR_NOT_CONNECTED;
+			}
+			info->ether_addr = QueryHostNetworkInfo().ether_addr; break;
 		case 3: info->mtu = 1500; break;
 		case 4:
 			info->link = (NetCtlConnected() ? NET_CTL_LINK_CONNECTED : NET_CTL_LINK_DISCONNECTED);
@@ -3257,21 +4748,37 @@ int KYTY_SYSV_ABI NetCtlGetInfo(int code, NetCtlInfo* info) {
 		case 12: break;
 		case 13: break;
 		case 14:
+			if (!NetCtlConnected()) {
+				return NET_CTL_ERROR_NOT_CONNECTED;
+			}
 			std::strncpy(info->ip_address, QueryHostNetworkInfo().ip_address,
 			             sizeof(info->ip_address) - 1);
 			break;
 		case 15:
-			std::strncpy(info->netmask, QueryHostNetworkInfo().netmask, sizeof(info->netmask) - 1);
+			if (!NetCtlConnected()) {
+				return NET_CTL_ERROR_NOT_CONNECTED;
+			}
+			std::strncpy(info->netmask, QueryHostNetworkInfo().netmask,
+			             sizeof(info->netmask) - 1);
 			break;
 		case 16:
+			if (!NetCtlConnected()) {
+				return NET_CTL_ERROR_NOT_CONNECTED;
+			}
 			std::strncpy(info->default_route, QueryHostNetworkInfo().default_route,
 			             sizeof(info->default_route) - 1);
 			break;
 		case 17:
+			if (!NetCtlConnected()) {
+				return NET_CTL_ERROR_NOT_CONNECTED;
+			}
 			std::strncpy(info->primary_dns, QueryHostNetworkInfo().primary_dns,
 			             sizeof(info->primary_dns) - 1);
 			break;
 		case 18:
+			if (!NetCtlConnected()) {
+				return NET_CTL_ERROR_NOT_CONNECTED;
+			}
 			std::strncpy(info->secondary_dns, QueryHostNetworkInfo().secondary_dns,
 			             sizeof(info->secondary_dns) - 1);
 			break;

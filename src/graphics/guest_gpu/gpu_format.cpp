@@ -220,4 +220,45 @@ BufferFormat RemapTextureFormat(BufferFormat format) {
 	return format == BufferFormat::k11_11_10UInt ? BufferFormat::k32UInt : format;
 }
 
+
+// KytyPlus: ASTC texture formats. 16 bytes per block regardless of footprint.
+bool IsBlockCompressedFormat(BufferFormat format) {
+	return BlockCompressedBytesPerBlock(format) != 0 && !IsASTCTextureFormat(format);
+}
+
+bool IsASTCTextureFormat(BufferFormat format) {
+	switch (format) {
+		case BufferFormat::kAstc4x4UNorm:
+		case BufferFormat::kAstc4x4Srgb:
+		case BufferFormat::kAstc5x4UNorm:
+		case BufferFormat::kAstc5x4Srgb:
+		case BufferFormat::kAstc5x5UNorm:
+		case BufferFormat::kAstc5x5Srgb:
+		case BufferFormat::kAstc6x5UNorm:
+		case BufferFormat::kAstc6x5Srgb:
+		case BufferFormat::kAstc6x6UNorm:
+		case BufferFormat::kAstc6x6Srgb:
+		case BufferFormat::kAstc8x5UNorm:
+		case BufferFormat::kAstc8x5Srgb:
+		case BufferFormat::kAstc8x6UNorm:
+		case BufferFormat::kAstc8x6Srgb:
+		case BufferFormat::kAstc8x8UNorm:
+		case BufferFormat::kAstc8x8Srgb:
+		case BufferFormat::kAstc10x5UNorm:
+		case BufferFormat::kAstc10x5Srgb:
+		case BufferFormat::kAstc10x6UNorm:
+		case BufferFormat::kAstc10x6Srgb:
+		case BufferFormat::kAstc10x8UNorm:
+		case BufferFormat::kAstc10x8Srgb:
+		case BufferFormat::kAstc10x10UNorm:
+		case BufferFormat::kAstc10x10Srgb:
+		case BufferFormat::kAstc12x10UNorm:
+		case BufferFormat::kAstc12x10Srgb:
+		case BufferFormat::kAstc12x12UNorm:
+		case BufferFormat::kAstc12x12Srgb:
+			return true;
+		default: return false;
+	}
+}
+
 } // namespace Libs::Graphics::Prospero

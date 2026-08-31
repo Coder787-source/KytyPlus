@@ -1181,6 +1181,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.ps_active ? &state.ps_input_info : nullptr, topology, primitive_restart_enable,
 	    state.vertex_program, state.pixel_program);
 
+	// KytyPlus: async pipeline compile in flight -- skip this draw; it will be
+	// re-recorded on a later frame once the pipeline is published.
+	if (pipeline.pipeline == nullptr) {
+		return;
+	}
+
 	// Resource preparation above may synchronously finish and restart the scheduler. From this
 	// point onward, every operation targets the current command buffer and cannot touch guest
 	// memory.

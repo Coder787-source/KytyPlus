@@ -1,4 +1,4 @@
-﻿#ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_ASYNCPYELINECOMPILER_H_
+#ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_ASYNCPYELINECOMPILER_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_ASYNCPYELINECOMPILER_H_
 
 #include "common/common.h"
@@ -19,33 +19,32 @@ namespace Libs::Graphics {
 
 // AsyncPipelineCompiler
 //
-// Compiles first-encounter graphics pipelines on a fixed worker thread pool
-// instead of inline on the GPU thread. Eliminates the multi-100 ms first-enc
-// stutter: the GPU thread submits a compile job and immediately proceeds to
-// the next draw (which skips recording while the pipeline is not ready),
-// while a worker performs the (already thread-safe) vkCreateGraphicsPipelines
-// call in parallel. Once a worker publishes the finished pipeline, subsequent
-// draws bind it normally.
+// KytyPlus fork feature. Compiles first-encounter graphics pipelines on a
+// fixed worker thread pool instead of inline on the GPU thread. Eliminates
+// the multi-100 ms first-encounter stutter: the GPU thread submits a compile
+// job and immediately proceeds (the draw that hit the miss skips recording
+// until the pipeline is published), while a worker performs the
+// vkCreateGraphicsPipelines call in parallel.
 //
-// Safety: every shared object a worker touches is already concurrency-safe:
+// Safety: every shared object a worker touches is concurrency-safe:
 //   - vk::Device object-creation calls are externally-synchronized-free per
 //     the Vulkan spec and reference-counted.
-//   - DescriptorCache::GetDescriptorSetLayout takes its own m_mutex.
-//   - ShaderRecompiler::TryRecompile is a pure build with no shared state.
+//   - vk::ShaderModule handles are owned by PipelineCache::m_program_cache,
+//     which outlives all in-flight requests (the destructor drains the
+//     queue before destroying anything).
 //   - vk::PipelineCache is reference-counted and thread-safe per the spec.
 // The only state a worker mutates that the GPU thread reads is the finished
-// pipeline map, which is published under PipelineCache::m_mutex.
+// pipeline map, published via PipelineCache::PublishCompiledPipeline under
+// PipelineCache::m_mutex.
 //
 // The compiler owns no Vulkan handles itself: finished GraphicsPipeline
 // objects are moved into PipelineCache::m_graphics_pipelines (which already
 // owns and destroys them), so lifetime is handled by the existing cache.
-class PipelineCache;
-
 class AsyncPipelineCompiler {
 public:
-	// A compile request. SPIR-V and input info are captured by value so the
-	// request is fully self-contained and safe to process on a worker thread
-	// without referencing GPU-thread-owned state.
+	// A compile request. Shader programs (id + module) and input info are
+	// captured by value so the request is fully self-contained and safe to
+	// process on a worker thread without referencing GPU-thread-owned state.
 	struct CompileRequest {
 		PipelineCache::GraphicsPipelineKey key {};
 
@@ -54,18 +53,21 @@ public:
 		ShaderVertexInputInfo    vs_input_info {};
 		// ps_input_info is optional (ps_active == false -> no pixel shader).
 		std::unique_ptr<ShaderPixelInputInfo> ps_input_info_storage;
-		std::vector<uint32_t>                vs_spirv {};
-		std::vector<uint32_t>                ps_spirv {};
 
-		uint32_t vs_hash0 = 0;
-		uint32_t vs_crc32 = 0;
-		uint32_t ps_hash0 = 0;
-		uint32_t ps_crc32 = 0;
+		// Upstream PipelineCache keys pipelines by ShaderProgram id and creates
+		// them from vk::ShaderModule handles; capture both so the worker can
+		// call CreatePipelineInternal directly. Modules live in ProgramCache,
+		// which outlives all in-flight requests (Shutdown drains first).
+		ShaderProgram vertex_program {};
+		ShaderProgram pixel_program {};
+
+		uint64_t vs_id = 0;
+		uint64_t ps_id = 0;
 		bool     ps_active = false;
 	};
 
-	AsyncPipelineCompiler(GraphicContext& graphics, DescriptorCache& descriptor_cache,
-	                      vk::PipelineCache driver_cache, PipelineCache& owner);
+	AsyncPipelineCompiler(GraphicContext& graphics, vk::PipelineCache driver_cache,
+	                      PipelineCache& owner);
 	~AsyncPipelineCompiler();
 
 	KYTY_CLASS_NO_COPY(AsyncPipelineCompiler);
@@ -89,21 +91,19 @@ private:
 	void WorkerLoop();
 
 	GraphicContext&  m_graphics;
-	DescriptorCache&  m_descriptor_cache;
 	vk::PipelineCache m_driver_cache;
-	PipelineCache&    m_owner;
+	PipelineCache&   m_owner;
 
 	// Worker coordination. m_state_mutex guards the queue, in-flight set, and
 	// the stop flag; workers wait on m_work_signal while idle.
-	std::mutex                       m_state_mutex {};
-	std::condition_variable          m_work_signal {};
-	std::vector<std::jthread>        m_workers {};
-	std::vector<CompileRequest>      m_queue {};
+	std::mutex                            m_state_mutex {};
+	std::condition_variable               m_work_signal {};
+	std::vector<std::jthread>             m_workers {};
+	std::vector<CompileRequest>           m_queue {};
 	std::unordered_set<PipelineCache::GraphicsPipelineKey,
-	                    PipelineCache::GraphicsPipelineKeyHash,
-	                    PipelineCache::GraphicsPipelineKeyEqual>
+	                    PipelineCache::GraphicsPipelineKeyHash>
 	    m_in_flight {};
-	std::atomic<bool>                m_stopping {false};
+	std::atomic<bool>                     m_stopping {false};
 
 	// Fixed pool size. More than ~4 contends on the driver's internal pipeline
 	// compile locks without improving throughput.

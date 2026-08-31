@@ -83,9 +83,9 @@ void submit_dcb_bytes(const uint32_t* dcb, uint32_t size_in_bytes) {
 
 	const uint32_t size_in_dwords = size_in_bytes / sizeof(uint32_t);
 
-	GetActiveRenderer()->GetGpu().Submit(const_cast<uint32_t*>(dcb), size_in_dwords,
+	GetActiveRenderer()->GetGpu().Submit(std::span {const_cast<uint32_t*>(dcb), size_in_dwords},
 
-	                                     nullptr, 0, false);
+	                                     {});
 
 }
 
@@ -103,9 +103,9 @@ void submit_acb_bytes(uint32_t queue, const uint32_t* acb, uint32_t size_in_byte
 
 	const uint32_t size_in_dwords = size_in_bytes / sizeof(uint32_t);
 
-	GetActiveRenderer()->GetGpu().SubmitCompute(queue, const_cast<uint32_t*>(acb),
+	GetActiveRenderer()->GetGpu().SubmitCompute(queue,
 
-	                                            size_in_dwords, false);
+	                                            std::span {const_cast<uint32_t*>(acb), size_in_dwords});
 
 }
 

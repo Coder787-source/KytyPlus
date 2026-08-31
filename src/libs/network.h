@@ -72,21 +72,62 @@ int64_t KYTY_SYSV_ABI Recv(int s, void* buf, uint64_t len, int flags);
 int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* addr,
                                uint32_t* addrlen);
 
+// Host-side loopback diagnostic. It exercises the same native UDP backend used
+// by the guest socket ABI without requiring an external server.
+bool RunUdpLoopbackDiagnostic();
+
 } // namespace Net
 
 namespace Ssl {
 
+// Raw-TLS connection surface (libSsl). The connection functions wrap a
+// handle table over the vendored mbed TLS stack; every entry validates its
+// arguments so an ABI mismatch degrades to a documented SCE error code
+// instead of a crash or a fabricated success. The exact guest-side parameter
+// layouts of the connection calls are not publicly documented, so the
+// implementations treat the connection argument as an opaque handle and
+// bound-check everything else.
 int KYTY_SYSV_ABI SslInit(uint64_t pool_size);
 int KYTY_SYSV_ABI SslTerm(int ssl_ctx_id);
 int KYTY_SYSV_ABI SslGetCaCerts(int ssl_ctx_id, void* ca_certs);
 int KYTY_SYSV_ABI SslFreeCaCerts(int ssl_ctx_id, void* ca_certs);
+
+int KYTY_SYSV_ABI SslCreateConnection(int ssl_ctx_id, const char* hostname, uint16_t port,
+                                      int is_nonblocking);
+int KYTY_SYSV_ABI SslCreateSslConnection(int ssl_ctx_id, const char* hostname, uint16_t port,
+                                        int is_nonblocking);
+int KYTY_SYSV_ABI SslConnect(int connection_id);
+int KYTY_SYSV_ABI SslClose(int connection_id);
+int KYTY_SYSV_ABI SslDeleteConnection(int connection_id);
+int KYTY_SYSV_ABI SslDeleteSslConnection(int connection_id);
+int KYTY_SYSV_ABI SslSend(int connection_id, const void* buf, uint64_t len);
+int64_t KYTY_SYSV_ABI SslRecv(int connection_id, void* buf, uint64_t len);
+int KYTY_SYSV_ABI SslCheckRecvPending(int connection_id);
+int KYTY_SYSV_ABI SslReuseConnection(int connection_id);
+int KYTY_SYSV_ABI SslGetSslError(int connection_id, int* error_code);
+int KYTY_SYSV_ABI SslSetSslVersion(int connection_id, int version);
+int KYTY_SYSV_ABI SslSetMinSslVersion(int connection_id, int version);
+int KYTY_SYSV_ABI SslEnableVerifyOption(int connection_id, int option);
+int KYTY_SYSV_ABI SslDisableVerifyOption(int connection_id, int option);
+int KYTY_SYSV_ABI SslEnableOption(int connection_id, int option);
+int KYTY_SYSV_ABI SslDisableOption(int connection_id, int option);
+int KYTY_SYSV_ABI SslGetAlpnSelected(int connection_id, const char** name);
+int KYTY_SYSV_ABI SslSetAlpn(int connection_id, const char* name);
 
 } // namespace Ssl
 
 namespace Http {
 
 struct HttpEpoll;
-struct HttpNBEvent;
+
+// SceHttpNBEvent: completion event written by HttpWaitRequest. The guest
+// allocates the array, so the layout must be visible to callers.
+struct HttpNBEvent {
+	uint32_t events       = 0;
+	uint32_t event_detail = 0;
+	int      id           = 0;
+	void*    user_arg     = nullptr;
+};
 
 using HttpEpollHandle = HttpEpoll*;
 

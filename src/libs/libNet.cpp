@@ -230,10 +230,33 @@ LIB_VERSION("Ssl", 1, "Ssl", 1, 1);
 namespace Ssl = Network::Ssl;
 
 LIB_DEFINE(InitNet_1_Ssl) {
+	// NIDs verified against the shadPS4 reference table for the same ABI
+	// (libSceSsl); the four original entries match it exactly, confirming the
+	// list carries across the PS4/PS5 boundary.
 	LIB_FUNC("hdpVEUDFW3s", Ssl::SslInit);
 	LIB_FUNC("0K1yQ6Lv-Yc", Ssl::SslTerm);
 	LIB_FUNC("TDfQqO-gMbY", Ssl::SslGetCaCerts);
 	LIB_FUNC("qIvLs0gYxi0", Ssl::SslFreeCaCerts);
+	// Connection lifecycle (raw TLS over guest sockets).
+	LIB_FUNC("tuscfitnhEo", Ssl::SslCreateConnection);
+	LIB_FUNC("P14ATpXc4J8", Ssl::SslCreateSslConnection);
+	LIB_FUNC("zXvd6iNyfgc", Ssl::SslConnect);
+	LIB_FUNC("viRXSHZYd0c", Ssl::SslClose);
+	LIB_FUNC("HJ1n138CQ2g", Ssl::SslDeleteConnection);
+	LIB_FUNC("hwrHV6Pprk4", Ssl::SslDeleteSslConnection);
+	LIB_FUNC("p5bM5PPufFY", Ssl::SslSend);
+	LIB_FUNC("hi0veU3L2pU", Ssl::SslRecv);
+	LIB_FUNC("1VM0h1JrUfA", Ssl::SslCheckRecvPending);
+	LIB_FUNC("50R2xYaYZwE", Ssl::SslReuseConnection);
+	LIB_FUNC("0XcZknp7-Wc", Ssl::SslGetSslError);
+	LIB_FUNC("bKaEtQnoUuQ", Ssl::SslSetSslVersion);
+	LIB_FUNC("QWSxBzf6lAg", Ssl::SslSetMinSslVersion);
+	LIB_FUNC("po1X86mgHDU", Ssl::SslEnableVerifyOption);
+	LIB_FUNC("PwsHbErG+e8", Ssl::SslDisableVerifyOption);
+	LIB_FUNC("m-zPyAsIpco", Ssl::SslEnableOption);
+	LIB_FUNC("iLKz4+ukLqk", Ssl::SslDisableOption);
+	LIB_FUNC("4O7+bRkRUe8", Ssl::SslGetAlpnSelected);
+	LIB_FUNC("TL86glUrmUw", Ssl::SslSetAlpn);
 }
 
 } // namespace LibSsl

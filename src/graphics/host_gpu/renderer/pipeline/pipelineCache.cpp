@@ -1,5 +1,8 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 
+#include "common/emulatorConfig.h"
+#include "graphics/host_gpu/renderer/pipeline/asyncPipelineCompiler.h"
+
 #include "common/assert.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -170,6 +173,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 }
 
 PipelineCache::~PipelineCache() {
+	ShutdownAsyncCompiler();
 	Save();
 	auto destroy = [this](const auto& pipelines) {
 		for (const auto& [key, pipeline]: pipelines) {
@@ -276,6 +280,45 @@ void PipelineCache::InitializeDriverCache() {
 		                 path);
 	} else {
 		PipelineCacheLog("Vulkan pipeline cache: initialized empty");
+	}
+}
+
+// --- KytyPlus: async pipeline compilation ---------------------------------
+
+PipelineCache::GraphicsPipeline& PipelineCache::AsyncPendingSentinel() noexcept {
+	static GraphicsPipeline sentinel;
+	return sentinel;
+}
+
+bool PipelineCache::AsyncCompilationEnabled() const noexcept {
+	return Config::AsyncPipelineCompilationEnabled() && !graphics_debug_dump_enabled();
+}
+
+bool PipelineCache::IsAsyncPending(const GraphicsPipelineKey& key) const {
+	return m_async_compiler != nullptr && m_async_compiler->IsPending(key);
+}
+
+AsyncPipelineCompiler& PipelineCache::GetOrCreateAsyncCompiler() {
+	if (m_async_compiler == nullptr) {
+		m_async_compiler = std::make_unique<AsyncPipelineCompiler>(m_graphics, m_driver_cache, *this);
+	}
+	return *m_async_compiler;
+}
+
+void PipelineCache::PublishCompiledPipeline(GraphicsPipelineKey key,
+                                             std::unique_ptr<PipelineCache::GraphicsPipeline> pipeline) {
+	Common::LockGuard lock(m_mutex);
+	const auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(pipeline));
+	if (!inserted) {
+		// A synchronous compile won the race; our duplicate is destroyed here on
+		// the worker thread, which is safe (device calls are thread-safe).
+	}
+}
+
+void PipelineCache::ShutdownAsyncCompiler() {
+	if (m_async_compiler != nullptr) {
+		m_async_compiler->Shutdown();
+		m_async_compiler.reset();
 	}
 }
 
@@ -519,17 +562,41 @@ PipelineCache::GraphicsPipeline& PipelineCache::CreateGraphicsPipeline(
 		     static_cast<void*>(pixel_program.module));
 	}
 
-	auto cached = std::make_unique<GraphicsPipeline>(p);
-	LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
-	CreatePipelineInternal(m_graphics, *cached, rendering, vs_input_info, vertex_program.module,
-	                       ps_input_info, pixel_program.module, static_params, m_driver_cache);
-	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
-
-	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
-	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
-
-	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
-	EXIT_IF(!inserted);
+	// KytyPlus: async path. When enabled, first-encounter pipelines are compiled
+	// on the worker pool and the draw is skipped until publication. When a job
+	// is already pending for this key, return the sentinel again (skip).
+	if (AsyncCompilationEnabled()) {
+		if (IsAsyncPending(key)) {
+			return AsyncPendingSentinel();
+		}
+		AsyncPipelineCompiler::CompileRequest request;
+		request.key             = key;
+		request.rendering       = rendering;
+		request.static_params   = static_params;
+		request.vs_input_info   = vs_input_info;
+		if (ps_input_info != nullptr) {
+			request.ps_input_info_storage = std::make_unique<ShaderPixelInputInfo>(*ps_input_info);
+		}
+		request.vertex_program  = vertex_program;
+		request.pixel_program   = pixel_program;
+		request.vs_id           = vs_id;
+		request.ps_id          = ps_id;
+		request.ps_active      = ps_active;
+		GetOrCreateAsyncCompiler().Submit(std::move(request));
+		return AsyncPendingSentinel();
+	}
+
+	auto cached = std::make_unique<GraphicsPipeline>(p);
+	LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
+	CreatePipelineInternal(m_graphics, *cached, rendering, vs_input_info, vertex_program.module,
+	                       ps_input_info, pixel_program.module, static_params, m_driver_cache);
+	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
+
+	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
+	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
+
+	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
+	EXIT_IF(!inserted);
 
 	return *iter->second;
 }

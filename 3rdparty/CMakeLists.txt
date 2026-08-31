@@ -1,4 +1,8 @@
+# Keep all bundled dependencies static. zlib's own ZLIB_BUILD_SHARED option
+# is independent of BUILD_SHARED_LIBS, so force it off explicitly as well.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
 
 # zlib is required for PFSC (compressed PFS) decompression. Vendored and built
 # statically from source so every platform build gets PFSC support without
@@ -7,6 +11,19 @@ set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(ZLIB_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(zlib EXCLUDE_FROM_ALL)
+
+# mbed TLS 3.6.7 (LTS) is the TLS backend for libSsl/libHttp HTTPS support.
+# Vendored and built statically from the pristine release tarball
+# (sha256 a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6).
+# Only the three libraries are built: programs/tests are disabled and the
+# release tarball ships pre-generated sources, so no Python steps run here.
+set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(MBEDTLS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+add_subdirectory(mbedtls EXCLUDE_FROM_ALL)
 
 add_subdirectory(cpuinfo)
 

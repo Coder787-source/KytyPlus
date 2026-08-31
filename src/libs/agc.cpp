@@ -43,6 +43,11 @@ namespace Libs::Graphics {
 
 static RenderContext* g_renderer = nullptr;
 
+// KytyPlus: shared accessor for the PS4 dispatch path (libGnmDriver).
+RenderContext* GetActiveRenderer() noexcept {
+	return g_renderer;
+}
+
 void Initialize() {
 	// Some games lock up if this is not called first
 	if (Config::RenderDocEnabled()) {
