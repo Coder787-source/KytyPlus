@@ -6,32 +6,18 @@
 // Deliberately NOT defined in namespace std:
 //   * defining names in namespace std is undefined behavior,
 //   * libstdc++ >= 13 declares a legacy function `void std::unexpected()`
-//     which would collide with a class template of the same name.
-// `kyty::expected` / `kyty::unexpected` are provided via using-declarations.
+//     which collides with the real std::unexpected<T> from <expected>-which,
+//     on clang+libstdc++, is also selected by __cpp_lib_expected under C++20.
+//
+// Therefore the polyfill below is used UNCONDITIONALLY on every platform.
+// Linux (clang + libstdc++), macOS (clang + libc++) and Windows (clang-cl +
+// MSVC STL) must all take the exact same branch, otherwise a hard error
+// appears only on Linux. All call sites use kyty::expected / kyty::unexpected.
 //
 // Exception-free: the project builds with -fno-exceptions on Linux/macOS, so
 // value()/error() on the wrong state assert() in debug builds instead of
 // throwing. (In release builds an unguarded wrong-state access trips the
 // variant's own error path - a loud failure, never silent UB.)
-
-#include <version>
-
-#if defined(__cpp_lib_expected) && __cpp_lib_expected >= 202202L
-
-#include <expected>
-
-namespace kyty {
-
-using std::bad_expected_access;
-using std::expected;
-using std::unexpected;
-
-template <class E>
-unexpected(E) -> unexpected<E>;
-
-} // namespace kyty
-
-#else
 
 #include <cassert>
 #include <type_traits>
@@ -246,5 +232,3 @@ private:
 };
 
 } // namespace kyty
-
-#endif
