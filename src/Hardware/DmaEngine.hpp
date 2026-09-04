@@ -18,7 +18,7 @@ namespace KytyPS5::Hardware {
         uint64_t source_addr = 0;
         uint64_t dest_addr = 0;
         size_t size = 0;
-        std::promise<std::expected<void, std::string>> promise;
+        std::promise<kyty::expected<void, std::string>> promise;
 
         DmaRequest(uint64_t src, uint64_t dst, size_t sz)
             : source_addr(src), dest_addr(dst), size(sz) {}
@@ -35,7 +35,7 @@ namespace KytyPS5::Hardware {
             return instance;
         }
 
-        std::future<std::expected<void, std::string>> Transfer(uint64_t src, uint64_t dst, size_t size) {
+        std::future<kyty::expected<void, std::string>> Transfer(uint64_t src, uint64_t dst, size_t size) {
             auto request = std::make_unique<DmaRequest>(src, dst, size);
             auto future = request->promise.get_future();
             
@@ -75,7 +75,7 @@ namespace KytyPS5::Hardware {
             auto dst_ptr = Kernel::MemoryManager::Instance().Translate(req->dest_addr);
 
             if (!src_ptr || !dst_ptr) {
-                req->promise.set_value(std::expected<void, std::string>(std::unexpected(std::string("DMA Address Translation Failed"))));
+                req->promise.set_value(kyty::expected<void, std::string>(kyty::unexpected(std::string("DMA Address Translation Failed"))));
                 return;
             }
 

@@ -27,16 +27,16 @@ namespace KytyPS5::Core {
         /**
          * @brief Map a region of guest memory to host memory.
          */
-        std::expected<void*, std::string> MapRegion(uint64_t guest_addr, size_t size, MemoryProtection prot) {
+        kyty::expected<void*, std::string> MapRegion(uint64_t guest_addr, size_t size, MemoryProtection prot) {
             std::lock_guard lock(mutex_);
 
-            if (guest_addr % 4096 != 0) return std::unexpected("Address not page-aligned");
+            if (guest_addr % 4096 != 0) return kyty::unexpected("Address not page-aligned");
 
             // Using VirtualAlloc to ensure the host OS manages these pages with proper DEP/NX
             void* host_ptr = VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, static_cast<DWORD>(prot));
             
             if (!host_ptr) {
-                return std::unexpected("Host VirtualAlloc failed");
+                return kyty::unexpected("Host VirtualAlloc failed");
             }
 
             std::lock_guard mapping_lock(mapping_mutex_);

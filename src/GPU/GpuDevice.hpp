@@ -32,7 +32,7 @@ namespace KytyPS5::GPU {
             return instance;
         }
 
-        std::expected<uint64_t, bool> GetOrCreatePso(const PsoDescriptor& desc) {
+        kyty::expected<uint64_t, bool> GetOrCreatePso(const PsoDescriptor& desc) {
             std::shared_lock lock(mutex_);
             if (pso_cache_.contains(desc)) {
                 return pso_cache_[desc];

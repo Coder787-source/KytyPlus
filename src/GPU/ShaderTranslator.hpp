@@ -34,9 +34,9 @@ namespace KytyPS5::Gpu {
     public:
         ShaderTranslator() = default;
 
-        std::expected<std::vector<uint32_t>, TranslatorError> Translate(std::span<const uint8_t> pssl_bytecode) {
+        kyty::expected<std::vector<uint32_t>, TranslatorError> Translate(std::span<const uint8_t> pssl_bytecode) {
             auto decoded = DecodePssl(pssl_bytecode);
-            if (!decoded) return std::unexpected(decoded.error());
+            if (!decoded) return kyty::unexpected(decoded.error());
 
             std::vector<uint32_t> spirv_binary;
             
@@ -45,7 +45,7 @@ namespace KytyPS5::Gpu {
 
             for (const auto& instr : decoded.value()) {
                 auto translated = TranslateInstruction(instr);
-                if (!translated) return std::unexpected(translated.error());
+                if (!translated) return kyty::unexpected(translated.error());
                 
                 spirv_binary.insert(spirv_binary.end(), translated.value().words.begin(), translated.value().words.end());
             }
@@ -55,17 +55,17 @@ namespace KytyPS5::Gpu {
         }
 
     private:
-        std::expected<std::vector<PsslInstruction>, TranslatorError> DecodePssl(std::span<const uint8_t> bytecode) {
+        kyty::expected<std::vector<PsslInstruction>, TranslatorError> DecodePssl(std::span<const uint8_t> bytecode) {
             // Implementation of PSSL bytecode parsing
             return std::vector<PsslInstruction>{}; 
         }
 
-        std::expected<SpirVInstruction, TranslatorError> TranslateInstruction(const PsslInstruction& instr) {
+        kyty::expected<SpirVInstruction, TranslatorError> TranslateInstruction(const PsslInstruction& instr) {
             switch (instr.opcode) {
                 case 0x10: return TranslateAdd(instr);
                 case 0x20: return TranslateMul(instr);
                 case 0x30: return TranslateTextureSample(instr);
-                default: return std::unexpected(TranslatorError::UnsupportedOpcode);
+                default: return kyty::unexpected(TranslatorError::UnsupportedOpcode);
             }
         }
 

@@ -34,12 +34,12 @@ public:
 	      feedback_loop_(std::make_unique<DualSenseFeedbackLoop>()),
 	      astro_compat_(std::make_unique<AstroCompatLayer>()) {}
 
-	std::expected<void, std::string> Boot(const std::string& image_path) {
+	kyty::expected<void, std::string> Boot(const std::string& image_path) {
 		std::cout << "[Boot] Loading image: " << image_path << std::endl;
 
 		auto load_result = elf_loader_->Load(image_path);
 		if (!load_result) {
-			return std::unexpected(load_result.error());
+			return kyty::unexpected(load_result.error());
 		}
 
 		std::cout << "[Boot] Initializing Virtual Memory..." << std::endl;
@@ -51,14 +51,14 @@ public:
 	}
 
 private:
-	std::expected<void, std::string> ExecuteGuestLoop(uint64_t entry_point) {
+	kyty::expected<void, std::string> ExecuteGuestLoop(uint64_t entry_point) {
 		bool running = true;
 		while (running) {
 			feedback_loop_->SyncState(dualsense_emu_.get());
 
 			auto result = jit_dispatcher_->Dispatch(entry_point);
 			if (!result) {
-				return std::unexpected("CPU Execution Panic");
+				return kyty::unexpected("CPU Execution Panic");
 			}
 
 			if (result->is_syscall) {

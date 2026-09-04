@@ -38,7 +38,7 @@ namespace KytyPS5::Gpu {
             return instance;
         }
 
-        std::expected<void*, std::string> GetOrCreatePipeline(const PsoDescriptor& desc) {
+        kyty::expected<void*, std::string> GetOrCreatePipeline(const PsoDescriptor& desc) {
             std::shared_lock lock(mutex_);
             if (cache_.contains(desc)) {
                 return cache_[desc];
@@ -50,7 +50,7 @@ namespace KytyPS5::Gpu {
             if (cache_.contains(desc)) return cache_[desc];
 
             void* compiled_pipeline = CompileAndStore(desc);
-            if (!compiled_pipeline) return std::unexpected("PSO Compilation Failed");
+            if (!compiled_pipeline) return kyty::unexpected("PSO Compilation Failed");
             
             cache_[desc] = compiled_pipeline;
             return compiled_pipeline;

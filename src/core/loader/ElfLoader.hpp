@@ -16,7 +16,7 @@ class ElfLoader {
 public:
 	ElfLoader() = default;
 
-	std::expected<LoadImage, std::string> Load(const std::string& /*image_path*/) {
+	kyty::expected<LoadImage, std::string> Load(const std::string& /*image_path*/) {
 		LoadImage image;
 		image.entry_point = 0;
 		return image;

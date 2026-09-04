@@ -21,7 +21,7 @@ enum class SystemError {
 };
 
 template<typename T>
-using Result = std::expected<T, SystemError>;
+using Result = kyty::expected<T, SystemError>;
 
 // ============================================================================
 // DECOMPRESSION ENGINE
@@ -30,7 +30,7 @@ using Result = std::expected<T, SystemError>;
 class DecompressionEngine {
 public:
     static Result<std::vector<std::byte>> DecompressKraken(std::span<const std::byte> compressed_data) {
-        if (compressed_data.empty()) return std::unexpected(SystemError::DecompressionFailure);
+        if (compressed_data.empty()) return kyty::unexpected(SystemError::DecompressionFailure);
         
         // Integration point for actual Kraken/Oodle SDK
         std::vector<std::byte> decompressed(compressed_data.size() * 2); 
@@ -167,7 +167,7 @@ public:
         gpu_->Init();
         
         auto image = provider_->LoadImage(game_path);
-        if (!image) return std::unexpected(image.error());
+        if (!image) return kyty::unexpected(image.error());
 
         Instruction entry_inst = MovRegReg{0, 1}; 
         jit_->Translate(entry_inst);

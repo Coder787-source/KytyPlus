@@ -38,7 +38,7 @@ enum class DecompressionError {
 class IDecompressor {
 public:
 	virtual ~IDecompressor()                                       = default;
-	virtual std::expected<std::vector<uint8_t>, DecompressionError> Decompress(std::span<const uint8_t> compressed_data,
+	virtual kyty::expected<std::vector<uint8_t>, DecompressionError> Decompress(std::span<const uint8_t> compressed_data,
 	                                                                     size_t original_size) = 0;
 	virtual std::string GetAlgorithmName() const                    = 0;
 };
@@ -53,7 +53,7 @@ public:
  */
 class ZlibDecompressor : public IDecompressor {
 public:
-	std::expected<std::vector<uint8_t>, DecompressionError> Decompress(std::span<const uint8_t> compressed_data,
+	kyty::expected<std::vector<uint8_t>, DecompressionError> Decompress(std::span<const uint8_t> compressed_data,
 	                                                                   size_t original_size) override;
 	std::string GetAlgorithmName() const override { return "zlib/deflate"; }
 
@@ -107,13 +107,13 @@ public:
 		return library_loaded_ && decompress_fn_ != nullptr;
 	}
 
-	std::expected<std::vector<uint8_t>, DecompressionError> Decompress(std::span<const uint8_t> compressed_data,
+	kyty::expected<std::vector<uint8_t>, DecompressionError> Decompress(std::span<const uint8_t> compressed_data,
 	                                                                   size_t original_size) override {
 		if (!IsLoaded()) {
-			return std::unexpected(DecompressionError::LibraryNotLoaded);
+			return kyty::unexpected(DecompressionError::LibraryNotLoaded);
 		}
 		if (compressed_data.empty() || original_size == 0) {
-			return std::unexpected(DecompressionError::InvalidHeader);
+			return kyty::unexpected(DecompressionError::InvalidHeader);
 		}
 
 		std::vector<uint8_t> output(original_size);
@@ -125,11 +125,11 @@ public:
 		                   0 /* BufferSizeLevel_Unspecified */, 0, 0, 0 /* single-threaded */);
 
 		if (result < 0 || static_cast<uint64_t>(result) > original_size) {
-			return std::unexpected(DecompressionError::CorruptData);
+			return kyty::unexpected(DecompressionError::CorruptData);
 		}
 		if (static_cast<size_t>(result) != original_size) {
 			// PFSC blocks must decode to exactly the logical block size.
-			return std::unexpected(DecompressionError::WrongOutputSize);
+			return kyty::unexpected(DecompressionError::WrongOutputSize);
 		}
 		return output;
 	}
@@ -215,12 +215,12 @@ public:
 		return instance;
 	}
 
-	std::expected<std::vector<uint8_t>, DecompressionError> ProcessAsset(uint32_t algo_id, std::span<const uint8_t> data,
+	kyty::expected<std::vector<uint8_t>, DecompressionError> ProcessAsset(uint32_t algo_id, std::span<const uint8_t> data,
 	                                                                 size_t original_size) {
 		std::shared_lock lock(mutex_);
 		auto             it = decompressors_.find(algo_id);
 		if (it == decompressors_.end()) {
-			return std::unexpected(DecompressionError::UnsupportedCompressionType);
+			return kyty::unexpected(DecompressionError::UnsupportedCompressionType);
 		}
 		return it->second->Decompress(data, original_size);
 	}

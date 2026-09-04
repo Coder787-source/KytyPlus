@@ -64,7 +64,7 @@ public:
 	JitDispatcher() = default;
 
 	// Scaffolding stub used by SystemOrchestrator.
-	std::expected<DispatchResult, std::string> Dispatch(uint64_t entry_point) {
+	kyty::expected<DispatchResult, std::string> Dispatch(uint64_t entry_point) {
 		DispatchResult result;
 		result.next_pc = entry_point;
 		return result;

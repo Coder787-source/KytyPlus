@@ -16,10 +16,10 @@ namespace KytyPS5::IO {
 
 #ifdef KYTY_HAS_ZLIB
 
-std::expected<std::vector<uint8_t>, DecompressionError>
+kyty::expected<std::vector<uint8_t>, DecompressionError>
 ZlibDecompressor::Decompress(std::span<const uint8_t> compressed_data, size_t original_size) {
 	if (compressed_data.empty() || original_size == 0) {
-		return std::unexpected(DecompressionError::InvalidHeader);
+		return kyty::unexpected(DecompressionError::InvalidHeader);
 	}
 
 	std::vector<uint8_t> output(original_size);
@@ -29,7 +29,7 @@ ZlibDecompressor::Decompress(std::span<const uint8_t> compressed_data, size_t or
 	if (TryInflate(compressed_data, output, false) || TryInflate(compressed_data, output, true)) {
 		return output;
 	}
-	return std::unexpected(DecompressionError::CorruptData);
+	return kyty::unexpected(DecompressionError::CorruptData);
 }
 
 bool ZlibDecompressor::TryInflate(std::span<const uint8_t> src, std::vector<uint8_t>& dst, bool raw) {
@@ -54,9 +54,9 @@ bool ZlibDecompressor::TryInflate(std::span<const uint8_t> src, std::vector<uint
 
 // zlib not linked in this build: report Unsupported so callers can log loudly
 // instead of silently handing back raw compressed bytes.
-std::expected<std::vector<uint8_t>, DecompressionError>
+kyty::expected<std::vector<uint8_t>, DecompressionError>
 ZlibDecompressor::Decompress(std::span<const uint8_t> /*compressed_data*/, size_t /*original_size*/) {
-	return std::unexpected(DecompressionError::UnsupportedCompressionType);
+	return kyty::unexpected(DecompressionError::UnsupportedCompressionType);
 }
 
 bool ZlibDecompressor::TryInflate(std::span<const uint8_t>, std::vector<uint8_t>&, bool) {

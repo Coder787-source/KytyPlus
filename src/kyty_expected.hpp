@@ -1,38 +1,44 @@
-﻿#pragma once
+#pragma once
 
 // C++20 polyfill for std::expected / std::unexpected (C++23).
 // Scaffolding-only. Prefer real <expected> when the toolchain provides it.
+//
+// Deliberately NOT defined in namespace std:
+//   * defining names in namespace std is undefined behavior,
+//   * libstdc++ >= 13 declares a legacy function `void std::unexpected()`
+//     which would collide with a class template of the same name.
+// `kyty::expected` / `kyty::unexpected` are provided via using-declarations.
+//
+// Exception-free: the project builds with -fno-exceptions on Linux/macOS, so
+// value()/error() on the wrong state assert() in debug builds instead of
+// throwing. (In release builds an unguarded wrong-state access trips the
+// variant's own error path - a loud failure, never silent UB.)
 
 #include <version>
 
 #if defined(__cpp_lib_expected) && __cpp_lib_expected >= 202202L
+
 #include <expected>
+
+namespace kyty {
+
+using std::bad_expected_access;
+using std::expected;
+using std::unexpected;
+
+template <class E>
+unexpected(E) -> unexpected<E>;
+
+} // namespace kyty
+
 #else
 
+#include <cassert>
 #include <type_traits>
 #include <utility>
 #include <variant>
-#include <stdexcept>
 
-namespace std {
-
-// Minimal stand-in for std::bad_expected_access (C++23). Thrown by
-// expected::value() when accessed as an error, and vice versa.
-template <class E>
-class bad_expected_access : public std::exception {
-public:
-	explicit bad_expected_access(E&& e) : error_(std::move(e)) {}
-	explicit bad_expected_access(const E& e) : error_(e) {}
-
-	const char* what() const noexcept override { return "bad access to expected without expected value"; }
-
-	const E& error() const& noexcept { return error_; }
-	E&       error() & noexcept { return error_; }
-	E        error() && noexcept { return std::move(error_); }
-
-private:
-	E error_;
-};
+namespace kyty {
 
 template <class E>
 class unexpected {
@@ -40,10 +46,10 @@ public:
 	constexpr explicit unexpected(const E& e) : error_(e) {}
 	constexpr explicit unexpected(E&& e) : error_(std::move(e)) {}
 
-	constexpr const E& error() const& noexcept { return error_; }
-	constexpr E& error() & noexcept { return error_; }
+	constexpr const E&  error() const& noexcept { return error_; }
+	constexpr E&        error() & noexcept { return error_; }
 	constexpr const E&& error() const&& noexcept { return std::move(error_); }
-	constexpr E&& error() && noexcept { return std::move(error_); }
+	constexpr E&&       error() && noexcept { return std::move(error_); }
 
 private:
 	E error_;
@@ -51,6 +57,21 @@ private:
 
 template <class E>
 unexpected(E) -> unexpected<E>;
+
+// Minimal stand-in for std::bad_expected_access (C++23). Never actually
+// thrown here (see the -fno-exceptions note above); it exists so that
+// exception-enabled builds can still catch portably if it ever gets thrown.
+template <class E>
+class bad_expected_access {
+public:
+	explicit bad_expected_access(E&& e) : error_(std::move(e)) {}
+	explicit bad_expected_access(const E& e) : error_(e) {}
+
+	const E& error() const& noexcept { return error_; }
+
+private:
+	E error_;
+};
 
 template <class T, class E>
 class expected {
@@ -72,25 +93,29 @@ public:
 	constexpr explicit operator bool() const noexcept { return has_value(); }
 
 	constexpr T& value() & {
-		if (!has_value()) throw bad_expected_access<E>(error());
+		assert(has_value());
 		return std::get<T>(storage_);
 	}
 	constexpr const T& value() const& {
-		if (!has_value()) throw bad_expected_access<E>(error());
+		assert(has_value());
 		return std::get<T>(storage_);
 	}
 	constexpr T&& value() && {
-		if (!has_value()) throw bad_expected_access<E>(std::move(error()));
+		assert(has_value());
 		return std::get<T>(std::move(storage_));
 	}
 
 	constexpr E& error() & {
-		if (has_value()) throw bad_expected_access<E>(E{});
+		assert(!has_value());
 		return std::get<E>(storage_);
 	}
 	constexpr const E& error() const& {
-		if (has_value()) throw bad_expected_access<E>(E{});
+		assert(!has_value());
 		return std::get<E>(storage_);
+	}
+	constexpr E&& error() && {
+		assert(!has_value());
+		return std::get<E>(std::move(storage_));
 	}
 
 	template <class U>
@@ -182,14 +207,14 @@ public:
 	constexpr bool has_value() const noexcept { return ok_; }
 	constexpr explicit operator bool() const noexcept { return ok_; }
 	constexpr void value() const {
-		if (!ok_) throw bad_expected_access<E>(error_);
+		assert(ok_);
 	}
 	constexpr E& error() & {
-		if (ok_) throw bad_expected_access<E>(E{});
+		assert(!ok_);
 		return error_;
 	}
 	constexpr const E& error() const& {
-		if (ok_) throw bad_expected_access<E>(E{});
+		assert(!ok_);
 		return error_;
 	}
 
@@ -220,6 +245,6 @@ private:
 	E error_;
 };
 
-} // namespace std
+} // namespace kyty
 
 #endif

@@ -19,7 +19,7 @@ namespace KytyPS5::JIT {
         Avx512Emitter() = default;
 
         // Emits VADDPS (Vector Add Packed Single Precision)
-        std::expected<void, JitError> EmitVAddPs(uint8_t zmm_dest, uint8_t zmm_src1, uint8_t zmm_src2) {
+        kyty::expected<void, JitError> EmitVAddPs(uint8_t zmm_dest, uint8_t zmm_src1, uint8_t zmm_src2) {
             // EVEX prefix encoding for AVX-512
             // Format: [Prefix] [Opcode] [ModRM]
             std::vector<uint8_t> bytes = {
@@ -32,7 +32,7 @@ namespace KytyPS5::JIT {
         }
 
         // Emits VMOVAPS (Vector Move Aligned Packed Single Precision)
-        std::expected<void, JitError> EmitVMoveAps(uint8_t zmm_dest, uint8_t zmm_src) {
+        kyty::expected<void, JitError> EmitVMoveAps(uint8_t zmm_dest, uint8_t zmm_src) {
             std::vector<uint8_t> bytes = {
                 0x62, 
                 static_cast<uint8_t>(0x00 | (zmm_dest << 3)),
@@ -43,19 +43,19 @@ namespace KytyPS5::JIT {
         }
 
         // Emits SFENCE (Store Fence) for memory consistency
-        std::expected<void, JitError> EmitStoreFence() {
+        kyty::expected<void, JitError> EmitStoreFence() {
             // SFENCE = 0x0F 0xAE 0xF8
             return AppendBytes({ 0x0F, 0xAE, 0xF8 });
         }
 
         // Emits LFENCE (Load Fence)
-        std::expected<void, JitError> EmitLoadFence() {
+        kyty::expected<void, JitError> EmitLoadFence() {
             // LFENCE = 0x0F 0xAE 0xE8
             return AppendBytes({ 0x0F, 0xAE, 0xE8 });
         }
 
         // Emits MFENCE (Memory Fence)
-        std::expected<void, JitError> EmitMemFence() {
+        kyty::expected<void, JitError> EmitMemFence() {
             // MFENCE = 0x0F 0xAE 0xF0
             return AppendBytes({ 0x0F, 0xAE, 0xF0 });
         }
@@ -71,7 +71,7 @@ namespace KytyPS5::JIT {
         }
 
     private:
-        std::expected<void, JitError> AppendBytes(const std::vector<uint8_t>& bytes) {
+        kyty::expected<void, JitError> AppendBytes(const std::vector<uint8_t>& bytes) {
             code_buffer_.insert(code_buffer_.end(), bytes.begin(), bytes.end());
             return {};
         }

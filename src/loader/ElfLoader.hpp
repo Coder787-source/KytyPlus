@@ -41,47 +41,47 @@ namespace KytyPS5::Loader {
     public:
         explicit ElfLoader(std::filesystem::path binary_path = {}) : path_(std::move(binary_path)) {}
 
-        std::expected<LoadImage, std::string> Load(const std::string& image_path) {
+        kyty::expected<LoadImage, std::string> Load(const std::string& image_path) {
             path_ = image_path;
             auto ok = Load();
             if (!ok) {
-                return std::unexpected(std::string("ELF load failed"));
+                return kyty::unexpected(std::string("ELF load failed"));
             }
             LoadImage image;
             image.entry_point = 0;
             return image;
         }
 
-        std::expected<void, LoaderError> Load() {
+        kyty::expected<void, LoaderError> Load() {
             auto header = ReadHeader();
-            if (!header) return std::unexpected(header.error());
+            if (!header) return kyty::unexpected(header.error());
 
             auto segments = MapSegments();
-            if (!segments) return std::unexpected(segments.error());
+            if (!segments) return kyty::unexpected(segments.error());
 
             auto relocs = ApplyRelocations();
-            if (!relocs) return std::unexpected(relocs.error());
+            if (!relocs) return kyty::unexpected(relocs.error());
 
             return {};
         }
 
-        std::expected<uint64_t, LoaderError> ResolveSymbol(const std::string& name) {
-            if (!symbol_table_.contains(name)) return std::unexpected(LoaderError::SymbolNotFound);
+        kyty::expected<uint64_t, LoaderError> ResolveSymbol(const std::string& name) {
+            if (!symbol_table_.contains(name)) return kyty::unexpected(LoaderError::SymbolNotFound);
             return symbol_table_[name].address;
         }
 
     private:
-        std::expected<bool, LoaderError> ReadHeader() {
+        kyty::expected<bool, LoaderError> ReadHeader() {
             // Implementation of ELF64 header validation
             return true;
         }
 
-        std::expected<bool, LoaderError> MapSegments() {
+        kyty::expected<bool, LoaderError> MapSegments() {
             // Maps .text, .data, .rodata into Kernel::MemoryManager
             return true;
         }
 
-        std::expected<bool, LoaderError> ApplyRelocations() {
+        kyty::expected<bool, LoaderError> ApplyRelocations() {
             // Processes RELA/REL sections to patch guest addresses
             return true;
         }
