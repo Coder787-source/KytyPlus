@@ -120,9 +120,28 @@ KernelEventFlagPrivate::Result KernelEventFlagPrivate::Wait(uint64_t bits, WaitM
 		}
 	};
 
-	if (m_single_thread && m_waiting_threads > 0) {
-		return Result::AlreadyWaiting;
+	// Single-thread gate: claim the sole waiter slot atomically under the
+	// mutex. The check and the claim are a single step, so two threads cannot
+	// both observe m_waiting_threads == 0 and both proceed to wait (the old
+	// code checked before the loop but incremented inside it — a TOCTOU gap).
+	if (m_single_thread) {
+		if (m_waiting_threads > 0) {
+			return Result::AlreadyWaiting;
+		}
+		m_waiting_threads = 1;
 	}
+
+	// Release the single-thread slot on every exit path. Runs before `lock`
+	// unwinds, so the mutex is still held while the counter is reset.
+	struct SlotGuard {
+		int* counter;
+		~SlotGuard() {
+			if (counter != nullptr) {
+				*counter = 0;
+			}
+		}
+	};
+	SlotGuard slot_guard {m_single_thread ? &m_waiting_threads : nullptr};
 
 	while (!((wait_mode == WaitMode::And && (m_bits & bits) == bits) ||
 	         (wait_mode == WaitMode::Or && (m_bits & bits) != 0))) {
@@ -134,7 +153,9 @@ KernelEventFlagPrivate::Result KernelEventFlagPrivate::Wait(uint64_t bits, WaitM
 			return Result::TimedOut;
 		}
 
-		m_waiting_threads++;
+		if (!m_single_thread) {
+			m_waiting_threads++;
+		}
 
 		if (infinitely) {
 			m_cond_var.Wait(&m_mutex);
@@ -142,7 +163,9 @@ KernelEventFlagPrivate::Result KernelEventFlagPrivate::Wait(uint64_t bits, WaitM
 			m_cond_var.WaitFor(&m_mutex, micros - elapsed);
 		}
 
-		m_waiting_threads--;
+		if (!m_single_thread) {
+			m_waiting_threads--;
+		}
 
 		elapsed = static_cast<uint32_t>(t.GetTimeS() * 1000000.0);
 

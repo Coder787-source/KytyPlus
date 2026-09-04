@@ -5,3 +5,7 @@ build/
 _Build/vscode-clang/
 _Build/
 cmake-build-debug/
+
+# Emulator run logs (can grow to many GB)
+_kyty*.txt
+*.log

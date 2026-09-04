@@ -34,6 +34,7 @@ static constexpr SOCKET INVALID_SOCKET = -1;
 #include "libs/libs.h"
 #include "libs/network.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -43,6 +44,7 @@ static constexpr SOCKET INVALID_SOCKET = -1;
 #include <fmt/format.h>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace Libs::Network {
@@ -2587,18 +2589,34 @@ int KYTY_SYSV_ABI HttpAbortRequest(int request_id) {
 
 int KYTY_SYSV_ABI HttpWaitRequest(HttpEpollHandle eh, HttpNBEvent* nbev, int maxevents,
                                   int timeout) {
-	PRINT_NAME();
-
-	LOGF("\t eh        = 0x%016" PRIx64 "\n"
-	     "\t nbev      = 0x%016" PRIx64 "\n"
-	     "\t maxevents = %d\n"
-	     "\t timeout   = %d\n",
-	     reinterpret_cast<uint64_t>(eh), reinterpret_cast<uint64_t>(nbev), maxevents, timeout);
-
 	EXIT_IF(g_net == nullptr);
 
 	if (eh == nullptr || maxevents < 0 || (maxevents > 0 && nbev == nullptr)) {
 		return HTTP_ERROR_INVALID_VALUE;
+	}
+
+	// TODO: wait on the epoll set registered with HttpSetEpoll and report ready
+	// requests in 'nbev' once the HTTP client is implemented. For now no event can
+	// become ready, so emulate the blocking behaviour of epoll_wait instead of
+	// returning immediately: callers (e.g. the bdHTTPWorker thread of UE4 games)
+	// poll this function in a tight loop and a non-blocking stub makes them spin
+	// at full CPU speed while flooding the log file. 'timeout' is in microseconds,
+	// like the other sceHttp timeouts; a negative value waits indefinitely.
+	if (timeout > 0) {
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(timeout);
+		while (true) {
+			const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+			    deadline - std::chrono::steady_clock::now());
+			if (remaining.count() <= 0) {
+				break;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(
+			    std::min<int64_t>(remaining.count(), std::chrono::milliseconds(100).count())));
+		}
+	} else if (timeout < 0) {
+		while (true) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
 	}
 
 	return 0;

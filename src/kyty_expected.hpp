@@ -16,6 +16,24 @@
 
 namespace std {
 
+// Minimal stand-in for std::bad_expected_access (C++23). Thrown by
+// expected::value() when accessed as an error, and vice versa.
+template <class E>
+class bad_expected_access : public std::exception {
+public:
+	explicit bad_expected_access(E&& e) : error_(std::move(e)) {}
+	explicit bad_expected_access(const E& e) : error_(e) {}
+
+	const char* what() const noexcept override { return "bad access to expected without expected value"; }
+
+	const E& error() const& noexcept { return error_; }
+	E&       error() & noexcept { return error_; }
+	E        error() && noexcept { return std::move(error_); }
+
+private:
+	E error_;
+};
+
 template <class E>
 class unexpected {
 public:

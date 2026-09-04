@@ -47,6 +47,13 @@ struct PkgHeader {
 static constexpr uint32_t PKG_MAGIC       = 0x7F504B47; // "\x7FPKG" (big-endian)
 static constexpr uint32_t PKG_PFS_BODY_MAGIC = 0x00534650; // "PFS\0" (little-endian read)
 static constexpr uint32_t PKG_BODY_OFFSET  = 0x200;       // Standard body offset
+// Per-file entry size in the PKG file table (name-offset / size / id).
+static constexpr uint32_t PKG_ENTRY_SIZE      = 0x10;
+// Upper bound on how many name-table bytes we are willing to read/copy.
+static constexpr uint32_t PKG_NAMETABLE_MAX_READ = 8192;
+// Fallback location for the name table when the header pointer is absent.
+// 0x2B30 is the documented fixed offset for CNT-type packages.
+static constexpr uint32_t PKG_NAMETABLE_DEFAULT_OFFSET = 0x2B30;
 
 #pragma pack(pop)
 
@@ -56,33 +63,6 @@ struct PkgFileEntry {
     uint64_t    offset;          // Offset within PKG body
     uint64_t    size;            // File size in bytes
 };
-
-// PKG entry-table record format (at table_offset in the header, big-endian).
-// Publicly documented on psdevwiki ("PKG files" page) and implemented the
-// same way by shadPS4's PKG extractor. Each entry is 32 bytes:
-//   code       BE32: 0 for the name-table descriptor entry; values >= 0x200
-//              are files, where (code - 0x200) is the byte offset of this
-//              file's name inside the name table.
-//   unknown1   BE32: unused by this parser
-//   offset     BE64: file data offset within the PKG (relative to file start)
-//   size       BE64: file data size in bytes
-//   unknown2   BE32: unused by this parser
-//   encrypted  BE32: nonzero if the entry's data is encrypted
-struct PkgEntryRecord {
-    uint32_t code;
-    uint32_t unknown1;
-    uint64_t offset;
-    uint64_t size;
-    uint32_t unknown2;
-    uint32_t encrypted;
-};
-
-static constexpr uint32_t PKG_ENTRY_SIZE            = 32;      // sizeof(PkgEntryRecord)
-static constexpr uint32_t PKG_ENTRY_CODE_NAME_TABLE = 0;      // descriptor entry code
-static constexpr uint32_t PKG_ENTRY_CODE_FILE_MIN   = 0x200;  // real file entry code base
-static constexpr uint32_t PKG_NAME_TABLE_MAX_SIZE   = 0x10000; // 64 KB safety cap
-
-// PKG parser result
 
 // PKG parser result
 struct PkgParseResult {
@@ -131,7 +111,6 @@ private:
     // Convert big-endian fields to host byte order
     static uint16_t Be16(uint16_t val);
     static uint32_t Be32(uint32_t val);
-    static uint64_t Be64(uint64_t val);
 };
 
 } // namespace Libs::Firmware

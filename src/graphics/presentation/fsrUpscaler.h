@@ -5,6 +5,9 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/host_gpu/vulkanInstance.h"
 
+#include <utility>
+#include <vector>
+
 namespace Libs::Graphics {
 
 struct VulkanImage;
@@ -51,6 +54,8 @@ private:
 	bool CreatePipelines();
 	bool CreateDescriptorResources();
 	bool EnsureIntermediate(uint32_t width, uint32_t height);
+	bool EnsureResult(uint32_t width, uint32_t height);
+	void DestroyIntermediate(IntermediateImage& img);
 
 	VulkanInstance*      m_gfx   = nullptr;
 	bool                 m_ready = false;
@@ -73,12 +78,29 @@ private:
 	vk::DeviceMemory m_easu_ubo_mem = nullptr;
 	vk::Buffer       m_rcas_ubo     = nullptr;
 	vk::DeviceMemory m_rcas_ubo_mem = nullptr;
+	// Byte offset of the RCAS UBO within the shared host-visible allocation.
+	// Deduced once at creation so Dispatch() maps the two UBOs to the right
+	// addresses (aligned to minUniformBufferOffsetAlignment).
+	vk::DeviceSize m_rcas_ubo_offset = 0;
 
 	// Sampler for reading the source / intermediate images.
 	vk::Sampler m_linear_sampler = nullptr;
 
 	// Intermediate image: EASU writes here, RCAS reads from here.
 	IntermediateImage m_intermediate;
+
+	// Result image: RCAS writes here (RGBA16F), then a blit copies it to the
+	// swapchain image. This decouples the storage-image format (which must match
+	// the shader's rgba16f qualifier) from the swapchain's R8G8B8A8Unorm format.
+	IntermediateImage m_result;
+
+	// Per-frame image views are created once and reused. They are destroyed in
+	// Destroy(), never inside Dispatch(), because the command buffer that
+	// references them is submitted asynchronously after Dispatch() returns.
+	// The source image may change between frames (guest framebuffer buffering),
+	// so source views are cached per image handle.
+	vk::ImageView m_dst_view = nullptr;
+	std::vector<std::pair<vk::Image, vk::ImageView>> m_src_views;
 };
 
 } // namespace Libs::Graphics

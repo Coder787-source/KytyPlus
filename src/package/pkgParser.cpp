@@ -3,7 +3,6 @@
 #include "common/logging/log.h"
 
 #include <algorithm>
-#include <array>
 #include <cstring>
 #include <fstream>
 #include <filesystem>
@@ -22,12 +21,6 @@ uint32_t PkgParser::Be32(uint32_t val) {
            ((val >> 8)  & 0x0000FF00) |
            ((val << 8)  & 0x00FF0000) |
            ((val << 24) & 0xFF000000);
-}
-
-
-uint64_t PkgParser::Be64(uint64_t val) {
-    return (static_cast<uint64_t>(Be32(static_cast<uint32_t>(val >> 32))) |
-            static_cast<uint64_t>(Be32(static_cast<uint32_t>(val))));
 }
 
 // ---- Fixed-string reader ----
@@ -156,120 +149,59 @@ PkgParseResult PkgParser::Parse(const std::string& pkg_path) {
     const uint32_t table_offset = Be32(hdr.table_offset);
     const uint32_t table_entries = Be32(hdr.table_entries);
 
-    if (table_offset > 0 && table_offset < file_size && table_entries > 0 && table_entries < 4096) {
-        f.seekg(static_cast<std::streamoff>(table_offset), std::ios::beg);
-
-        // Entry table layout is documented above PkgEntryRecord in the header:
-        // 32-byte big-endian records at table_offset, with a code-0 descriptor
-        // entry pointing at the name table and code >= 0x200 file entries.
-
-        // ---- Parse the real entry table at table_offset ----
-        // Each entry is 32 bytes (see PkgEntryRecord). The first entry with
-        // code 0 is the name-table descriptor: its 'offset' field points at
-        // the name table, and its 'size' field is the name table's size.
-        // Entries with code >= 0x200 are files: (code - 0x200) is the byte
-        // offset of the file's name inside the name table, and offset/size
-        // locate the file data within the PKG.
-
-        // Bounds check the whole entry table before reading anything.
-        const uint64_t table_bytes = static_cast<uint64_t>(table_entries) * PKG_ENTRY_SIZE;
-        if (table_offset + table_bytes > file_size) {
-            LOGF("PKG: entry table (offset 0x%X, %u entries) exceeds file size (%llu), skipping",
-                 table_offset, table_entries, static_cast<unsigned long long>(file_size));
-        } else {
-            f.clear();
+    // Entry-table sanity: the field is a count of 16-byte PKG file entries and
+    // must not imply a table that overruns the file.
+    const uint32_t max_header_entries = 4096;
+    if (table_offset > 0 && table_offset < file_size && table_entries > 0 &&
+        table_entries < max_header_entries) {
+        const uint64_t table_bytes =
+            static_cast<uint64_t>(table_entries) * PKG_ENTRY_SIZE;
+        if (table_bytes <= file_size - table_offset) {
+            // The name table pointer is the first u32 of the entry table.
             f.seekg(static_cast<std::streamoff>(table_offset), std::ios::beg);
+            uint32_t name_table_off = 0;
+            f.read(reinterpret_cast<char*>(&name_table_off), 4);
+            name_table_off = Be32(name_table_off);
 
-            std::vector<PkgEntryRecord> records(table_entries);
-            // Read raw bytes and decode field-by-field (big-endian, packed).
-            std::array<uint8_t, PKG_ENTRY_SIZE> raw_entry {};
-            bool table_ok = true;
-            for (uint32_t e = 0; e < table_entries && table_ok; ++e) {
-                f.read(reinterpret_cast<char*>(raw_entry.data()), PKG_ENTRY_SIZE);
-                if (static_cast<size_t>(f.gcount()) < PKG_ENTRY_SIZE) {
-                    LOGF("PKG: short read in entry table at index %u, skipping remaining entries", e);
-                    table_ok = false;
-                    break;
-                }
-                // Byte-safe big-endian field reads (no type punning on
-                // potentially unaligned data).
-                auto read_be32 = [&raw_entry](size_t off) -> uint32_t {
-                    uint32_t v = 0;
-                    std::memcpy(&v, raw_entry.data() + off, sizeof(v));
-                    return Be32(v);
-                };
-                auto read_be64 = [&raw_entry](size_t off) -> uint64_t {
-                    uint64_t v = 0;
-                    std::memcpy(&v, raw_entry.data() + off, sizeof(v));
-                    return Be64(v);
-                };
-                records[e].code     = read_be32(0);
-                records[e].unknown1 = read_be32(4);
-                records[e].offset   = read_be64(8);
-                records[e].size     = read_be64(16);
-                records[e].unknown2 = read_be32(20);
-                records[e].encrypted = read_be32(24);
+            if (name_table_off == 0) {
+                name_table_off = PKG_NAMETABLE_DEFAULT_OFFSET;
             }
 
-            if (table_ok) {
-                // Locate the name table via the code-0 descriptor entry.
-                uint64_t name_table_off = 0;
-                uint64_t name_table_size = 0;
-                bool has_name_table = false;
-                for (const auto& rec : records) {
-                    if (rec.code == PKG_ENTRY_CODE_NAME_TABLE) {
-                        name_table_off  = rec.offset;
-                        name_table_size = rec.size;
-                        has_name_table  = true;
-                        break;
+            if (name_table_off > 0 && name_table_off + PKG_NAMETABLE_MAX_READ <= file_size) {
+                // Read name table (null-separated names). Bounds are enforced by
+                // the +size check above, so a truncated or crafted table cannot
+                // drive the seek/read past EOF.
+                f.seekg(static_cast<std::streamoff>(name_table_off), std::ios::beg);
+                std::vector<char> names(PKG_NAMETABLE_MAX_READ, 0);
+                f.read(names.data(), static_cast<std::streamsize>(names.size()));
+                const auto got = static_cast<size_t>(f.gcount());
+
+                // Parse null-separated names
+                size_t pos = 0;
+                while (pos < got) {
+                    std::string name;
+                    while (pos < got && names[pos] != '\0') {
+                        name += names[pos++];
                     }
+                    ++pos; // skip null
+                    if (!name.empty()) {
+                        PkgFileEntry entry;
+                        entry.name = name;
+                        entry.offset = 0; // exact offsets require full entry table parsing
+                        entry.size = 0;
+                        result.files.push_back(entry);
+                    }
+                    if (result.files.size() >= table_entries) break;
                 }
 
-                if (!has_name_table) {
-                    LOGF("PKG: no name-table descriptor (code 0) entry found, file names unavailable");
-                } else if (name_table_off >= file_size ||
-                           name_table_size == 0 || name_table_size > PKG_NAME_TABLE_MAX_SIZE ||
-                           name_table_off + name_table_size > file_size) {
-                    LOGF("PKG: name table (offset 0x%llX, size %llu) out of bounds, skipping names",
-                         static_cast<unsigned long long>(name_table_off),
-                         static_cast<unsigned long long>(name_table_size));
-                } else {
-                    // Read the name table once.
-                    std::vector<char> names(static_cast<size_t>(name_table_size), '\0');
-                    f.clear();
-                    f.seekg(static_cast<std::streamoff>(name_table_off), std::ios::beg);
-                    f.read(names.data(), static_cast<std::streamsize>(names.size()));
-                    if (static_cast<size_t>(f.gcount()) < names.size()) {
-                        LOGF("PKG: short read of name table (%u of %u bytes), skipping names",
-                             static_cast<uint32_t>(f.gcount()),
-                             static_cast<uint32_t>(names.size()));
-                    } else {
-                        for (const auto& rec : records) {
-                            if (rec.code == PKG_ENTRY_CODE_NAME_TABLE) continue;
-                            if (rec.code < PKG_ENTRY_CODE_FILE_MIN) continue; // unknown code, skip
-
-                            const uint64_t name_off = static_cast<uint64_t>(rec.code) - PKG_ENTRY_CODE_FILE_MIN;
-                            if (name_off >= names.size()) {
-                                LOGF("PKG: name offset 0x%llX (code 0x%X) exceeds name table, skipping entry",
-                                     static_cast<unsigned long long>(name_off), rec.code);
-                                continue;
-                            }
-
-                            // Name runs to the next null within the table bounds.
-                            std::string name;
-                            for (size_t p = static_cast<size_t>(name_off); p < names.size() && names[p] != '\0'; ++p) {
-                                name += names[p];
-                            }
-
-                            PkgFileEntry entry;
-                            entry.name   = std::move(name);
-                            entry.offset = rec.offset;
-                            entry.size   = rec.size;
-                            result.files.push_back(std::move(entry));
-                        }
-                    }
+                if (result.files.empty()) {
+                    LOGF("PKG: name table empty at 0x%X\n", name_table_off);
                 }
+            } else {
+                LOGF("PKG: name table offset 0x%X out of bounds or missing\n", name_table_off);
             }
+        } else {
+            LOGF("PKG: entry table size %llu exceeds file remainder\n", table_bytes);
         }
     }
 

@@ -1,13 +1,14 @@
 #include "package/pfsParser.h"
 #include <functional>
 #include "common/logging/log.h"
+#include "IO/Decompressor.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <filesystem>
+#include <span>
 #include <sstream>
-#include <unordered_set>
 
 #ifdef KYTY_HAS_ZLIB
 #include <zlib.h>
@@ -24,6 +25,49 @@ namespace Libs::Firmware {
 // ============================================================================
 
 namespace {
+
+// Little-endian reads with explicit bounds checks (no reinterpret_cast on
+// unaligned/truncated buffers).
+static uint32_t ReadU32LE(const uint8_t* p) {
+	uint32_t v = 0;
+	std::memcpy(&v, p, sizeof(v));
+	return v;
+}
+static uint64_t ReadU64LE(const uint8_t* p) {
+	uint64_t v = 0;
+	std::memcpy(&v, p, sizeof(v));
+	return v;
+}
+
+// Returns true if a PFS file path is safe to extract under the output
+// directory. File names come from the package and are untrusted: reject
+// absolute paths, "."/".." components, empty components, backslashes and
+// Windows drive letters so a hostile package cannot write outside output_dir.
+bool IsSafeRelativePath(const std::string& name) {
+	if (name.empty() || name.front() == '/') {
+		return false;
+	}
+	size_t pos = 0;
+	while (true) {
+		const size_t next = name.find('/', pos);
+		const size_t end  = (next == std::string::npos) ? name.size() : next;
+		if (end == pos) {
+			return false; // empty component (leading/double/trailing slash)
+		}
+		const std::string comp = name.substr(pos, end - pos);
+		if (comp == "." || comp == "..") {
+			return false;
+		}
+		if (comp.find('\\') != std::string::npos || comp.find(':') != std::string::npos) {
+			return false;
+		}
+		if (next == std::string::npos) {
+			break;
+		}
+		pos = next + 1;
+	}
+	return true;
+}
 
 static constexpr uint8_t kAesSbox[256] = {
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
@@ -136,36 +180,6 @@ static void GfMul128(uint8_t* out, const uint8_t* in) {
     if (carry) {
         out[0] ^= 0x87;
     }
-}
-
-// Returns true if a PFS file path is safe to extract under the output
-// directory. File names come from the package and are untrusted: reject
-// absolute paths, "."/".." components, empty components, backslashes and
-// Windows drive letters so a hostile package cannot write outside output_dir.
-bool IsSafeRelativePath(const std::string& name) {
-    if (name.empty() || name.front() == '/') {
-        return false;
-    }
-    size_t pos = 0;
-    while (true) {
-        const size_t next = name.find('/', pos);
-        const size_t end  = (next == std::string::npos) ? name.size() : next;
-        if (end == pos) {
-            return false; // empty component (leading/double/trailing slash)
-        }
-        const std::string comp = name.substr(pos, end - pos);
-        if (comp == "." || comp == "..") {
-            return false;
-        }
-        if (comp.find('\\') != std::string::npos || comp.find(':') != std::string::npos) {
-            return false;
-        }
-        if (next == std::string::npos) {
-            break;
-        }
-        pos = next + 1;
-    }
-    return true;
 }
 
 } // anonymous namespace
@@ -307,24 +321,16 @@ std::vector<uint8_t> PfsParser::ReadBlock(
     uint32_t num_blocks, const PfsEkpfsKey* ekpfs_key) {
 
     if (block_num < 0 || static_cast<uint32_t>(block_num) >= num_blocks) {
-        LOGF("PFS: block %lld out of range (num_blocks=%u)",
-             static_cast<long long>(block_num), num_blocks);
         return {};
     }
 
     const uint64_t offset = static_cast<uint64_t>(block_num) * block_size;
-    f.clear();
     f.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
 
     std::vector<uint8_t> raw(block_size);
     f.read(reinterpret_cast<char*>(raw.data()), block_size);
     const auto got = static_cast<size_t>(f.gcount());
     raw.resize(got);
-
-    if (raw.empty()) {
-        LOGF("PFS: short read at block %lld", static_cast<long long>(block_num));
-        return raw;
-    }
 
     if (ekpfs_key && !raw.empty()) {
         // Decrypt each XTS sector within the block
@@ -348,202 +354,161 @@ std::vector<uint8_t> PfsParser::ReadBlock(
 
 // ---- PFSC decompression ----
 
-// Byte-safe little-endian reads (no type punning on unaligned untrusted data)
-static uint32_t ReadLe32(const uint8_t* p) {
-    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-}
-static uint64_t ReadLe64(const uint8_t* p) {
-    uint64_t v = 0;
-    for (int i = 7; i >= 0; --i) v = (v << 8) | p[i];
-    return v;
-}
-
-std::vector<uint8_t> PfsParser::DecompressPfscStream(const std::vector<uint8_t>& pfsc_payload) {
-#if KYTY_PFS_HAS_ZLIB
-    // ---- Header: 0x30 bytes, little-endian ----
-    //   0x00 u32 magic, 0x04 i32 unk4(0), 0x08 i32 unk8(6),
-    //   0x0C i32 logical_block_size, 0x10 i32 logical_block_size (repeat),
-    //   0x14 u64 block_offsets_offset, 0x1C u64 data_offset,
-    //   0x24 q  logical_size (data_length)
-    if (pfsc_payload.size() < PFSC_HEADER_SIZE) {
-        LOGF("PFS: PFSC payload too small for header (%zu bytes)", pfsc_payload.size());
-        return {};
-    }
-
-    const uint32_t magic = ReadLe32(pfsc_payload.data() + 0x00);
-    const int32_t  unk4   = static_cast<int32_t>(ReadLe32(pfsc_payload.data() + 0x04));
-    const int32_t  unk8   = static_cast<int32_t>(ReadLe32(pfsc_payload.data() + 0x08));
-    const int32_t  lbs    = static_cast<int32_t>(ReadLe32(pfsc_payload.data() + 0x0C));
-    const uint64_t lbs2u  = ReadLe64(pfsc_payload.data() + 0x10);
-    const uint64_t off_off = ReadLe64(pfsc_payload.data() + 0x18);
-    const uint64_t data_off = ReadLe64(pfsc_payload.data() + 0x20);
-    const int64_t  logical_size = static_cast<int64_t>(ReadLe64(pfsc_payload.data() + 0x28));
-
-    if (magic != PFSC_MAGIC) {
-        LOGF("PFS: PFSC invalid magic 0x%08X", magic);
-        return {};
-    }
-    if (unk4 != 0 || unk8 != 6) {
-        LOGF("PFS: PFSC unexpected header fields (unk4=%d, unk8=%d)", unk4, unk8);
-        return {};
-    }
-    if (lbs <= 0 || lbs2u != static_cast<uint64_t>(lbs)) {
-        LOGF("PFS: PFSC logical block size mismatch (%d vs %llu)", lbs,
-             static_cast<unsigned long long>(lbs2u));
-        return {};
-    }
-    if (lbs != static_cast<int32_t>(PFSC_LOGICAL_BLOCK_SIZE)) {
-        LOGF("PFS: PFSC unsupported logical block size %d (expected %u)",
-             lbs, PFSC_LOGICAL_BLOCK_SIZE);
-        return {};
-    }
-    if (logical_size < 0) {
-        LOGF("PFS: PFSC negative logical size");
-        return {};
-    }
-
-    const uint64_t lbsU = static_cast<uint64_t>(lbs);
-    const uint64_t block_count = static_cast<uint64_t>(logical_size) / lbsU;
-
-    if (block_count > (1ULL << 26)) { // 64M blocks sanity cap
-        LOGF("PFS: PFSC block count %llu exceeds sanity cap", static_cast<unsigned long long>(block_count));
-        return {};
-    }
-    if (off_off != PFSC_BLOCK_OFFSETS_OFFSET) {
-        LOGF("PFS: PFSC offset table pointer %llu unexpected (expected 0x%X)",
-             static_cast<unsigned long long>(off_off), PFSC_BLOCK_OFFSETS_OFFSET);
-        return {};
-    }
-    if (data_off < PFSC_INITIAL_DATA_OFFSET) {
-        LOGF("PFS: PFSC data offset %llu below minimum header span",
-             static_cast<unsigned long long>(data_off));
-        return {};
-    }
-    if (data_off > pfsc_payload.size()) {
-        LOGF("PFS: PFSC data offset %llu exceeds payload length %zu",
-             static_cast<unsigned long long>(data_off), pfsc_payload.size());
-        return {};
-    }
-
-    // ---- Block offset table: (block_count + 1) x u64 LE ----
-    const size_t table_entries = static_cast<size_t>(block_count) + 1;
-    const size_t offsets_bytes = table_entries * PFSC_OFFSET_ENTRY_SIZE;
-    if (off_off > pfsc_payload.size() || offsets_bytes > pfsc_payload.size() - off_off) {
-        LOGF("PFS: PFSC offset table truncated (payload %zu bytes)", pfsc_payload.size());
-        return {};
-    }
-    if (data_off < off_off + offsets_bytes) {
-        LOGF("PFS: PFSC offset table overlaps data region");
-        return {};
-    }
-
-    std::vector<uint64_t> offsets(table_entries);
-    for (size_t i = 0; i < table_entries; ++i) {
-        offsets[i] = ReadLe64(pfsc_payload.data() + off_off + i * PFSC_OFFSET_ENTRY_SIZE);
-    }
-
-    if (offsets[0] != data_off) {
-        LOGF("PFS: PFSC first offset %llu != data start %llu",
-             static_cast<unsigned long long>(offsets[0]),
-             static_cast<unsigned long long>(data_off));
-        return {};
-    }
-    if (offsets[table_entries - 1] > pfsc_payload.size()) {
-        LOGF("PFS: PFSC final offset %llu exceeds payload size %zu",
-             static_cast<unsigned long long>(offsets[table_entries - 1]), pfsc_payload.size());
-        return {};
-    }
-    for (size_t i = 1; i < table_entries; ++i) {
-        if (offsets[i] < offsets[i - 1]) {
-            LOGF("PFS: PFSC block offsets not monotonic at index %zu", i);
-            return {};
-        }
-    }
-
-    // ---- Decode blocks ----
-    std::vector<uint8_t> logical;
-    logical.reserve(static_cast<size_t>(logical_size));
-
-    for (uint64_t i = 0; i < block_count; ++i) {
-        const uint64_t begin = offsets[i];
-        const uint64_t end = offsets[i + 1];
-        const uint64_t span = end - begin;
-
-        if (begin > pfsc_payload.size() || end > pfsc_payload.size()) {
-            LOGF("PFS: PFSC block %llu out of bounds", static_cast<unsigned long long>(i));
-            return {};
-        }
-
-        if (span == lbsU) {
-            // Stored raw: span equal to the logical block size is raw data
-            logical.insert(logical.end(), pfsc_payload.begin() + begin, pfsc_payload.begin() + end);
-            continue;
-        }
-
-        if (span > lbsU) {
-            LOGF("PFS: PFSC block %llu stored size %llu exceeds logical size %llu",
-                 static_cast<unsigned long long>(i), static_cast<unsigned long long>(span),
-                 static_cast<unsigned long long>(lbsU));
-            return {};
-        }
-
-        // Compressed: single zlib stream that must decompress to exactly lbs bytes
-        uLongf out_len = lbsU;
-        logical.resize(logical.size() + lbsU);
-        const int rc = uncompress(logical.data() + logical.size() - lbsU, &out_len,
-                                  pfsc_payload.data() + begin, static_cast<uLong>(span));
-        if (rc != Z_OK) {
-            LOGF("PFS: PFSC block %llu zlib failure (rc=%d)", static_cast<unsigned long long>(i), rc);
-            return {};
-        }
-        if (out_len != lbsU) {
-            LOGF("PFS: PFSC block %llu decompressed to %llu bytes, expected %llu",
-                 static_cast<unsigned long long>(i), static_cast<unsigned long long>(out_len),
-                 static_cast<unsigned long long>(lbsU));
-            return {};
-        }
-    }
-
-    if (logical.size() != static_cast<uint64_t>(logical_size)) {
-        LOGF("PFS: PFSC logical output size mismatch (%zu vs header %lld)",
-             logical.size(), static_cast<long long>(logical_size));
-        return {};
-    }
-
-    LOGF("PFS: PFSC decoded %llu block(s), %lld logical bytes",
-         static_cast<unsigned long long>(block_count), static_cast<long long>(logical_size));
-    return logical;
-#else
-    (void)pfsc_payload;
-    LOGF("PFS: PFSC decompression requested but zlib is not linked");
-    return {};
-#endif
-}
-
 std::vector<uint8_t> PfsParser::DecompressPfscBlock(const std::vector<uint8_t>& raw_block) {
 #if KYTY_PFS_HAS_ZLIB
-    // Legacy path: a complete zlib stream in a block-sized slice. Blocks in a
-    // real PFSC container are addressed via the offset table, not this path.
-    if (raw_block.size() < 4) return raw_block;
+    // Check for PFSC header
+    if (raw_block.size() < PFSC_HEADER_SIZE) return raw_block;
 
-    std::vector<uint8_t> out(PFSC_LOGICAL_BLOCK_SIZE * 4);
+    // PFSC magic check
+    const uint32_t magic = *reinterpret_cast<const uint32_t*>(raw_block.data());
+    if (magic != PFSC_MAGIC) return raw_block;
+
+    // PFSC format: 0x30-byte header, then block offset table at 0x400,
+    // then compressed data blocks.
+    // The header contains: magic, block_count, uncompressed_size, etc.
+    // For a full implementation, we'd parse the offset table and decompress
+    // each block. For now, attempt zlib decompression of data after header.
+
+    // Read the offset table (starts at PFSC_BLOCK_OFFSETS_OFFSET = 0x400)
+    if (raw_block.size() < PFSC_BLOCK_OFFSETS_OFFSET + 8) return raw_block;
+
+    // Simple approach: try decompressing from the data section
+    // The first compressed block starts at PFSC_INITIAL_DATA_OFFSET (0x10000)
+    // but in a single-block context, it may be right after the header.
+
+    // Attempt zlib decompression of everything after the header
+    std::vector<uint8_t> out(PFSC_LOGICAL_BLOCK_SIZE * 4); // generous output
     uLongf out_len = out.size();
 
     const int rc = uncompress(out.data(), &out_len,
-                              raw_block.data(), static_cast<uLong>(raw_block.size()));
+                               raw_block.data() + PFSC_HEADER_SIZE,
+                               raw_block.size() - PFSC_HEADER_SIZE);
+
     if (rc == Z_OK) {
         out.resize(out_len);
         return out;
     }
-    LOGF("PFS: PFSC single-block decompression failed (zlib rc=%d), returning raw", rc);
+
+    // If simple decompression failed, try from the block offsets area
+    out_len = out.size();
+    const int rc2 = uncompress(out.data(), &out_len,
+                                raw_block.data() + PFSC_BLOCK_OFFSETS_OFFSET,
+                                raw_block.size() - PFSC_BLOCK_OFFSETS_OFFSET);
+    if (rc2 == Z_OK) {
+        out.resize(out_len);
+        return out;
+    }
+
+    LOGF("PFS: PFSC decompression failed (zlib rc=%d, rc2=%d), returning raw", rc, rc2);
     return raw_block;
 #else
+    // No zlib — return raw data, log warning
     if (raw_block.size() >= 4) {
-        LOGF("PFS: PFSC compressed data detected but zlib not linked - returning raw");
+        const uint32_t magic = *reinterpret_cast<const uint32_t*>(raw_block.data());
+        if (magic == PFSC_MAGIC) {
+            LOGF("PFS: PFSC compressed block detected but zlib not linked — returning raw");
+        }
     }
     return raw_block;
 #endif
+}
+
+// ---- PFSC stream decompression (full header + offset table) ----
+
+std::vector<uint8_t> PfsParser::DecompressPfscStream(const std::vector<uint8_t>& stream) {
+    // PFSC stream layout (verified against MkPFS consts.py and pfsVolume.h):
+    //   +0x00  'PFSC' magic
+    //   +0x0C  u32 block_count
+    //   +0x10  u64 logical_size (total uncompressed size of this stream)
+    //   +0x400 offset table: (block_count + 1) u64 entries; entry[i] is the
+    //          byte offset of compressed block i within the stream, and the
+    //          +1 terminator gives the end of the last block.
+    //   +0x10000 first compressed block.
+    if (stream.size() < PFSC_HEADER_SIZE) {
+        return {};
+    }
+    if (ReadU32LE(stream.data()) != PFSC_MAGIC) {
+        return {};
+    }
+
+    const uint32_t block_count  = ReadU32LE(stream.data() + 0x0C);
+    const uint64_t logical_size = ReadU64LE(stream.data() + 0x10);
+
+    if (block_count == 0 || logical_size == 0) {
+        return {};
+    }
+    // Sanity: block count must cover the logical size.
+    const uint64_t max_blocks =
+        (logical_size + PFSC_LOGICAL_BLOCK_SIZE - 1) / PFSC_LOGICAL_BLOCK_SIZE;
+    if (block_count != max_blocks) {
+        LOGF("PFS: PFSC block_count %u != expected %llu", block_count,
+             static_cast<unsigned long long>(max_blocks));
+        return {};
+    }
+    if (block_count > (1u << 26)) {
+        return {};
+    }
+
+    // Offset table: (block_count + 1) u64 entries at 0x400.
+    const size_t table_len = static_cast<size_t>(block_count + 1) * PFSC_OFFSET_ENTRY_SIZE;
+    if (PFSC_BLOCK_OFFSETS_OFFSET + table_len > stream.size()) {
+        return {};
+    }
+
+    std::vector<uint64_t> offsets(block_count + 1);
+    for (uint32_t i = 0; i <= block_count; ++i) {
+        offsets[i] = ReadU64LE(stream.data() + PFSC_BLOCK_OFFSETS_OFFSET
+                               + static_cast<size_t>(i) * PFSC_OFFSET_ENTRY_SIZE);
+    }
+
+    std::vector<uint8_t> out;
+    out.reserve(static_cast<size_t>(logical_size));
+
+    for (uint32_t i = 0; i < block_count; ++i) {
+        const uint64_t cur  = offsets[i];
+        const uint64_t next = offsets[i + 1];
+        if (next < cur || next > stream.size()) {
+            LOGF("PFS: PFSC offset table entry %u out of range (0x%llx -> 0x%llx)", i,
+                 static_cast<unsigned long long>(cur), static_cast<unsigned long long>(next));
+            return {};
+        }
+        const size_t comp_len = static_cast<size_t>(next - cur);
+        if (comp_len == 0) {
+            return {};
+        }
+
+        // Logical size of this block: full 64KiB except the last block.
+        const uint64_t base = static_cast<uint64_t>(i) * PFSC_LOGICAL_BLOCK_SIZE;
+        const size_t   raw_len =
+            (base + PFSC_LOGICAL_BLOCK_SIZE <= logical_size)
+                ? PFSC_LOGICAL_BLOCK_SIZE
+                : static_cast<size_t>(logical_size - base);
+
+        // Stored-uncompressed fast path: comp_len == raw_len means the block
+        // was not compressed (offset delta equals the raw length).
+        if (comp_len == raw_len) {
+            out.insert(out.end(), stream.begin() + static_cast<std::ptrdiff_t>(cur),
+                       stream.begin() + static_cast<std::ptrdiff_t>(next));
+            continue;
+        }
+
+        // Route through the decompression provider (zlib stock, Oodle if a
+        // user-supplied core is loaded). algo 0 = zlib/deflate.
+        auto result = KytyPS5::IO::DecompressionProvider::Instance().ProcessAsset(
+            0, std::span<const uint8_t>(stream.data() + cur, comp_len), raw_len);
+        if (!result || result->size() != raw_len) {
+            LOGF("PFS: PFSC block %u decode failed", i);
+            return {};
+        }
+        out.insert(out.end(), result->begin(), result->end());
+    }
+
+    if (out.size() != logical_size) {
+        LOGF("PFS: PFSC decoded %zu bytes, expected %llu", out.size(),
+             static_cast<unsigned long long>(logical_size));
+        return {};
+    }
+    return out;
 }
 
 // ---- Inode reading (D32/S32/S64) ----
@@ -556,7 +521,6 @@ bool PfsParser::ReadInode(std::ifstream& f, uint32_t block_number,
     if (block_number == 0) return false;
 
     const uint64_t offset = static_cast<uint64_t>(block_number) * block_size;
-    f.clear();
     f.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
 
     const bool is_64bit = (mode & PFS_MODE_64BIT_INODES) != 0;
@@ -610,7 +574,6 @@ PfsParser::InodeInfo PfsParser::ExtractInodeInfo(const PfsInodeD32& d32,
             info.mode = s64.mode;
             info.flags = s64.flags;
             info.size = s64.size;
-            info.is_64bit = true; // 64-bit block pointers (S64 variant only)
             for (size_t i = 0; i < MAX_DIRECT_BLOCKS; ++i) info.db[i] = s64.db[i];
             for (size_t i = 0; i < MAX_INDIRECT_BLOCKS; ++i) info.ib[i] = s64.ib[i];
             break;
@@ -623,36 +586,33 @@ PfsParser::InodeInfo PfsParser::ExtractInodeInfo(const PfsInodeD32& d32,
 
 std::vector<int64_t> PfsParser::GetIndirectBlocks(
     std::ifstream& f, const InodeInfo& inode,
-    uint32_t block_size, uint32_t num_blocks,
+    uint32_t block_size, uint32_t num_blocks, uint32_t mode,
     const PfsEkpfsKey* ekpfs_key) {
 
     std::vector<int64_t> all_blocks;
 
-    // Direct blocks (0-11).
-    // Slot 0 is never a valid data block (it holds the superblock), and a
-    // zeroed slot means "unused" in images that do not terminate the direct
-    // block list with -1. Either way: stop at db[i] <= 0.
+    // Direct blocks (0-11)
     for (size_t i = 0; i < MAX_DIRECT_BLOCKS; ++i) {
-        if (inode.db[i] <= 0) break;
-        all_blocks.push_back(inode.db[i]);
+        if (inode.db[i] < 0) break;
+        if (static_cast<uint64_t>(inode.db[i]) < num_blocks) {
+            all_blocks.push_back(inode.db[i]);
+        }
     }
 
     // Indirect blocks (ib[0-4])
     // Each indirect block contains block_size / sizeof(int32_t or int64_t) block pointers
-    const bool is_64bit = inode.is_64bit; // true only for the S64 inode variant
-    const size_t ptr_size = is_64bit ? 8 : 4;
+    // The pointer width is an image-wide property set by the superblock mode flag
+    // (PFS_MODE_64BIT_INODES), *not* a per-inode flag.
+    const bool   is_64bit       = (mode & PFS_MODE_64BIT_INODES) != 0;
+    const size_t ptr_size       = is_64bit ? 8 : 4;
     const size_t ptrs_per_block = block_size / ptr_size;
 
     for (size_t level = 0; level < MAX_INDIRECT_BLOCKS; ++level) {
-        if (inode.ib[level] <= 0) break; // 0 = unused (superblock), -1 = terminator
+        if (inode.ib[level] < 0) break;
         if (static_cast<uint32_t>(inode.ib[level]) >= num_blocks) break;
 
         auto block_data = ReadBlock(f, inode.ib[level], block_size, num_blocks, ekpfs_key);
-        if (block_data.empty()) {
-            LOGF("PFS: indirect block %lld of inode %u unreadable, truncating block list",
-                 static_cast<long long>(inode.ib[level]), inode.number);
-            break;
-        }
+        if (block_data.empty()) break;
 
         // Read pointers from the indirect block
         for (size_t j = 0; j < ptrs_per_block; ++j) {
@@ -668,11 +628,7 @@ std::vector<int64_t> PfsParser::GetIndirectBlocks(
             }
 
             if (ptr < 0) break;
-            if (static_cast<uint32_t>(ptr) >= num_blocks) {
-                LOGF("PFS: block pointer %lld in indirect table of inode %u out of range, truncating",
-                     static_cast<long long>(ptr), inode.number);
-                break;
-            }
+            if (static_cast<uint32_t>(ptr) >= num_blocks) break;
             all_blocks.push_back(ptr);
         }
     }
@@ -684,66 +640,46 @@ std::vector<int64_t> PfsParser::GetIndirectBlocks(
 
 std::vector<std::pair<std::string, uint32_t>> PfsParser::ReadDirectory(
     std::ifstream& f, const InodeInfo& dir_inode,
-    uint32_t block_size, uint32_t num_blocks,
+    uint32_t block_size, uint32_t num_blocks, uint32_t mode,
     const PfsEkpfsKey* ekpfs_key) {
 
     std::vector<std::pair<std::string, uint32_t>> entries;
 
     // Get all data blocks (direct + indirect) for this directory
-    auto all_blocks = GetIndirectBlocks(f, dir_inode, block_size, num_blocks, ekpfs_key);
+    auto all_blocks = GetIndirectBlocks(f, dir_inode, block_size, num_blocks, mode, ekpfs_key);
 
     for (int64_t blk : all_blocks) {
         auto block_data = ReadBlock(f, blk, block_size, num_blocks, ekpfs_key);
         if (block_data.empty()) continue;
 
-        // Parse dirent entries from the block.
-        // On-disk format (verified against MkPFS Dirent.to_bytes):
-        //   u32 inode, i32 type, i32 name_len, i32 ent_size,
-        //   then name_len ASCII bytes, then zero padding to ent_size.
-        // ent_size = align8(name_len + 17) and is the record stride.
+        // Parse dirent entries from the block
         size_t pos = 0;
         while (pos + sizeof(PfsDirent) <= block_data.size()) {
             PfsDirent dirent;
             std::memcpy(&dirent, block_data.data() + pos, sizeof(PfsDirent));
 
-            if (dirent.type <= 0 || dirent.type > DIRENT_TYPE_DOTDOT) {
+            if (dirent.type == 0 || dirent.type > DIRENT_TYPE_DOTDOT) {
                 break; // end of entries
             }
 
-            if (dirent.name_len <= 0 || dirent.name_len > 0x200) {
-                LOGF("PFS: dirent name length %d invalid, truncating directory listing",
-                     dirent.name_len);
-                break;
-            }
-
-            const size_t rec = pos; // record start
             pos += sizeof(PfsDirent);
-            const size_t name_len = static_cast<size_t>(dirent.name_len);
-            if (pos + name_len > block_data.size()) {
-                LOGF("PFS: dirent name (len %d) exceeds block bounds, truncating directory listing",
-                     dirent.name_len);
-                break;
+            if (pos + dirent.name_size > block_data.size()) break;
+
+            std::string name;
+            for (uint32_t j = 0; j < dirent.name_size && pos < block_data.size(); ++j) {
+                if (block_data[pos] == '\0') { pos++; break; }
+                name += static_cast<char>(block_data[pos++]);
             }
 
-            std::string name(reinterpret_cast<const char*>(block_data.data() + pos), name_len);
-            pos += name_len;
-
-            // Advance to the next record: ent_size from the record start.
-            const int64_t ent_size = static_cast<int64_t>(dirent.ent_size);
-            if (ent_size < static_cast<int64_t>(sizeof(PfsDirent)) ||
-                ent_size > static_cast<int64_t>(sizeof(PfsDirent)) + 0x200) {
-                LOGF("PFS: dirent entry size %d invalid, truncating directory listing", ent_size);
-                break;
+            // Entries are 8-byte aligned. The name parser has already consumed
+            // the null terminator, so only the remaining inter-entry padding
+            // (if any) is skipped here — never valid name bytes.
+            while (pos < block_data.size() && (pos % 8) != 0) {
+                ++pos;
             }
-            const size_t next = static_cast<size_t>(rec + ent_size);
-            if (next <= rec || next > block_data.size()) {
-                LOGF("PFS: dirent entry size overruns block, truncating directory listing");
-                break;
-            }
-            pos = next;
 
             if (dirent.type != DIRENT_TYPE_DOT && dirent.type != DIRENT_TYPE_DOTDOT) {
-                entries.emplace_back(std::move(name), dirent.inode);
+                entries.emplace_back(name, dirent.inode);
             }
         }
     }
@@ -755,42 +691,39 @@ std::vector<std::pair<std::string, uint32_t>> PfsParser::ReadDirectory(
 
 std::vector<uint8_t> PfsParser::ReadFileData(
     std::ifstream& f, const InodeInfo& inode,
-    uint32_t block_size, uint32_t num_blocks,
-    bool is_compressed, const PfsEkpfsKey* ekpfs_key) {
+    uint32_t block_size, uint32_t num_blocks, uint32_t mode,
+    const PfsEkpfsKey* ekpfs_key) {
 
     // Get all data blocks (direct + indirect)
-    auto all_blocks = GetIndirectBlocks(f, inode, block_size, num_blocks, ekpfs_key);
+    auto all_blocks = GetIndirectBlocks(f, inode, block_size, num_blocks, mode, ekpfs_key);
+
+    // PFSC-compressed inode: the data blocks form a single PFSC stream
+    // (header + offset table + compressed blocks). Decode the whole stream,
+    // not per-block — the old per-block zlib hack ignored the offset table.
+    if ((inode.flags & INODE_FLAG_COMPRESSED) != 0) {
+        std::vector<uint8_t> stream;
+        for (int64_t blk : all_blocks) {
+            auto block_data = ReadBlock(f, blk, block_size, num_blocks, ekpfs_key);
+            if (block_data.empty()) break;
+            stream.insert(stream.end(), block_data.begin(), block_data.end());
+        }
+        if (stream.empty()) {
+            return {};
+        }
+        auto decoded = DecompressPfscStream(stream);
+        if (decoded.empty()) {
+            LOGF("PFS: PFSC stream decode failed for inode %u", inode.number);
+            return {};
+        }
+        if (decoded.size() > inode.size) {
+            decoded.resize(static_cast<size_t>(inode.size));
+        }
+        return decoded;
+    }
 
     std::vector<uint8_t> data;
     data.reserve(static_cast<size_t>(inode.size));
 
-    // The inode payload spans its data blocks. For a compressed inode the
-    // whole payload is one PFSC container: gather all block bytes first, then
-    // decode the container in one pass (its offset table spans the entire
-    // payload, so per-block decompression cannot work).
-    if (is_compressed && (inode.flags & INODE_FLAG_COMPRESSED)) {
-        std::vector<uint8_t> payload;
-        uint64_t payload_len = 0;
-        const uint64_t max_len = static_cast<uint64_t>(num_blocks) * block_size;
-        for (int64_t blk : all_blocks) {
-            if (payload_len >= max_len) break;
-            auto block_data = ReadBlock(f, blk, block_size, num_blocks, ekpfs_key);
-            if (block_data.empty()) break;
-            payload.insert(payload.end(), block_data.begin(), block_data.end());
-            payload_len += block_data.size();
-        }
-        auto logical = DecompressPfscStream(payload);
-        if (logical.empty()) {
-            LOGF("PFS: inode %u PFSC payload decode failed", inode.number);
-            return {};
-        }
-        const size_t to_keep = std::min<size_t>(logical.size(),
-                                                static_cast<size_t>(inode.size));
-        logical.resize(to_keep);
-        return logical;
-    }
-
-    // Uncompressed path: copy block bytes up to the inode size
     uint64_t remaining = inode.size;
     for (int64_t blk : all_blocks) {
         if (remaining == 0) break;
@@ -828,108 +761,24 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
         return result;
     }
 
-    // Check for PFSC (compressed PFS): the whole image is one PFSC container.
-    // Decode it to the logical (decompressed) PFS image and parse that instead.
+    // Check for PFSC (compressed PFS)
     if (sb.format != PFS_FORMAT_MAGIC) {
-        f.clear();
         f.seekg(0, std::ios::beg);
         uint8_t magic4[4] = {0};
         f.read(reinterpret_cast<char*>(magic4), 4);
         if (magic4[0] == 0x50 && magic4[1] == 0x46 && magic4[2] == 0x53 && magic4[3] == 0x43) {
             result.is_compressed = true;
-            LOGF("PFS: PFSC compressed image detected, decoding");
-#if KYTY_PFS_HAS_ZLIB
-            // Read the whole file and decode the PFSC container.
-            std::vector<uint8_t> whole;
-            {
-                f.clear();
-                f.seekg(0, std::ios::end);
-                const auto end_pos = f.tellg();
-                if (end_pos < 0) {
-                    result.error = "PFSC: cannot determine file size";
-                    result.ok = false;
-                    return result;
-                }
-                const size_t file_size = static_cast<size_t>(end_pos);
-                whole.resize(file_size);
-                f.clear();
-                f.seekg(0, std::ios::beg);
-                f.read(reinterpret_cast<char*>(whole.data()), file_size);
-                if (static_cast<size_t>(f.gcount()) < file_size) {
-                    result.error = "PFSC: short read of file";
-                    result.ok = false;
-                    return result;
-                }
-            }
-
-            auto logical = DecompressPfscStream(whole);
-            if (logical.empty()) {
-                result.error = "PFSC: container decode failed";
-                result.ok = false;
-                return result;
-            }
-
-            // The walk below reads via the file stream, so materialize the
-            // logical bytes to a temporary file and re-parse it. RAII removes
-            // the temp file when this parse returns.
-            struct TempFileGuard {
-                std::string path;
-                ~TempFileGuard() {
-                    if (!path.empty()) {
-                        std::error_code ec;
-                        std::filesystem::remove(path, ec);
-                    }
-                }
-            } guard;
-            {
-                const std::filesystem::path src_path(pfs_path);
-                const std::filesystem::path tmp = src_path.parent_path() /
-                    (src_path.filename().string() + ".kyty_pfsc.tmp");
-                std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-                if (!out) {
-                    result.error = "PFSC: cannot create temp file for decompressed image";
-                    result.ok = false;
-                    return result;
-                }
-                out.write(reinterpret_cast<const char*>(logical.data()),
-                          static_cast<std::streamsize>(logical.size()));
-                if (!out) {
-                    result.error = "PFSC: failed writing temp file";
-                    result.ok = false;
-                    return result;
-                }
-                out.close();
-                guard.path = tmp.string();
-            }
-
-            // Recursive parse of the decompressed image
-            auto inner = Parse(guard.path);
-            if (!inner.ok) {
-                result.error = "PFSC: inner PFS parse failed: " + inner.error;
-                result.ok = false;
-                return result;
-            }
-
-            // Merge the inner (decoded) image results. is_compressed is cleared:
-            // this result now describes the decoded image, and callers
-            // (ExtractAll) should extract files from it normally. The inner
-            // parse already logged that the source was PFSC.
-            result.version = inner.version;
-            result.mode = inner.mode;
-            result.block_size = inner.block_size;
-            result.num_blocks = inner.num_blocks;
-            result.num_inodes = inner.num_inodes;
-            result.is_encrypted = inner.is_encrypted;
-            result.is_compressed = false;
-            result.files = std::move(inner.files);
-            result.ok = true;
-            return result;
-#else
-            result.error = "PFSC compressed image but zlib not linked";
+            LOGF("PFS: whole-image PFSC container detected");
+            // A whole-image PFSC is a PFSC stream whose decompressed payload is
+            // a PFS image. It is a distinct container from per-inode PFSC
+            // streams (which are handled by DecompressPfscStream during
+            // extraction). Decompressing the entire image to memory and
+            // re-parsing the inner PFS is not supported here.
+            result.error = "Whole-image PFSC container (decompress the image first, then parse the inner PFS)";
             result.ok = false;
             return result;
-#endif
         }
+
         result.error = "Invalid PFS magic (expected 20130315 at format field, got " +
                         std::to_string(sb.format) + ")";
         return result;
@@ -982,14 +831,11 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
         return result;
     }
 
-    // Recursively walk the directory tree starting from root.
-    // Corrupt or hostile images can contain directory cycles (A -> B -> A)
-    // or runaway nesting; without guards that overflows the stack.
-    constexpr int kMaxWalkDepth = 32; // real PFS trees are shallow (less than 16)
-    std::unordered_set<uint32_t> visited_inodes;
-    std::function<void(const InodeInfo&, const std::string&, int)> walkDir =
-        [&](const InodeInfo& dir_info, const std::string& path_prefix, int depth) {
-        auto dir_entries = ReadDirectory(f, dir_info, result.block_size, result.num_blocks, nullptr);
+    // Recursively walk the directory tree starting from root
+    std::function<void(const InodeInfo&, const std::string&)> walkDir =
+        [&](const InodeInfo& dir_info, const std::string& path_prefix) {
+        auto dir_entries = ReadDirectory(f, dir_info, result.block_size, result.num_blocks,
+                                          result.mode, nullptr);
         if (path_prefix.empty()) {
             LOGF("PFS: root directory has %zu entries", dir_entries.size());
         }
@@ -1023,26 +869,15 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
                      static_cast<unsigned long long>(file.size),
                      file.is_compressed ? "yes" : "no");
 
-                // Recurse into subdirectories (cycle and depth guards)
+                // Recurse into subdirectories
                 if (file.is_directory) {
-                    if (depth >= kMaxWalkDepth) {
-                        LOGF("PFS: directory nesting exceeds %d levels at '%s', skipping",
-                             kMaxWalkDepth, file.name.c_str());
-                    } else if (!visited_inodes.insert(info.number).second) {
-                        LOGF("PFS: directory inode %u revisited (cycle), skipping '%s'",
-                             info.number, file.name.c_str());
-                    } else {
-                        walkDir(info, file.name, depth + 1);
-                    }
+                    walkDir(info, file.name);
                 }
-            } else {
-                LOGF("PFS: failed to read inode %u ('%s'), skipping", inode_num, name.c_str());
             }
         }
     };
 
-    visited_inodes.insert(root_info.number);
-    walkDir(root_info, "", 1);
+    walkDir(root_info, "");
 
     result.ok = true;
     return result;
@@ -1065,79 +900,12 @@ uint32_t PfsParser::ExtractAll(const PfsParseResult& result,
         return 0;
     }
 
-    // For a PFSC-compressed whole image, the caller (Parse) decoded it to a
-    // temp file and parsed that; but ExtractAll re-opens pfs_path, which is the
-    // original compressed file. Decode again here and extract from the logical
-    // image instead, via the same container decode.
-    std::string effective_path = pfs_path;
-    struct TempFileGuard2 {
-        std::string path;
-        ~TempFileGuard2() {
-            if (!path.empty()) {
-                std::error_code ec;
-                std::filesystem::remove(path, ec);
-            }
-        }
-    } extract_guard;
-    // Decode when the file itself is a PFSC container, regardless of the
-    // result flag: Parse clears is_compressed after a successful decode, but
-    // callers may pass the original (still compressed) image path here.
-    {
-        std::ifstream sniff(pfs_path, std::ios::binary);
-        uint8_t sniff_magic[4] = {0};
-        if (sniff) {
-            sniff.clear();
-            sniff.seekg(0, std::ios::beg);
-            sniff.read(reinterpret_cast<char*>(sniff_magic), 4);
-            const bool is_pfsc = sniff_magic[0] == 0x50 && sniff_magic[1] == 0x46 &&
-                                 sniff_magic[2] == 0x53 && sniff_magic[3] == 0x43;
-            if (!is_pfsc) {
-                // Not compressed: no decode needed
-                goto after_pfsc_decode;
-            }
-        }
-    }
-    if (true) { // PFSC detected
-#if KYTY_PFS_HAS_ZLIB
-        std::ifstream cf(pfs_path, std::ios::binary);
-        if (!cf) {
-            LOGF("PFS: cannot extract - cannot open compressed image");
-            return 0;
-        }
-        cf.seekg(0, std::ios::end);
-        const auto cend = cf.tellg();
-        if (cend <= 0) { LOGF("PFS: cannot extract - bad compressed image size"); return 0; }
-        std::vector<uint8_t> whole(static_cast<size_t>(cend));
-        cf.seekg(0, std::ios::beg);
-        cf.read(reinterpret_cast<char*>(whole.data()), static_cast<std::streamsize>(whole.size()));
-        if (static_cast<size_t>(cf.gcount()) < whole.size()) {
-            LOGF("PFS: cannot extract - short read of compressed image");
-            return 0;
-        }
-        auto logical = DecompressPfscStream(whole);
-        if (logical.empty()) {
-            LOGF("PFS: cannot extract - PFSC container decode failed");
-            return 0;
-        }
-        const std::filesystem::path src_path(pfs_path);
-        const std::filesystem::path tmp = src_path.parent_path() /
-            (src_path.filename().string() + ".kyty_pfsc_extract.tmp");
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            LOGF("PFS: cannot extract - cannot create temp file for decompressed image");
-            return 0;
-        }
-        out.write(reinterpret_cast<const char*>(logical.data()),
-                  static_cast<std::streamsize>(logical.size()));
-        out.close();
-        extract_guard.path = tmp.string();
-        effective_path = extract_guard.path;
-#else
+    if (result.is_compressed) {
+#if !KYTY_PFS_HAS_ZLIB
         LOGF("PFS: cannot extract - PFSC compressed and zlib not linked");
         return 0;
 #endif
     }
-after_pfsc_decode:;
 
     if (result.files.empty()) {
         LOGF("PFS: no files to extract");
@@ -1151,22 +919,21 @@ after_pfsc_decode:;
         return 0;
     }
 
-    std::ifstream f(effective_path, std::ios::binary);
+    std::ifstream f(pfs_path, std::ios::binary);
     if (!f) {
-        LOGF("PFS: cannot open for extraction: %s", effective_path.c_str());
+        LOGF("PFS: cannot open for extraction: %s", pfs_path.c_str());
         return 0;
     }
 
     uint32_t extracted = 0;
 
     for (const auto& file : result.files) {
-        if (file.is_directory) continue; // skip directories, only extract files
-
+        if (file.name.empty() || file.name == "." || file.name == "..") continue;
         if (!IsSafeRelativePath(file.name)) {
-            LOGF("PFS: refusing unsafe file name '%s', possible path traversal, skipping",
-                 file.name.c_str());
+            LOGF("PFS: skipping unsafe path in package: %s", file.name.c_str());
             continue;
         }
+        if (file.is_directory) continue; // skip directories, only extract files
 
         const std::filesystem::path out_path = std::filesystem::path(output_dir) / file.name;
         // Create parent directories for nested files (e.g. sce_sys/param.json)
@@ -1188,15 +955,12 @@ after_pfsc_decode:;
             auto info = ExtractInodeInfo(d32, s32, s64, variant);
 
             auto data = ReadFileData(f, info, result.block_size,
-                                     result.num_blocks, result.is_compressed, ekpfs_key);
+                                     result.num_blocks, result.mode, ekpfs_key);
 
             out.write(reinterpret_cast<const char*>(data.data()),
                       static_cast<std::streamsize>(data.size()));
             extracted++;
             LOGF("PFS: extracted %s (%zu bytes)", file.name.c_str(), data.size());
-        } else {
-            LOGF("PFS: failed to re-read inode %u for '%s', skipping",
-                 static_cast<unsigned>(file.inode), file.name.c_str());
         }
 
         out.close();

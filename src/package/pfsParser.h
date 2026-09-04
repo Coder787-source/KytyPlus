@@ -108,16 +108,13 @@ struct PfsInodeS64 {
     uint8_t  pad[0x310 - 0x90 - 40]; // padding to 0x310
 };
 
-// PFS directory entry (verified against MkPFS Dirent.to_bytes):
-// u32 inode, i32 type (2=file, 3=dir, 4=dot, 5=dotdot), i32 name_len
-// (ASCII name length, no null), i32 ent_size (total record size including
-// header and 8-byte-aligned padding). Name bytes follow the header.
+// PFS directory entry
 struct PfsDirent {
+    uint32_t type;            // 2=file, 3=directory, 4=dot, 5=dotdot
     uint32_t inode;           // inode number this entry points to
-    int32_t  type;            // 2=file, 3=directory, 4=dot, 5=dotdot
-    int32_t  name_len;        // length of the name string (no null)
-    int32_t  ent_size;        // total record size (header + name + padding)
-    // Followed by name_len bytes of ASCII name, then zero padding
+    uint32_t name_size;       // length of the name string (including null)
+    uint32_t pad;              // padding
+    // Followed by name_size bytes of name (null-terminated)
 };
 
 #pragma pack(pop)
@@ -216,20 +213,12 @@ public:
     // Check if data starts with PFSC (compressed PFS) magic
     static bool HasPfscMagic(const std::vector<uint8_t>& data);
 
-private:
-    // Read an inode at a given block number (handles D32/S32/S64 variants)
-    static bool ReadInode(std::ifstream& f, uint32_t block_number,
-                           uint32_t block_size, uint32_t version, uint32_t mode,
-                           PfsInodeD32& out_d32, PfsInodeS32& out_s32,
-                           PfsInodeS64& out_s64, int& out_variant);
-
-    // Unified inode info extracted from any variant
+    // Unified inode info extracted from any variant (public: reused by PfsVolume)
     struct InodeInfo {
         uint32_t number;
         uint16_t mode;
         uint32_t flags;
         uint64_t size;
-        bool     is_64bit;  // true only for the S64 variant (64-bit block pointers)
         int64_t  db[MAX_DIRECT_BLOCKS];
         int64_t  ib[MAX_INDIRECT_BLOCKS];
     };
@@ -240,19 +229,27 @@ private:
                                        const PfsInodeS64& s64,
                                        int variant);
 
+private:
+    // Read an inode at a given block number (handles D32/S32/S64 variants)
+    static bool ReadInode(std::ifstream& f, uint32_t block_number,
+                           uint32_t block_size, uint32_t version, uint32_t mode,
+                           PfsInodeD32& out_d32, PfsInodeS32& out_s32,
+                           PfsInodeS64& out_s64, int& out_variant);
+
     // Read directory entries from a directory inode's data blocks
     // Handles both direct and indirect blocks
     static std::vector<std::pair<std::string, uint32_t>> ReadDirectory(
         std::ifstream& f, const InodeInfo& dir_inode,
-        uint32_t block_size, uint32_t num_blocks,
+        uint32_t block_size, uint32_t num_blocks, uint32_t mode,
         const PfsEkpfsKey* ekpfs_key);
 
     // Read file data from inode's direct + indirect blocks
-    // Handles both direct and indirect block pointers for files > 12 blocks
+    // Handles both direct and indirect block pointers for files > 12 blocks.
+    // PFSC-compressed inodes are decoded as a full stream (see DecompressPfscStream).
     static std::vector<uint8_t> ReadFileData(
         std::ifstream& f, const InodeInfo& inode,
-        uint32_t block_size, uint32_t num_blocks,
-        bool is_compressed, const PfsEkpfsKey* ekpfs_key);
+        uint32_t block_size, uint32_t num_blocks, uint32_t mode,
+        const PfsEkpfsKey* ekpfs_key);
 
     // Read a data block, decrypting if EKPFS key is provided
     static std::vector<uint8_t> ReadBlock(
@@ -263,17 +260,16 @@ private:
     static std::vector<uint8_t> DecompressPfscBlock(
         const std::vector<uint8_t>& raw_block);
 
-    // Decode an entire PFSC container: 0x30-byte header, block offset table,
-    // then stored blocks (compressed when smaller than the logical block size,
-    // raw when exactly the logical block size). Returns the logical
-    // (decompressed) byte stream, or an empty vector on invalid input.
+    // Decompress a full PFSC stream (header + offset table + compressed blocks).
+    // `stream` is the concatenation of the inode's data blocks (the whole PFSC
+    // stream). Returns the decompressed logical data, or empty on failure.
     static std::vector<uint8_t> DecompressPfscStream(
-        const std::vector<uint8_t>& pfsc_payload);
+        const std::vector<uint8_t>& stream);
 
     // Follow indirect block chain and collect all block numbers
     static std::vector<int64_t> GetIndirectBlocks(
         std::ifstream& f, const InodeInfo& inode,
-        uint32_t block_size, uint32_t num_blocks,
+        uint32_t block_size, uint32_t num_blocks, uint32_t mode,
         const PfsEkpfsKey* ekpfs_key);
 
     // AES-XTS decrypt a sector (self-contained, no OpenSSL)
