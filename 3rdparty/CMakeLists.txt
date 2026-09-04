@@ -6,6 +6,12 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(ZLIB_INSTALL OFF CACHE BOOL "" FORCE)
+# Build zlib statically only. The vendored zlib CMakeLists defaults
+# ZLIB_BUILD_SHARED to ON, which emits z.dll on Windows and makes the
+# emulator a hard runtime dependency on whatever z.dll the loader resolves
+# from PATH. A stale/ABI-mismatched z.dll then kills the process at startup.
+# Linking the static archive removes the DLL dependency entirely.
+set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 add_subdirectory(zlib EXCLUDE_FROM_ALL)
 
 add_subdirectory(cpuinfo)

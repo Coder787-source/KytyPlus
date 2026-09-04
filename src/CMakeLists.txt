@@ -356,12 +356,13 @@ endif()
 
 set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL2-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak)
 
-# zlib is required by rpfArchiveReader on all platforms.
-find_package(ZLIB)
-if(ZLIB_FOUND)
-	list(APPEND kyty_emulator_link_libraries ZLIB::ZLIB)
-	list(APPEND kyty_emulator_compile_definitions KYTY_HAS_ZLIB=1)
-endif()
+# zlib is required by rpfArchiveReader on all platforms. The vendored static
+# archive (ZLIB::ZLIBSTATIC) is always built by 3rdparty/CMakeLists.txt, so
+# link it unconditionally. The shared target ZLIB::ZLIB is not built anymore
+# (no z.dll is emitted or loaded at runtime), and find_package(ZLIB) is not
+# used because it could resolve a system zlib instead of the vendored one.
+list(APPEND kyty_emulator_link_libraries ZLIB::ZLIBSTATIC)
+list(APPEND kyty_emulator_compile_definitions KYTY_HAS_ZLIB=1)
 
 # Linux system libraries required by the static FFmpeg archive.
 if(LINUX)
