@@ -64,7 +64,7 @@ struct ConfigOptions {
 	bool                   fullscreen_enabled          = false;
 	uint32_t               vblank_frequency            = 60;
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
-	bool                   vulkan_validation_enabled   = false;
+	bool                   vulkan_validation_enabled   = true;  // Enabled by default for debugging
 	bool                   shader_validation_enabled   = false;
 	// Match the launcher's playable default so CLI launches without
 	// --shader-optimization-type still get SPIR-V performance passes.
