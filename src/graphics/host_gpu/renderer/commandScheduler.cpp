@@ -426,11 +426,16 @@ size_t CommandScheduler::GrowCommandBuffers() {
 void CommandScheduler::BeginNext() {
 	EXIT_IF(m_recording);
 
+	// Try to find a reusable buffer with progressive fallback
 	auto candidate = FindReusableBuffer(m_master.KnownGpuTick());
-	bool refreshed = false;
 	if (candidate < 0) {
 		m_master.Refresh();
-		refreshed = true;
+		candidate = FindReusableBuffer(m_master.KnownGpuTick());
+	}
+	if (candidate < 0) {
+		// Last resort: wait for master and try again
+		m_master.Wait(m_master.NextTick() - 1);
+		m_master.Refresh();
 		candidate = FindReusableBuffer(m_master.KnownGpuTick());
 	}
 	if (candidate < 0) {
@@ -439,7 +444,7 @@ void CommandScheduler::BeginNext() {
 
 	m_current = candidate;
 	Current().WaitForFenceAndReset();
-	PopPendingOperations(!refreshed);
+	PopPendingOperations(candidate >= static_cast<int>(m_buffers.size()));
 	BindCurrent();
 	Current().Begin();
 	m_recording = true;
