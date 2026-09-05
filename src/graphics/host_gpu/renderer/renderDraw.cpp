@@ -736,11 +736,24 @@ struct VertexBufferRange {
 	[[nodiscard]] uint64_t RequestedSize() const { return requested_end - base_address; }
 };
 
-static std::vector<BufferBinding> AcquireVertexBuffers(RenderCommandBuffer&         buffer,
-                                                       const ShaderVertexInputInfo& vs_input_info) {
+struct PreparedVertexBuffers {
+	static constexpr uint32_t MaxBuffers = ShaderVertexInputInfo::RES_MAX;
+
+	std::array<vk::Buffer, MaxBuffers>            buffers {};
+	std::array<vk::DeviceSize, MaxBuffers>        offsets {};
+	std::array<std::shared_ptr<void>, MaxBuffers> owners {};
+	uint32_t                                      count       = 0;
+	uint32_t                                      owner_count = 0;
+};
+
+static PreparedVertexBuffers AcquireVertexBuffers(RenderCommandBuffer&         buffer,
+                                                  const ShaderVertexInputInfo& vs_input_info) {
+	EXIT_IF(vs_input_info.buffers_num < 0 ||
+	        vs_input_info.buffers_num > ShaderVertexInputInfo::RES_MAX);
+
 	// Collect the non-empty guest vertex ranges.
-	std::vector<VertexBufferRange> ranges;
-	ranges.reserve(vs_input_info.buffers_num);
+	std::array<VertexBufferRange, ShaderVertexInputInfo::RES_MAX> ranges {};
+	uint32_t                                                      range_count = 0;
 	for (int i = 0; i < vs_input_info.buffers_num; i++) {
 		const auto& vertex = vs_input_info.buffers[i];
 		const auto  size   = VertexBufferDescriptorSize(vertex);
@@ -751,27 +764,31 @@ static std::vector<BufferBinding> AcquireVertexBuffers(RenderCommandBuffer&     
 			EXIT("invalid vertex buffer range: addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
 			     vertex.addr, size);
 		}
-		ranges.push_back({vertex.addr, vertex.addr + size});
+		ranges[range_count++] = {vertex.addr, vertex.addr + size};
 	}
 
-	std::ranges::sort(ranges, [](const VertexBufferRange& left, const VertexBufferRange& right) {
-		return left.base_address < right.base_address;
-	});
+	std::sort(ranges.begin(), ranges.begin() + range_count,
+	          [](const VertexBufferRange& left, const VertexBufferRange& right) {
+		          return left.base_address < right.base_address;
+		          });
 
 	// Merge overlapping or touching ranges before acquiring host buffers.
-	std::vector<VertexBufferRange> merged_ranges;
-	merged_ranges.reserve(ranges.size());
-	for (const auto& range: ranges) {
-		if (!merged_ranges.empty() && merged_ranges.back().requested_end >= range.base_address) {
-			merged_ranges.back().requested_end =
-			    std::max(merged_ranges.back().requested_end, range.requested_end);
+	std::array<VertexBufferRange, ShaderVertexInputInfo::RES_MAX> merged_ranges {};
+	uint32_t                                                      merged_count = 0;
+	for (uint32_t i = 0; i < range_count; i++) {
+		const auto& range = ranges[i];
+		if (merged_count != 0 &&
+		    merged_ranges[merged_count - 1].requested_end >= range.base_address) {
+			merged_ranges[merged_count - 1].requested_end =
+			    std::max(merged_ranges[merged_count - 1].requested_end, range.requested_end);
 			continue;
 		}
-		merged_ranges.push_back(range);
+		merged_ranges[merged_count++] = {range.base_address, range.requested_end};
 	}
 
 	auto& cache = buffer.GetContext().GetBufferCache();
-	for (auto& range: merged_ranges) {
+	for (uint32_t i = 0; i < merged_count; i++) {
+		auto& range = merged_ranges[i];
 		// PPSA20298
 		const auto size =
 		    Libs::LibKernel::Memory::ClampRangeSize(range.base_address, range.RequestedSize());
@@ -780,30 +797,47 @@ static std::vector<BufferBinding> AcquireVertexBuffers(RenderCommandBuffer&     
 	}
 
 	// Rebuild slot bindings, offsetting non-empty slots into their acquired merged range.
-	std::vector<BufferBinding> bindings;
-	bindings.reserve(vs_input_info.buffers_num);
+	PreparedVertexBuffers prepared;
+	prepared.count = static_cast<uint32_t>(vs_input_info.buffers_num);
+	std::shared_ptr<Buffer> null_owner;
+	vk::Buffer              null_buffer = nullptr;
 	for (int i = 0; i < vs_input_info.buffers_num; i++) {
 		const auto& vertex = vs_input_info.buffers[i];
 		const auto  size   = VertexBufferDescriptorSize(vertex);
 		if (size == 0) {
-			auto owner = cache.ObtainNullBuffer();
-			bindings.push_back({owner, owner->Handle(), 0});
+			if (null_owner == nullptr) {
+				null_owner  = cache.ObtainNullBuffer();
+				null_buffer = null_owner->Handle();
+			}
+			prepared.buffers[i] = null_buffer;
+			prepared.offsets[i] = 0;
 			continue;
 		}
 
-		const auto range = std::ranges::find_if(merged_ranges, [&](const VertexBufferRange& value) {
-			return vertex.addr >= value.base_address && vertex.addr < value.acquired_end;
-		});
-		if (range == merged_ranges.end()) {
+		const auto range = std::find_if(merged_ranges.begin(), merged_ranges.begin() + merged_count,
+		                                [&](const VertexBufferRange& value) {
+			                                return vertex.addr >= value.base_address &&
+			                                       vertex.addr < value.acquired_end;
+			                                });
+		if (range == merged_ranges.begin() + merged_count) {
 			EXIT("vertex buffer address is outside the acquired range: addr=0x%016" PRIx64 "\n",
 			     vertex.addr);
 		}
 
-		auto binding = range->binding;
-		binding.offset += vertex.addr - range->base_address;
-		bindings.push_back(std::move(binding));
+		prepared.buffers[i] = range->binding.buffer;
+		prepared.offsets[i] = range->binding.offset + vertex.addr - range->base_address;
 	}
-	return bindings;
+
+	if (null_owner != nullptr) {
+		prepared.owners[prepared.owner_count++] = std::move(null_owner);
+	}
+	for (uint32_t i = 0; i < merged_count; i++) {
+		if (merged_ranges[i].binding.owner != nullptr) {
+			EXIT_IF(prepared.owner_count >= PreparedVertexBuffers::MaxBuffers);
+			prepared.owners[prepared.owner_count++] = std::move(merged_ranges[i].binding.owner);
+		}
+	}
+	return prepared;
 }
 
 static void SetDrawDebugPhase(RenderCommandBuffer& buffer, uint64_t submit_id,
@@ -937,7 +971,7 @@ static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	return true;
 }
 
-static std::vector<BufferBinding> PrepareVertexBuffers(uint64_t                     submit_id,
+static PreparedVertexBuffers PrepareVertexBuffers(uint64_t                     submit_id,
                                                        RenderCommandBuffer&         buffer,
                                                        const DrawCallInfo&          draw,
                                                        const ShaderVertexInputInfo& vs_input_info) {
@@ -950,8 +984,8 @@ static std::vector<BufferBinding> PrepareVertexBuffers(uint64_t                 
 
 static void RebindVertexBuffers(RenderCommandBuffer&         buffer,
                                 const ShaderVertexInputInfo& vs_input_info,
-                                std::vector<BufferBinding>&  bindings) {
-	bindings = AcquireVertexBuffers(buffer, vs_input_info);
+                                PreparedVertexBuffers&     prepared) {
+	prepared = AcquireVertexBuffers(buffer, vs_input_info);
 }
 
 static PreparedIndexBuffer PrepareIndexBuffer(RenderCommandBuffer&         buffer,
@@ -993,14 +1027,18 @@ static void RebindIndexBuffer(RenderCommandBuffer& buffer, PreparedIndexBuffer& 
 }
 
 static void CommitVertexBuffers(RenderCommandBuffer& buffer, vk::CommandBuffer vk_buffer,
-                                std::vector<BufferBinding>& bindings) {
-	for (uint32_t slot = 0; slot < bindings.size(); slot++) {
-		auto& binding = bindings[slot];
-		if (binding.owner != nullptr) {
-			buffer.RetainResourceUntilFence(binding.owner);
+                                PreparedVertexBuffers& prepared) {
+	for (uint32_t i = 0; i < prepared.owner_count; i++) {
+		if (prepared.owners[i] != nullptr) {
+			buffer.RetainResourceUntilFence(std::move(prepared.owners[i]));
 		}
-		EXIT_IF(binding.buffer == nullptr);
-		vk_buffer.bindVertexBuffers(slot, 1, &binding.buffer, &binding.offset);
+	}
+	for (uint32_t i = 0; i < prepared.count; i++) {
+		EXIT_IF(prepared.buffers[i] == nullptr);
+	}
+	if (prepared.count != 0) {
+		vk_buffer.bindVertexBuffers(0, prepared.count, prepared.buffers.data(),
+		                            prepared.offsets.data());
 	}
 }
 
