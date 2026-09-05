@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -20,6 +21,9 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 namespace KytyPS5::IO {
@@ -160,35 +164,93 @@ private:
 		}
 
 		for (const auto& name: names) {
-#ifdef _WIN32
-			library_handle_ = LoadLibraryA(name.c_str());
-#else
-			library_handle_ = dlopen(name.c_str(), RTLD_NOW | RTLD_LOCAL);
-#endif
-			if (library_handle_ == nullptr) {
-				continue;
+			// Try each name as given, and also next to the executable: essential on
+			// Linux/macOS, where dlopen() does not search the executable's directory
+			// (unlike LoadLibraryA with a bare name on Windows).
+			std::vector<std::string> candidates {name};
+			const auto exe_dir = GetExecutableDir();
+			if (!exe_dir.empty() && name.find('/') == std::string::npos &&
+			    name.find('\\') == std::string::npos) {
+				candidates.emplace_back(exe_dir + name);
 			}
-
-			decompress_fn_ = reinterpret_cast<OodleDecompressFunc>(
-#ifdef _WIN32
-			    GetProcAddress(library_handle_, "OodleLZ_Decompress"));
-#else
-			    dlsym(library_handle_, "OodleLZ_Decompress"));
-#endif
-			if (decompress_fn_ != nullptr) {
-				library_loaded_ = true;
-				return;
+			for (const auto& path: candidates) {
+				if (TryLoadLibrary(path)) {
+					return;
+				}
 			}
-
-#ifdef _WIN32
-			FreeLibrary(library_handle_);
-#else
-			dlclose(library_handle_);
-#endif
-			library_handle_ = nullptr;
 		}
 
 		library_loaded_ = false;
+	}
+
+	// Loads `path` and resolves OodleLZ_Decompress; returns false (and cleans
+	// up) if the library is missing or does not export the expected symbol.
+	bool TryLoadLibrary(const std::string& path) {
+#ifdef _WIN32
+		library_handle_ = LoadLibraryA(path.c_str());
+#else
+		library_handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+#endif
+		if (library_handle_ == nullptr) {
+			return false;
+		}
+
+		decompress_fn_ = reinterpret_cast<OodleDecompressFunc>(
+#ifdef _WIN32
+		    GetProcAddress(library_handle_, "OodleLZ_Decompress"));
+#else
+		    dlsym(library_handle_, "OodleLZ_Decompress"));
+#endif
+		if (decompress_fn_ != nullptr) {
+			library_loaded_ = true;
+			return true;
+		}
+
+#ifdef _WIN32
+		FreeLibrary(library_handle_);
+#else
+		dlclose(library_handle_);
+#endif
+		library_handle_ = nullptr;
+		return false;
+	}
+
+	// Directory of the running executable with a trailing separator, or empty on
+	// failure. Used to find user-supplied cores placed next to the emulator.
+	static std::string GetExecutableDir() {
+#ifdef _WIN32
+		std::vector<wchar_t> buf(MAX_PATH);
+		DWORD                size = 0;
+		while ((size = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()))) >=
+		       buf.size()) {
+			buf.resize(buf.size() * 2); // truncated: retry with a larger buffer
+		}
+		if (size == 0) {
+			return {};
+		}
+		const auto exe = std::filesystem::path(buf.data(), buf.data() + size);
+#else
+		std::error_code ec;
+#if defined(__APPLE__)
+		uint32_t size = 0;
+		if (_NSGetExecutablePath(nullptr, &size) != 0 || size == 0) {
+			return {};
+		}
+		std::vector<char> buf(size);
+		if (_NSGetExecutablePath(buf.data(), &size) != 0) {
+			return {};
+		}
+		const auto exe = std::filesystem::path(buf.data());
+#else
+		const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+		if (ec) {
+			return {};
+		}
+#endif
+#endif
+		const auto dir = exe.parent_path().string();
+		return (dir.empty() ? dir
+		                    : dir + (dir.back() == '/' || dir.back() == '\\' ? std::string {} : "/"));
 	}
 
 	// s64 return + enum params before decoder-mem params, threads last (see class comment).

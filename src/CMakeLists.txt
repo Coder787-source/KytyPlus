@@ -454,6 +454,8 @@ target_link_libraries(graphics_audio_semantics_tests Vulkan::Headers common fmt:
 target_include_directories(graphics_audio_semantics_tests PRIVATE ${inc_headers})
 
 add_kyty_full_emulator_test(pm4_ngs2_fuzz_tests ../tests/Pm4Ngs2FuzzTests.cpp)
+add_kyty_full_emulator_test(package_parser_tests ../tests/PackageParserTests.cpp)
+target_link_libraries(package_parser_tests pkg_parser gcn_decoder)
 
 add_kyty_full_emulator_test(soft_ignore_evidence_tests ../tests/SoftIgnoreEvidenceTests.cpp)
 
@@ -547,6 +549,7 @@ if(BUILD_TESTING)
 	add_test(NAME pipeline_cache_data COMMAND $<TARGET_FILE:pipeline_cache_data_tests>)
 	add_test(NAME graphics_audio_semantics COMMAND $<TARGET_FILE:graphics_audio_semantics_tests>)
 	add_test(NAME pm4_ngs2_fuzz COMMAND $<TARGET_FILE:pm4_ngs2_fuzz_tests> --iterations=4096)
+	add_test(NAME package_parser COMMAND $<TARGET_FILE:package_parser_tests>)
 	add_test(NAME soft_ignore_evidence COMMAND $<TARGET_FILE:soft_ignore_evidence_tests>)
 	add_test(NAME resource_mutex COMMAND $<TARGET_FILE:resource_mutex_tests>)
 	add_test(NAME event_queue_lifetime COMMAND $<TARGET_FILE:event_queue_lifetime_tests>)

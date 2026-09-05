@@ -591,12 +591,15 @@ std::vector<int64_t> PfsParser::GetIndirectBlocks(
 
     std::vector<int64_t> all_blocks;
 
-    // Direct blocks (0-11)
+    // Direct blocks (0-11).
+    // Slot 0 is never a valid data block (it holds the superblock), and a
+    // zeroed slot means "unused" in images that do not terminate the direct
+    // block list with -1. Either way: stop at db[i] <= 0, and bounds-check
+    // every pointer against the image's block count.
     for (size_t i = 0; i < MAX_DIRECT_BLOCKS; ++i) {
-        if (inode.db[i] < 0) break;
-        if (static_cast<uint64_t>(inode.db[i]) < num_blocks) {
-            all_blocks.push_back(inode.db[i]);
-        }
+        if (inode.db[i] <= 0) break;
+        if (static_cast<uint64_t>(inode.db[i]) >= num_blocks) break;
+        all_blocks.push_back(inode.db[i]);
     }
 
     // Indirect blocks (ib[0-4])
@@ -608,8 +611,9 @@ std::vector<int64_t> PfsParser::GetIndirectBlocks(
     const size_t ptrs_per_block = block_size / ptr_size;
 
     for (size_t level = 0; level < MAX_INDIRECT_BLOCKS; ++level) {
-        if (inode.ib[level] < 0) break;
-        if (static_cast<uint32_t>(inode.ib[level]) >= num_blocks) break;
+        // Same convention as direct slots: 0 = unused, negative = terminator.
+        if (inode.ib[level] <= 0) break;
+        if (static_cast<uint64_t>(inode.ib[level]) >= num_blocks) break;
 
         auto block_data = ReadBlock(f, inode.ib[level], block_size, num_blocks, ekpfs_key);
         if (block_data.empty()) break;
@@ -627,8 +631,10 @@ std::vector<int64_t> PfsParser::GetIndirectBlocks(
                 ptr = ptr32;
             }
 
-            if (ptr < 0) break;
-            if (static_cast<uint32_t>(ptr) >= num_blocks) break;
+            // Zero means "unused" here as well; stop the chain at ptr <= 0
+            // and bounds-check the rest.
+            if (ptr <= 0) break;
+            if (static_cast<uint64_t>(ptr) >= num_blocks) break;
             all_blocks.push_back(ptr);
         }
     }

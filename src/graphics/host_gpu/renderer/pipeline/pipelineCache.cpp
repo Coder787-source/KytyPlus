@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -88,10 +89,21 @@ void PipelineCache::LoadDriverCache() {
 			if (!initial_data.empty()) {
 				std::memcpy(initial_data.data(), buffer.GetDataConst(), buffer.Size());
 			}
-			if (!PipelineCacheDataIsCompatible(initial_data,
-			                                   m_graphics.GetPhysicalDeviceProperties())) {
+
+			const auto&      props = m_graphics.GetPhysicalDeviceProperties();
+			const bool       same_uuid = PipelineCacheDataUuidMatches(initial_data, props);
+
+			// Validate-and-reuse: the header's vendor/device fields identify the
+			// hardware; the UUID only identifies the driver's cache format. A UUID
+			// change (driver update) does not invalidate per the spec, so reuse the
+			// blob instead of discarding it — the driver ignores entries it cannot
+			// use. Truly incompatible data (other device/header) is dropped.
+			if (!PipelineCacheDataIsCompatible(initial_data, props, /*require_same_uuid=*/false)) {
 				LOGF("PipelineCache: ignoring incompatible driver cache\n");
 				initial_data.clear();
+			} else if (!same_uuid) {
+				LOGF("PipelineCache: cache written by a different driver version - "
+				     "reusing it anyway (entries are validated by the driver)\n");
 			}
 		}
 	}
@@ -144,6 +156,20 @@ void PipelineCache::SaveDriverCache() const {
 		return;
 	}
 	file.Write(data.data(), static_cast<uint32_t>(data.size()));
+
+	// Tag the cache file with the driver UUID it was produced by. Not consumed
+	// by the loader (the blob header carries the UUID already); useful for
+	// debugging cache churn by hand.
+	const auto uuid_path = std::filesystem::path(kDriverCachePath).string() + ".uuid";
+	Common::File uuid_file(std::filesystem::path(uuid_path), Common::File::Mode::Write);
+	if (!uuid_file.IsInvalid()) {
+		char uuid_text[VK_UUID_SIZE * 2 + 1] = {};
+		for (uint32_t i = 0; i < VK_UUID_SIZE; ++i) {
+			std::snprintf(uuid_text + i * 2, 3, "%02hhx",
+			              m_graphics.GetPhysicalDeviceProperties().pipelineCacheUUID[i]);
+		}
+		uuid_file.Write(uuid_text, static_cast<uint32_t>(VK_UUID_SIZE * 2));
+	}
 }
 
 void PipelineCache::MaybeSaveDriverCache() {

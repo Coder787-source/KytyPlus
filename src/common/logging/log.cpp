@@ -5,6 +5,7 @@
 #include "common/emulatorConfig.h"
 #include "common/stringUtils.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fmt/format.h>
@@ -15,6 +16,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/null_sink.h>
 #include <spdlog/sinks/stdout_sinks.h>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -73,6 +75,8 @@ static Direction                       g_direction   = Direction::Console;
 static std::filesystem::path           g_output_file;
 static std::mutex                      g_logger_mutex;
 static std::shared_ptr<spdlog::logger> g_logger;
+static std::string                     g_last_message;
+static uint64_t                        g_repeat_count = 0;
 
 void Flush() {
 	if (g_logger != nullptr) {
@@ -80,10 +84,24 @@ void Flush() {
 	}
 }
 
+// Writes out a pending repeat counter as a notice line.
+// Must be called with g_logger_mutex held.
+static void FlushPendingRepeat() {
+	if (g_repeat_count == 0 || g_logger == nullptr) {
+		return;
+	}
+	const auto notice = fmt::format("[previous message repeated {} times]\n", g_repeat_count);
+	g_logger->log(spdlog::level::info, spdlog::string_view_t(notice.data(), notice.size()));
+	g_repeat_count = 0;
+}
+
 static void SetupLogger() {
 	std::lock_guard lock(g_logger_mutex);
 	Flush();
+	FlushPendingRepeat();
 	g_logger.reset();
+	g_last_message.clear();
+	g_repeat_count = 0;
 
 	switch (g_direction) {
 		case Direction::Silent:
@@ -100,11 +118,6 @@ static void SetupLogger() {
 	}
 }
 
-static std::shared_ptr<spdlog::logger> GetLogger() {
-	std::lock_guard lock(g_logger_mutex);
-	return g_logger;
-}
-
 static void WriteImpl(std::string_view text, fmt::text_style style = {}) {
 	if (text.empty()) {
 		return;
@@ -119,13 +132,33 @@ static void WriteImpl(std::string_view text, fmt::text_style style = {}) {
 		return;
 	}
 
-	if (auto logger = GetLogger()) {
-		if (g_direction == Direction::Console && HasStyle(style)) {
-			const auto styled = fmt::format(style, "{}", text);
-			logger->log(spdlog::level::info, spdlog::string_view_t(styled.data(), styled.size()));
-		} else {
-			logger->log(spdlog::level::info, spdlog::string_view_t(text.data(), text.size()));
-		}
+	std::lock_guard lock(g_logger_mutex);
+
+	auto logger = g_logger;
+	if (logger == nullptr) {
+		return;
+	}
+
+	// Collapse consecutive duplicate messages into a repeat counter instead of
+	// writing them out: a hot-path stub can emit the same lines millions of
+	// times per second, which floods the log file (multi-GB files that hide
+	// the useful lines) and wastes disk I/O. Nothing is lost: the first
+	// occurrence is always written and the counter is flushed as a notice
+	// line as soon as a different message arrives or the logger shuts down.
+	if (g_last_message == text) {
+		++g_repeat_count;
+		return;
+	}
+
+	FlushPendingRepeat();
+
+	g_last_message.assign(text.data(), text.size());
+
+	if (g_direction == Direction::Console && HasStyle(style)) {
+		const auto styled = fmt::format(style, "{}", text);
+		logger->log(spdlog::level::info, spdlog::string_view_t(styled.data(), styled.size()));
+	} else {
+		logger->log(spdlog::level::info, spdlog::string_view_t(text.data(), text.size()));
 	}
 }
 
@@ -164,12 +197,14 @@ KYTY_SUBSYSTEM_INIT(Log) {
 KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Log) {
 	Flush();
 	std::lock_guard lock(g_logger_mutex);
+	FlushPendingRepeat();
 	g_logger.reset();
 }
 
 KYTY_SUBSYSTEM_DESTROY(Log) {
 	Flush();
 	std::lock_guard lock(g_logger_mutex);
+	FlushPendingRepeat();
 	g_logger.reset();
 }
 

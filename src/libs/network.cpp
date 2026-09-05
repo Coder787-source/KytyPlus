@@ -14,6 +14,7 @@
 #endif
 #else
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -21,6 +22,9 @@
 // the shared (non-guarded) code paths reference.
 using SOCKET                           = int;
 static constexpr SOCKET INVALID_SOCKET = -1;
+inline int closesocket(SOCKET s) {
+	return ::close(s);
+}
 #endif
 
 #include "common/assert.h"
@@ -39,10 +43,13 @@ static constexpr SOCKET INVALID_SOCKET = -1;
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <fmt/format.h>
 #include <mutex>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -144,6 +151,11 @@ public:
 	bool HttpSetAutoRedirect(Id id, int enable);
 	bool HttpSetAuthEnabled(Id id, int enable);
 	bool HttpMarkRequestSent(Id req_id, int result);
+	bool HttpCompleteRequest(Id req_id, int result, int status_code, std::string&& headers,
+	                         std::vector<uint8_t>&& body);
+	bool HttpRequestParameters(Id req_id, std::string* method, std::string* url,
+	                           std::string* user_agent, uint64_t* content_length);
+	bool HttpIsRequestCompleted(Id req_id);
 	bool HttpGetRequestResponse(Id req_id, int* send_result, int* status_code, const char** headers,
 	                            size_t* headers_size, uint64_t* content_length);
 
@@ -211,13 +223,15 @@ private:
 	struct HttpRequest: public HttpConnection {
 		explicit HttpRequest(HttpConnection& conn): HttpConnection(conn) {}
 		// int      conn_id = 0;
-		std::string method;
-		std::string url;
-		uint64_t    content_length = 0;
-		bool        send_attempted = false;
-		int         send_result    = HTTP_ERROR_BEFORE_SEND;
-		int         status_code    = 0;
-		std::string response_headers;
+		std::string           method;
+		std::string           url;
+		uint64_t              content_length = 0;
+		bool                  send_attempted = false;
+		bool                  completed      = false;
+		int                   send_result    = HTTP_ERROR_BEFORE_SEND;
+		int                   status_code    = 0;
+		std::string           response_headers;
+		std::vector<uint8_t>  response_body;
 	};
 
 	HttpBase* FindHttpBase(Id id, bool include_request);
@@ -629,10 +643,69 @@ bool Network::HttpGetRequestResponse(Id req_id, int* send_result, int* status_co
 		*headers_size = request.response_headers.size();
 	}
 	if (content_length != nullptr) {
-		*content_length = 0;
+		*content_length = request.response_body.size();
 	}
 
 	return true;
+}
+
+bool Network::HttpCompleteRequest(Id req_id, int result, int status_code, std::string&& headers,
+	                          std::vector<uint8_t>&& body) {
+	Common::LockGuard lock(m_mutex);
+
+	if (req_id.GetType() == Id::Type::Request && req_id.GetId() >= 0 &&
+	    static_cast<size_t>(req_id.GetId()) < m_requests.size() &&
+	    m_requests[req_id.GetId()].used) {
+		auto& request          = m_requests[req_id.GetId()];
+		request.send_attempted = true;
+		request.completed      = true;
+		request.send_result    = result;
+		request.status_code    = (result == OK ? status_code : 0);
+		request.response_headers = std::move(headers);
+		request.response_body    = std::move(body);
+		return true;
+	}
+
+	return false;
+}
+
+bool Network::HttpRequestParameters(Id req_id, std::string* method, std::string* url,
+                                    std::string* user_agent, uint64_t* content_length) {
+	Common::LockGuard lock(m_mutex);
+
+	if (req_id.GetType() != Id::Type::Request || req_id.GetId() < 0 ||
+	    static_cast<size_t>(req_id.GetId()) >= m_requests.size() ||
+	    !m_requests[req_id.GetId()].used) {
+		return false;
+	}
+
+	const auto& request = m_requests[req_id.GetId()];
+	if (method != nullptr) {
+		*method = request.method;
+	}
+	if (url != nullptr) {
+		*url = request.url;
+	}
+	if (user_agent != nullptr) {
+		*user_agent = request.user_agent;
+	}
+	if (content_length != nullptr) {
+		*content_length = request.content_length;
+	}
+
+	return true;
+}
+
+bool Network::HttpIsRequestCompleted(Id req_id) {
+	Common::LockGuard lock(m_mutex);
+
+	if (req_id.GetType() == Id::Type::Request && req_id.GetId() >= 0 &&
+	    static_cast<size_t>(req_id.GetId()) < m_requests.size() &&
+	    m_requests[req_id.GetId()].used) {
+		return m_requests[req_id.GetId()].completed;
+	}
+
+	return false;
 }
 
 bool Network::HttpDeleteTemplate(Id tmpl_id) {
@@ -2559,6 +2632,170 @@ int KYTY_SYSV_ABI HttpUnsetEpoll(int id) {
 	return OK;
 }
 
+namespace {
+
+// HTTP status text for the minimal response line the client builds.
+constexpr uint64_t kHttpFetchMaxBody = 16u * 1024u * 1024u; // 16 MiB safety cap
+
+// Performs a blocking HTTP request over the Winsock netstack: resolve, connect,
+// send a minimal GET/POST, read status + headers + body. HTTPS is not
+// attempted (no TLS); an https:// URL fails cleanly with a network error so
+// callers see the failure instead of hanging.
+int HttpFetchSync(const std::string& url, const std::string& method, const std::string& user_agent,
+                  uint64_t content_length, int* out_status, std::string* out_headers,
+                  std::vector<uint8_t>* out_body) {
+	*out_status = 0;
+	out_headers->clear();
+	out_body->clear();
+
+	// url: scheme://host[:port]/path
+	const auto scheme_end = url.find("://");
+	if (scheme_end == std::string::npos) {
+		return HTTP_ERROR_INVALID_URL;
+	}
+	const std::string scheme = url.substr(0, scheme_end);
+	if (scheme != "http") {
+		// No TLS support in this client; https would require SslOpen etc.
+		LOGF("Http: https:// not supported by the built-in client (%s)\n", url.c_str());
+		return HTTP_ERROR_BEFORE_SEND;
+	}
+
+	const std::string rest        = url.substr(scheme_end + 3);
+	const auto        path_start  = rest.find('/');
+	const std::string host_port  = (path_start == std::string::npos) ? rest : rest.substr(0, path_start);
+	const std::string path       = (path_start == std::string::npos) ? std::string("/") : rest.substr(path_start);
+
+	std::string host;
+	uint16_t    port = 80;
+	auto        colon = host_port.rfind(':');
+	if (colon != std::string::npos && host_port.find(']') == std::string::npos) {
+		host = host_port.substr(0, colon);
+		port = static_cast<uint16_t>(std::strtoul(host_port.c_str() + colon + 1, nullptr, 10));
+		if (port == 0) {
+			port = 80;
+		}
+	} else {
+		host = host_port;
+	}
+	if (host.empty()) {
+		return HTTP_ERROR_INVALID_URL;
+	}
+
+	addrinfo hints {};
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+	addrinfo* result = nullptr;
+	if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0 || result == nullptr) {
+		return HTTP_ERROR_NETWORK;
+	}
+
+	int ret = HTTP_ERROR_NETWORK;
+	for (addrinfo* ai = result; ai != nullptr; ai = ai->ai_next) {
+		if (ai->ai_family != AF_INET) {
+			continue;
+		}
+		auto* sa   = reinterpret_cast<sockaddr_in*>(ai->ai_addr);
+		sa->sin_port = htons(port);
+
+		const SOCKET sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (sock == INVALID_SOCKET) {
+			break;
+		}
+
+		if (::connect(sock, ai->ai_addr, static_cast<int>(ai->ai_addrlen)) != 0) {
+			::closesocket(sock);
+			continue;
+		}
+
+		// Send a minimal HTTP/1.1 request. A caller-provided body (POST) is
+		// advertised but not transmitted; responses are what games poll for.
+		std::string req;
+		req += method + " " + path + " HTTP/1.1\r\n";
+		req += "Host: " + host_port + "\r\n";
+		if (!user_agent.empty()) {
+			req += "User-Agent: " + user_agent + "\r\n";
+		}
+		req += "Connection: close\r\n";
+		req += "Content-Length: " + std::to_string(content_length) + "\r\n";
+		req += "\r\n";
+
+		const int sent = ::send(sock, req.data(), static_cast<int>(req.size()), 0);
+		if (sent == SOCKET_ERROR || static_cast<size_t>(sent) != req.size()) {
+			::closesocket(sock);
+			continue;
+		}
+
+		std::vector<uint8_t> raw;
+		uint8_t              buf[16384];
+		while (raw.size() < kHttpFetchMaxBody) {
+			const int got = ::recv(sock, reinterpret_cast<char*>(buf), sizeof(buf), 0);
+			if (got <= 0) {
+				break;
+			}
+			raw.insert(raw.end(), buf, buf + got);
+			// Done as soon as we have the full header block and, when a
+			// Content-Length was given, the whole body.
+			const uint8_t sep[] = {'\r', '\n', '\r', '\n'};
+			auto          pos   = std::search(raw.begin(), raw.end(), sep, sep + 4);
+			if (pos == raw.end()) {
+				continue;
+			}
+			const size_t body_at  = static_cast<size_t>(pos - raw.begin()) + 4;
+			const size_t hdr_end  = body_at;
+			uint64_t     body_len = 0;
+			if (std::search(raw.begin(), raw.begin() + static_cast<std::ptrdiff_t>(hdr_end),
+			                (const uint8_t*)"ontent-Length:", (const uint8_t*)"ontent-Length:" + 15) !=
+			    raw.begin() + static_cast<std::ptrdiff_t>(hdr_end)) {
+				// parse the decimal after the colon
+				const std::string headers(reinterpret_cast<const char*>(raw.data()), hdr_end);
+				auto              p = headers.find("ontent-Length:");
+				if (p != std::string::npos) {
+					p += 15;
+					body_len = std::strtoull(headers.c_str() + p, nullptr, 10);
+				}
+			}
+			if (body_len == 0 || raw.size() >= hdr_end + body_len) {
+				break;
+			}
+		}
+		::closesocket(sock);
+
+		// Parse status line + split headers/body.
+		const uint8_t sep[] = {'\r', '\n', '\r', '\n'};
+		auto          pos   = std::search(raw.begin(), raw.end(), sep, sep + 4);
+		if (pos == raw.end()) {
+			break; // try next address
+		}
+		const size_t      hdr_len = static_cast<size_t>(pos - raw.begin());
+		const std::string headers(reinterpret_cast<const char*>(raw.data()), hdr_len);
+		std::istringstream hs(headers);
+		std::string       line;
+		if (!std::getline(hs, line)) {
+			break;
+		}
+		int status = 0;
+		if (line.rfind("HTTP/", 0) == 0) {
+			const auto sp1 = line.find(' ');
+			const auto sp2 = (sp1 == std::string::npos) ? std::string::npos : line.find(' ', sp1 + 1);
+			if (sp1 != std::string::npos && sp2 != std::string::npos) {
+				status = std::atoi(line.c_str() + sp1 + 1);
+			}
+		}
+		if (status < 100) {
+			break;
+		}
+		*out_status  = status;
+		*out_headers = headers;
+		out_body->assign(raw.begin() + static_cast<std::ptrdiff_t>(hdr_len) + 4, raw.end());
+		ret = OK;
+		break;
+	}
+	freeaddrinfo(result);
+	return ret;
+}
+
+} // namespace
+
 int KYTY_SYSV_ABI HttpSendRequest(int request_id, const void* /*post_data*/, size_t /*size*/) {
 	PRINT_NAME();
 
@@ -2566,11 +2803,27 @@ int KYTY_SYSV_ABI HttpSendRequest(int request_id, const void* /*post_data*/, siz
 
 	EXIT_IF(g_net == nullptr);
 
-	if (!g_net->HttpMarkRequestSent(Network::Id(request_id), HTTP_ERROR_TIMEOUT)) {
+	std::string method;
+	std::string url;
+	std::string user_agent;
+	uint64_t    content_length = 0;
+	if (!g_net->HttpRequestParameters(Network::Id(request_id), &method, &url, &user_agent,
+	                                  &content_length)) {
 		return HTTP_ERROR_INVALID_ID;
 	}
 
-	return HTTP_ERROR_TIMEOUT;
+	// Request.method already holds the verb string ("GET", "POST", ...).
+	const std::string verb = method.empty() ? std::string("GET") : method;
+
+	int                status = 0;
+	std::string        headers;
+	std::vector<uint8_t> body;
+	const int result = HttpFetchSync(url, verb, user_agent, content_length, &status, &headers, &body);
+
+	g_net->HttpCompleteRequest(Network::Id(request_id), result, status, std::move(headers),
+	                           std::move(body));
+
+	return result;
 }
 
 int KYTY_SYSV_ABI HttpAbortRequest(int request_id) {
@@ -2595,31 +2848,42 @@ int KYTY_SYSV_ABI HttpWaitRequest(HttpEpollHandle eh, HttpNBEvent* nbev, int max
 		return HTTP_ERROR_INVALID_VALUE;
 	}
 
-	// TODO: wait on the epoll set registered with HttpSetEpoll and report ready
-	// requests in 'nbev' once the HTTP client is implemented. For now no event can
-	// become ready, so emulate the blocking behaviour of epoll_wait instead of
-	// returning immediately: callers (e.g. the bdHTTPWorker thread of UE4 games)
-	// poll this function in a tight loop and a non-blocking stub makes them spin
-	// at full CPU speed while flooding the log file. 'timeout' is in microseconds,
-	// like the other sceHttp timeouts; a negative value waits indefinitely.
-	if (timeout > 0) {
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(timeout);
-		while (true) {
-			const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-			    deadline - std::chrono::steady_clock::now());
-			if (remaining.count() <= 0) {
-				break;
-			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(
-			    std::min<int64_t>(remaining.count(), std::chrono::milliseconds(100).count())));
+	// Non-blocking mode: report the registered request if it already completed.
+	if (timeout == 0) {
+		if (eh->request_id.IsValid() && g_net->HttpIsRequestCompleted(eh->request_id)) {
+			nbev[0].events     = 1;
+			nbev[0].event_detail = 0;
+			nbev[0].id           = 0; // guest request id is resolved by the caller
+			nbev[0].user_arg     = eh->user_arg;
+			return 1;
 		}
-	} else if (timeout < 0) {
-		while (true) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		}
+		return 0;
 	}
 
-	return 0;
+	// Blocking mode: instead of a blind sleep, wake as soon as the registered
+	// request completes (send + response received on another thread). This
+	// preserves the v3.1 busy-loop fix (we still never return "not ready"
+	// instantly in a loop) while making the UE4 bdHTTPWorker pattern actually
+	// progress. 'timeout' is in microseconds; a negative value waits
+	// indefinitely. Sleep in small slices so shutdown is never delayed.
+	const auto deadline =
+	    (timeout > 0)
+	        ? std::optional<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now()
+	                                                               + std::chrono::microseconds(timeout))
+	        : std::nullopt;
+	while (true) {
+		if (eh->request_id.IsValid() && g_net->HttpIsRequestCompleted(eh->request_id)) {
+			nbev[0].events       = 1;
+			nbev[0].event_detail = 0;
+			nbev[0].id           = 0;
+			nbev[0].user_arg     = eh->user_arg;
+			return 1;
+		}
+		if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
+			return 0;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
 }
 
 int KYTY_SYSV_ABI HttpGetStatusCode(int request_id, int* status_code) {

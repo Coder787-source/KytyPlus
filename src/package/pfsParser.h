@@ -229,6 +229,13 @@ public:
                                        const PfsInodeS64& s64,
                                        int variant);
 
+    // Decompress a full PFSC stream (header + offset table + compressed blocks).
+    // `stream` is the concatenation of the inode's data blocks (the whole PFSC
+    // stream). Returns the decompressed logical data, or empty on failure.
+    // Public so tests and volume tooling can decode PFSC streams directly.
+    static std::vector<uint8_t> DecompressPfscStream(
+        const std::vector<uint8_t>& stream);
+
 private:
     // Read an inode at a given block number (handles D32/S32/S64 variants)
     static bool ReadInode(std::ifstream& f, uint32_t block_number,
@@ -259,12 +266,6 @@ private:
     // Decompress a PFSC block (requires zlib)
     static std::vector<uint8_t> DecompressPfscBlock(
         const std::vector<uint8_t>& raw_block);
-
-    // Decompress a full PFSC stream (header + offset table + compressed blocks).
-    // `stream` is the concatenation of the inode's data blocks (the whole PFSC
-    // stream). Returns the decompressed logical data, or empty on failure.
-    static std::vector<uint8_t> DecompressPfscStream(
-        const std::vector<uint8_t>& stream);
 
     // Follow indirect block chain and collect all block numbers
     static std::vector<int64_t> GetIndirectBlocks(
