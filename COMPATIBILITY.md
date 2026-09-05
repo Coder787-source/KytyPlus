@@ -42,7 +42,7 @@ directly onto a row here.
 4. Rows are sorted alphabetically by title automatically. Keep one row per title; the bot matches
    existing rows by Title ID first, falling back to title text.
 
-Don't have games to test yourself? Filing accurate reports for titles you already own is the
+Filing accurate reports for titles you already own is the
 single most useful contribution you can make here — see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for details.
 
