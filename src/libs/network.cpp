@@ -14,6 +14,7 @@
 #endif
 #else
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -22,6 +23,7 @@
 // the shared (non-guarded) code paths reference.
 using SOCKET                           = int;
 static constexpr SOCKET INVALID_SOCKET = -1;
+static constexpr SOCKET SOCKET_ERROR   = -1;
 inline int closesocket(SOCKET s) {
 	return ::close(s);
 }
