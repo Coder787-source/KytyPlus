@@ -50,7 +50,7 @@ single most useful contribution you can make here — see
 
 | Title | Title ID | Status | Last tested (version) | Reports |
 |---|---|---|---|---|
-| Crash Bandicoot 4: It's About Time | PPSA02433 | Boots / logos only | KytyPlus ([@Crispy81](https://github.com/KytyPS5/KytyPS5/issues/88) test) | [#88](https://github.com/KytyPS5/KytyPS5/issues/88) |
+| Crash Bandicoot 4: It's About Time | PPSA02433 | Boots / logos only | v3.3 ([@Crispy81](https://github.com/KytyPS5/KytyPS5/issues/88) tester) | [#88](https://github.com/KytyPS5/KytyPS5/issues/88) |
 | Dead Cells | PPSA-15554 | Reaches menu | v1.8 | [#3](https://github.com/Coder787-source/KytyPlus/issues/3) |
 
 <!--
