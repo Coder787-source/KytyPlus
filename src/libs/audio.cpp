@@ -369,19 +369,24 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking) {
 	}
 
 	if (blocking) {
-		constexpr uint64_t target_latency_us = 40000;
+		// More aggressive buffer management to prevent audio issues
+		// during heavy GPU load (common in gameplay vs cutscene)
+		constexpr uint64_t target_latency_us = 30000; // Slightly lower latency
 		const auto buffer_us = port->freq != 0 ? (1000000ULL * port->samples_num) / port->freq : 0;
 		const auto buffers =
 		    buffer_us != 0 ? static_cast<uint32_t>((target_latency_us + buffer_us - 1) / buffer_us)
 		                   : 2u;
-		const auto min_queued_size = queue_size * std::clamp(buffers, 2u, 16u);
+		const auto min_queued_size = queue_size * std::clamp(buffers, 2u, 8u); // Smaller max
 		const auto wait_start      = LibKernel::KernelGetProcessTime();
+		// Timeout faster to avoid blocking the game thread
+		const uint64_t timeout_us = 100000; // 100ms max wait
 		while (SDL_GetQueuedAudioSize(port->audio_device) > min_queued_size) {
-			if (LibKernel::KernelGetProcessTime() - wait_start > 200000) {
+			if (LibKernel::KernelGetProcessTime() - wait_start > timeout_us) {
+				// Force clear if we're waiting too long - prevents audio stutter
 				SDL_ClearQueuedAudio(port->audio_device);
 				break;
 			}
-			Common::Thread::SleepMicro(1000);
+			Common::Thread::SleepMicro(500); // Sleep less to check more frequently
 		}
 	}
 

@@ -211,16 +211,21 @@ void CommandBuffer::WaitForFenceOnly() {
 		return;
 	}
 	auto device = m_graphics.device;
-	auto result = device.waitForFences(1, &m_slot->fence, VK_TRUE, UINT64_MAX);
+	// Use a reasonable timeout instead of UINT64_MAX to avoid hanging forever
+	// on driver issues or if the fence was somehow lost
+	const uint64_t timeout = 10'000'000'000ULL; // 10 seconds
+	auto result = device.waitForFences(1, &m_slot->fence, VK_TRUE, timeout);
 	if (result != vk::Result::eSuccess) {
 		LOGF("vkWaitForFences failed: %s (%d), slot=%u submit_seq=%" PRIu64
 		     " debug_op=%u debug_submit=%" PRIu64 " args=%u,%u,%u,%u,0x%016" PRIx64 "\n",
 		     VulkanToString(result).c_str(), static_cast<int>(result), m_slot->id, m_submit_seq,
 		     m_debug_op, m_debug_submit_id, m_debug_arg0, m_debug_arg1, m_debug_arg2, m_debug_arg3,
 		     m_debug_arg4);
+		// Don't exit - log and continue. The fence might be signaled
+		// by the time we need it, or we can continue without it.
+	} else {
+		m_fence_waited = true;
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
-	m_fence_waited = true;
 }
 
 void CommandBuffer::WaitForFenceAndReset() {

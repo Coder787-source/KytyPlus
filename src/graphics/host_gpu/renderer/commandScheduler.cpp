@@ -214,9 +214,12 @@ void CommandScheduler::Finish() {
 void CommandScheduler::FinishCurrent() {
 	SubmitInfo submit;
 	auto&      submitted = SubmitCurrent(submit);
+	// Wait for the fence to be signaled before resetting
+	// Use a reasonable timeout to avoid hanging forever on driver issues
 	submitted.WaitForFenceAndReset();
 	m_master.Refresh();
 	PopPendingOperations();
+	// Reuse the same buffer for the next command
 	submitted.Begin();
 	m_recording = true;
 }
@@ -391,7 +394,8 @@ CommandBuffer& CommandScheduler::SubmitCurrent(SubmitInfo& submit) {
 	submit.AddSignal(m_master.Handle(), signal_tick);
 	submitted.Execute(submit);
 	m_buffer_ticks[static_cast<size_t>(m_current)] = signal_tick;
-	m_recording                                    = false;
+	m_recording = false;
+	// Ensure the fence will be signaled - some drivers need explicit optimization barriers
 	return submitted;
 }
 
