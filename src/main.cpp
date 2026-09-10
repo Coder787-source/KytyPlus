@@ -1,4 +1,4 @@
-#include "common/common.h"
+﻿#include "common/common.h"
 #include "common/mmioBus.h"
 #include "common/ps5_nvme_lle.h"
 #include "common/commonSubsystem.h"
@@ -12,6 +12,7 @@
 #include "emulator.h"
 #include "package/pkgParser.h"
 #include "kytyGitVersion.h"
+#include "platformDispatch.h"
 
 #include <charconv>
 #include <cstdio>
@@ -403,9 +404,9 @@ int main(int argc, char* argv[]) {
 			return 1;
 		}
 		if (pr.is_encrypted) {
-			::printf("PKG '%s' is encrypted. Decryption requires user-supplied keys.bin\n",
+			::printf("PKG '%s' is encrypted. Encrypted packages are not supported.\n",
 			         pr.content_id.c_str());
-			::printf("(The emulator never provides or distributes keys.)\n");
+			::printf("(KytyPlus only parses decrypted/plaintext packages.)\n");
 			slist.DestroyAll(false);
 			return 1;
 		}
@@ -429,6 +430,35 @@ int main(int argc, char* argv[]) {
 		return 0;
 	}
 
+
+	// KytyPlus: platform dispatch gate. A PS4 (Orbis) eboot is delegated to
+	// shadPS4; only PS5 (Prospero) titles reach the native Run() path. This
+	// must happen BEFORE Run() so no PS5 Vulkan/memory subsystems are
+	// initialized for a PS4 title (and vice versa).
+	{
+		using namespace Emulator::PlatformDispatch;
+
+		const auto eboot = ResolveEbootHostPath(options.app0_dir, options.elf);
+		const auto platform = DetectPlatform(eboot);
+
+		if (platform == GuestPlatform::Ps4) {
+			// Subprocess delegation is the only backend (see platformDispatch.h).
+			const auto result = DispatchToShadps4(eboot, BackendMode::Subprocess, {});
+			if (result.delegated) {
+				::printf("PS4 title delegated to shadPS4 (exit=%d)\n", result.exit_code);
+				slist.DestroyAll(false);
+				return result.exit_code;
+			}
+			::printf("PS4 dispatch failed: %s\n", result.message.c_str());
+			slist.DestroyAll(false);
+			return 1;
+		}
+
+		if (platform == GuestPlatform::Unknown) {
+			::printf("Warning: could not determine guest platform for %s; "
+			         "assuming PS5.\n", eboot.string().c_str());
+		}
+	}
 
 	Run(options);
 

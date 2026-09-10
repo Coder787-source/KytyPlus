@@ -12,3 +12,6 @@ add_executable(hardware_accuracy_test hardware_accuracy_test.cpp)
 # Link against common library if applicable, or just compile as standalone for the test
 # Since we used headers, we just need the source files if we have .cpp implementations
 # For this specific test, we only used headers, so it's a standalone translation unit.
+
+# Regression stress file added for the PFS/XTS path.
+add_executable(PackageParserRegressionTests_Brutal PackageParserRegressionTests_Brutal.cpp)

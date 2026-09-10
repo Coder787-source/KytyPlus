@@ -1,0 +1,54 @@
+From: KytyPlus
+Subject: Honor SHADPS4_USER_DIR as the highest-priority user-dir override
+
+KytyPlus launches shadPS4 with its working directory set to the shared
+parent that already contains a unified `user/` tree, so the portable-dir
+detection in path_util.cpp normally adopts it. However, if shadPS4 is ever
+run directly from a different cwd (or the portable dir is absent), it falls
+back to the platform dir (%APPDATA%/shadPS4 on Windows,
+~/.local/share/shadPS4 on Linux), silently splitting saves/settings/caches
+and losing the user's sys_modules.
+
+This patch makes shadPS4 honor the SHADPS4_USER_DIR environment variable
+as the highest-priority override, so the unified tree is used regardless of
+cwd. KytyPlus sets this variable before launching the subprocess.
+
+Apply with:  git apply patches/shadps4-user-dir.patch
+(or:          patch -p1 < patches/shadps4-user-dir.patch)
+
+--- a/src/common/path_util.cpp
++++ b/src/common/path_util.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <cstdlib>
+ #include <filesystem>
+ #include <fstream>
+ #include <unordered_map>
+@@ -96,7 +97,17 @@ static auto UserPaths = [] {
+ 	// Try the portable user directory first.
+ 	auto user_dir = std::filesystem::current_path() / PORTABLE_DIR;
+-	if (!std::filesystem::exists(user_dir)) {
++	// KytyPlus: honor an explicit override before falling back to the
++	// platform dir. This lets an embedding host pin the unified user tree
++	// even when the portable dir is absent or the cwd differs.
++	if (const char* override_dir = std::getenv("SHADPS4_USER_DIR");
++	    override_dir != nullptr && override_dir[0] != '\0') {
++		user_dir = std::filesystem::path(override_dir);
++	} else if (!std::filesystem::exists(user_dir)) {
+ 		// If it doesn't exist, use the standard path for the platform instead.
+ 		// NOTE: On Windows we currently just create the portable directory instead.
+ #ifdef __APPLE__
+ 		user_dir =
+ 			std::filesystem::path(getenv("HOME")) / "Library" / "Application Support" / "shadPS4";
+@@ -120,6 +131,7 @@ static auto UserPaths = [] {
+ #endif
+ 	}
+ 
++	// KytyPlus: ensure the override dir exists so create_path() below succeeds.
++	std::filesystem::create_directories(user_dir);
++
+ 	std::unordered_map<PathType, fs::path> paths;
+ 
+ 	const auto create_path = [&](PathType shad_path, const fs::path& new_path) {

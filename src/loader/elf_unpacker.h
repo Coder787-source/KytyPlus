@@ -6,8 +6,6 @@
 #include <string>
 #include <vector>
 
-#include "binary_decryption.h"
-
 namespace Emulator {
 
 /** Scaffolding-only allocator; not Libs::LibKernel::Memory. */

@@ -112,6 +112,32 @@ jobs:
         run: |
           cmake --install _Build/windows --prefix _Build/windows/install
 
+      - name: Bundle shadPS4 (Windows, source build w/ patch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Build from source with the KytyPlus user-dir patch so the bundled
+          # binary honors SHADPS4_USER_DIR. Fall back to the prebuilt download
+          # if the source build fails (e.g. upstream drift) so the pipeline
+          # never breaks.
+          if bash scripts/build_shadps4.sh windows _Build/windows/install; then
+            echo "shadPS4 built from source with patch"
+          else
+            echo "::warning::shadPS4 source build failed; falling back to prebuilt"
+            latest="$(curl -s https://api.github.com/repos/shadps4-emu/shadPS4/releases/latest \
+              | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+            ver="${latest#v.}"
+            asset="shadps4-win64-sdl-${ver}.zip"
+            curl --fail --location --retry 3 \
+              --output "$RUNNER_TEMP/$asset" \
+              "https://github.com/shadps4-emu/shadPS4/releases/download/${latest}/${asset}"
+            unzip -o "$RUNNER_TEMP/$asset" -d "$RUNNER_TEMP/shadps4-win"
+            cp "$RUNNER_TEMP/shadps4-win/shadPS4.exe" _Build/windows/install/shadPS4.exe
+          fi
+          # Ensure the executable bit is set ahead of time so the dispatcher
+          # can launch it without a chmod at runtime.
+          chmod +x _Build/windows/install/shadPS4.exe
+          ls -la _Build/windows/install/shadPS4.exe
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -215,6 +241,35 @@ jobs:
           install -m 644 "$package/LICENSE" _Build/macos/install/LICENSE.MoltenVK
           codesign --force --sign - --timestamp=none _Build/macos/install/libMoltenVK.dylib
 
+      - name: Bundle latest shadPS4 (macOS, prebuilt)
+        # shadPS4 sets CMAKE_OSX_DEPLOYMENT_TARGET 26.0, so it cannot be
+        # built on the macos-15 runner. Keep the prebuilt download here;
+        # the env-var pin in the dispatcher still applies, and the source
+        # build path (scripts/build_shadps4.sh) is available for a macOS
+        # 26+ runner.
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest="$(curl -s https://api.github.com/repos/shadps4-emu/shadPS4/releases/latest \
+            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+          ver="${latest#v.}"
+          asset="shadps4-macos-sdl-${ver}.zip"
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/$asset" \
+            "https://github.com/shadps4-emu/shadPS4/releases/download/${latest}/${asset}"
+          unzip -o "$RUNNER_TEMP/$asset" -d "$RUNNER_TEMP/shadps4-macos"
+          install -m 755 "$RUNNER_TEMP/shadps4-macos/shadps4" \
+            _Build/macos/install/shadps4
+          # Grant execute permission ahead of time; codesign below preserves it.
+          chmod +x _Build/macos/install/shadps4
+          install -m 755 "$RUNNER_TEMP/shadps4-macos/libvulkan.dylib" \
+            _Build/macos/install/libvulkan.dylib
+          install -m 755 "$RUNNER_TEMP/shadps4-macos/libvulkan_kosmickrisp.dylib" \
+            _Build/macos/install/libvulkan_kosmickrisp.dylib
+          install -m 644 "$RUNNER_TEMP/shadps4-macos/kosmickrisp_mesa_icd.json" \
+            _Build/macos/install/kosmickrisp_mesa_icd.json
+          codesign --force --sign - --timestamp=none _Build/macos/install/shadps4
+          ls -la _Build/macos/install/shadps4
       - name: Verify artifacts
         shell: bash
         run: |
@@ -268,7 +323,18 @@ jobs:
             libxss-dev \
             lld \
             ninja-build \
-            wayland-protocols
+            wayland-protocols \
+            libedit-dev \
+            libevdev-dev \
+            libjack-dev \
+            libopenal-dev \
+            libpng-dev \
+            libsdl2-dev \
+            libsndio-dev \
+            libssl-dev \
+            libvulkan-dev \
+            vulkan-validationlayers \
+            zlib1g-dev
 
       - name: Install Qt 6.10.3
         uses: jurplel/install-qt-action@v4
@@ -353,6 +419,33 @@ jobs:
           )
           _Build/linux/install/kyty_emulator --help > /dev/null
 
+      - name: Bundle shadPS4 (Linux, source build w/ patch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Build from source with the KytyPlus user-dir patch so the bundled
+          # binary honors SHADPS4_USER_DIR. Fall back to the prebuilt download
+          # if the source build fails (e.g. upstream drift) so the pipeline
+          # never breaks.
+          if bash scripts/build_shadps4.sh linux _Build/linux/install; then
+            echo "shadPS4 built from source with patch"
+          else
+            echo "::warning::shadPS4 source build failed; falling back to prebuilt"
+            latest="$(curl -s https://api.github.com/repos/shadps4-emu/shadPS4/releases/latest \
+              | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+            ver="${latest#v.}"
+            asset="shadps4-linux-sdl-${ver}.zip"
+            curl --fail --location --retry 3 \
+              --output "$RUNNER_TEMP/$asset" \
+              "https://github.com/shadps4-emu/shadPS4/releases/download/${latest}/${asset}"
+            unzip -o "$RUNNER_TEMP/$asset" -d "$RUNNER_TEMP/shadps4-linux"
+            install -m 755 "$RUNNER_TEMP/shadps4-linux/Shadps4-sdl.AppImage" \
+              _Build/linux/install/shadps4
+          fi
+          # Explicitly grant execute permission ahead of time so the AppImage
+          # is launchable by the dispatcher without a runtime chmod.
+          chmod +x _Build/linux/install/shadps4
+          ls -la _Build/linux/install/shadps4
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -13,7 +13,6 @@
 #include "kernel/cpu_core.h"
 #include "graphics/guest_gpu/gpu_translator.h"
 #include "kernel/interrupt_controller.h"
-#include "loader/binary_decryption.h"
 #include "loader/elf_unpacker.h"
 #include "kernel/syscall_dispatcher.h"
 
@@ -28,7 +27,7 @@ public:
 	EmulatorController() = default;
 	~EmulatorController() { Stop(); }
 
-	bool Start(const std::string& gamePath, const std::vector<uint8_t>& userKeys) {
+	bool Start(const std::string& gamePath) {
 		std::cout << "[Controller] Booting game: " << gamePath << std::endl;
 
 		mem_manager_ = std::make_unique<StubMemoryManager>();
@@ -36,12 +35,8 @@ public:
 		gpu_translator_ = std::make_unique<GPUTranslator>();
 		syscall_dispatcher_ = std::make_unique<SyscallDispatcher>();
 
-		BinaryDecryption decryptor;
-		const std::vector<uint8_t> ciphertext;
-		const std::vector<uint8_t> plaintext = decryptor.Decrypt(ciphertext, userKeys);
-
 		ElfUnpacker unpacker(mem_manager_.get());
-		if (!unpacker.MapBinaryToMemory(plaintext)) {
+		if (!unpacker.MapBinaryToMemory({})) {
 			std::cerr << "[Controller] Failed to map binary to memory." << std::endl;
 			return false;
 		}

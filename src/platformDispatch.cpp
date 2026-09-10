@@ -204,31 +204,6 @@ DispatchResult DispatchToShadps4(const std::filesystem::path& eboot_host_path,
 		return result;
 	}
 
-	if (mode == BackendMode::InProcess) {
-#ifdef KYTY_ENABLE_INPROCESS_SHADPS4
-		// Linked-library path. shadPS4 must be built as a namespace-isolated
-		// lib exporting this C ABI (see shadps4Embedder.h). Symbol clashes
-		// (LOG_INFO / Common::Singleton / ASSERT) are resolved by the
-		// isolation build, not here.
-		auto user_dir = Emulator::Shadps4Integration::ResolveSharedUserDir();
-		const int rc_init = ::shadps4_runtime_init();
-		if (rc_init != 0) {
-			result.message = "PS4 dispatch: shadps4_runtime_init failed (" +
-			                 std::to_string(rc_init) + ")";
-			return result;
-		}
-		result.delegated = true;
-		result.exit_code =
-		    ::shadps4_runtime_run(eboot_host_path.string().c_str(), user_dir.string().c_str());
-		::shadps4_runtime_shutdown();
-		return result;
-#else
-		result.message = "PS4 dispatch: in-process backend not enabled (build with "
-		                 "KYTY_ENABLE_INPROCESS_SHADPS4 and link the shadPS4 isolation lib)";
-		return result;
-#endif
-	}
-
 	// --- Subprocess mode (embed-aware on Windows) ---
 	//
 	// Kyty's own host window is created deep inside Run(), which a PS4 title
@@ -288,8 +263,18 @@ DispatchResult DispatchToShadps4(const std::filesystem::path& eboot_host_path,
 	}
 
 	std::string cwd_w = shad_parent.string();
+
+	// Pin the shared user dir via env so shadPS4 uses the unified tree even
+	// if its portable-dir detection (current_path()/user) would otherwise
+	// miss it. The child inherits this; we restore the parent env after the
+	// child exits. The dispatcher is single-threaded here, so this is safe.
+	const std::string user_env =
+	    Emulator::Shadps4Integration::Shadps4UserDirEnvName() + "=" + shared_user.string();
+	_putenv(user_env.c_str());
+
 	if (!CreateProcessA(nullptr, cmd_buf.data(), nullptr, nullptr, FALSE, 0, nullptr,
 	                     cwd_w.empty() ? nullptr : cwd_w.c_str(), &si, &pi)) {
+		_putenv((Emulator::Shadps4Integration::Shadps4UserDirEnvName() + "=").c_str());
 		result.message = "PS4 dispatch: CreateProcess failed for shadPS4 (err=" +
 		                 std::to_string(GetLastError()) + ")";
 		if (host) {
@@ -355,6 +340,9 @@ DispatchResult DispatchToShadps4(const std::filesystem::path& eboot_host_path,
 		if (!shad_parent.empty()) {
 			(void)chdir(shad_parent.string().c_str());
 		}
+		// Pin the shared user dir via env (see Windows path above).
+		(void)setenv(Emulator::Shadps4Integration::Shadps4UserDirEnvName().c_str(),
+		             shared_user.string().c_str(), 1);
 		execl(bin.c_str(), bin.c_str(), eboot_str.c_str(), static_cast<char*>(nullptr));
 		_exit(127);
 	}

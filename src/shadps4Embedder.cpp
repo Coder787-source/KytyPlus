@@ -52,7 +52,8 @@ std::filesystem::path ResolveSharedUserDir() {
 	// Pre-create the subdirs shadPS4 expects so its first run does not
 	// scatter them unpredictably. Names mirror shadPS4's path_util.cpp.
 	const char* subdirs[] = {"savedata", "games",    "shader",  "cache",
-	                         "logs",     "screenshots", "trophy",  "config"};
+	                         "logs",     "screenshots", "trophy",  "config",
+	                         "sys_modules"};
 	for (const auto* s : subdirs) {
 		std::filesystem::create_directories(user_dir / s, ec);
 	}

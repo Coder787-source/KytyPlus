@@ -236,7 +236,7 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
     }
 
     if (result.is_encrypted) {
-        LOGF("PKG: cannot extract - body is encrypted, requires user-supplied keys.bin");
+        LOGF("PKG: cannot extract - body is encrypted (decryption not supported)");
         return 0;
     }
 
@@ -306,7 +306,7 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
              pfs_extracted, pfs_out_dir.c_str());
         extracted = pfs_extracted;
     } else if (pfs_result.ok && pfs_result.is_encrypted) {
-        LOGF("PKG: PFS body is encrypted (requires EKPFS keys) - extracted raw body.pfs only");
+        LOGF("PKG: PFS body is encrypted (decryption not supported) - extracted raw body.pfs only");
         extracted = 1;
     } else if (pfs_result.ok && pfs_result.is_compressed) {
         LOGF("PKG: PFS body is PFSC-compressed - extracted raw body.pfs only");

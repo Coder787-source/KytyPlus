@@ -28,9 +28,6 @@
 //     save data, settings, and shader caches are unified between a Kyty
 //     install and the embedded shadPS4, instead of each maintaining its
 //     own isolated user dir.
-//   - InProcessLinkage: the build-system seam (macros + forward decls)
-//     for the eventual in-process lib path, so the dispatch code can
-//     compile in either mode from the same source.
 
 #include "common/common.h"
 
@@ -87,20 +84,5 @@ namespace Emulator::Shadps4Integration {
 	// The env var shadPS4 reads (via its portable-dir logic) to override its
 	// user directory. Set this in the child's environment before launch.
 	std::string Shadps4UserDirEnvName();
-
-	// ---- In-process linkage seam (forward declarations only) -------------
-	// Implemented when shadPS4 is built as a namespace-isolated library and
-	// KYTY_ENABLE_INPROCESS_SHADPS4 is defined at configure time. Keeping the
-	// declarations here means DispatchToShadps4() compiles in either mode.
-#ifdef KYTY_ENABLE_INPROCESS_SHADPS4
-	extern "C" {
-	// shadps4_runtime_init / run / shutdown — the C ABI the in-process lib
-	// must expose. Symbols are namespace-mangled away by shadPS4's isolation
-	// build so they do not clash with Kyty's LOG_INFO / Singleton / ASSERT.
-	int shadps4_runtime_init(void);
-	int shadps4_runtime_run(const char* eboot_path, const char* user_dir);
-	void shadps4_runtime_shutdown(void);
-	}
-#endif
 
 } // namespace Emulator::Shadps4Integration

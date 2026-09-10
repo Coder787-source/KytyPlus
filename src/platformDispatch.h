@@ -16,20 +16,22 @@
 // routing point: detect the guest platform from the eboot and dispatch
 // to the appropriate backend.
 //
-// Two backend modes are supported:
+// Backend mode:
 //   Mode::Subprocess  - launch an external shadPS4 binary on the eboot.
 //                       Works immediately, requires a built shadps4.exe
 //                       discoverable via the SHADPS4_BIN env var or the
 //                       --shadps4-bin option, or a sibling install dir.
-//   Mode::InProcess   - call the shadPS4 runtime as a linked library via
-//                       the shadps4_runtime_* C ABI (see Shadps4Runtime.h).
-//                       Requires building shadPS4 as a lib and resolving
-//                       its symbol clashes (LOG_INFO/Singleton/ASSERT)
-//                       via a namespace-isolation build; not the default.
 //
-// Only one backend is ever active per process. The dispatch point is
-// reached before Kyty initializes its own Vulkan/memory subsystems, so
-// no PS5 resources are wasted on a PS4 title (and vice versa).
+// Only subprocess delegation is supported. shadPS4 and Kyty are mutually
+// incompatible in a single address space (C++23 vs C++20, SDL3 vs SDL2,
+// and colliding LOG_INFO / Common::Singleton / ASSERT symbols), so an
+// in-process linked-library backend is intentionally not provided. The
+// unified-window experience is instead achieved by reparenting the shadPS4
+// subprocess window into Kyty's host window (see shadps4Embedder.h).
+//
+// The dispatch point is reached before Kyty initializes its own
+// Vulkan/memory subsystems, so no PS5 resources are wasted on a PS4 title
+// (and vice versa).
 
 #include "common/common.h"
 
@@ -48,7 +50,6 @@ namespace Emulator::PlatformDispatch {
 
 	enum class BackendMode : uint8_t {
 		Subprocess = 0,
-		InProcess  = 1,
 	};
 
 	struct DispatchResult {
@@ -81,10 +82,8 @@ namespace Emulator::PlatformDispatch {
 	std::filesystem::path FindShadps4Binary(const std::string& bin_override);
 
 	// Delegate a PS4 title to shadPS4. In Subprocess mode this execs the
-	// resolved binary and blocks until it exits. In InProcess mode it
-	// calls the linked shadps4_runtime_run entry (if available). On any
-	// failure, delegated is false and message describes the problem so
-	// the caller can fall back / report cleanly.
+	// resolved binary and blocks until it exits. On any failure, delegated is false and
+	// message describes the problem so the caller can fall back / report cleanly.
 	DispatchResult DispatchToShadps4(const std::filesystem::path& eboot_host_path,
 	                                 BackendMode                   mode,
 	                                 const std::filesystem::path&  shadps4_bin);

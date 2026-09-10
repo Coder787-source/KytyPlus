@@ -1,7 +1,6 @@
 #ifndef KYTY_FIRMWARE_PFS_PARSER_H_
 #define KYTY_FIRMWARE_PFS_PARSER_H_
 
-#include <array>
 #include <cstdint>
 #include <fstream>
 #include <string>
@@ -16,10 +15,10 @@ namespace Libs::Firmware {
 // Based on the publicly documented PFS format (psdevwiki, MkPFS project).
 //
 // The PFS superblock (header) is UNENCRYPTED and can be parsed without keys.
-// File data blocks may be encrypted (AES-XTS) requiring user-supplied EKPFS keys,
-// or plaintext (debug/decrypted images). This parser handles both cases:
+// File data blocks may be encrypted (AES-XTS) or plaintext (debug/decrypted
+// images). This parser handles:
 //   - Plaintext: full enumeration + extraction
-//   - Encrypted: superblock parse + enumeration (data needs EKPFS keys)
+//   - Encrypted: superblock parse + enumeration only (data cannot be read)
 //   - PFSC compressed: full decompression via zlib
 //
 // Format constants verified against MkPFS (github.com/PSBrew/MkPFS) consts.py.
@@ -153,12 +152,6 @@ static constexpr uint32_t PFSC_OFFSET_ENTRY_SIZE  = 0x8;
 static constexpr uint32_t PFSC_BLOCK_OFFSETS_OFFSET = 0x400;
 static constexpr uint32_t PFSC_INITIAL_DATA_OFFSET  = 0x10000;
 
-// AES-XTS sector size (for encrypted PFS)
-static constexpr uint32_t PFS_XTS_SECTOR_SIZE      = 0x1000; // 4KB
-
-// EKPFS key size (32 bytes = 16-byte data key + 16-byte tweak key)
-static constexpr size_t   EKPFS_KEY_SIZE           = 32;
-
 // Extracted file from PFS
 struct PfsFile {
     std::string name;        // file name
@@ -184,28 +177,20 @@ struct PfsParseResult {
     std::vector<PfsFile> files; // extracted file entries
 };
 
-// EKPFS key material for encrypted PFS decryption
-struct PfsEkpfsKey {
-    std::array<uint8_t, 16> tweak_key;  // AES-XTS tweak key
-    std::array<uint8_t, 16> data_key;   // AES-XTS data key
-};
-
 class PfsParser {
 public:
     // Parse a PFS image file.
     // Reads the superblock, validates magic, detects encryption/compression,
     // and enumerates the root directory to list files.
     // For encrypted images, the superblock + directory structure is parsed.
-    // File data extraction requires EKPFS keys (use ExtractWithKeys).
+    // File data extraction is not supported for encrypted images.
     static PfsParseResult Parse(const std::string& pfs_path);
 
     // Extract all files from a decrypted (plaintext) PFS image to output_dir.
-    // Returns the number of files extracted. Returns 0 for encrypted images
-    // without keys.
+    // Returns the number of files extracted. Returns 0 for encrypted images.
     static uint32_t ExtractAll(const PfsParseResult& result,
                                  const std::string& pfs_path,
-                                 const std::string& output_dir,
-                                 const PfsEkpfsKey* ekpfs_key = nullptr);
+                                 const std::string& output_dir);
 
     // Check if data starts with PFS magic
     static bool HasPfsMagic(const std::vector<uint8_t>& data);
@@ -247,21 +232,19 @@ private:
     // Handles both direct and indirect blocks
     static std::vector<std::pair<std::string, uint32_t>> ReadDirectory(
         std::ifstream& f, const InodeInfo& dir_inode,
-        uint32_t block_size, uint32_t num_blocks, uint32_t mode,
-        const PfsEkpfsKey* ekpfs_key);
+        uint32_t block_size, uint32_t num_blocks, uint32_t mode);
 
     // Read file data from inode's direct + indirect blocks
     // Handles both direct and indirect block pointers for files > 12 blocks.
     // PFSC-compressed inodes are decoded as a full stream (see DecompressPfscStream).
     static std::vector<uint8_t> ReadFileData(
         std::ifstream& f, const InodeInfo& inode,
-        uint32_t block_size, uint32_t num_blocks, uint32_t mode,
-        const PfsEkpfsKey* ekpfs_key);
+        uint32_t block_size, uint32_t num_blocks, uint32_t mode);
 
-    // Read a data block, decrypting if EKPFS key is provided
+    // Read a data block
     static std::vector<uint8_t> ReadBlock(
         std::ifstream& f, int64_t block_num, uint32_t block_size,
-        uint32_t num_blocks, const PfsEkpfsKey* ekpfs_key);
+        uint32_t num_blocks);
 
     // Decompress a PFSC block (requires zlib)
     static std::vector<uint8_t> DecompressPfscBlock(
@@ -270,13 +253,7 @@ private:
     // Follow indirect block chain and collect all block numbers
     static std::vector<int64_t> GetIndirectBlocks(
         std::ifstream& f, const InodeInfo& inode,
-        uint32_t block_size, uint32_t num_blocks, uint32_t mode,
-        const PfsEkpfsKey* ekpfs_key);
-
-    // AES-XTS decrypt a sector (self-contained, no OpenSSL)
-    static std::vector<uint8_t> AesXtsDecryptSector(
-        const uint8_t* sector_data, size_t sector_size,
-        const PfsEkpfsKey& key, uint64_t sector_number);
+        uint32_t block_size, uint32_t num_blocks, uint32_t mode);
 };
 
 } // namespace Libs::Firmware
