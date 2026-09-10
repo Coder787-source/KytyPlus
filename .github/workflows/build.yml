@@ -250,13 +250,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          latest="$(curl -s https://api.github.com/repos/shadps4-emu/shadPS4/releases/latest \
-            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
-          ver="${latest#v.}"
-          asset="shadps4-macos-sdl-${ver}.zip"
-          curl --fail --location --retry 3 \
+          # Resolve the canonical asset URL from the GitHub API instead of
+          # hand-building it. The release-assets redirect target carries a
+          # short-lived signed URL that can transiently 404 on the macOS
+          # runner's egress path; --retry-all-errors makes curl retry those
+          # instead of failing the whole job.
+          asset="shadps4-macos-sdl-0.18.0.zip"
+          url="$(curl -s --retry 3 --retry-all-errors \
+            https://api.github.com/repos/shadps4-emu/shadPS4/releases/latest \
+            | sed -n 's/.*"browser_download_url": *"\([^"]*shadps4-macos-sdl[^"]*\.zip\)".*/\1/p' \
+            | head -n1)"
+          test -n "$url"
+          curl --fail --location --retry 5 --retry-all-errors \
             --output "$RUNNER_TEMP/$asset" \
-            "https://github.com/shadps4-emu/shadPS4/releases/download/${latest}/${asset}"
+            "$url"
           unzip -o "$RUNNER_TEMP/$asset" -d "$RUNNER_TEMP/shadps4-macos"
           install -m 755 "$RUNNER_TEMP/shadps4-macos/shadps4" \
             _Build/macos/install/shadps4
