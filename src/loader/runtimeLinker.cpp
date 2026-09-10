@@ -832,6 +832,12 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 	}
 
 	LOGF("kyty_exception_handler: %016" PRIx64 "\n", info->exception_address);
+
+	// Emit the raw register dump through the allocation-free, non-throwing sink.
+	// This runs inside the exception filter; LOGF/fmt::sprintf can allocate and
+	// throw, so a fault here would be a double-fault and lose the diagnostic.
+	// DumpExceptionInfo degrades instead of crashing.
+	Common::HostException::DumpExceptionInfo(*info);
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	HMODULE owner_module = nullptr;
 	if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |

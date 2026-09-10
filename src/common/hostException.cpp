@@ -8,10 +8,13 @@
 #include <windows.h> // IWYU pragma: keep
 #elif defined(__APPLE__)
 #include <csignal>
+#include <sys/types.h>
 #include <sys/ucontext.h>
+#include <unistd.h>
 #else
 #include <csignal>
 #include <initializer_list>
+#include <sys/types.h>
 #include <ucontext.h> // IWYU pragma: keep
 #include <unistd.h>
 #endif
@@ -23,6 +26,98 @@
 // IWYU pragma: no_include <wtypes.h>
 
 namespace Common::HostException {
+
+// ---------------------------------------------------------------------------
+// Async-signal-safe raw logging.
+//
+// The fault path must never itself fault. RawLog is restricted to raw OS write
+// primitives and a fixed stack buffer: no CRT heap, no iostreams, no std::string,
+// no locks, no exceptions. A fault inside the CRT (heap corruption, iostream
+// state) must not be able to re-enter the formatter.
+// ---------------------------------------------------------------------------
+
+void RawLog::RawWriteStderr(const char* data, size_t len) noexcept {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	const HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+	if (h == nullptr || h == INVALID_HANDLE_VALUE) {
+		return;
+	}
+	DWORD written = 0;
+	WriteFile(h, data, static_cast<DWORD>(len), &written, nullptr);
+#else
+	size_t off = 0;
+	while (off < len) {
+		const ssize_t n = ::write(STDERR_FILENO, data + off, len - off);
+		if (n <= 0) {
+			break; // EINTR/partial-write failure: degrade, never loop forever
+		}
+		off += static_cast<size_t>(n);
+	}
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Allocation-free register dump.
+//
+// Runs inside the exception filter, so it must be total: no heap, no iostreams,
+// no std::string, no locks, no exceptions. Every value is emitted as raw hex via
+// RawLog. This is the diagnostic that runs when a real game hits a real error;
+// if it faults, the dump becomes a crash and the debugging data is lost.
+// ---------------------------------------------------------------------------
+void DumpExceptionInfo(const ExceptionInfo& info) noexcept {
+	RawLog log;
+
+	log.Append("=== HOST EXCEPTION REGISTER DUMP ===\n");
+	log.Append("exception_address=0x");
+	log.AppendHex(info.exception_address);
+	log.Append("\nnative_code=0x");
+	log.AppendHex32(info.native_code);
+	log.Append("\naccess_violation_vaddr=0x");
+	log.AppendHex(info.access_violation_vaddr);
+	log.Append("\n");
+
+	log.Append("rax=0x");
+	log.AppendHex(info.rax);
+	log.Append(" rbx=0x");
+	log.AppendHex(info.rbx);
+	log.Append(" rcx=0x");
+	log.AppendHex(info.rcx);
+	log.Append(" rdx=0x");
+	log.AppendHex(info.rdx);
+	log.Append("\n");
+
+	log.Append("rsi=0x");
+	log.AppendHex(info.rsi);
+	log.Append(" rdi=0x");
+	log.AppendHex(info.rdi);
+	log.Append(" rbp=0x");
+	log.AppendHex(info.rbp);
+	log.Append(" rsp=0x");
+	log.AppendHex(info.rsp);
+	log.Append("\n");
+
+	log.Append("r8 =0x");
+	log.AppendHex(info.r8);
+	log.Append(" r9 =0x");
+	log.AppendHex(info.r9);
+	log.Append(" r10=0x");
+	log.AppendHex(info.r10);
+	log.Append(" r11=0x");
+	log.AppendHex(info.r11);
+	log.Append("\n");
+
+	log.Append("r12=0x");
+	log.AppendHex(info.r12);
+	log.Append(" r13=0x");
+	log.AppendHex(info.r13);
+	log.Append(" r14=0x");
+	log.AppendHex(info.r14);
+	log.Append(" r15=0x");
+	log.AppendHex(info.r15);
+	log.Append("\n");
+
+	log.Flush();
+}
 
 #if !defined(__APPLE__)
 
