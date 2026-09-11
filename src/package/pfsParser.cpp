@@ -215,7 +215,8 @@ std::vector<uint8_t> PfsParser::DecompressPfscStream(const std::vector<uint8_t>&
     }
 
     std::vector<uint8_t> out;
-    out.reserve(static_cast<size_t>(logical_size));
+    const uint64_t safe_logical = std::min<uint64_t>(logical_size, 1ull << 34); // 16 GiB cap
+    out.reserve(static_cast<size_t>(safe_logical));
 
     for (uint32_t i = 0; i < block_count; ++i) {
         const uint64_t cur  = offsets[i];
@@ -478,7 +479,15 @@ std::vector<uint8_t> PfsParser::ReadFileData(
     }
 
     std::vector<uint8_t> data;
-    data.reserve(static_cast<size_t>(inode.size));
+    // Bound the reserved size against the actual archive size so a malformed
+    // inode.size cannot trigger std::length_error / std::bad_alloc inside the
+    // launcher's install console (which was previously a hard crash).
+    const auto f_eof = f.tellg();
+    f.seekg(0, std::ios::end);
+    const uint64_t f_size = static_cast<uint64_t>(f.tellg());
+    f.seekg(f_eof, std::ios::beg);
+    const uint64_t cap = (f_size > 0) ? f_size : (64u * 1024u);
+    data.reserve(static_cast<size_t>(std::min<uint64_t>(inode.size, cap)));
 
     uint64_t remaining = inode.size;
     for (int64_t blk : all_blocks) {
@@ -587,9 +596,16 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
         return result;
     }
 
-    // Recursively walk the directory tree starting from root
-    std::function<void(const InodeInfo&, const std::string&)> walkDir =
-        [&](const InodeInfo& dir_info, const std::string& path_prefix) {
+    // Recursively walk the directory tree starting from root. Bounded to a
+    // fixed depth (PFS trees are shallow in practice) so a cyclic or hostile
+    // self-referencing inode graph cannot overflow the host stack.
+    constexpr size_t kMaxWalkDepth = 32;
+    std::function<void(const InodeInfo&, const std::string&, size_t)> walkDir =
+        [&](const InodeInfo& dir_info, const std::string& path_prefix, size_t depth) {
+        if (depth >= kMaxWalkDepth) {
+            LOGF("PFS: directory tree exceeds max depth %zu, truncating walk", kMaxWalkDepth);
+            return;
+        }
         auto dir_entries = ReadDirectory(f, dir_info, result.block_size, result.num_blocks,
                                           result.mode);
         if (path_prefix.empty()) {
@@ -627,13 +643,13 @@ PfsParseResult PfsParser::Parse(const std::string& pfs_path) {
 
                 // Recurse into subdirectories
                 if (file.is_directory) {
-                    walkDir(info, file.name);
+                    walkDir(info, file.name, depth + 1);
                 }
             }
         }
     };
 
-    walkDir(root_info, "");
+    walkDir(root_info, "", 0);
 
     result.ok = true;
     return result;

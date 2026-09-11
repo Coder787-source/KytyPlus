@@ -44,28 +44,85 @@ bool PkgParser::HasPfsMagic(const std::vector<uint8_t>& data) {
 
 // ---- Encryption detection ----
 
-bool PkgParser::IsEncrypted(const std::string& pkg_path, uint32_t body_offset) {
+bool PkgParser::IsEncrypted(const std::string& pkg_path,
+                            uint32_t body_offset,
+                            uint64_t body_size,
+                            uint64_t* out_pfs_image_offset) {
+    if (out_pfs_image_offset) *out_pfs_image_offset = 0;
+
+    // The PFS superblock's 'format' (magic) field lives at superblock offset 0x08
+    // (version U64 @ 0x00, format U64 @ 0x08). Its LE32 low word is:
+    //   PFS_MAGIC = 20130315 = 0x01332A0B  => bytes 0B 2A 33 01
+    //
+    // The PFS image is NOT guaranteed to start at body_offset. In retail and fake
+    // packages the file-entry/name tables occupy the first body region, and the
+    // PFS superblock commonly sits exactly at body_offset + body_size (or later).
+    // A blind read at body_offset would return non-PFS bytes and falsely mark a
+    // plaintext image "encrypted". We therefore stream from body_offset to EOF
+    // and locate the magic with a fixed-size sliding window (constant memory,
+    // O(file_size)).
+    //
+    // A PFSC-compressed PFS has ASCII "PFSC" at its own offset 0x00, which is
+    // likewise plaintext and not "encrypted".
+
     std::ifstream f(pkg_path, std::ios::binary);
-    if (!f) return true; // assume encrypted if unreadable
+    if (!f) return true; // treat unreadable as encrypted
 
-    // The PFS 'format' (magic) field is at offset 0x08 within the PFS image
-    // (the header is: version U64 @ 0x00, format U64 @ 0x08).
-    // Read 8 bytes starting at body_offset + 0x08 and check if the low 4 bytes
-    // match the PFS magic 20130315 (LE: 0B 2A 33 01).
-    // Also accept PFSC (compressed, ASCII "PFSC" at offset 0x00) as decrypted.
-    f.seekg(static_cast<std::streamoff>(body_offset), std::ios::beg);
-    uint8_t head[16] = {0};
-    f.read(reinterpret_cast<char*>(head), 16);
-    if (f.gcount() < 8) return true;
+    std::error_code ec;
+    const uint64_t total = std::filesystem::file_size(pkg_path, ec);
+    if (ec || total == 0) return true;
 
-    // PFSC compressed PFS: ASCII "PFSC" at offset 0x00 of body
-    const bool is_pfsc = (head[0] == 0x50 && head[1] == 0x46 && head[2] == 0x53 && head[3] == 0x43);
+    const uint64_t start = static_cast<uint64_t>(body_offset);
+    const uint64_t end = total; // scan body end and beyond; superblock can sit at body_size boundary
+    if (start >= end) return true;
 
-    // PFS format magic 20130315 (0x01332A0B) at offset 0x08, stored as LE uint64
-    // Low 4 bytes at body+0x08: 0B 2A 33 01
-    const bool is_pfs = (head[8] == 0x0B && head[9] == 0x2A && head[10] == 0x33 && head[11] == 0x01);
+    constexpr size_t kChunk = 1 << 16;           // 64 KiB read
+    constexpr size_t kNeedle = 11;               // 11-byte overlap (magic needs 12)
+    std::vector<uint8_t> chunk(kChunk);
+    std::vector<uint8_t> window;
+    window.reserve(kChunk + kNeedle);
 
-    return !(is_pfs || is_pfsc);
+    uint64_t abs = start;
+    while (abs < end) {
+        const size_t want = static_cast<size_t>(std::min<uint64_t>(end - abs, kChunk));
+        f.seekg(static_cast<std::streamoff>(abs), std::ios::beg);
+        f.read(reinterpret_cast<char*>(chunk.data()), static_cast<std::streamsize>(want));
+        const size_t got = static_cast<size_t>(f.gcount());
+        if (got == 0) break;
+
+        // Rebuild scan window = [tail of previous | fresh chunk]
+        window.erase(window.begin(), window.begin() +
+                     (window.size() > kNeedle ? window.size() - kNeedle : window.size()));
+        const size_t old = window.size();
+        window.resize(old + got);
+        std::memcpy(window.data() + old, chunk.data(), got);
+
+        // Absolute file offset of window[0..old) is (abs - old) for the tail bytes,
+        // but we only need the offset of the magic, which maps to a known position:
+        //   a magic at window[k] has absolute offset = (abs - old) + k
+        // Because the tail was the last kNeedle bytes ending at 'abs' (start of chunk).
+        const uint64_t win_base = abs - old;
+        for (size_t k = 0; k + 4 <= window.size(); ++k) {
+            const uint64_t off = win_base + k;
+            if (off >= 8) {
+                const bool is_pfs = (window[k]==0x0B && window[k+1]==0x2A &&
+                                     window[k+2]==0x33 && window[k+3]==0x01);
+                if (is_pfs) {
+                    if (out_pfs_image_offset) *out_pfs_image_offset = off - 8;
+                    return false;
+                }
+            }
+            const bool is_pfsc = (window[k]=='P' && window[k+1]=='F' &&
+                                  window[k+2]=='S' && window[k+3]=='C');
+            if (is_pfsc) {
+                if (out_pfs_image_offset) *out_pfs_image_offset = off;
+                return false;
+            }
+        }
+        abs += got;
+    }
+
+    return true; // no PFS/compressed magic found
 }
 
 // ---- Header validation ----
@@ -205,19 +262,21 @@ PkgParseResult PkgParser::Parse(const std::string& pkg_path) {
         }
     }
 
-    // Detect encryption (check for PFS magic at body_offset)
+    // Detect encryption (check for PFS magic anywhere in the body region).
+    result.pfs_image_offset = 0;
     // First check for empty body — an empty body is NOT encrypted, it's just empty
     if (result.body_size == 0) {
         result.is_encrypted = false;
         LOGF("PKG: body is empty (body_size=0) - nothing to extract");
     } else {
-        result.is_encrypted = IsEncrypted(pkg_path, result.body_offset);
+        result.is_encrypted = IsEncrypted(pkg_path, result.body_offset,
+                                           result.body_size, &result.pfs_image_offset);
 
         if (result.is_encrypted) {
-            LOGF("PKG: body is encrypted (no PFS magic at offset 0x%X) - requires user keys to extract",
-                 result.body_offset);
+            LOGF("PKG: body is encrypted (no PFS magic in body region) - requires user keys to extract");
         } else {
-            LOGF("PKG: body is decrypted (PFS magic found) - can extract without keys");
+            LOGF("PKG: body is decrypted (PFS magic at 0x%llX) - can extract without keys",
+                 static_cast<unsigned long long>(result.pfs_image_offset));
         }
     }
 
@@ -261,17 +320,21 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
 
     uint32_t extracted = 0;
 
-    // For a decrypted PKG, the body is a PFS image.
-    // Extract the body to a temporary .pfs file, then parse it with
-    // the PFS parser to enumerate and extract individual files.
-
-    if (result.body_size == 0) {
-        const uint64_t fsize = std::filesystem::file_size(pkg_path);
-        const uint32_t bsize = static_cast<uint32_t>(fsize - result.body_offset);
-        const_cast<PkgParseResult&>(result).body_size = bsize;
+    // The PFS image is not guaranteed to sit at body_offset — it commonly begins
+    // at body_offset + body_size. Use the superblock offset located during Parse().
+    uint64_t pfs_start = result.pfs_image_offset;
+    if (pfs_start == 0 || pfs_start >= std::filesystem::file_size(pkg_path)) {
+        // Fallback: assume the PFS image is the whole body region.
+        pfs_start = result.body_offset;
+    }
+    const uint64_t pfs_end = std::filesystem::file_size(pkg_path);
+    if (pfs_start >= pfs_end) {
+        LOGF("PKG: PFS image bounds invalid (start=0x%llX)",
+             static_cast<unsigned long long>(pfs_start));
+        return 0;
     }
 
-    f.seekg(static_cast<std::streamoff>(result.body_offset), std::ios::beg);
+    f.seekg(static_cast<std::streamoff>(pfs_start), std::ios::beg);
 
     const std::filesystem::path out_pfs = std::filesystem::path(output_dir) / "body.pfs";
     std::ofstream out(out_pfs, std::ios::binary);
@@ -282,7 +345,7 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
 
     constexpr size_t kBufSize = 1 << 20; // 1 MB
     std::vector<uint8_t> buf(kBufSize);
-    uint64_t remaining = result.body_size;
+    uint64_t remaining = pfs_end - pfs_start;
     while (remaining > 0) {
         const size_t to_read = static_cast<size_t>(std::min<uint64_t>(remaining, kBufSize));
         f.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(to_read));
@@ -294,8 +357,10 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
     out.close();
     f.close();
 
-    LOGF("PKG: extracted body PFS image to %s (%u bytes)",
-         out_pfs.string().c_str(), result.body_size);
+    LOGF("PKG: extracted body PFS image to %s (%llu bytes @0x%llX)",
+         out_pfs.string().c_str(), static_cast<unsigned long long>(pfs_end - pfs_start),
+         static_cast<unsigned long long>(pfs_start));
+
 
     // Parse the extracted PFS image and extract individual files
     const std::string pfs_out_dir = std::filesystem::path(output_dir).string() + "/pfs_files";

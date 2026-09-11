@@ -16,6 +16,7 @@
 
 #include <charconv>
 #include <cstdio>
+#include <new>
 #include <fmt/format.h>
 
 using namespace Common;
@@ -410,13 +411,16 @@ int main(int argc, char* argv[]) {
 			slist.DestroyAll(false);
 			return 1;
 		}
-		// Build the extraction directory from the PKG's parent directory.
-		// A relative PKG path has an empty parent_path(), so use "." to stay
-		// in the working directory (a leading "/" would be a drive-root path
-		// on Windows and write to C:\pkg_out).
-		auto out_dir_path = std::filesystem::path(options.install_pkg).parent_path();
-		if (out_dir_path.empty()) out_dir_path = ".";
-		const auto out_dir = (out_dir_path / "pkg_out").string();
+		// Extract into a deterministic folder that the caller can find.
+		// The launcher sets the working directory to the emulator's own folder
+		// and later looks for "<wd>/pkg_out/pfs_files", so write to the current
+		// working directory rather than the PKG's parent folder. This keeps the
+		// install path in sync for every user, regardless of where the .pkg lives.
+		// current_path() is always absolute, so this cannot write to a drive root.
+		const auto out_dir = (std::filesystem::current_path() / "pkg_out").string();
+		// KytyPlus: untrusted inode/size fields in a malformed or truncated package
+		// are bounded inside PfsParser::ReadFileData / DecompressPfscStream (reserve
+		// caps), so no unbounded allocation can abort the install console.
 		const uint32_t n = Libs::Firmware::PkgParser::ExtractAll(pr, options.install_pkg.string(), out_dir);
 		::printf("PKG '%s' parsed OK. Extracted %u file(s) to %s\n",
 		         pr.content_id.c_str(), n, out_dir.c_str());

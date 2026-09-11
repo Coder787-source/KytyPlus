@@ -92,7 +92,11 @@ void FsrUpscaler::Destroy() {
 	}
 	if (m_rcas_ubo != nullptr) {
 		dev.destroyBuffer(m_rcas_ubo, nullptr);
-		dev.freeMemory(m_rcas_ubo_mem, nullptr);
+		if (m_rcas_ubo_mem != m_easu_ubo_mem) {
+			// m_rcas_ubo_mem aliases m_easu_ubo_mem (a shared allocation); only
+			// free it when distinct to avoid a Vulkan double-free on teardown.
+			dev.freeMemory(m_rcas_ubo_mem, nullptr);
+		}
 		m_rcas_ubo = nullptr;
 	}
 	if (m_desc_pool != nullptr) {

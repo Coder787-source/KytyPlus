@@ -253,6 +253,10 @@ void Presenter::Frame::Configure(GraphicContext& graphics, vk::Extent2D extent, 
 	create.tiling        = vk::ImageTiling::eOptimal;
 	create.initialLayout = vk::ImageLayout::eUndefined;
 	create.usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+	// The FSR upscaler samples this frame image as EASU input, so eSampled is
+	// required even when transfer-only blitting would suffice. Without it,
+	// vkCreateImageView fails (VUID-VkImageViewCreateInfo-image-04441).
+	create.usage |= vk::ImageUsageFlagBits::eSampled;
 	create.sharingMode = vk::SharingMode::eExclusive;
 	create.samples     = vk::SampleCountFlagBits::e1;
 	if (!graphics.CreateImage(create, dst)) {

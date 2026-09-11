@@ -87,7 +87,9 @@ GuestPlatform DetectGamePlatform(const QString& game_dir, const QString& elf_nam
 		if (elf_off < 0 || elf_off + 16 > buf.size()) {
 			return GuestPlatform::Unknown;
 		}
-		const unsigned char abi = static_cast<unsigned char>(buf[elf_off + 7]);
+		// PS5 sets EI_ABIVERSION (byte 8) to 2; PS4 leaves it 0.
+		// (EI_OSABI byte 7 is 0x09/FreeBSD on both, so it cannot discriminate.)
+		const unsigned char abi = static_cast<unsigned char>(buf[elf_off + 8]);
 		switch (abi) {
 			case 0: return GuestPlatform::Ps4;
 			case 2: return GuestPlatform::Ps5;
@@ -100,7 +102,9 @@ GuestPlatform DetectGamePlatform(const QString& game_dir, const QString& elf_nam
 	    static_cast<unsigned char>(buf[1]) == kElfMagic[1] &&
 	    static_cast<unsigned char>(buf[2]) == kElfMagic[2] &&
 	    static_cast<unsigned char>(buf[3]) == kElfMagic[3]) {
-		const unsigned char abi = static_cast<unsigned char>(buf[7]);
+		// PS5 sets EI_ABIVERSION (byte 8) to 2; PS4 leaves it 0.
+		// (EI_OSABI byte 7 is 0x09/FreeBSD on both, so it cannot discriminate.)
+		const unsigned char abi = static_cast<unsigned char>(buf[8]);
 		switch (abi) {
 			case 0: return GuestPlatform::Ps4;
 			case 2: return GuestPlatform::Ps5;

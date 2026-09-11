@@ -20,9 +20,9 @@ namespace Libs::Firmware {
 #pragma pack(push, 1)
 
 // PKG container header (big-endian, based on PS3/PS4 package format)
-// The magic is 0x7F504B47 = "\x7FPKG"
+// The magic is 0x7F434E54 = "\x7FCNT"
 struct PkgHeader {
-    uint32_t magic;             // 0x000: 0x7F504B47 ("\x7FPKG"), big-endian
+    uint32_t magic;             // 0x000: 0x7F434E54 ("\x7FCNT"), big-endian
     uint16_t revision;          // 0x004: package revision
     uint16_t type;              // 0x006: package type
     uint32_t unknown0;          // 0x008: unknown field
@@ -44,7 +44,7 @@ struct PkgHeader {
 };
 
 // PFS (PlayStation File System) magic for detecting decrypted body content
-static constexpr uint32_t PKG_MAGIC       = 0x7F504B47; // "\x7FPKG" (big-endian)
+static constexpr uint32_t PKG_MAGIC       = 0x7F434E54; // "\x7FCNT" (big-endian)
 static constexpr uint32_t PKG_PFS_BODY_MAGIC = 0x00534650; // "PFS\0" (little-endian read)
 static constexpr uint32_t PKG_BODY_OFFSET  = 0x200;       // Standard body offset
 // Per-file entry size in the PKG file table (name-offset / size / id).
@@ -74,6 +74,11 @@ struct PkgParseResult {
     uint32_t body_size;                   // Body size
     std::vector<PkgFileEntry> files;      // Extracted file entries
 
+    // Absolute file offset of the located PFS superblock inside the PKG.
+    // 0 if no PFS image was found. The PFS image is NOT guaranteed to start at
+    // body_offset; it commonly starts at body_offset + body_size.
+    uint64_t pfs_image_offset;
+
     // Encryption status
     bool is_encrypted;                    // True if body appears encrypted (no PFS magic)
     bool keys_required_and_missing;       // True if encrypted but no keys available
@@ -98,8 +103,15 @@ public:
     // Check if data starts with PFS magic (decrypted body indicator)
     static bool HasPfsMagic(const std::vector<uint8_t>& data);
 
-    // Check if the PKG body is encrypted (no PFS magic at body_offset)
-    static bool IsEncrypted(const std::string& pkg_path, uint32_t body_offset);
+    // Check if the PKG body is encrypted.
+    // Scans the body for the PFS superblock format magic (0x01332A0B/LE 0B 2A 33 01)
+    // located anywhere at or after body_offset. The PFS image is commonly placed
+    // AFTER the body (body_offset + body_size), not at body_offset itself.
+    // On success sets out_pfs_image_offset to the absolute superblock offset.
+    static bool IsEncrypted(const std::string& pkg_path,
+                            uint32_t body_offset,
+                            uint64_t body_size,
+                            uint64_t* out_pfs_image_offset = nullptr);
 
 private:
     // Validate PKG header magic and basic sanity

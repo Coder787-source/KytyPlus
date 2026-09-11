@@ -105,7 +105,9 @@ GuestPlatform DetectPlatform(const std::filesystem::path& eboot_host_path) {
 		return GuestPlatform::Unknown;
 	}
 
-	const uint8_t abi_version = buf[elf_off + 7];
+	// PS5 sets EI_ABIVERSION (byte 8) to 2; PS4 leaves it 0.
+	// (EI_OSABI byte 7 is 0x09/FreeBSD on both, so it cannot discriminate.)
+	const uint8_t abi_version = buf[elf_off + 8];
 	switch (abi_version) {
 		case 0:  return GuestPlatform::Ps4;
 		case 2:  return GuestPlatform::Ps5;
