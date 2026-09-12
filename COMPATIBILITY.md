@@ -73,7 +73,7 @@ launches. This number is **separate** from the native PS5 count and must not be 
 
 > [!IMPORTANT]
 > PS4 titles require the user to provide a **legally dumped `sys_modules`** set. KytyPlus does not
-> ship or download firmware. See [README](../README.md) for setup.
+> ship or download firmware. See README for setup.
 
 Status values below are mapped from the upstream
 [shadPS4 compatibility list](https://github.com/shadps4-compatibility/shadps4-game-compatibility)
