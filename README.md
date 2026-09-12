@@ -92,6 +92,7 @@ testers are for.
 - **Configurable present path** — present mode (VSync / Mailbox / Immediate), present filter (Nearest / Linear / Cubic), and aspect ratio (Stretch / 16:9 / 4:3 / Integer). *(First in the PS5 scene.)*
 - **PKG package parser + full PFS filesystem parser** — parses Sony `.pkg` package files (PS4/PS5 digital games / updates) via `--install-pkg`, extracts the inner PFS image, then walks the full filesystem (PFS superblock, D32/S32/S64 inodes, directory enumeration, indirect block traversal, PFSC/zlib decompression). *(First in the PS5 scene.)*
 - **Install .PKG GUI buttons** — "Install Package (.pkg)" buttons in the launcher, so users no longer need the command line to install. Fixes the discoverability gap where users previously couldn't find the install path.
+-  **Unified PS4/PS5 dispatch** — auto-detects PS4 vs PS5 from the game ELF and dispatches PS4 titles to an embedded **shadPS4** subprocess, reparenting its window into KytyPlus with unified saves.
 
 **Wired, validated only as mechanism / spec, not on real games or hardware:**
 
@@ -99,7 +100,6 @@ testers are for.
 - **UMA heap detection** — detects unified-memory architectures (device-local + host-visible + host-coherent). Detection is live; the staging-bypass itself is not yet wired.
 - **Bandwidth-aware adaptive LOD bias** — monitors frame timing and ramps texture LOD bias up under bandwidth pressure / down with headroom, invalidating stale samplers via a generation counter. *(First in the PS5 scene. Mechanism self-validatable; game-level benefit unvalidated.)*
 - **MMIO bus + NVMe LLE foundation** — a real address-range router for memory-mapped devices (registered in the boot path) plus an NVMe controller rewritten as an `MmioDevice` talking to the real MMU. *(First LLE infrastructure in the PS5 scene. Not yet exercised by games — groundwork, not a working storage path.)*
-- **Unified PS4/PS5 dispatch** — auto-detects PS4 vs PS5 from the game ELF and dispatches PS4 titles to an embedded **shadPS4** subprocess, reparenting its window into KytyPlus with unified saves. *(Only unified PS4/PS5 emulator. Wired, not yet tested with a real PS4 game.)*
 - **Native DualSense HID driver** — replaces SDL-only input with a native HID driver (buttons, sticks, L2/R2, gyro/IMU, touchpad in; rumble, lightbar RGB, adaptive trigger effects out), wired into the real pad path. *(First in the PS5 scene. Spec-accurate, not validated on a physical DualSense. Windows-only,no macOS or Linux stub,untested in games.)*
 - **Extended CPU instruction emulation** — software-emulates 15+ x86-64 instructions that fault on hosts lacking them (RDTSC/RDTSCP, CPUID hypervisor leaves, XGETBV/XSETBV, RDMSR/WRMSR, RDPMC/RDPRU/RDPID, CLZERO, WBINVD/INVD, MWAIT, descriptor-table/status-word ops). *(Extends upstream’s MONITORX/MWAITX + SSE4a + SHA-NI baseline. Strictly additive, no-regression.)*
 - **EXIT diagnostics** — 24 highest-impact unimplemented-path guards upgraded from raw condition strings to descriptive messages, so tester crash logs say what opcode/register/syscall was missing. *(No-regression.)*
