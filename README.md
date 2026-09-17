@@ -105,8 +105,7 @@ testers are for.
 - **Config validation** — case-insensitive parsing, deprecated names transparently migrated (e.g. `Fsr31` → `Fsr1`), invalid values rejected with a clear log message.
 > [!NOTE]
 > All of the above are implemented, compiled, and wired in. Game-level benefit is **not yet
-> validated on real hardware** — I don’t have a PS5 to dump games myself, so I can’t test
-> the optimizations on actual games. That’s why we need testers to be able to test these
+> verified**. That’s why we need testers to be able to test these
 > features, so that together, we can build a better emulator.
 
 Compatibility is still **early**. A title that no longer hits one known crash will often hit the
