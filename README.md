@@ -125,16 +125,34 @@ next unimplemented feature. Always test with a **fresh build** and attach logs w
 This project started on an integrated-GPU machine, so several defaults and allocator choices were
 made **with iGPUs / UMA in mind**. That design intent now has a first real result behind it.
 
-- **First confirmed real-game run on an iGPU:** *Silent Hill 2 Remake* (PPSA08709, UE5,
-  PS5-native) renders on an **AMD Radeon 840M** (Ryzen AI 5 340, shared-memory system): its
-  first interactive screen (the content-warning/title flow) with working FSR 1.0 presentation,
-  thousands of frames over a multi-minute session, no GPU hangs, clean exit. Performance is
-  **single-digit FPS** — a correctness milestone, not a playability claim. See
-  [COMPATIBILITY.md](COMPATIBILITY.md).
-- Two HLE-side GPU-hang workarounds were needed for this title (both emulator fixes, not game
-  patches): one UE5 volumetric compute pass that wedged this specific APU is currently skipped
-  (volumetrics/fog render wrong), and a guard validates storage-image atomics against host
-  format support.
+### First confirmed real-game run on an iGPU
+
+*Silent Hill 2 Remake* (PPSA08709, UE5, PS5-native) — AMD **Radeon 840M** iGPU (512 MB),
+Ryzen AI 5 340, shared system memory (15.2 GB), 1280×800 display, windowed at 1166×656.
+Multi-minute session on a dev build (post-v3.4).
+
+**What was observed:**
+
+- **Rendering correctness:** the game's first interactive screen (content-warning / title flow)
+  draws with **no visible graphical glitches** — crisp text, correct layout, working QR code,
+  no corruption or garbling anywhere in the frame.
+- **Presentation:** the game allocates and renders native 3840×2160 buffers; FSR 1.0
+  (EASU + RCAS) upscales them into the window correctly. The present path is stable end-to-end.
+- **Stability:** 4,088 frames and ~149,000 GPU submits over a ~4-minute session with **zero GPU
+  hangs, zero device losses, zero crashes**, ending in a clean exit — no Windows driver reset
+  (TDR) was triggered at any point.
+- **Performance:** **~3.9 FPS.** Expected for an early HLE emulator driving a 2024 AAA UE5 title
+  on an entry-level iGPU — the title is not playable yet. This figure is from the warning screen;
+  deeper gameplay is untested and likely heavier.
+- **Audio / controller input:** not evaluated in this session.
+- **Known visual limitation waiting ahead:** one UE5 volumetric (fog) compute pass is currently
+  skipped to contain a GPU hang on this APU — volumetric/fog effects will look wrong in gameplay
+  until that pass is implemented properly. A storage-image atomic feature guard is also active.
+  Both are emulator-side workarounds; no game files are modified.
+
+This is a **correctness milestone, not a playability claim**: geometry, text, compute and the
+full present pipeline demonstrably work on shared-memory iGPU hardware; performance is the next
+frontier. See [COMPATIBILITY.md](COMPATIBILITY.md).
 
 If you have an **iGPU system** (e.g. Radeon 780M, Intel Arc iGPU) **and legally obtained game dumps**,
 a boot/menu report with logs and a rig description is still extremely valuable — one data point
