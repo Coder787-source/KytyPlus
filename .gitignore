@@ -9,3 +9,17 @@ cmake-build-debug/
 # Emulator run logs (can grow to many GB)
 _kyty*.txt
 *.log
+
+# --- Local session artifacts (do not commit) ---
+dist/
+*.zip
+*.bak
+kyty_nids.txt
+dualsense_parse_test.*
+dualsense_trigger_test.*
+/build_*.bat
+/_*.bat
+/_*.png
+/_kyty_*.log
+/build_*log*.txt
+/scriptsenv-*.cmd

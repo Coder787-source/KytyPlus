@@ -8,6 +8,8 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <iphlpapi.h>
+#include <wincrypt.h>
+#include <winhttp.h>
 #include <ws2tcpip.h>
 #ifdef s_addr
 #undef s_addr
@@ -32,13 +34,20 @@ inline int closesocket(SOCKET s) {
 #include "common/assert.h"
 #include "common/byteBuffer.h"
 #include "common/common.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
+
+#if !defined(_WIN32) && defined(KYTY_HAVE_OPENSSL)
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -49,6 +58,7 @@ inline int closesocket(SOCKET s) {
 #include <cstdio>
 #include <cstring>
 #include <fmt/format.h>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -57,6 +67,120 @@ inline int closesocket(SOCKET s) {
 #include <vector>
 
 namespace Libs::Network {
+
+constexpr size_t kGuestPageSize = 0x4000;
+// Same value as kernel/memory.cpp PROT_CPU_READ (not exported from the kernel memory header).
+constexpr int    kProtCpuRead   = 0x01;
+static size_t    AlignUpPage(size_t v) { return (v + kGuestPageSize - 1) & ~(kGuestPageSize - 1); }
+
+// Host root-certificate store shared by the TLS backends. Declared at namespace
+// scope because sceSslGetCaCerts (earlier in this file) hands the real trust
+// store to the guest. Read-only passthrough of the OS trust anchors: no signing,
+// no account identity, no authentication surface.
+static std::mutex                 g_ca_mutex;
+static std::vector<std::string>   g_ca_ders;
+static std::unique_ptr<uint8_t[]> g_ca_pool;
+static size_t                     g_ca_pool_size = 0;
+static void                       LoadHostCaCerts();
+
+#if defined(_WIN32)
+// Guest-visible CA store on Windows: the REAL system root certificates, read from
+// the "ROOT" certstore and converted to DER. Same contract as the OpenSSL path.
+static void LoadHostCaCerts() {
+	std::lock_guard lock(g_ca_mutex);
+	if (g_ca_pool_size != 0) {
+		return;
+	}
+
+	HCERTSTORE store = ::CertOpenSystemStoreW(0, L"ROOT");
+	if (store == nullptr) {
+		return;
+	}
+
+	PCCERT_CONTEXT ctx = nullptr;
+	while ((ctx = ::CertEnumCertificatesInStore(store, ctx)) != nullptr) {
+		g_ca_ders.emplace_back(reinterpret_cast<const char*>(ctx->pbCertEncoded), ctx->cbCertEncoded);
+	}
+	::CertCloseStore(store, 0);
+
+	size_t total = 0;
+	for (const auto& d: g_ca_ders) {
+		total += d.size();
+	}
+	if (total != 0) {
+		g_ca_pool      = std::make_unique<uint8_t[]>(total);
+		g_ca_pool_size = total;
+		size_t off     = 0;
+		for (const auto& d: g_ca_ders) {
+			std::memcpy(g_ca_pool.get() + off, d.data(), d.size());
+			off += d.size();
+		}
+	}
+
+}
+#else
+#if defined(KYTY_HAVE_OPENSSL)
+// trust-store passthrough: no signing, no account identity, no auth surface.
+static void LoadHostCaCerts() {
+	std::lock_guard lock(g_ca_mutex);
+	if (g_ca_pool_size != 0) {
+		return;
+	}
+
+	SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+	if (ctx == nullptr) {
+		return;
+	}
+	SSL_CTX_set_default_verify_paths(ctx);
+
+	X509_STORE* store = SSL_CTX_get_cert_store(ctx);
+	if (store != nullptr) {
+		STACK_OF(X509_OBJECT)* objs = X509_STORE_get0_objects(store);
+		const int              n    = (objs != nullptr) ? sk_X509_OBJECT_num(objs) : 0;
+		for (int i = 0; i < n; i++) {
+			X509_OBJECT* obj = sk_X509_OBJECT_value(objs, i);
+			if (obj == nullptr || X509_OBJECT_get_type(obj) != X509_LU_X509) {
+				continue;
+			}
+			X509* cert = X509_OBJECT_get0_X509(obj);
+			if (cert == nullptr) {
+				continue;
+			}
+			const int len = i2d_X509(cert, nullptr);
+			if (len <= 0) {
+				continue;
+			}
+			std::string    der(static_cast<size_t>(len), '\0');
+			unsigned char* out = reinterpret_cast<unsigned char*>(der.data());
+			if (i2d_X509(cert, &out) != len) {
+				continue;
+			}
+			g_ca_ders.push_back(std::move(der));
+		}
+	}
+
+	SSL_CTX_free(ctx);
+
+	size_t total = 0;
+	for (const auto& d: g_ca_ders) {
+		total += d.size();
+	}
+	if (total != 0) {
+		g_ca_pool      = std::make_unique<uint8_t[]>(total);
+		g_ca_pool_size = total;
+		size_t off     = 0;
+		for (const auto& d: g_ca_ders) {
+			std::memcpy(g_ca_pool.get() + off, d.data(), d.size());
+			off += d.size();
+		}
+	}
+
+}
+#else
+// No TLS backend on this platform: there is no host trust store to expose.
+static void LoadHostCaCerts() {}
+#endif
+#endif
 
 class Network {
 public:
@@ -1319,7 +1443,7 @@ int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr
 	}
 
 #if defined(_WIN32)
-	if (!EnsureSocketBackend()) {
+	if (!Net::EnsureSocketBackend()) {
 		return NET_ERROR_ENETDOWN;
 	}
 
@@ -1676,7 +1800,7 @@ int KYTY_SYSV_ABI Socket(int family, int type, int protocol) {
 	     "\t protocol = %d\n",
 	     family, type, protocol);
 
-	if (!EnsureSocketBackend()) {
+	if (!Net::EnsureSocketBackend()) {
 		return SetPosixSocketError(Posix::POSIX_ENETDOWN);
 	}
 
@@ -2274,12 +2398,66 @@ int KYTY_SYSV_ABI SslGetCaCerts(int ssl_ctx_id, void* ca_certs) {
 		return SSL_ERROR_INVALID_ID;
 	}
 
-	auto* certs          = static_cast<SslCaCerts*>(ca_certs);
-	certs->cert_data     = nullptr;
-	certs->cert_data_num = 0;
-	certs->pool          = nullptr;
+	auto* certs = static_cast<SslCaCerts*>(ca_certs);
 
-	return SSL_ERROR_NOT_FOUND;
+	// Return the real host root certificates. The certificate blobs live in guest
+	// memory (pointers must be guest VAs), while their sizes stay host-side.
+	LoadHostCaCerts();
+
+	if (g_ca_ders.empty()) {
+		certs->cert_data     = nullptr;
+		certs->cert_data_num = 0;
+		certs->pool          = nullptr;
+		return SSL_ERROR_NOT_FOUND;
+	}
+
+	size_t total = 0;
+	for (const auto& d: g_ca_ders) {
+		total += d.size();
+	}
+	void* guest_block = nullptr;
+	if (LibKernel::Memory::KernelMapNamedFlexibleMemory(&guest_block, AlignUpPage(total),
+	                                                    kProtCpuRead, 0,
+	                                                    "kyty_ca_certs") != OK ||
+	    guest_block == nullptr) {
+		certs->cert_data     = nullptr;
+		certs->cert_data_num = 0;
+		certs->pool          = nullptr;
+		return SSL_ERROR_OUT_OF_SIZE;
+	}
+	size_t off = 0;
+	for (const auto& d: g_ca_ders) {
+		std::memcpy(static_cast<uint8_t*>(guest_block) + off, d.data(), d.size());
+		off += d.size();
+	}
+
+	void* guest_sizes = nullptr;
+	if (LibKernel::Memory::KernelMapNamedFlexibleMemory(&guest_sizes,
+	                                                    AlignUpPage(g_ca_ders.size() * sizeof(SslData)),
+	                                                    kProtCpuRead, 0,
+	                                                    "kyty_ca_sizes") != OK ||
+	    guest_sizes == nullptr) {
+		certs->cert_data     = nullptr;
+		certs->cert_data_num = 0;
+		certs->pool          = nullptr;
+		return SSL_ERROR_OUT_OF_SIZE;
+	}
+
+	size_t data_off = 0;
+	for (size_t i = 0; i < g_ca_ders.size(); i++) {
+		auto* entry = static_cast<SslData*>(
+		    static_cast<void*>(static_cast<uint8_t*>(guest_sizes) + (i * sizeof(SslData))));
+		entry->ptr       = static_cast<char*>(guest_block) + data_off;
+		entry->size      = g_ca_ders[i].size();
+		data_off        += g_ca_ders[i].size();
+	}
+
+	certs->cert_data     = static_cast<SslData*>(guest_sizes);
+	certs->cert_data_num = g_ca_ders.size();
+	certs->pool          = guest_block;
+
+
+	return OK;
 }
 
 int KYTY_SYSV_ABI SslFreeCaCerts(int ssl_ctx_id, void* ca_certs) {
@@ -2639,16 +2817,363 @@ namespace {
 // HTTP status text for the minimal response line the client builds.
 constexpr uint64_t kHttpFetchMaxBody = 16u * 1024u * 1024u; // 16 MiB safety cap
 
+// Splits "host[:port]" into a bare host plus port, stripping IPv6 brackets for
+// getaddrinfo (which wants the bare address) while preserving the bracketed form
+// for the Host: header (which requires it, RFC 3986).
+static bool HttpParseHostPort(const std::string& host_port, uint16_t default_port,
+                              std::string* host, uint16_t* port, std::string* host_header) {
+	*port = default_port;
+	if (host_port.empty()) {
+		return false;
+	}
+	if (host_port[0] == '[') {
+		const auto close = host_port.find(']');
+		if (close == std::string::npos) {
+			return false;
+		}
+		*host = host_port.substr(1, close - 1);
+		if (close + 1 < host_port.size() && host_port[close + 1] == ':') {
+			const auto p = std::strtoul(host_port.c_str() + close + 2, nullptr, 10);
+			*port        = (p == 0 ? default_port : static_cast<uint16_t>(p));
+		}
+		*host_header = host_port;
+	} else {
+		const auto colon = host_port.rfind(':');
+		if (colon != std::string::npos && host_port.find(':') == colon) {
+			*host = host_port.substr(0, colon);
+			const auto p = std::strtoul(host_port.c_str() + colon + 1, nullptr, 10);
+			*port        = (p == 0 ? default_port : static_cast<uint16_t>(p));
+		} else {
+			*host = host_port;
+		}
+		*host_header = host_port;
+	}
+	return !host->empty();
+}
+
+#if defined(_WIN32)
+// HTTPS over the Windows/system TLS stack (Schannel, via WinHTTP). No third-party
+// TLS library is required and normal certificate validation stays enabled.
+static int HttpFetchSyncWinHttp(const std::string& url, const std::string& method,
+                                const std::string& user_agent, uint64_t content_length,
+                                const void* post_data, size_t post_size, int* out_status,
+                                std::string* out_headers, std::vector<uint8_t>* out_body) {
+	// URL components are expected to be ASCII, consistent with the rest of this client.
+	auto widen = [](const std::string& s) { return std::wstring(s.begin(), s.end()); };
+
+	const std::wstring wurl = widen(url);
+	URL_COMPONENTS     uc {};
+	uc.dwStructSize     = sizeof(uc);
+	wchar_t host_buf[256] {};
+	wchar_t path_buf[2048] {};
+	uc.lpszHostName     = host_buf;
+	uc.dwHostNameLength = 255;
+	uc.lpszUrlPath      = path_buf;
+	uc.dwUrlPathLength  = 2047;
+	if (WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc) == FALSE) {
+		return HTTP_ERROR_INVALID_URL;
+	}
+	const bool secure = (uc.nScheme == INTERNET_SCHEME_HTTPS);
+
+	const std::wstring agent = user_agent.empty() ? std::wstring(L"Kyty") : widen(user_agent);
+	HINTERNET          session = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+	                                         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+	if (session == nullptr) {
+		return HTTP_ERROR_NETWORK;
+	}
+	// (resolve, connect, send, receive) timeouts in milliseconds.
+	WinHttpSetTimeouts(session, 10000, 10000, 30000, 30000);
+
+	int       ret  = HTTP_ERROR_NETWORK;
+	HINTERNET conn = WinHttpConnect(session, host_buf, uc.nPort, 0);
+	if (conn != nullptr) {
+		const std::wstring verb = widen(method.empty() ? std::string("GET") : method);
+		const wchar_t*    path = (path_buf[0] == L'\0' ? L"/" : path_buf);
+		HINTERNET         req  = WinHttpOpenRequest(conn, verb.c_str(), path, nullptr,
+		                                           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+		                                           secure ? WINHTTP_FLAG_SECURE : 0);
+		if (req != nullptr) {
+			const uint64_t body_len = (post_size != 0 ? post_size : content_length);
+			if (body_len != 0) {
+				const std::wstring cl = L"Content-Length: " + std::to_wstring(body_len) + L"\r\n";
+				WinHttpAddRequestHeaders(req, cl.c_str(), static_cast<ULONG>(-1),
+				                         WINHTTP_ADDREQ_FLAG_ADD);
+			}
+
+			const BOOL sent = WinHttpSendRequest(
+			    req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+			    (post_size != 0 ? const_cast<void*>(post_data) : WINHTTP_NO_REQUEST_DATA),
+			    static_cast<DWORD>(post_size), static_cast<DWORD>(post_size), 0);
+
+			if (sent != FALSE && WinHttpReceiveResponse(req, nullptr) != FALSE) {
+				DWORD status     = 0;
+				DWORD status_len = sizeof(status);
+				WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+				                    WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_len,
+				                    WINHTTP_NO_HEADER_INDEX);
+
+				DWORD hdr_bytes = 0;
+				WinHttpQueryHeaders(req, WINHTTP_QUERY_RAW_HEADERS_CRLF,
+				                    WINHTTP_HEADER_NAME_BY_INDEX, nullptr, &hdr_bytes,
+				                    WINHTTP_NO_HEADER_INDEX);
+				if (hdr_bytes > sizeof(wchar_t)) {
+					std::wstring raw(hdr_bytes / sizeof(wchar_t), L'\0');
+					if (WinHttpQueryHeaders(req, WINHTTP_QUERY_RAW_HEADERS_CRLF,
+					                        WINHTTP_HEADER_NAME_BY_INDEX, raw.data(), &hdr_bytes,
+					                        WINHTTP_NO_HEADER_INDEX) != FALSE) {
+						for (const wchar_t c: raw) {
+							if (c == L'\0') {
+								break;
+							}
+							out_headers->push_back(static_cast<char>(c));
+						}
+					}
+				}
+
+				std::vector<uint8_t> body;
+				for (;;) {
+					DWORD avail = 0;
+					if (WinHttpQueryDataAvailable(req, &avail) == FALSE || avail == 0) {
+						break;
+					}
+					if (body.size() + avail > kHttpFetchMaxBody) {
+						break;
+					}
+					const size_t at = body.size();
+					body.resize(at + avail);
+					DWORD got = 0;
+					if (WinHttpReadData(req, body.data() + at, avail, &got) == FALSE) {
+						body.resize(at);
+						break;
+					}
+					body.resize(at + got);
+					if (got == 0) {
+						break;
+					}
+				}
+
+				*out_status = static_cast<int>(status);
+				*out_body   = std::move(body);
+				ret         = OK;
+			}
+			WinHttpCloseHandle(req);
+		}
+		WinHttpCloseHandle(conn);
+	}
+	WinHttpCloseHandle(session);
+	return ret;
+}
+#endif
+
+// TLS on Linux is provided by OpenSSL when available. It is an optional
+// dependency: if <openssl/ssl.h> is not present the build falls back to no TLS
+// and https:// requests fail with an explicit error instead of hanging.
+#if !defined(_WIN32)
+#if defined(KYTY_HAVE_OPENSSL)
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+
+#include <cstring>
+
+namespace {
+
+// One-time OpenSSL initialisation (safe to call repeatedly).
+void EnsureOpenSsl() {
+	static std::once_flag once;
+	std::call_once(once, [] { SSL_library_init(); SSL_load_error_strings(); });
+}
+
+class OpenSslConn {
+public:
+	~OpenSslConn() {
+		if (ssl_ != nullptr) {
+			SSL_free(ssl_);
+		}
+		if (ctx_ != nullptr) {
+			SSL_CTX_free(ctx_);
+		}
+	}
+
+	bool Connect(const std::string& host, uint16_t port) {
+		EnsureOpenSsl();
+		ctx_ = SSL_CTX_new(TLS_client_method());
+		if (ctx_ == nullptr) {
+			return false;
+		}
+		SSL_CTX_set_default_verify_paths(ctx_);
+		SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
+
+		// AF_UNSPEC so IPv6-only hosts resolve too.
+		addrinfo hints {};
+		hints.ai_family   = AF_UNSPEC;
+		hints.ai_socktype = SOCK_STREAM;
+		addrinfo* result  = nullptr;
+		if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0 || result == nullptr) {
+			return false;
+		}
+
+		bool ok = false;
+		for (addrinfo* ai = result; ai != nullptr; ai = ai->ai_next) {
+			if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6) {
+				continue;
+			}
+			if (ai->ai_family == AF_INET) {
+				auto* sa     = reinterpret_cast<sockaddr_in*>(ai->ai_addr);
+				sa->sin_port = htons(port);
+			} else {
+				auto* sa      = reinterpret_cast<sockaddr_in6*>(ai->ai_addr);
+				sa->sin6_port = htons(port);
+			}
+			fd_           = ::socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
+			if (fd_ < 0) {
+				break;
+			}
+			if (::connect(fd_, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) != 0) {
+				::close(fd_);
+				fd_ = -1;
+				continue;
+			}
+			ok = true;
+			break;
+		}
+		freeaddrinfo(result);
+		if (!ok) {
+			return false;
+		}
+
+		ssl_ = SSL_new(ctx_);
+		if (ssl_ == nullptr) {
+			return false;
+		}
+		SSL_set_fd(ssl_, static_cast<int>(fd_));
+		// SNI is required by most modern servers.
+		SSL_set_tlsext_host_name(ssl_, host.c_str());
+		SSL_set1_host(ssl_, host.c_str());
+		if (SSL_connect(ssl_) != 1) {
+			return false;
+		}
+		return SSL_get_verify_result(ssl_) == X509_V_OK;
+	}
+
+	bool Write(const void* data, size_t size) {
+		return SSL_write(ssl_, data, static_cast<int>(size)) == static_cast<int>(size);
+	}
+
+	int Read(void* buf, int size) { return SSL_read(ssl_, buf, size); }
+
+private:
+	SSL_CTX* ctx_ = nullptr;
+	SSL*     ssl_ = nullptr;
+	int      fd_  = -1;
+};
+
+} // namespace
+
+// Guest-visible CA store. These are the REAL system root certificates (from
+// OpenSSL's default verify paths), exposed through sceSslGetCaCerts so a guest
+// that validates the chain in-process gets genuine roots. This is a read-only
+
+static int HttpFetchSyncOpenSsl(const std::string& url, const std::string& method,
+                                const std::string& user_agent, uint64_t content_length,
+                                const void* post_data, size_t post_size, int* out_status,
+                                std::string* out_headers, std::vector<uint8_t>* out_body) {
+	const auto scheme_end = url.find("://");
+	if (scheme_end == std::string::npos) {
+		return HTTP_ERROR_INVALID_URL;
+	}
+	const std::string rest       = url.substr(scheme_end + 3);
+	const auto        path_start = rest.find('/');
+	const std::string host_port  = (path_start == std::string::npos) ? rest : rest.substr(0, path_start);
+	const std::string path       = (path_start == std::string::npos) ? std::string("/") : rest.substr(path_start);
+
+	std::string host;
+	uint16_t    port = 443;
+	std::string host_header;
+	if (!HttpParseHostPort(host_port, 443, &host, &port, &host_header)) {
+		return HTTP_ERROR_INVALID_URL;
+	}
+
+	OpenSslConn conn;
+	if (!conn.Connect(host, port)) {
+		return HTTP_ERROR_NETWORK;
+	}
+
+	std::string req;
+	req += method + " " + path + " HTTP/1.1\r\n";
+	req += "Host: " + host_header + "\r\n";
+	if (!user_agent.empty()) {
+		req += "User-Agent: " + user_agent + "\r\n";
+	}
+	req += "Connection: close\r\n";
+	const uint64_t body_len = (post_size != 0 ? post_size : content_length);
+	req += "Content-Length: " + std::to_string(body_len) + "\r\n\r\n";
+	if (post_data != nullptr && post_size != 0) {
+		req.append(static_cast<const char*>(post_data), post_size);
+	}
+	if (!conn.Write(req.data(), req.size())) {
+		return HTTP_ERROR_BEFORE_SEND;
+	}
+
+	std::vector<uint8_t> raw;
+	uint8_t              buf[16384];
+	for (;;) {
+		const int got = conn.Read(buf, sizeof(buf));
+		if (got <= 0) {
+			break;
+		}
+		raw.insert(raw.end(), buf, buf + got);
+		if (raw.size() >= kHttpFetchMaxBody) {
+			break;
+		}
+	}
+
+	const uint8_t sep[] = {'\r', '\n', '\r', '\n'};
+	auto          pos   = std::search(raw.begin(), raw.end(), sep, sep + 4);
+	if (pos == raw.end()) {
+		return HTTP_ERROR_NETWORK;
+	}
+	const size_t      hdr_len = static_cast<size_t>(pos - raw.begin());
+	const std::string headers(reinterpret_cast<const char*>(raw.data()), hdr_len);
+	std::istringstream hs(headers);
+	std::string        line;
+	if (!std::getline(hs, line)) {
+		return HTTP_ERROR_NETWORK;
+	}
+	int status = 0;
+	if (line.rfind("HTTP/", 0) == 0) {
+		const auto sp1 = line.find(' ');
+		const auto sp2 = (sp1 == std::string::npos) ? std::string::npos : line.find(' ', sp1 + 1);
+		if (sp1 != std::string::npos && sp2 != std::string::npos) {
+			status = std::atoi(line.c_str() + sp1 + 1);
+		}
+	}
+	if (status < 100) {
+		return HTTP_ERROR_NETWORK;
+	}
+	*out_status  = status;
+	*out_headers = headers;
+	out_body->assign(raw.begin() + static_cast<std::ptrdiff_t>(hdr_len) + 4, raw.end());
+	return OK;
+}
+#endif // KYTY_HAVE_OPENSSL
+#endif // !_WIN32
 // Performs a blocking HTTP request over the Winsock netstack: resolve, connect,
-// send a minimal GET/POST, read status + headers + body. HTTPS is not
-// attempted (no TLS); an https:// URL fails cleanly with a network error so
-// callers see the failure instead of hanging.
+// send a GET/POST, read status + headers + body. On Windows, https:// is routed
+// through WinHttp (system TLS). Other platforms keep plain HTTP and report an
+// unsupported scheme for https instead of hanging.
 int HttpFetchSync(const std::string& url, const std::string& method, const std::string& user_agent,
-                  uint64_t content_length, int* out_status, std::string* out_headers,
-                  std::vector<uint8_t>* out_body) {
+                  uint64_t content_length, const void* post_data, size_t post_size,
+                  int* out_status, std::string* out_headers, std::vector<uint8_t>* out_body) {
 	*out_status = 0;
 	out_headers->clear();
 	out_body->clear();
+
+	// Winsock must be initialised before getaddrinfo/socket/connect. WinHTTP (the
+	// https:// path) initialises it as a side effect, which masked this until an
+	// http:// request ran first.
+	if (!Net::EnsureSocketBackend()) {
+		return HTTP_ERROR_NETWORK;
+	}
 
 	// url: scheme://host[:port]/path
 	const auto scheme_end = url.find("://");
@@ -2656,9 +3181,20 @@ int HttpFetchSync(const std::string& url, const std::string& method, const std::
 		return HTTP_ERROR_INVALID_URL;
 	}
 	const std::string scheme = url.substr(0, scheme_end);
+#if defined(_WIN32)
+	if (scheme == "https") {
+		return HttpFetchSyncWinHttp(url, method, user_agent, content_length, post_data, post_size,
+		                            out_status, out_headers, out_body);
+	}
+#else
+#if defined(KYTY_HAVE_OPENSSL)
+	if (scheme == "https") {
+		return HttpFetchSyncOpenSsl(url, method, user_agent, content_length, post_data, post_size,
+		                            out_status, out_headers, out_body);
+	}
+#endif
+#endif
 	if (scheme != "http") {
-		// No TLS support in this client; https would require SslOpen etc.
-		LOGF("Http: https:// not supported by the built-in client (%s)\n", url.c_str());
 		return HTTP_ERROR_BEFORE_SEND;
 	}
 
@@ -2669,37 +3205,35 @@ int HttpFetchSync(const std::string& url, const std::string& method, const std::
 
 	std::string host;
 	uint16_t    port = 80;
-	auto        colon = host_port.rfind(':');
-	if (colon != std::string::npos && host_port.find(']') == std::string::npos) {
-		host = host_port.substr(0, colon);
-		port = static_cast<uint16_t>(std::strtoul(host_port.c_str() + colon + 1, nullptr, 10));
-		if (port == 0) {
-			port = 80;
-		}
-	} else {
-		host = host_port;
-	}
-	if (host.empty()) {
+	std::string host_header;
+	if (!HttpParseHostPort(host_port, 80, &host, &port, &host_header)) {
 		return HTTP_ERROR_INVALID_URL;
 	}
 
+	// AF_UNSPEC so IPv6-only hosts resolve too.
 	addrinfo hints {};
-	hints.ai_family = AF_INET;
+	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	addrinfo* result = nullptr;
-	if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0 || result == nullptr) {
+	const int gai = getaddrinfo(host.c_str(), nullptr, &hints, &result);
+	if (gai != 0 || result == nullptr) {
 		return HTTP_ERROR_NETWORK;
 	}
 
 	int ret = HTTP_ERROR_NETWORK;
 	for (addrinfo* ai = result; ai != nullptr; ai = ai->ai_next) {
-		if (ai->ai_family != AF_INET) {
+		if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6) {
 			continue;
 		}
-		auto* sa   = reinterpret_cast<sockaddr_in*>(ai->ai_addr);
-		sa->sin_port = htons(port);
+		if (ai->ai_family == AF_INET) {
+			auto* sa     = reinterpret_cast<sockaddr_in*>(ai->ai_addr);
+			sa->sin_port = htons(port);
+		} else {
+			auto* sa      = reinterpret_cast<sockaddr_in6*>(ai->ai_addr);
+			sa->sin6_port = htons(port);
+		}
 
-		const SOCKET sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		const SOCKET sock = ::socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
 		if (sock == INVALID_SOCKET) {
 			break;
 		}
@@ -2713,7 +3247,7 @@ int HttpFetchSync(const std::string& url, const std::string& method, const std::
 		// advertised but not transmitted; responses are what games poll for.
 		std::string req;
 		req += method + " " + path + " HTTP/1.1\r\n";
-		req += "Host: " + host_port + "\r\n";
+		req += "Host: " + host_header + "\r\n";
 		if (!user_agent.empty()) {
 			req += "User-Agent: " + user_agent + "\r\n";
 		}
@@ -2721,8 +3255,14 @@ int HttpFetchSync(const std::string& url, const std::string& method, const std::
 		req += "Content-Length: " + std::to_string(content_length) + "\r\n";
 		req += "\r\n";
 
-		const int sent = ::send(sock, req.data(), static_cast<int>(req.size()), 0);
-		if (sent == SOCKET_ERROR || static_cast<size_t>(sent) != req.size()) {
+		// POST bodies used to be advertised via Content-Length but never sent.
+		std::string packet = req;
+		if (post_data != nullptr && post_size != 0) {
+			packet.append(static_cast<const char*>(post_data), post_size);
+		}
+
+		const int sent = ::send(sock, packet.data(), static_cast<int>(packet.size()), 0);
+		if (sent == SOCKET_ERROR || static_cast<size_t>(sent) != packet.size()) {
 			::closesocket(sock);
 			continue;
 		}
@@ -2798,7 +3338,7 @@ int HttpFetchSync(const std::string& url, const std::string& method, const std::
 
 } // namespace
 
-int KYTY_SYSV_ABI HttpSendRequest(int request_id, const void* /*post_data*/, size_t /*size*/) {
+int KYTY_SYSV_ABI HttpSendRequest(int request_id, const void* post_data, size_t size) {
 	PRINT_NAME();
 
 	LOGF("\t request_id = %d\n", request_id);
@@ -2820,7 +3360,8 @@ int KYTY_SYSV_ABI HttpSendRequest(int request_id, const void* /*post_data*/, siz
 	int                status = 0;
 	std::string        headers;
 	std::vector<uint8_t> body;
-	const int result = HttpFetchSync(url, verb, user_agent, content_length, &status, &headers, &body);
+	const int result = HttpFetchSync(url, verb, user_agent, content_length, post_data, size, &status,
+	                                 &headers, &body);
 
 	g_net->HttpCompleteRequest(Network::Id(request_id), result, status, std::move(headers),
 	                           std::move(body));
@@ -3328,12 +3869,12 @@ static HostNetworkInfo QueryHostNetworkInfo() {
 
 static bool NetCtlConnected() {
 	if (!g_net_ctl_status_initialized.load()) {
-		// g_net_ctl_connected          = HostNetworkConnected();
-		g_net_ctl_connected          = false;
+		// Reporting a connected console is opt-in (--network-online). Historically this
+		// always reported "offline" so games would skip network features; reporting the
+		// real adapter state makes them attempt online paths, which may reach stubbed
+		// Np*/Ssl* services. Gating keeps the old behavior the default.
+		g_net_ctl_connected          = (Config::NetworkOnlineEnabled() && HostNetworkConnected());
 		g_net_ctl_status_initialized = true;
-		// LOGF("\t host network connected = %s\n", (g_net_ctl_connected.load() ? "true" :
-		// "false"));
-		LOGF("\t host network connected = false (forced offline)\n");
 	}
 
 	return g_net_ctl_connected.load();
@@ -3342,11 +3883,8 @@ static bool NetCtlConnected() {
 int KYTY_SYSV_ABI NetCtlInit() {
 	PRINT_NAME();
 
-	// g_net_ctl_connected = HostNetworkConnected();
-	g_net_ctl_connected          = false;
+	g_net_ctl_connected          = (Config::NetworkOnlineEnabled() && HostNetworkConnected());
 	g_net_ctl_status_initialized = true;
-	// LOGF("\t host network connected = %s\n", (g_net_ctl_connected.load() ? "true" : "false"));
-	LOGF("\t host network connected = false (forced offline)\n");
 
 	return OK;
 }
@@ -3481,10 +4019,13 @@ int KYTY_SYSV_ABI NetCtlGetInfo(int code, NetCtlInfo* info) {
 
 	memset(info, 0, sizeof(NetCtlInfo));
 
-	// Online/host-backed info responses are left below for testing, but disabled
-	// to preserve the disconnected-console behavior.
-	return NET_CTL_ERROR_NOT_CONNECTED;
+	// Without --network-online, preserve the original disconnected-console response.
+	if (!Config::NetworkOnlineEnabled()) {
+		return NET_CTL_ERROR_NOT_CONNECTED;
+	}
 
+	// Host-backed info: every field below is filled from the adapter state
+	// reported by QueryHostNetworkInfo().
 	switch (code) {
 		case 1:
 			info->device =

@@ -2056,6 +2056,35 @@ void TestNewShaderRecompilerMoreAluFamilies() {
 	CheckSpirvBinaryValidates(result.spirv);
 }
 
+// Regression test for upstream KytyPS5 issue #349 (LEGO 2K Drive).
+// The game's compute shader contains a VOP1 V_NOT_B32 (opcode 0x37) with a
+// partial-width SDWA destination write (dst_sel=4 -> word0). Previously no
+// VOP1_SDWA_RULES entry existed for V_NOT_B32, so FindVop1SdwaRule() returned
+// nullptr and the decoder rejected the whole shader as "unsupported" ->
+// "VOP1 SDWA destination selector is not supported", crashing the game at the
+// online-services/menu screen. The rule was added in VectorAluOps.cpp; this
+// test pins the exact encoding so it can never regress.
+void TestNewShaderRecompilerVNotB32SdwaPartialDestination() {
+	const uint32_t shader[] = {
+	    EncodeVop1(0x37, 249, 249),
+	    EncodeVop1Sdwa(5, 4, 2, 6),
+	    0xbf810000u,
+	};
+
+	ShaderRecompiler::CompileOptions options;
+	options.stage   = ShaderType::Compute;
+	options.dump_ir = true;
+
+	ShaderRecompiler::CompileResult result;
+	std::string                     error;
+	Check(ShaderRecompiler::TryRecompile(shader, options, result, &error), error.c_str());
+	Check(Common::ContainsStr(result.decoded_dump, "v_not_b32"),
+	      "new decoder did not decode VOP1 V_NOT_B32 with partial SDWA destination");
+	Check(!Common::ContainsStr(
+	        result.decoded_dump, "VOP1 SDWA destination selector is not supported"),
+	      "regression: VOP1 SDWA partial destination still rejected V_NOT_B32");
+}
+
 void TestNewShaderRecompilerExpandedAluBatch() {
 	const uint32_t shader[] = {
 	    EncodeSopk(0x00, 9, 7),          // s_movk_i32 s9, 7
@@ -7537,6 +7566,7 @@ int main() {
 	TestNewShaderRecompilerMoreAluFamilies();
 	TestNewShaderRecompilerRejectsDppOn64BitCompares();
 	TestNewShaderRecompilerIrLookupMissFailsExplicitly();
+	TestNewShaderRecompilerVNotB32SdwaPartialDestination();
 	TestNewShaderRecompilerExpandedAluBatch();
 	TestNewShaderRecompilerVop3pPackedF16();
 	TestNewShaderRecompilerStagedShaderOps();

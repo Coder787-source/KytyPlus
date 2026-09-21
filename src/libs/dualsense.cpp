@@ -33,91 +33,144 @@ namespace Libs::DualSense {
 
 namespace {
 
-// DualSense input report (USB, report id 0x01). Documented offsets.
-struct InputReportUsb {
-	uint8_t  report_id;          // 0x01
-	uint8_t  buttons_lo;         // [0..7] in byte 1
-	uint8_t  buttons_hi;         // [0..7] in byte 2
-	uint8_t  buttons2_lo;        // byte 3 (PS/touchpad/mic)
-	uint8_t  buttons2_hi;        // byte 4
-	uint8_t  left_stick_x;       // byte 5
-	uint8_t  left_stick_y;       // byte 6
-	uint8_t  right_stick_x;      // byte 7
-	uint8_t  right_stick_y;      // byte 8
-	uint8_t  l2;                  // byte 9 (analog)
-	uint8_t  r2;                  // byte 10 (analog)
-	uint8_t  sequence;           // byte 11
-	uint8_t  reserved_a[3];     // bytes 12-14
-	int16_t gyro_x;              // bytes 15-16 (LE, raw)
-	int16_t gyro_y;              // bytes 17-18
-	int16_t gyro_z;              // bytes 19-20
-	int16_t accel_x;             // bytes 21-22
-	int16_t accel_y;             // bytes 23-24
-	int16_t accel_z;             // bytes 25-26
-	// ... touchpad, timestamp, battery follow (parsed below by offset, not via struct).
-};
-static_assert(sizeof(InputReportUsb) >= 27, "DualSense input report header size");
+// DualSense USB input report (report id 0x01, 64 bytes). Byte offsets follow the
+// authoritative layout from the Linux hid-playstation driver (dualsense_input_report),
+// after the 1-byte report ID:
+//   [1-2] left stick x,y   [3-4] right stick x,y   [5-6] L2,R2 analog
+//   [7] seq number                                        [8-11] buttons[4]
+//   [12-15] reserved              [16-21] gyro x,y,z (le16)
+//   [22-27] accel x,y,z (le16)    [28-31] sensor timestamp (le32)
+//   [33-40] touch points[2] (4 bytes each)  [53] status (battery/nibble charging)
+constexpr size_t DS_REPORT_USB_SIZE        = 64;
+constexpr size_t DS_OFF_LX                 = 1;
+constexpr size_t DS_OFF_LY                 = 2;
+constexpr size_t DS_OFF_RX                 = 3;
+constexpr size_t DS_OFF_RY                 = 4;
+constexpr size_t DS_OFF_L2                 = 5;
+constexpr size_t DS_OFF_R2                 = 6;
+constexpr size_t DS_OFF_SEQ                = 7;
+constexpr size_t DS_OFF_BUTTONS            = 8;  // 4 bytes: [0]=hat+squares, [1]=bumpers/options, [2]=PS/touch/mic
+constexpr size_t DS_OFF_GYRO               = 16; // 3 x le16
+constexpr size_t DS_OFF_ACCEL              = 22; // 3 x le16
+constexpr size_t DS_OFF_TOUCH              = 33; // 2 touch points x 4 bytes
+constexpr size_t DS_OFF_STATUS             = 53; // battery nibble [3:0], charging [7:4]
 
-// DualSense output report (USB, report id 0x05). Documented offsets.
-struct OutputReportUsb {
-	uint8_t  report_id;          // 0x05
-	uint8_t  flags1;             // feature flags byte 1
-	uint8_t  flags2;             // feature flags byte 2
-	uint8_t  right_motor;        // small motor (high-freq)
-	uint8_t  left_motor;         // large motor (low-freq)
-	uint8_t  trigger_left[10];   // L2 trigger effect block (10 bytes)
-	uint8_t  trigger_right[10];  // R2 trigger effect block (10 bytes)
-	uint8_t  reserved_b[4];      // bytes 22-25
-	uint8_t  lightbar_r;         // byte 26
-	uint8_t  lightbar_g;         // byte 27
-	uint8_t  lightbar_b;         // byte 28
-	uint8_t  reserved_c[40];     // padding to 74-byte report
-};
-static_assert(sizeof(OutputReportUsb) <= 74, "DualSense output report size");
+// Read a little-endian 16-bit value at a given report offset.
+inline int16_t LE16Bytes(const uint8_t* buf, size_t off) {
+	return static_cast<int16_t>(static_cast<uint16_t>(buf[off]) | (static_cast<uint16_t>(buf[off + 1]) << 8));
+}
 
-// Build a 10-byte trigger effect block from a TriggerEffectParam.
-// Layout follows the documented DualSense trigger report:
-//   [0] mode, [1] strength10/position, [2] strength, [3] start,
-//   [4] end/decel, [5] frequency/amplitude, [6] .. [9] reserved.
+// D-pad hat switch (low nibble of buttons[0]) -> combined direction bitmask.
+constexpr uint32_t HAT_BIT_UP    = 0x0010;
+constexpr uint32_t HAT_BIT_RIGHT = 0x0020;
+constexpr uint32_t HAT_BIT_DOWN  = 0x0040;
+constexpr uint32_t HAT_BIT_LEFT  = 0x0080;
+
+// Convert the 4-bit hat switch value (idle 0x8, compass N=0x0, NE=0x1, ... NW=0x7)
+// to the independent D-pad direction bits used by the rest of the code.
+uint32_t HatToDpadBits(uint8_t hat) {
+	switch (hat & 0x0F) {
+		case 0x0: return HAT_BIT_UP;                       // N
+		case 0x1: return HAT_BIT_UP | HAT_BIT_RIGHT;       // NE
+		case 0x2: return HAT_BIT_RIGHT;                     // E
+		case 0x3: return HAT_BIT_DOWN | HAT_BIT_RIGHT;     // SE
+		case 0x4: return HAT_BIT_DOWN;                      // S
+		case 0x5: return HAT_BIT_DOWN | HAT_BIT_LEFT;      // SW
+		case 0x6: return HAT_BIT_LEFT;                      // W
+		case 0x7: return HAT_BIT_UP | HAT_BIT_LEFT;        // NW
+		default:  return 0;                                 // idle 0x8 or invalid
+	}
+}
+
+// DualSense USB output report (report id 0x02, 63 bytes). Byte offsets follow the
+// Linux hid-playstation.c output struct (dualsense_output_report_usb) plus the
+// trigger-effect blocks and lightbar confirmed by community reverse-engineering:
+//   [0] report id 0x02      [1-2] valid/flags        [3] right motor  [4] left motor
+//   [11-21] right trigger effect (mode + 10 params)  [22-32] left trigger effect
+//   [33-36] audio/reserved  [37] power  [38] speaker vol
+//   [45] lightbar R  [46] lightbar G  [47] lightbar B
+constexpr size_t DS_OUT_REPORT_USB_SIZE = 63;
+constexpr uint8_t DS_OUT_REPORT_ID_USB  = 0x02;
+constexpr size_t DS_OUT_FLAGS0          = 1;   // rumble/triggers/audio enable bits
+constexpr size_t DS_OUT_FLAGS1          = 2;   // mic-light/player-LED/power enabling
+constexpr size_t DS_OUT_MOTOR_RIGHT      = 3;
+constexpr size_t DS_OUT_MOTOR_LEFT       = 4;
+constexpr size_t DS_OUT_TRIGGER_RIGHT    = 11; // 11 bytes: mode + 10 params
+constexpr size_t DS_OUT_TRIGGER_LEFT     = 22; // 11 bytes: mode + 10 params
+constexpr size_t DS_OUT_LIGHTBAR_R       = 45;
+constexpr size_t DS_OUT_LIGHTBAR_G       = 46;
+constexpr size_t DS_OUT_LIGHTBAR_B       = 47;
+// Flags byte 0 bits (what this packet changes).
+constexpr uint8_t DS_OUT_F0_RUMBLE_RIGHT = 0x01;
+constexpr uint8_t DS_OUT_F0_RUMBLE_LEFT  = 0x02;
+constexpr uint8_t DS_OUT_F0_TRIGGER_RIGHT= 0x04;
+constexpr uint8_t DS_OUT_F0_TRIGGER_LEFT = 0x08;
+// Flags byte 1: LIGHTBAR_CONTROL_ENABLE (0x04) + RELEASE_LEDS (0x08) from the kernel
+// output struct. Both are needed to apply a new lightbar color reliably.
+constexpr uint8_t DS_OUT_F1_LED_ENABLE   = 0x04;
+constexpr uint8_t DS_OUT_F1_LED_RELEASE  = 0x08;
+
+// Build an 11-byte trigger effect block (mode byte + 10 packed params) using the
+// OFFICIAL mode bytes and the zone-bitpacked layout confirmed by the ExtendInput/
+// reWASD reverse-engineering (Steamworks 1.55). Each of the 10 positions encodes a
+// 3-bit strength in a packed 32-bit field, plus a per-position active bitmask.
 void BuildTriggerBlock(uint8_t* out, const TriggerEffectParam& e) {
-	std::memset(out, 0, 10);
-	out[0] = static_cast<uint8_t>(e.mode);
+	std::memset(out, 0, 11);
+
+	// Helper: fill all 10 zones with a single strength (Feedback-style).
+	auto fillUniform = [&](uint8_t strength) {
+		if (strength > 8 || strength == 0) return;
+		const uint8_t force = static_cast<uint8_t>((strength - 1) & 0x07);
+		uint32_t zones = 0;
+		uint16_t active = 0;
+		for (int i = e.start; i < 10; i++) {
+			zones  |= static_cast<uint32_t>(force) << (3 * i);
+			active |= static_cast<uint16_t>(1) << i;
+		}
+		out[1] = static_cast<uint8_t>(active & 0xFF);
+		out[2] = static_cast<uint8_t>((active >> 8) & 0xFF);
+		out[3] = static_cast<uint8_t>(zones & 0xFF);
+		out[4] = static_cast<uint8_t>((zones >> 8) & 0xFF);
+		out[5] = static_cast<uint8_t>((zones >> 16) & 0xFF);
+		out[6] = static_cast<uint8_t>((zones >> 24) & 0xFF);
+	};
+
 	switch (e.mode) {
 		case TriggerEffect::Feedback:
-			out[1] = 0;            // enable flags
-			out[2] = e.strength;    // resistance strength 0-7
+			out[0] = static_cast<uint8_t>(TriggerEffect::Feedback); // 0x21
+			fillUniform(e.strength);
 			break;
 		case TriggerEffect::Weapon:
-			out[1] = 0;
-			out[2] = e.strength;    // initial resistance
-			out[3] = e.start;       // stage start
-			out[4] = e.end;         // stage end
-			out[5] = e.frequency;   // strength after stage
+			out[0] = static_cast<uint8_t>(TriggerEffect::Weapon); // 0x25
+			if (e.strength > 8 || e.strength == 0) break;
+			// start/end position zones + strength; start must be 2..7, end start+1..8.
+			{	uint8_t start = e.start > 7 ? 7 : e.start < 2 ? 2 : e.start;
+				uint8_t end   = e.end > 8 ? 8 : e.end; 
+				if (end <= start) end = start + 1;
+				uint16_t zones = static_cast<uint16_t>((1 << start) | (1 << end));
+				out[1] = static_cast<uint8_t>(zones & 0xFF);
+				out[2] = static_cast<uint8_t>((zones >> 8) & 0xFF);
+				out[3] = static_cast<uint8_t>(e.strength - 1);
+			}
 			break;
 		case TriggerEffect::Vibration:
-			out[1] = 0;
-			out[2] = e.strength;    // amplitude
-			out[3] = e.start;
-			out[4] = e.end;
-			out[5] = e.frequency;   // frequency
-			break;
-		case TriggerEffect::Slope:
-			out[1] = 0;
-			out[2] = e.strength;
-			out[3] = e.start;
-			out[4] = e.end;
+			out[0] = static_cast<uint8_t>(TriggerEffect::Vibration); // 0x26
+			// position + amplitude (uniform zones) + frequency at param P9 (out[9]).
+			fillUniform(e.strength ? e.strength : 1);
+			out[9] = e.frequency;
 			break;
 		case TriggerEffect::Off:
 		default:
-			// all zeros = off
+			out[0] = static_cast<uint8_t>(TriggerEffect::Off); // 0x05: all zeros = off
 			break;
 	}
 }
 
-// DualSense gyro/accel scale (documented sensitivity).
-// Gyro: ~0.00269 deg/s/LSB; Accel: ~0.000976 m/s^2/LSB.
-constexpr float GYRO_SCALE  = 0.00269f;
-constexpr float ACCEL_SCALE = 0.000976f;
+
+
+// DualSense gyro/accel scale (from Linux hid-playstation.c).
+constexpr float GYRO_SCALE  = 1.0f / 1024.0f; // 1024 LSB per deg/s
+constexpr float ACCEL_SCALE = 1.0f / 8192.0f; // 8192 LSB per g
 
 } // namespace
 
@@ -240,56 +293,94 @@ bool DualSenseDriver::PollOnce(InputState* out) {
 	// we read raw input reports.
 	DWORD read_n = 0;
 	BOOL ok = ReadFile(m_handle, buf, sizeof(buf), &read_n, nullptr);
-	if (!ok || read_n < sizeof(InputReportUsb)) {
+	if (!ok || read_n < DS_REPORT_USB_SIZE) {
 		return false;
 	}
 	return ParseInputReportUsb(buf, static_cast<size_t>(read_n), out);
 }
 
 bool DualSenseDriver::ParseInputReportUsb(const uint8_t* buf, size_t len, InputState* out) {
-	if (buf == nullptr || out == nullptr || len < sizeof(InputReportUsb)) return false;
+	if (buf == nullptr || out == nullptr || len < DS_REPORT_USB_SIZE) return false;
 	if (buf[0] != 0x01) return false; // USB input report id
 
-	auto* rep = reinterpret_cast<const InputReportUsb*>(buf);
+	// Buttons: buttons[0] low nibble = hat, bits 4-7 = Square/Cross/Circle/Triangle;
+	// buttons[1] = L1/R1/L2/R2/Create/Options/L3/R3; buttons[2] = PS/Touchpad/Mic.
+	const uint8_t b0 = buf[DS_OFF_BUTTONS + 0];
+	const uint8_t b1 = buf[DS_OFF_BUTTONS + 1];
+	const uint8_t b2 = buf[DS_OFF_BUTTONS + 2];
 
-	uint32_t buttons = 0;
-	buttons |= static_cast<uint32_t>(rep->buttons_lo);
-	buttons |= static_cast<uint32_t>(rep->buttons_hi) << 8;
-	buttons |= static_cast<uint32_t>(rep->buttons2_lo) << 16;
+	uint32_t buttons = HatToDpadBits(b0 & 0x0F);
+	buttons |= static_cast<uint32_t>((b0 >> 4) & 0x0F) << 0; // Square/Cro/Cur/Tri in low bits
+
+	// Re-map the physical positions into the single 32-bit bitmask used by the
+	// rest of the code (Button* constants in dualsense.h).
+	// b0 bit4 Square -> Square(0x4), bit5 Cross -> Cross(0x1), bit6 Circle -> Circle(0x2), bit7 Triangle -> Triangle(0x8)
+	buttons &= ~0x0F; // remove raw face nibble
+	if (b0 & 0x10) buttons |= ButtonSquare;
+	if (b0 & 0x20) buttons |= ButtonCross;
+	if (b0 & 0x40) buttons |= ButtonCircle;
+	if (b0 & 0x80) buttons |= ButtonTriangle;
+
+	if (b1 & 0x01) buttons |= ButtonL1;
+	if (b1 & 0x02) buttons |= ButtonR1;
+	if (b1 & 0x04) buttons |= ButtonL2;
+	if (b1 & 0x08) buttons |= ButtonR2;
+	if (b1 & 0x10) buttons |= ButtonCreate;
+	if (b1 & 0x20) buttons |= ButtonOptions;
+	if (b1 & 0x40) buttons |= ButtonL3;
+	if (b1 & 0x80) buttons |= ButtonR3;
+
+	if (b2 & 0x01) buttons |= ButtonPsButton;
+	if (b2 & 0x02) buttons |= ButtonTouchpad;
+	if (b2 & 0x04) buttons |= ButtonMicMute;
 
 	out->buttons       = buttons;
-	out->left_stick_x  = rep->left_stick_x;
-	out->left_stick_y  = rep->left_stick_y;
-	out->right_stick_x = rep->right_stick_x;
-	out->right_stick_y = rep->right_stick_y;
-	out->l2            = rep->l2;
-	out->r2            = rep->r2;
-	out->sequence      = rep->sequence;
+	out->left_stick_x  = buf[DS_OFF_LX];
+	out->left_stick_y  = buf[DS_OFF_LY];
+	out->right_stick_x = buf[DS_OFF_RX];
+	out->right_stick_y = buf[DS_OFF_RY];
+	out->l2            = buf[DS_OFF_L2];
+	out->r2            = buf[DS_OFF_R2];
+	out->sequence      = buf[DS_OFF_SEQ];
 
-	out->motion.gyro_x  = static_cast<float>(rep->gyro_x)  * GYRO_SCALE;
-	out->motion.gyro_y  = static_cast<float>(rep->gyro_y)  * GYRO_SCALE;
-	out->motion.gyro_z  = static_cast<float>(rep->gyro_z)  * GYRO_SCALE;
-	out->motion.accel_x = static_cast<float>(rep->accel_x) * ACCEL_SCALE;
-	out->motion.accel_y = static_cast<float>(rep->accel_y) * ACCEL_SCALE;
-	out->motion.accel_z = static_cast<float>(rep->accel_z) * ACCEL_SCALE;
+	// Motion sensors: le16, gyro at 16, accel at 22.
+	const int16_t gx = LE16Bytes(buf, DS_OFF_GYRO + 0);
+	const int16_t gy = LE16Bytes(buf, DS_OFF_GYRO + 2);
+	const int16_t gz = LE16Bytes(buf, DS_OFF_GYRO + 4);
+	const int16_t ax = LE16Bytes(buf, DS_OFF_ACCEL + 0);
+	const int16_t ay = LE16Bytes(buf, DS_OFF_ACCEL + 2);
+	const int16_t az = LE16Bytes(buf, DS_OFF_ACCEL + 4);
+	out->motion.gyro_x  = static_cast<float>(gx) * GYRO_SCALE;
+	out->motion.gyro_y  = static_cast<float>(gy) * GYRO_SCALE;
+	out->motion.gyro_z  = static_cast<float>(gz) * GYRO_SCALE;
+	out->motion.accel_x = static_cast<float>(ax) * ACCEL_SCALE;
+	out->motion.accel_y = static_cast<float>(ay) * ACCEL_SCALE;
+	out->motion.accel_z = static_cast<float>(az) * ACCEL_SCALE;
 
-	// Touchpad: documented at bytes 33-43 (two points, 4 bytes each + header).
-	// Parse defensively based on length.
-	if (len >= 45) {
+	// Touchpad: two points, 4 bytes each, starting at byte 33. Each point:
+	//   [0] contact (bit7 set = inactive, id = low 7 bits)
+	//   [1] x_lo
+	//   [2] x_hi:4 | y_lo:4
+	//   [3] y_hi
+	//   =>  X = ((byte2 & 0x0F)<<8) | byte1 ;  Y = (byte3<<4) | (byte2>>4)
+	if (len >= DS_OFF_TOUCH + 8) {
 		for (int t = 0; t < 2; ++t) {
-			size_t base = 33 + t * 4;
-			uint8_t p0 = buf[base + 0];
-			uint8_t p1 = buf[base + 1];
-			uint8_t p2 = buf[base + 2];
-			out->touch[t].active = (p0 & 0x80) == 0; // bit7 clear = touching
-			out->touch[t].id     = static_cast<uint8_t>(p0 & 0x7F);
-			out->touch[t].x      = static_cast<uint16_t>(((p1 & 0x0F) << 8) | p2);
-			out->touch[t].y      = static_cast<uint16_t>(((p1 >> 4) & 0x0F) << 8) | buf[base + 3];
+			size_t base = DS_OFF_TOUCH + static_cast<size_t>(t) * 4;
+			uint8_t contact = buf[base + 0];
+			uint8_t x_lo    = buf[base + 1];
+			uint8_t hi      = buf[base + 2];
+			uint8_t y_hi    = buf[base + 3];
+			out->touch[t].active = (contact & 0x80) == 0; // bit7 clear = touching
+			out->touch[t].id     = static_cast<uint8_t>(contact & 0x7F);
+			out->touch[t].x      = static_cast<uint16_t>(((hi & 0x0F) << 8) | x_lo);
+			out->touch[t].y      = static_cast<uint16_t>((static_cast<uint16_t>(y_hi) << 4) | (hi >> 4));
 		}
 	} else {
 		out->touch[0].active = false;
 		out->touch[1].active = false;
 	}
+
+	// Battery/charging status nibble at byte 53 (not exposed in InputState today).
 
 	out->valid = true;
 	return true;
@@ -299,26 +390,39 @@ void DualSenseDriver::SendOutputReportUsb(const VibrationParam* v, const LightBa
                                           const TriggerEffectParam* lt, const TriggerEffectParam* rt) {
 	if (!m_open || m_handle == nullptr) return;
 
-	OutputReportUsb rep {};
-	std::memset(&rep, 0, sizeof(rep));
-	rep.report_id = 0x05;
-	// flags1: bit0 enable rumble, bit3 enable lightbar, bit4 enable trigger L, bit5 enable trigger R
-	rep.flags1 = 0x01 | 0x08;
-	if (lt != nullptr) rep.flags1 |= 0x10;
-	if (rt != nullptr) rep.flags1 |= 0x20;
+	uint8_t rep[DS_OUT_REPORT_USB_SIZE];
+	std::memset(rep, 0, sizeof(rep));
+	rep[0] = DS_OUT_REPORT_ID_USB; // 0x02
 
-	rep.right_motor = v ? v->small_motor : 0;
-	rep.left_motor  = v ? v->large_motor : 0;
+	// Rumble enable flags.
+	if (v != nullptr) {
+		rep[DS_OUT_FLAGS0] |= DS_OUT_F0_RUMBLE_RIGHT | DS_OUT_F0_RUMBLE_LEFT;
+		rep[DS_OUT_MOTOR_RIGHT] = v->small_motor;
+		rep[DS_OUT_MOTOR_LEFT ] = v->large_motor;
+	}
 
-	if (lt != nullptr) BuildTriggerBlock(rep.trigger_left,  *lt);
-	if (rt != nullptr) BuildTriggerBlock(rep.trigger_right, *rt);
+	// Lightbar: enable LED color application; keep previously-set RGB if none given.
+	{	const uint8_t r = lb ? lb->r : m_last_lightbar.r;
+		const uint8_t g = lb ? lb->g : m_last_lightbar.g;
+		const uint8_t b = lb ? lb->b : m_last_lightbar.b;
+		rep[DS_OUT_LIGHTBAR_R] = r;
+		rep[DS_OUT_LIGHTBAR_G] = g;
+		rep[DS_OUT_LIGHTBAR_B] = b;
+		rep[DS_OUT_FLAGS1] |= DS_OUT_F1_LED_ENABLE | DS_OUT_F1_LED_RELEASE;
+	}
 
-	rep.lightbar_r = lb ? lb->r : m_last_lightbar.r;
-	rep.lightbar_g = lb ? lb->g : m_last_lightbar.g;
-	rep.lightbar_b = lb ? lb->b : m_last_lightbar.b;
+	// Adaptive triggers: build an 11-byte block in place.
+	if (lt != nullptr) {
+		rep[DS_OUT_FLAGS0] |= DS_OUT_F0_TRIGGER_LEFT;
+		BuildTriggerBlock(&rep[DS_OUT_TRIGGER_LEFT], *lt);
+	}
+	if (rt != nullptr) {
+		rep[DS_OUT_FLAGS0] |= DS_OUT_F0_TRIGGER_RIGHT;
+		BuildTriggerBlock(&rep[DS_OUT_TRIGGER_RIGHT], *rt);
+	}
 
 	DWORD written = 0;
-	WriteFile(m_handle, &rep, sizeof(rep), &written, nullptr);
+	WriteFile(m_handle, rep, sizeof(rep), &written, nullptr);
 }
 
 #else // non-Windows
@@ -341,7 +445,7 @@ bool DualSenseDriver::ParseInputReportBt(const uint8_t* buf, size_t len, InputSt
 	if (buf[0] != 0x01) return false; // BT input report id
 	// BT report has a 1-byte HID prefix before the same body as USB; offsets shift by ~1.
 	// Reuse USB parser on the body starting at byte 1 if it aligns.
-	if (len - 1 >= sizeof(InputReportUsb)) {
+	if (len - 1 >= DS_REPORT_USB_SIZE) {
 		return ParseInputReportUsb(buf + 1, len - 1, out);
 	}
 	return false;

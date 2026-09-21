@@ -12,8 +12,12 @@
   </property>
   <property name="minimumSize">
    <size>
-    <width>480</width>
-    <height>360</height>
+    <!-- KytyPlus: the layout needs ~500px of height (300px list + 3 labels
+         + 3 buttons + margins). The old 360px minimum let Qt squeeze the
+         list on top of the text labels. Keep this above the layout minimum
+         so the overlap cannot happen again. -->
+    <width>560</width>
+    <height>540</height>
    </size>
   </property>
   <property name="windowTitle">

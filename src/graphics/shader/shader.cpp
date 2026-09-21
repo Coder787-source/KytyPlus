@@ -235,10 +235,14 @@ static bool SpirvValidateBinary(const char* label, uint64_t shader_hash,
 	return false;
 }
 
+// KytyPlus: a single unhandled guest instruction used to tear down the whole process.
+// Recompiler failures are reported instead, and the caller skips the draw / dispatch so
+// the rest of the frame (and every already-working shader) keeps running. Strict mode
+// (--strict-unimplemented) restores the abort for debugging.
 static void ExitShaderRecompilerFailure(const char* label, uint64_t shader_hash,
-                                        const char* reason) {
-	EXIT("%s failed hash=0x%016" PRIx64 ": %s\n", label, shader_hash,
-	     reason != nullptr ? reason : "");
+                                       const char* reason) {
+	SOFT_EXIT("%s failed hash=0x%016" PRIx64 ": %s\n", label, shader_hash,
+	          reason != nullptr ? reason : "");
 }
 
 static const ShaderBinaryInfo* GetBinaryInfo(const uint32_t* code) {
@@ -1437,12 +1441,14 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
 		ExitShaderRecompilerFailure("ShaderRecompiler VS", options.shader_hash, error.c_str());
+		return false;
 	}
 	DumpShaderRecompilerOriginal("vs", options.shader_hash, code, result.decoded_dump);
 	if (!SpirvValidateBinary("ShaderRecompiler VS", options.shader_hash, result.spirv)) {
 		DumpShaderRecompilerSpirv("vs", options.shader_hash, result.spirv);
 		ExitShaderRecompilerFailure("ShaderRecompiler VS", options.shader_hash,
 		                            "SPIR-V validation failed");
+		return false;
 	}
 
 	input_info.stage.program =
@@ -1490,12 +1496,14 @@ bool ShaderCompileSpirvPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegis
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
 		ExitShaderRecompilerFailure("ShaderRecompiler PS", options.shader_hash, error.c_str());
+		return false;
 	}
 	DumpShaderRecompilerOriginal("ps", options.shader_hash, code, result.decoded_dump);
 	if (!SpirvValidateBinary("ShaderRecompiler PS", options.shader_hash, result.spirv)) {
 		DumpShaderRecompilerSpirv("ps", options.shader_hash, result.spirv);
 		ExitShaderRecompilerFailure("ShaderRecompiler PS", options.shader_hash,
 		                            "SPIR-V validation failed");
+		return false;
 	}
 	input_info.stage.program =
 	    std::make_shared<const ShaderRecompiler::IR::Program>(std::move(result.program));
@@ -1540,12 +1548,14 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
 		ExitShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash, error.c_str());
+		return false;
 	}
 	DumpShaderRecompilerOriginal("cs", options.shader_hash, code, result.decoded_dump);
 	if (!SpirvValidateBinary("ShaderRecompiler CS", options.shader_hash, result.spirv)) {
 		DumpShaderRecompilerSpirv("cs", options.shader_hash, result.spirv);
 		ExitShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash,
 		                            "SPIR-V validation failed");
+		return false;
 	}
 	input_info.stage.program =
 	    std::make_shared<const ShaderRecompiler::IR::Program>(std::move(result.program));

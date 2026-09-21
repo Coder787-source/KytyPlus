@@ -53,12 +53,14 @@ enum : uint32_t {
 };
 
 // Adaptive trigger effect modes (output report, documented values).
+// Mode bytes are the OFFICIAL Sony/Steamworks modes (confirmed via Steamworks 1.55
+// logging and the ExtendInput/reWASD reverse-engineering). 0x01/0x02 are legacy
+// "simple" modes and are NOT what Sony firmware expects for normal use.
 enum class TriggerEffect : uint8_t {
-	Off         = 0x05,
-	Feedback    = 0x01, // continuous resistance
-	Weapon      = 0x02, // stage + resistance (weapon cocking)
-	Vibration   = 0x26, // vibration segment
-	Slope       = 0x21, // slope-based resistance
+	Off         = 0x05, // fully disengage + withdraw actuator
+	Feedback    = 0x21, // continuous resistance (10 position zones)
+	Weapon      = 0x25, // stage + resistance (weapon cocking, start/end zones)
+	Vibration   = 0x26, // vibration segment (position + amplitude + frequency)
 };
 
 struct TriggerEffectParam {

@@ -24,9 +24,11 @@
 #include "loader/runtimeLinker.h"
 #include "loader/systemContent.h"
 #include "loader/timer.h"
+#include "shadps4Embedder.h"
 
 #include <cstdlib>
 #include <filesystem>
+#include <string>
 
 namespace Emulator {
 
@@ -180,6 +182,22 @@ static void Execute(const std::filesystem::path& game_patch) {
 	std::quick_exit(0);
 }
 
+// KytyPlus: only PS5 (Prospero) titles reach the native loader here; PS4 titles
+// delegate to shadPS4 and return before Run() is called.
+//
+// This pre-creates the conventional <exe dir>/user tree (including the
+// sys_modules/ drop-in location) so the folders exist on a first run. It
+// deliberately does NOT export SHADPS4_USER_DIR: that variable enables the
+// optional LLE sysmodule scan, and LLE must stay opt-in. Modules staged in
+// that tree may have been built for a different platform, so loading them
+// implicitly would replace working HLE with wrong-ABI code.
+static void PrepareLleSysmoduleDirs() {
+	const auto user_dir = Shadps4Integration::ResolveSharedUserDir();
+	LOGF("User dirs ready: %s, staged tree: %s\n",
+	     Common::PathToString(user_dir).c_str(),
+	     Common::PathToString(user_dir / "sys_modules").c_str());
+}
+
 void Run(const RunOptions& options) {
 	if (options.app0_dir.empty()) {
 		EXIT("app0 directory is required\n");
@@ -203,6 +221,8 @@ void Run(const RunOptions& options) {
 	Libs::LibKernel::FileSystem::Mount(options.app0_dir, "/hostapp");
 
 	MountSandboxDirs();
+
+	PrepareLleSysmoduleDirs();
 
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
 	Libs::InitAll(rt->Symbols());

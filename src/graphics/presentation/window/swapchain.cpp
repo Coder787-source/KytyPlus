@@ -430,10 +430,14 @@ void Swapchain::Create() {
 		    std::clamp(graphics.screen_height, surface.capabilities.minImageExtent.height,
 		               surface.capabilities.maxImageExtent.height);
 	}
-	uint32_t image_count = surface.capabilities.minImageCount + 1;
-	if (surface.capabilities.maxImageCount != 0) {
-		image_count = std::min(image_count, surface.capabilities.maxImageCount);
+	// KytyPlus iGPU: prefer the smallest allowed image count. Every swapchain image is a
+	// full-resolution allocation in shared system memory on an APU; minImageCount+1 gives
+	// 3-4 buffers on this driver, which wastes VRAM the render targets need.
+	uint32_t image_count = surface.capabilities.minImageCount;
+	if (surface.capabilities.maxImageCount != 0 && image_count > surface.capabilities.maxImageCount) {
+		image_count = surface.capabilities.maxImageCount;
 	}
+	image_count = std::max(image_count, 2u);
 	const auto transform =
 	    surface.capabilities.supportedTransforms & vk::SurfaceTransformFlagBitsKHR::eIdentity
 	        ? vk::SurfaceTransformFlagBitsKHR::eIdentity
@@ -490,6 +494,10 @@ void Swapchain::Create() {
 			default:                            return vk::PresentModeKHR::eFifo;
 		}
 	}();
+	// KytyPlus iGPU: make the effective presentation configuration visible at startup.
+	LOGF("Swapchain config: minImageCount=%u extent=%ux%u format=%d presentMode=%s\n",
+	     image_count, m_extent.width, m_extent.height, static_cast<int>(format.format),
+	     vk::to_string(requested_present_mode).c_str());
 	const auto supported_modes = EnumerateVulkan<vk::PresentModeKHR>(
 	    "vkGetPhysicalDeviceSurfacePresentModesKHR", [&](uint32_t* count, vk::PresentModeKHR* modes) {
 		    return graphics.physical_device.getSurfacePresentModesKHR(m_window.surface, count, modes);
@@ -568,7 +576,14 @@ void Swapchain::Destroy() {
 
 	{
 		Common::LockGuard queue_lock(graphics.queue_mutex);
-		RequireVulkanSuccess(graphics.queue.waitIdle(), "wait for swapchain queue");
+		// Shutdown path: after a device loss or TDR reset waitIdle() returns
+		// VK_ERROR_DEVICE_LOST. There is nothing left to drain at this point, and
+		// aborting here turned an already-degraded frame into a hard process exit.
+		const auto wait_result = graphics.queue.waitIdle();
+		if (wait_result != vk::Result::eSuccess) {
+			LOGF("Swapchain: queue idle failed during destroy: %s (%d)\n",
+			     VulkanToString(wait_result).c_str(), static_cast<int>(wait_result));
+		}
 	}
 	if (m_fsr != nullptr) {
 		m_fsr->Destroy();

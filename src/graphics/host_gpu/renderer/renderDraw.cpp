@@ -11,6 +11,7 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/hardwareContext.h"
+#include "graphics/guest_gpu/pm4.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
@@ -486,19 +487,50 @@ static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
 		return false;
 	};
 
-	const bool ps5_ngg_vertex_path = stages == 0x02002000 && vertex_info.es_regs.data_addr != 0 &&
-	                                 vertex_info.gs_regs.chksum != 0 &&
-	                                 sh_regs.m_vgtGsMaxVertOut == 0x00000000 &&
-	                                 is_known_gs_out_prim_type(sh_regs.m_vgtGsOutPrimType);
+	// Decode the active geometry stages from VGT_SHADER_STAGES_EN instead of
+	// matching one literal mask. The old check accepted exactly 0x02002000 and
+	// rejected every other non-zero combination, which is why NGG drew only for
+	// that single front-end. The bits used here are the architected field positions
+	// (PRIMGEN_PASSTHRU_EN bit 25, PRIMGEN_EN bit 13, ES_EN bits 3..4, GS_EN bit 5,
+	// VS_EN bits 6..7), so any front-end that enables the vertex+ES passthrough path
+	// is handled the same way rather than falling through to an unconditional skip.
+	const bool stages_have_vs = (stages & Pm4::VGT_SHADER_STAGES_EN_VS_EN_MASK) != 0;
+	const bool stages_have_es = (stages & Pm4::VGT_SHADER_STAGES_EN_ES_EN_MASK) != 0;
+	const bool stages_have_gs = (stages & Pm4::VGT_SHADER_STAGES_EN_GS_EN_MASK) != 0;
+	const bool stages_primgen = (stages & Pm4::VGT_SHADER_STAGES_EN_PRIMGEN_EN_MASK) != 0;
+	const bool stages_primgen_passthru =
+	    (stages & Pm4::VGT_SHADER_STAGES_EN_PRIMGEN_PASSTHRU_EN_MASK) != 0;
+	const bool stages_tessellation =
+	    (stages & (Pm4::VGT_SHADER_STAGES_EN_LS_EN_MASK | Pm4::VGT_SHADER_STAGES_EN_HS_EN_MASK)) != 0;
 
-	const bool unsupported_stage_mask = (stages != 0 && stages != 0x02002000);
-	const bool unsupported_gs_stage = (vertex_info.es_regs.data_addr != 0 &&
-	                                   vertex_info.gs_regs.data_addr != 0 && !ps5_ngg_vertex_path);
+	// NGG/primgen vertex path. The primgen pass-through front-end (PRIMGEN_EN bit 13
+	// plus PRIMGEN_PASSTHRU_EN bit 25, i.e. 0x02002000) runs the vertex work through the
+	// NGG unit and sets NEITHER VS_EN nor ES_EN, so a front-end test that demands VS_EN
+	// rejects exactly the combination this path exists to handle. Accept any of the
+	// vertex-processing front-ends instead.
+	const bool stages_have_vertex_frontend =
+	    stages_have_vs || stages_have_es || stages_primgen_passthru;
+	const bool ngg_vertex_path =
+	    stages_have_vertex_frontend && vertex_info.es_regs.data_addr != 0 &&
+	    vertex_info.gs_regs.chksum != 0 &&
+	    vertex_info.gs_regs.data_addr == 0 && (stages_primgen_passthru || stages_primgen || stages_have_es) &&
+	    sh_regs.m_vgtGsMaxVertOut == 0x00000000 &&
+	    is_known_gs_out_prim_type(sh_regs.m_vgtGsOutPrimType);
+
+	// A stage combination we do not model: tessellation stages, or a mask that enables
+	// neither a plain VS draw nor the NGG vertex path.
+	const bool unsupported_stage_mask =
+	    stages != 0 && (stages_tessellation || !stages_have_vertex_frontend) && !ngg_vertex_path;
+	// A real (non-passthrough) geometry stage is unsupported when a GS data address is
+	// present -- either alongside the ES address, or with GS_EN set in the stage mask.
+	const bool unsupported_gs_stage =
+	    !ngg_vertex_path && vertex_info.gs_regs.data_addr != 0 &&
+	    (vertex_info.es_regs.data_addr != 0 || stages_have_gs);
 	const bool ge_group_size =
 	    ge_cntl.primitive_group_size > 0x0040 || ge_cntl.vertex_group_size > 0x0040;
 	const bool ge_shader_regs =
 	    (sh_regs.m_geNggSubgrpCntl != 0x00000000 && sh_regs.m_geNggSubgrpCntl != 0x00000001) ||
-	    sh_regs.m_vgtGsMaxVertOut != 0x00000000 ||
+	    (sh_regs.m_vgtGsMaxVertOut != 0x00000000 && !ngg_vertex_path) ||
 	    !is_known_gs_out_prim_type(sh_regs.m_vgtGsOutPrimType) ||
 	    sh_regs.m_geMaxOutputPerSubgroup > 0x00000040;
 
@@ -541,8 +573,10 @@ struct DrawCallInfo {
 	uint32_t             first_instance = 0;
 };
 
-RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderColorInfo* colors,
-                                                 uint32_t color_count, RenderDepthInfo& depth) {
+std::optional<RenderState> RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer,
+                                                      RenderColorInfo* colors,
+                                                      uint32_t color_count,
+                                                      RenderDepthInfo& depth) {
 	EXIT_IF(colors == nullptr || color_count > RENDER_COLOR_ATTACHMENTS_MAX);
 	auto&       cache = m_context.GetTextureCache();
 	RenderState state {};
@@ -565,7 +599,13 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		}
 		target.image_view = cache.FindRenderTarget(target.image_id, target.desc);
 		auto& image       = cache.GetImage(target.image_id);
-		EXIT_IF(image.backing.samples != target.samples || target.image_view == nullptr);
+		EXIT_IF(image.backing.samples != target.samples);
+		if (target.image_view == nullptr) {
+			// KytyPlus: the render target has no backing image (its creation was soft-skipped),
+			// so no view exists. Skip this draw instead of aborting the process.
+			SOFT_EXIT("render target has no view; skipping draw\n");
+			return std::nullopt;
+		}
 		if (attachment_samples == 0) {
 			attachment_samples = target.samples;
 		} else if (attachment_samples != target.samples) {
@@ -612,7 +652,12 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			EXIT("failed to consume HTile clear state\n");
 		}
 		auto& image = cache.GetImage(depth.image_id);
-		EXIT_IF(depth.image_view == nullptr || image.backing.samples != depth.samples);
+		EXIT_IF(image.backing.samples != depth.samples);
+		if (depth.image_view == nullptr) {
+			// KytyPlus: see the color-attachment case above.
+			SOFT_EXIT("depth target has no view; skipping draw\n");
+			return std::nullopt;
+		}
 		if (attachment_samples == 0) {
 			attachment_samples = depth.samples;
 		} else if (attachment_samples != depth.samples) {
@@ -955,7 +1000,10 @@ static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	}
 	if (!ShaderCompileInfoVS(vertex_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
 	                         state.vs_shader)) {
-		EXIT("ShaderCompileInfoVS failed for draw %s\n", draw.name);
+		// KytyPlus: the recompiler already reported the specific gap. Skip this draw and
+		// keep rendering rather than aborting the process on one unsupported instruction.
+		LOGF("GraphicsRender%s: skipping draw, VS recompile failed\n", draw.name);
+		return false;
 	}
 
 	if (!state.ps_active) {
@@ -966,7 +1014,9 @@ static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 	}
 	if (!ShaderCompileInfoPS(pixel_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
 	                         target_export_mapping, state.ps_input_info, state.ps_shader)) {
-		EXIT("ShaderCompileInfoPS failed for draw %s\n", draw.name);
+		// KytyPlus: see the VS note above. Skip the draw instead of aborting.
+		LOGF("GraphicsRender%s: skipping draw, PS recompile failed\n", draw.name);
+		return false;
 	}
 	return true;
 }
@@ -1158,12 +1208,26 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	LogDrawPhase(draw.name, "PrepareBindings");
 	auto bindings        = PrepareGraphicsBindings(buffer, state.vs_input_info.stage,
 	                                               state.ps_input_info.stage, state.ps_active);
+	if (!bindings.valid) {
+		// KytyPlus: an image binding could not be produced (its backing image was never
+		// created). The descriptor set would receive a null view, so skip this draw entirely
+		// rather than aborting the process.
+		LogDrawPhase(draw.name, "BindingsUnavailable-SkipDraw");
+		return;
+	}
 	auto vertex_bindings = PrepareVertexBuffers(submit_id, buffer, draw, state.vs_input_info);
 	auto index_binding   = PrepareIndexBuffer(buffer, index_source);
 	RebindVertexBuffers(buffer, state.vs_input_info, vertex_bindings);
 	RebindIndexBuffer(buffer, index_binding);
-	state.rendering =
-	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info);
+	{
+		auto rendering =
+		    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info);
+		if (!rendering.has_value()) {
+			LogDrawPhase(draw.name, "RenderTargetUnavailable-SkipDraw");
+			return;
+		}
+		state.rendering = *rendering;
+	}
 
 	if (log_pipeline_phase) {
 		LogDrawPhase(draw.name, "CreatePipeline");

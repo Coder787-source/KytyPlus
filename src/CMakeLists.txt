@@ -410,6 +410,7 @@ list(APPEND check_headers
 # definition for the merged tree — previously duplicated here and at top-level).
 
 add_kyty_full_emulator_test(shader_cfg_tests ../tests/shaderCfgTests.cpp)
+target_link_libraries(shader_cfg_tests gcn_decoder)
 
 add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 	../tests/ScalarProvenanceTests.cpp
@@ -512,6 +513,7 @@ target_link_libraries(image_page_table_tests common fmt::fmt)
 target_include_directories(image_page_table_tests PRIVATE ${inc_headers})
 
 add_kyty_full_emulator_test(shader_recompiler_compute_tests ../tests/ShaderRecompilerComputeTests.cpp)
+target_link_libraries(shader_recompiler_compute_tests gcn_decoder)
 
 set(gpu_test_generated_dir "${PROJECT_BINARY_DIR}/gpu_test_shaders")
 set(gpu_test_ms_depth_source
@@ -604,6 +606,17 @@ if (WIN32)
 	target_link_libraries(kyty_emulator opengl32)
 	target_link_libraries(kyty_emulator iphlpapi)
 	target_link_libraries(kyty_emulator ws2_32)
+	# System TLS for https:// via WinHTTP (no third-party TLS dependency).
+	target_link_libraries(kyty_emulator winhttp)
+endif()
+if (NOT WIN32)
+	# Non-Windows TLS for https:// is optional: use OpenSSL when it is present.
+	# Without it, https:// requests report an unsupported scheme rather than failing silently.
+	find_package(OpenSSL QUIET)
+	if (OpenSSL_FOUND)
+		target_compile_definitions(kyty_emulator PRIVATE KYTY_HAVE_OPENSSL)
+		target_link_libraries(kyty_emulator OpenSSL::SSL OpenSSL::Crypto)
+	endif()
 endif()
 if (KYTY_CLANG_CL)
 	target_link_libraries(kyty_emulator onecore)

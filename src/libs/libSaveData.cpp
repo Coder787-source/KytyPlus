@@ -455,7 +455,9 @@ int KYTY_SYSV_ABI SaveDataMount3(const SaveDataMount3* mount, SaveDataMountResul
 	}
 
 	if (!create && !create2 && !open) {
-		EXIT("unknown mount mode: %u", mount->mount_mode);
+		LOGF("\t SaveDataMount: unknown mount mode 0x%08" PRIx32 "\n", mount->mount_mode);
+		g_mount_slots.Release(static_cast<size_t>(slot));
+		return SAVE_DATA_ERROR_PARAMETER;
 	}
 
 	if (open && !Common::File::IsDirectoryExisting(mount_dir)) {
@@ -471,7 +473,12 @@ int KYTY_SYSV_ABI SaveDataMount3(const SaveDataMount3* mount, SaveDataMountResul
 		Common::File::CreateDirectories(mount_dir);
 		created = true;
 
-		EXIT_NOT_IMPLEMENTED((!Common::File::IsDirectoryExisting(mount_dir)));
+		if (!Common::File::IsDirectoryExisting(mount_dir)) {
+			// The host refused to create the save directory (permissions, read-only
+			// medium). Report it to the guest instead of aborting the title.
+			g_mount_slots.Release(static_cast<size_t>(slot));
+			return SAVE_DATA_ERROR_NO_PERMISSION;
+		}
 	}
 
 	return mount_save_data(slot, dir_name, mount_dir, created ? 1u : 0u, mount_result);

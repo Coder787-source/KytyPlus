@@ -29,6 +29,12 @@ public:
 	void               MarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
 	void               UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
 	void               UntrackMemory(uint64_t vaddr, uint64_t size);
+
+	// True while the calling thread is executing inside ForEachUploadRange's upload callback,
+	// during which the tracker (and its region locks) must not be re-entered. Callers that would
+	// otherwise re-enter - notably running deferred GPU operations from a stream-buffer wait that
+	// the upload path triggers - must postpone until this is false.
+	[[nodiscard]] static bool InUploadCallback() noexcept { return s_upload_owner != nullptr; }
 	// Removes protection from a range and flushes GPU-owned data when required.
 	template <typename Flush>
 	void InvalidateRegion(uint64_t vaddr, uint64_t size, Flush&& on_flush) noexcept {

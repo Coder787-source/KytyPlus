@@ -106,6 +106,10 @@ void PipelineCache::LoadDriverCache() {
 				     "reusing it anyway (entries are validated by the driver)\n");
 			}
 		}
+		// Common::File asserts the handle was closed in its destructor, so the read
+		// handle must be released explicitly. This path never ran before the write
+		// fix above, because the cache file never existed to be loaded.
+		file.Close();
 	}
 
 	vk::PipelineCacheCreateInfo create_info {};
@@ -150,18 +154,26 @@ void PipelineCache::SaveDriverCache() const {
 		LOGF("PipelineCache: could not create cache directory\n");
 		return;
 	}
-	Common::File file(path, Common::File::Mode::Write);
+	// Mode::Write maps to SysFileOpenW(), which opens an EXISTING file only
+	// (Windows: OPEN_EXISTING, Linux: fopen "r+"). On a first run, or after the
+	// cache file is deleted, that always failed - so the driver pipeline cache was
+	// never persisted and every launch recompiled all pipelines from scratch.
+	// Create() uses CREATE_ALWAYS, so the file is created when absent.
+	Common::File file(path);
 	if (file.IsInvalid()) {
 		LOGF("PipelineCache: could not open cache file for writing\n");
 		return;
 	}
 	file.Write(data.data(), static_cast<uint32_t>(data.size()));
+	file.Close();
 
 	// Tag the cache file with the driver UUID it was produced by. Not consumed
 	// by the loader (the blob header carries the UUID already); useful for
 	// debugging cache churn by hand.
 	const auto uuid_path = std::filesystem::path(kDriverCachePath).string() + ".uuid";
-	Common::File uuid_file(std::filesystem::path(uuid_path), Common::File::Mode::Write);
+	// Same CREATE-vs-OPEN_EXISTING issue as the cache blob above: the .uuid sidecar
+	// does not exist on a first run, so Mode::Write could never open it.
+	Common::File uuid_file {std::filesystem::path(uuid_path)};
 	if (!uuid_file.IsInvalid()) {
 		char uuid_text[VK_UUID_SIZE * 2 + 1] = {};
 		for (uint32_t i = 0; i < VK_UUID_SIZE; ++i) {
@@ -169,6 +181,7 @@ void PipelineCache::SaveDriverCache() const {
 			              m_graphics.GetPhysicalDeviceProperties().pipelineCacheUUID[i]);
 		}
 		uuid_file.Write(uuid_text, static_cast<uint32_t>(VK_UUID_SIZE * 2));
+		uuid_file.Close();
 	}
 }
 

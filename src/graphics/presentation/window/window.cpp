@@ -856,9 +856,41 @@ static void WindowCreate(WindowContext& context) {
 
 	LOGF("WindowCreate(): width = %d, height = %d\n", width, height);
 
+	// KytyPlus: keep the game in an ordinary window. A window that all but matches the
+	// panel (1280x720 on a 1280x800 display) reads as borderless fullscreen, because the
+	// frame ends up flush with the screen edges. Fit the requested size inside the
+	// display's usable area first so the decorations stay visible and usable.
+	if (!Config::FullscreenEnabled()) {
+		SDL_Rect usable{};
+		if (SDL_GetDisplayUsableBounds(0, &usable) == 0 && usable.w > 0 && usable.h > 0) {
+			constexpr int margin_x = 48;
+			constexpr int margin_y = 96;
+			const int     max_w    = std::max(320, usable.w - margin_x);
+			const int     max_h    = std::max(240, usable.h - margin_y);
+			if (width > max_w) {
+				height = static_cast<int>((static_cast<double>(height) * max_w) / width);
+				width  = max_w;
+			}
+			if (height > max_h) {
+				width  = static_cast<int>((static_cast<double>(width) * max_h) / height);
+				height = max_h;
+			}
+			if (width != static_cast<int>(context.graphic_ctx.screen_width) ||
+			    height != static_cast<int>(context.graphic_ctx.screen_height)) {
+				LOGF("Windowed fit: using %dx%d (display usable %dx%d)\n", width, height, usable.w,
+				     usable.h);
+				context.graphic_ctx.screen_width  = static_cast<uint32_t>(width);
+				context.graphic_ctx.screen_height = static_cast<uint32_t>(height);
+			}
+		}
+	}
+
 	uint32_t window_flags = KYTY_SDL_WINDOW_FLAGS;
 	if (Config::FullscreenEnabled()) {
 		window_flags |= static_cast<uint32_t>(SDL_WINDOW_FULLSCREEN_DESKTOP);
+	} else {
+		// Windowed: allow the user to resize; keep the normal frame decorations.
+		window_flags |= static_cast<uint32_t>(SDL_WINDOW_RESIZABLE);
 	}
 #if defined(__APPLE__)
 	// macOS 26 window chrome (CoreUI asset decode, SwiftUI titlebar) has been observed
@@ -877,7 +909,7 @@ static void WindowCreate(WindowContext& context) {
 		EXIT("%s\n", SDL_GetError());
 	}
 
-	SDL_SetWindowResizable(context.window, SDL_FALSE);
+	SDL_SetWindowResizable(context.window, Config::FullscreenEnabled() ? SDL_FALSE : SDL_TRUE);
 }
 
 Presenter& WindowInit(uint32_t width, uint32_t height) {

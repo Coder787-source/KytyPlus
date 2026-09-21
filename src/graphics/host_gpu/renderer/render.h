@@ -138,6 +138,12 @@ private:
 	uint32_t                                   m_debug_arg2      = 0;
 	uint32_t                                   m_debug_arg3      = 0;
 	uint64_t                                   m_debug_arg4      = 0;
+	// KytyPlus: per-submission census, reported when the GPU refuses to retire the submit.
+	uint32_t                                   m_debug_draw_count     = 0;
+	uint32_t                                   m_debug_dispatch_count = 0;
+	uint32_t                                   m_debug_compute_count  = 0;
+	uint32_t                                   m_debug_flip_count     = 0;
+	uint32_t                                   m_debug_eop_count      = 0;
 	std::vector<std::unique_ptr<VulkanBuffer>> m_retired_buffers;
 	FenceResourceRetainer                      m_fence_resources;
 	std::vector<VulkanDescriptorSet*>          m_descriptor_sets_after_fence;
@@ -185,7 +191,10 @@ public:
 	     PrepareBindings(CommandBuffer& buffer, const ShaderStageRuntime& runtime,
 	                     vk::ShaderStageFlags shader_stage, DescriptorCache::Stage stage);
 	void RebindBuffers(CommandBuffer& buffer, DescriptorCache::PreparedBindings& bindings);
-	void RebindImages(CommandBuffer& buffer, DescriptorCache::PreparedBindings& bindings);
+	// Returns false when an image binding cannot be produced (for example an image whose
+	// creation was soft-skipped). Callers must skip the draw/dispatch in that case.
+	[[nodiscard]] bool RebindImages(CommandBuffer& buffer,
+	                               DescriptorCache::PreparedBindings& bindings);
 	void CommitBindings(CommandBuffer& buffer, vk::PipelineBindPoint pipeline_bind_point,
 	                    vk::PipelineLayout layout, DescriptorCache::PreparedBindings& bindings);
 
@@ -193,6 +202,7 @@ private:
 	struct GraphicsBindings {
 		DescriptorCache::PreparedBindings                vertex;
 		std::optional<DescriptorCache::PreparedBindings> pixel;
+		bool                                             valid = true;
 	};
 
 	[[nodiscard]] DescriptorCache::TextureBinding
@@ -217,8 +227,11 @@ private:
 	                         vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
 	                         const DrawIndexBufferSource& index_source, bool log_pipeline_phase,
 	                         bool set_bind_debug, bool set_auto_debug);
-	[[nodiscard]] RenderState AcquireRenderTargets(CommandBuffer& buffer, RenderColorInfo* colors,
-	                                               uint32_t color_count, RenderDepthInfo& depth);
+	// Returns std::nullopt when a render target cannot be acquired (for example its backing
+	// image was never created); callers skip the draw in that case.
+	[[nodiscard]] std::optional<RenderState>
+	AcquireRenderTargets(CommandBuffer& buffer, RenderColorInfo* colors, uint32_t color_count,
+	                     RenderDepthInfo& depth);
 	[[nodiscard]] bool        ResolveColorTargets(uint64_t submit_id, RenderCommandBuffer& buffer,
 	                                              uint32_t render_target_slice_offset);
 	void                      BindImage(ImageId id, bool storage);

@@ -241,7 +241,12 @@ DispatchResult DispatchToShadps4(const std::filesystem::path& eboot_host_path,
 	auto shad_parent = shared_user.parent_path();
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	std::string cmd = std::string("\"") + bin.string() + "\" \"" + eboot_str + "\"";
+	// KytyPlus: always ask shadPS4 for its in-client FPS overlay (Kyty's own counter is a
+	// window title, which is invisible once the child is reparented without decorations).
+	// NOTE: --uncap-fps is deliberately NOT passed. Removing the presenter pacer also removes
+	// the guest vblank timing source, which makes vblank-driven game logic run far too fast
+	// (measured ~141 fps / ~2.4x). 60 Hz with present_mode=Immediate is correct game speed.
+	std::string cmd = std::string("\"") + bin.string() + "\" \"" + eboot_str + "\" --show-fps";
 
 	STARTUPINFOA si{};
 	si.cb = sizeof(si);
@@ -345,7 +350,8 @@ DispatchResult DispatchToShadps4(const std::filesystem::path& eboot_host_path,
 		// Pin the shared user dir via env (see Windows path above).
 		(void)setenv(Emulator::Shadps4Integration::Shadps4UserDirEnvName().c_str(),
 		             shared_user.string().c_str(), 1);
-		execl(bin.c_str(), bin.c_str(), eboot_str.c_str(), static_cast<char*>(nullptr));
+		execl(bin.c_str(), bin.c_str(), eboot_str.c_str(), "--show-fps",
+		      static_cast<char*>(nullptr));
 		_exit(127);
 	}
 	int status = 0;

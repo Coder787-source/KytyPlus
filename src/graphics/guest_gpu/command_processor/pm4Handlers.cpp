@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -202,7 +203,9 @@ static void HwCtxSetDepthBoundsRegister(CommandProcessor& cp, uint32_t cmd_offse
 	switch (cmd_offset) {
 		case Pm4::DB_DEPTH_BOUNDS_MIN: ctx.SetDepthBoundsMin(fvalue); break;
 		case Pm4::DB_DEPTH_BOUNDS_MAX: ctx.SetDepthBoundsMax(fvalue); break;
-		default: EXIT("unknown depth bounds register: 0x%08" PRIx32 "\n", cmd_offset);
+		default:
+			SOFT_EXIT("unknown depth bounds register (soft-skip): 0x%08" PRIx32 "\n", cmd_offset);
+			break;
 	}
 }
 
@@ -788,7 +791,7 @@ static void HwCtxSetClipRectRegister(CommandProcessor& cp, uint32_t cmd_offset, 
 		return;
 	}
 
-	EXIT("unknown clip-rect register: 0x%08" PRIx32 "\n", cmd_offset);
+	SOFT_EXIT("unknown clip-rect register (soft-skip): 0x%08" PRIx32 "\n", cmd_offset);
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetClipRect) {
@@ -927,8 +930,10 @@ static void HwCtxSetPolyOffsetRegister(CommandProcessor& cp, uint32_t cmd_offset
 			offset.back_offset = std::bit_cast<float>(value);
 			break;
 		default:
-			EXIT("unknown polygon offset context register 0x%03" PRIx32 " = 0x%08" PRIx32 "\n",
-			     cmd_offset, value);
+			SOFT_EXIT("unknown polygon offset context register (soft-skip) 0x%03" PRIx32
+			          " = 0x%08" PRIx32 "\n",
+			          cmd_offset, value);
+			break;
 	}
 
 	cp.GetCtx().SetPolyOffset(offset);
@@ -1390,8 +1395,10 @@ static void HwShSetCsRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_
 		case Pm4::COMPUTE_SHADER_CHKSUM:
 		case Pm4::COMPUTE_DISPATCH_TUNNEL: HwShIgnoreComputeRegister(cmd_offset, value); break;
 		default:
-			EXIT("unsupported compute SH register 0x%08" PRIx32 " = 0x%08" PRIx32 "\n", cmd_offset,
-			     value);
+			SOFT_EXIT("unsupported compute SH register (soft-skip) 0x%08" PRIx32
+			          " = 0x%08" PRIx32 "\n",
+			          cmd_offset, value);
+			break;
 	}
 
 	cp.GetShCtx().SetCsShader(cs_regs);
@@ -1650,7 +1657,9 @@ static void HwUcSetGdsOaRegister(CommandProcessor& cp, uint32_t cmd_offset, uint
 		case Pm4::GDS_OA_CNTL: ucfg.SetGdsOaCntl(value); break;
 		case Pm4::GDS_OA_COUNTER: ucfg.SetGdsOaCounter(value); break;
 		case Pm4::GDS_OA_ADDRESS: ucfg.SetGdsOaAddress(value); break;
-		default: EXIT("unknown GDS OA register: 0x%08" PRIx32 "\n", cmd_offset);
+		default:
+			SOFT_EXIT("unknown GDS OA register (soft-skip): 0x%08" PRIx32 "\n", cmd_offset);
+			break;
 	}
 
 	const auto                   index = ucfg.GetGdsOaState().GetIndex();
@@ -1719,9 +1728,9 @@ static bool HwUcTrySetFakeRegisterRange(uint32_t cmd_offset, const uint32_t* buf
 	for (uint32_t i = 0; i < num_values; i++) {
 		auto reg = cmd_offset + i;
 		if (!HwUcTrySetFakeRegister(reg, buffer[i])) {
-			EXIT("unsupported fake UC register range at 0x%08" PRIx32 " + %" PRIu32
-			     ", value = 0x%08" PRIx32 "\n",
-			     cmd_offset, i, buffer[i]);
+			SOFT_EXIT("unsupported fake UC register range (soft-skip) at 0x%08" PRIx32 " + %" PRIu32
+			          ", value = 0x%08" PRIx32 "\n",
+			          cmd_offset, i, buffer[i]);
 		}
 	}
 
@@ -2425,7 +2434,14 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 		auto pfunc = g_hw_ctx_indirect_func[cmd_offset & (Pm4::CX_NUM - 1)];
 
 		if (pfunc == nullptr) {
-			EXIT("unknown cx reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
+			// Soft path: unmapped indirect context register; skip this entry.
+			static std::atomic<uint32_t> unknown_icx_log_count {0};
+			if (unknown_icx_log_count.fetch_add(1, std::memory_order_relaxed) < 128) {
+				LOGF("unknown indirect cx reg (soft-skip) at %05" PRIx32 ": 0x%" PRIx32 "\n",
+				     num_dw - dw, cmd_offset);
+			}
+			SOFT_NOT_IMPLEMENTED(true);
+			continue;
 		}
 
 		pfunc(cp, cmd_offset, value);
@@ -2472,9 +2488,15 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 		}
 
 		if (cmd_offset >= Pm4::SH_NUM) {
-			EXIT("unsupported indirect SH register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
-			     "), value = 0x%08" PRIx32 "\n",
-			     cmd_offset, raw_cmd_offset, value);
+			// Soft path: out-of-range indirect shader register; skip this entry.
+			static std::atomic<uint32_t> unknown_ish_range_log_count {0};
+			if (unknown_ish_range_log_count.fetch_add(1, std::memory_order_relaxed) < 128) {
+				LOGF("indirect SH register out of range (soft-skip) 0x%08" PRIx32
+				     " (raw 0x%08" PRIx32 "), value = 0x%08" PRIx32 "\n",
+				     cmd_offset, raw_cmd_offset, value);
+			}
+			SOFT_NOT_IMPLEMENTED(true);
+			continue;
 		}
 
 		auto pfunc = g_hw_sh_indirect_func[cmd_offset];
@@ -2488,7 +2510,9 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 				LOGF("\t sh_indirect[%" PRIu32 "] offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
 				     j, dump_regs[j * 2], dump_regs[j * 2 + 1]);
 			}
-			EXIT("unknown sh reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
+			// Soft path: unmapped indirect shader register; skip this entry.
+			SOFT_NOT_IMPLEMENTED(true);
+			continue;
 		}
 
 		pfunc(cp, cmd_offset, value);
@@ -2537,9 +2561,15 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 			}
 		}
 		if (cmd_offset >= Pm4::UC_NUM) {
-			EXIT("unsupported indirect UC register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
-			     "), value = 0x%08" PRIx32 "\n",
-			     cmd_offset, raw_cmd_offset, value);
+			// Soft path: out-of-range indirect user-config register; skip this entry.
+			static std::atomic<uint32_t> unknown_iuc_range_log_count {0};
+			if (unknown_iuc_range_log_count.fetch_add(1, std::memory_order_relaxed) < 128) {
+				LOGF("indirect UC register out of range (soft-skip) 0x%08" PRIx32
+				     " (raw 0x%08" PRIx32 "), value = 0x%08" PRIx32 "\n",
+				     cmd_offset, raw_cmd_offset, value);
+			}
+			SOFT_NOT_IMPLEMENTED(true);
+			continue;
 		}
 
 		auto pfunc = g_hw_uc_indirect_func[cmd_offset & (Pm4::UC_NUM - 1)];
@@ -2550,7 +2580,9 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 				LOGF("\t uc_indirect[%" PRIu32 "] offset=0x%08" PRIx32 ", value=0x%08" PRIx32 "\n",
 				     j, dump_regs[j * 2], dump_regs[j * 2 + 1]);
 			}
-			EXIT("unknown uc reg at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, cmd_offset);
+			// Soft path: unmapped indirect user-config register; skip this entry.
+			SOFT_NOT_IMPLEMENTED(true);
+			continue;
 		}
 		pfunc(cp, cmd_offset, value);
 	}
@@ -2590,7 +2622,10 @@ KYTY_CP_OP_PARSER(CpOpMarker) {
 			cp.FlipWithInterrupt(eop_event_type, cache_action, addr, value);
 			break;
 		}
-		default: EXIT("unknown marker at %05" PRIx32 ": 0x%" PRIx32 "\n", num_dw - dw, id);
+		default:
+			SOFT_EXIT("unknown marker (soft-skip) at %05" PRIx32 ": 0x%" PRIx32 "\n",
+			          num_dw - dw, id);
+			break;
 	}
 
 	return len_dw + 1;
@@ -2614,9 +2649,10 @@ KYTY_CP_OP_PARSER(CpOpNop) {
 		return cp_op(cp, cmd_id, buffer, dw, num_dw);
 	}
 
-	EXIT("unknown custom code at 0x%05" PRIx32 ": 0x%02" PRIx32 "\n", num_dw - dw, r);
+	SOFT_EXIT("unknown custom code (soft-skip) at 0x%05" PRIx32 ": 0x%02" PRIx32 "\n", num_dw - dw, r);
 
-	return 0;
+	// Keep the stream aligned using the packet header length instead of aborting.
+	return KYTY_PM4_LEN(cmd_id) - 1;
 }
 
 KYTY_CP_OP_PARSER(CpOpNumInstances) {
@@ -2696,7 +2732,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 				cp.TriggerEopEventAtEndOfPipe(interrupt_context_id);
 				queued = true;
 				break;
-			default: EXIT("unknown release_mem interrupt selector\n");
+			default: SOFT_EXIT("unknown release_mem interrupt selector (soft-skip)\n"); break;
 		}
 		if (queued) {
 			cp.BufferFlush();
@@ -2794,9 +2830,17 @@ KYTY_CP_OP_PARSER(CpOpSetContextReg) {
 	}
 
 	if (cmd_offset >= Pm4::CX_NUM) {
-		EXIT("unknown extended context register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-		     "\n\tcmd_offset = %08" PRIx32 "\n\tvalue = %08" PRIx32 "\n",
-		     num_dw - dw, cmd_id, cmd_offset, buffer[1]);
+		// Soft path: the write targets extended context hardware this backend does not
+		// model. Log once and drop the packet rather than terminating the title.
+		static std::atomic<uint32_t> unknown_cx_log_count {0};
+		if (unknown_cx_log_count.fetch_add(1, std::memory_order_relaxed) < 128) {
+			LOGF("unknown extended context register (soft-skip)\n\t%05" PRIx32
+			     ":\n\tcmd_id = %08" PRIx32 "\n\tcmd_offset = %08" PRIx32 "\n\tvalue = %08" PRIx32
+			     "\n",
+			     num_dw - dw, cmd_id, cmd_offset, buffer[1]);
+		}
+		SOFT_NOT_IMPLEMENTED(true);
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto pfunc = g_hw_ctx_func[cmd_offset & (Pm4::CX_NUM - 1)];
@@ -2818,9 +2862,16 @@ KYTY_CP_OP_PARSER(CpOpSetContextReg) {
 			}
 			return num_values + 1u;
 		}
-		EXIT("unknown context register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-		     "\n\tcmd_offset = %08" PRIx32 "\n",
-		     num_dw - dw, cmd_id, cmd_offset);
+		// Soft path: unmapped context register. Log and consume the packet so the
+		// stream stays aligned; downstream draws render with one register unset.
+		static std::atomic<uint32_t> unknown_ctx_log_count {0};
+		if (unknown_ctx_log_count.fetch_add(1, std::memory_order_relaxed) < 256) {
+			LOGF("unknown context register (soft-skip)\n\t%05" PRIx32
+			     ":\n\tcmd_id = %08" PRIx32 "\n\tcmd_offset = %08" PRIx32 "\n",
+			     num_dw - dw, cmd_id, cmd_offset);
+		}
+		SOFT_NOT_IMPLEMENTED(true);
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);
@@ -2838,14 +2889,30 @@ KYTY_CP_OP_PARSER(CpOpSetShaderReg) {
 		return 2;
 	}
 
-	EXIT_NOT_IMPLEMENTED(cmd_offset >= Pm4::SH_NUM);
+	if (cmd_offset >= Pm4::SH_NUM) {
+		// Soft path: out-of-range shader register. Log and drop the packet.
+		static std::atomic<uint32_t> unknown_sh_range_log_count {0};
+		if (unknown_sh_range_log_count.fetch_add(1, std::memory_order_relaxed) < 128) {
+			LOGF("shader register out of range (soft-skip)\n\t%05" PRIx32 " cmd_id=%08" PRIx32
+			     " cmd_offset=0x%08" PRIx32 "\n",
+			     num_dw - dw, cmd_id, cmd_offset);
+		}
+		SOFT_NOT_IMPLEMENTED(true);
+		return KYTY_PM4_LEN(cmd_id) - 1u;
+	}
 
 	auto pfunc = g_hw_sh_func[cmd_offset];
 
 	if (pfunc == nullptr) {
-		EXIT("unknown shader register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-		     "\n\tcmd_offset = %08" PRIx32 "\n",
-		     num_dw - dw, cmd_id, cmd_offset);
+		// Soft path: unmapped shader register. Log and consume the packet.
+		static std::atomic<uint32_t> unknown_sh_log_count {0};
+		if (unknown_sh_log_count.fetch_add(1, std::memory_order_relaxed) < 256) {
+			LOGF("unknown shader register (soft-skip)\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
+			     "\n\tcmd_offset = %08" PRIx32 "\n",
+			     num_dw - dw, cmd_id, cmd_offset);
+		}
+		SOFT_NOT_IMPLEMENTED(true);
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);
@@ -2873,9 +2940,15 @@ KYTY_CP_OP_PARSER(CpOpSetUconfigReg) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	if (cmd_offset >= Pm4::UC_NUM) {
-		EXIT("unsupported UC register offset 0x%08" PRIx32 " (raw 0x%08" PRIx32
-		     "), cmd_id = 0x%08" PRIx32 "\n",
-		     cmd_offset, raw_cmd_offset, cmd_id);
+		// Soft path: out-of-range user-config register.
+		static std::atomic<uint32_t> unknown_uc_range_log_count {0};
+		if (unknown_uc_range_log_count.fetch_add(1, std::memory_order_relaxed) < 128) {
+			LOGF("UC register out of range (soft-skip) 0x%08" PRIx32 " (raw 0x%08" PRIx32
+			     "), cmd_id = 0x%08" PRIx32 "\n",
+			     cmd_offset, raw_cmd_offset, cmd_id);
+		}
+		SOFT_NOT_IMPLEMENTED(true);
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto pfunc = g_hw_uc_func[cmd_offset & (Pm4::UC_NUM - 1)];
@@ -2897,9 +2970,15 @@ KYTY_CP_OP_PARSER(CpOpSetUconfigReg) {
 			}
 			return num_values + 1u;
 		}
-		EXIT("unknown user config register\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32
-		     "\n\tcmd_offset = %08" PRIx32 "\n",
-		     num_dw - dw, cmd_id, cmd_offset);
+		// Soft path: unmapped user-config register.
+		static std::atomic<uint32_t> unknown_uc_log_count {0};
+		if (unknown_uc_log_count.fetch_add(1, std::memory_order_relaxed) < 256) {
+			LOGF("unknown user config register (soft-skip)\n\t%05" PRIx32
+			     ":\n\tcmd_id = %08" PRIx32 "\n\tcmd_offset = %08" PRIx32 "\n",
+			     num_dw - dw, cmd_id, cmd_offset);
+		}
+		SOFT_NOT_IMPLEMENTED(true);
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
 	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);

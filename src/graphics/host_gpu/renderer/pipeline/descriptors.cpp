@@ -446,7 +446,10 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
 		return;
 	}
-	EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
+	// Soft-skipped rather than fatal: an unsupported storage-texture descriptor is a
+	// rendering gap, not a reason to tear down the whole emulator. Strict mode
+	// (--strict-unimplemented) restores the abort for debugging.
+	SOFT_EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
 	     "kind=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
 	     "base_level=%u last_level=%u max_mip=%u min_lod=%u base_array=%u bc=%u msaa=%d "
 	     "depth_tile_bpe=%u swizzle_ok=%d "
@@ -886,7 +889,7 @@ void RenderExecutor::RebindBuffers(CommandBuffer&                     buffer,
 	}
 }
 
-void RenderExecutor::RebindImages(CommandBuffer&                     buffer,
+bool RenderExecutor::RebindImages(CommandBuffer&                     buffer,
                                   DescriptorCache::PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(prepared.program == nullptr || prepared.snapshot == nullptr);
@@ -908,11 +911,21 @@ void RenderExecutor::RebindImages(CommandBuffer&                     buffer,
 		}
 		auto& binding      = images[i];
 		binding.image_view = texture_cache.FindTexture(binding.image_id, binding.desc);
+		if (binding.image_view == nullptr) {
+			// KytyPlus: the image exists in the cache but has no usable backing (its creation
+			// was soft-skipped, for example an unsupported format/usage or an exhausted device
+			// heap). A null view cannot be written into a descriptor set, so report failure and
+			// let the caller skip this draw/dispatch instead of aborting the process.
+			LOGF("RebindImages: image binding has no view, skipping draw/dispatch (image_id=%u,%u)\n",
+			     binding.image_id.index, binding.image_id.generation);
+			return false;
+		}
 		auto&      image   = texture_cache.GetImage(binding.image_id);
 		const bool storage = binding.desc.type == TextureCache::BindingType::Storage;
 		image.usage.storage |= storage;
 		image.usage.texture |= !storage;
 	}
+	return true;
 }
 
 RenderExecutor::GraphicsBindings
@@ -923,12 +936,12 @@ RenderExecutor::PrepareGraphicsBindings(CommandBuffer& buffer, const ShaderStage
 	                              DescriptorCache::Stage::Vertex),
 	};
 	RebindBuffers(buffer, bindings.vertex);
-	RebindImages(buffer, bindings.vertex);
+	bindings.valid = RebindImages(buffer, bindings.vertex);
 	if (pixel_active) {
 		bindings.pixel.emplace(PrepareBindings(buffer, pixel, vk::ShaderStageFlagBits::eFragment,
 		                                       DescriptorCache::Stage::Pixel));
 		RebindBuffers(buffer, *bindings.pixel);
-		RebindImages(buffer, *bindings.pixel);
+		bindings.valid = RebindImages(buffer, *bindings.pixel) && bindings.valid;
 	}
 	return bindings;
 }

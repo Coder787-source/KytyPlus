@@ -839,18 +839,35 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution, size_t stop_depth) {
 
 		if (handler == nullptr) {
 			const auto offset = total_dw - remaining_dw;
-			LOGF("unknown PM4 packet: data=0x%016" PRIx64 ", num_dw=%" PRIu32
-			     ", offset=0x%05" PRIx32 ", current=0x%016" PRIx64 "\n",
-			     reinterpret_cast<uint64_t>(packet - offset), total_dw, offset,
-			     reinterpret_cast<uint64_t>(packet));
-			const auto  dump_begin = (offset > 8 ? offset - 8 : 0);
-			const auto  dump_end   = std::min<uint32_t>(total_dw, offset + 16);
-			auto* const base       = packet - offset;
-			for (uint32_t i = dump_begin; i < dump_end; i++) {
-				LOGF("\t%05" PRIx32 "%s %08" PRIx32 "\n", i, (i == offset ? ":" : " "), base[i]);
+			static std::atomic<uint32_t> unknown_op_log_count {0};
+			if (unknown_op_log_count.fetch_add(1) < 512) {
+				LOGF("unknown PM4 packet (soft-skip): data=0x%016" PRIx64 ", num_dw=%" PRIu32
+				     ", offset=0x%05" PRIx32 ", opcode=0x%02" PRIx32 ", cmd_id=0x%08" PRIx32 "\n",
+				     reinterpret_cast<uint64_t>(packet - offset), total_dw, offset, opcode,
+				     packet_header);
 			}
-			EXIT("unknown op\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32 "\n",
-			     total_dw - remaining_dw, packet_header);
+			if (Config::UnimplementedStrictMode()) {
+				const auto  dump_begin = (offset > 8 ? offset - 8 : 0);
+				const auto  dump_end   = std::min<uint32_t>(total_dw, offset + 16);
+				auto* const base       = packet - offset;
+				for (uint32_t i = dump_begin; i < dump_end; i++) {
+					LOGF("\t%05" PRIx32 "%s %08" PRIx32 "\n", i, (i == offset ? ":" : " "), base[i]);
+				}
+				EXIT("unknown op\n\t%05" PRIx32 ":\n\tcmd_id = %08" PRIx32 "\n",
+				     total_dw - remaining_dw, packet_header);
+			}
+			// Soft path: advance past the packet using the length encoded in its header so the
+			// remaining command stream is preserved. In the serialized-CP model a packet with
+			// no handler is typically a state write for hardware this backend does not model,
+			// so skipping it keeps the draws that follow intact instead of killing the title.
+			uint32_t skip_dw = KYTY_PM4_LEN(packet_header);
+			if (skip_dw == 0 || skip_dw > remaining_dw) {
+				skip_dw = remaining_dw;
+			}
+			cursor.next_packet += skip_dw;
+			cursor.remaining_dw -= skip_dw;
+			execution.m_made_progress = true;
+			continue;
 		}
 
 		const auto packet_dw =

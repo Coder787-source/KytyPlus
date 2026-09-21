@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <fmt/format.h>
 #include <memory>
 #include <vector>
@@ -1304,6 +1305,10 @@ static void RelocateRecords(Elf64_Rela* records, uint64_t size, Program* program
                             std::vector<std::string>* unresolved) {
 	KYTY_PROFILER_FUNCTION();
 
+	if (records == nullptr || size == 0) {
+		return;
+	}
+
 	uint32_t index = 0;
 	for (auto* r = records;
 	     reinterpret_cast<uint8_t*>(r) < reinterpret_cast<uint8_t*>(records) + size; r++, index++) {
@@ -1782,7 +1787,20 @@ void RuntimeLinker::Resolve(const std::string& name, SymbolType type, Program* p
 				return;
 			}
 
-			EXIT("l == nullptr || m == nullptr");
+			// Historically this aborted the process during relocation: a symbol naming a
+			// library/module the loaded set does not provide (e.g. a sysmodule we do not
+			// ship) killed the title before entry. Return an unresolved record instead
+			// (vaddr == 0). RelocateRecord turns a vaddr==0 result into an unresolved
+			// import stub via RegisterStubbedImport, so the guest keeps running and the
+			// call site becomes a logged no-op rather than a relocation-time abort.
+			static std::atomic<uint32_t> missing_metadata_log_count {0};
+			if (missing_metadata_log_count.fetch_add(1, std::memory_order_relaxed) < 256) {
+				LOGF("Unresolved import (missing lib/module metadata, stubbed): %s\n",
+				     ids.at(0).c_str());
+			}
+			out_info->vaddr    = 0;
+			out_info->name     = ids.at(0);
+			out_info->dbg_name = "";
 		}
 	} else {
 		out_info->vaddr    = 0;
@@ -2010,6 +2028,136 @@ void RuntimeLinker::StopAllModules() {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Optional LLE sysmodule loading.
+//
+// Mirrors the shape of shadPS4's sysmodule loader: when enabled, modules found
+// in a user-supplied pack directory take precedence over Kyty's built-in HLE,
+// with a staged "sys_modules/" tree beside the executable as a best-effort
+// fallback. A denylist keeps individual modules on HLE even when present, for
+// modules known to fault inside Sony code.
+//
+// Environment variables (kept SHADPS4_* to match the mirrored implementation):
+//   SHADPS4_LOAD_ALL_SYSMODULES         "0" disables the extra scan (default on)
+//   SHADPS4_SYSMODULES_PACK_DIR         directory holding the .sprx/.prx modules
+//   SHADPS4_LLE_SYSMODULE_DENY          extra names to keep on HLE (comma list)
+//   SHADPS4_LLE_SYSMODULE_DENY_DEFAULT  "0" clears the built-in denylist
+// ---------------------------------------------------------------------------
+
+static bool KytyEnvDisabled(const char* name) {
+	const char* env = std::getenv(name);
+	if (env == nullptr || *env == '\0') {
+		return false;
+	}
+	auto v = Common::ToLower(std::string(env));
+	return v == "0" || v == "false" || v == "no" || v == "off";
+}
+
+static bool KytyLoadAllSysModules() {
+	return !KytyEnvDisabled("SHADPS4_LOAD_ALL_SYSMODULES");
+}
+
+static std::filesystem::path KytySysModulesPackDir() {
+	const char* env = std::getenv("SHADPS4_SYSMODULES_PACK_DIR");
+	if (env == nullptr || *env == '\0') {
+		return {};
+	}
+	return std::filesystem::path(env);
+}
+
+static std::vector<std::string> KytyLleSysmoduleDenylist() {
+	static const char* k_default[] = {
+		"libscesystemservice.sprx",
+	};
+
+	std::vector<std::string> list;
+
+	if (!KytyEnvDisabled("SHADPS4_LLE_SYSMODULE_DENY_DEFAULT")) {
+		for (auto* name: k_default) {
+			list.emplace_back(Common::ToLower(name));
+		}
+	}
+
+	if (const char* env = std::getenv("SHADPS4_LLE_SYSMODULE_DENY");
+	    env != nullptr && *env != '\0') {
+		std::string raw = env;
+		size_t      pos = 0;
+		while (pos <= raw.size()) {
+			auto comma = raw.find(',', pos);
+			auto tok   = raw.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+			auto b     = tok.find_first_not_of(" \t");
+			auto e     = tok.find_last_not_of(" \t");
+			if (b != std::string::npos) {
+				list.push_back(Common::ToLower(tok.substr(b, e - b + 1)));
+			}
+			if (comma == std::string::npos) {
+				break;
+			}
+			pos = comma + 1;
+		}
+	}
+
+	return list;
+}
+
+static bool KytyLleSysmoduleDeniedName(const std::string& name,
+                                       const std::vector<std::string>& deny) {
+	auto lower = Common::ToLower(name);
+	for (const auto& d: deny) {
+		if (d == lower) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Resolve a file name inside a directory, matching case-insensitively on hosts
+// with case-sensitive filesystems. On Windows the direct path is used.
+static std::filesystem::path KytyResolveCaseInsensitive(const std::filesystem::path& dir,
+                                                        const std::string&           name) {
+#ifdef _WIN32
+	(void)name;
+	return dir / name;
+#else
+	if (!Common::File::IsDirectoryExisting(dir)) {
+		return {};
+	}
+	for (const auto& entry: Common::File::GetDirEntries(dir)) {
+		if (entry.is_file && Common::EqualNoCase(entry.name, name)) {
+			return dir / entry.name;
+		}
+	}
+	return {};
+#endif
+}
+
+// LoadProgram() calls EXIT() on an invalid ELF, so a candidate module must be
+// validated before it is handed over. Accepted container magics mirror
+// Elf64::IsSelf(): a plain ELF, or one of the two SELF magics. Most shipped
+// modules are SELF containers, so an ELF-only check rejects valid files.
+static bool KytyIsLoadableElf(const std::filesystem::path& path) {
+	std::ifstream f(Common::PathToString(path), std::ios::binary);
+	if (!f) {
+		return false;
+	}
+	unsigned char magic[4] = {};
+	f.read(reinterpret_cast<char*>(magic), 4);
+	if (f.gcount() < 4) {
+		return false;
+	}
+	if (magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
+		return true;
+	}
+	// SELF magics accepted by Elf64::IsSelf().
+	if (magic[0] == 0x54 && magic[1] == 0x14 && magic[2] == 0xf5 && magic[3] == 0xee) {
+		return true;
+	}
+	if (magic[0] == 0x4f && magic[1] == 0x15 && magic[2] == 0x3d && magic[3] == 0x1d) {
+		return true;
+	}
+	return false;
+}
+
 static bool IsAdjacentModuleFile(const std::string& name) {
 	auto lower = Common::ToLower(name);
 	return Common::EndsWith(lower, ".prx") || Common::EndsWith(lower, ".sprx");
@@ -2064,6 +2212,30 @@ void RuntimeLinker::PreloadAdjacentPrograms() {
 		}
 	};
 
+	// Like add_dir(), but also honours the LLE denylist and never stages libkernel,
+	// which must stay on HLE even when present in the pack dir.
+	auto add_lle_dir = [&add_path](const std::filesystem::path& dir,
+	                               const std::vector<std::string>& deny) {
+		if (dir.empty() || !Common::File::IsDirectoryExisting(dir)) {
+			return;
+		}
+		for (const auto& entry: Common::File::GetDirEntries(dir)) {
+			if (!entry.is_file || !IsAdjacentModuleFile(entry.name) ||
+			    SkipAdjacentModuleFile(entry.name)) {
+				continue;
+			}
+			auto lower = Common::ToLower(entry.name);
+			if (lower.rfind("libkernel", 0) == 0) {
+				continue;
+			}
+			if (KytyLleSysmoduleDeniedName(entry.name, deny)) {
+				LOGF("LLE: skipping denylisted sysmodule: %s\n", entry.name.c_str());
+				continue;
+			}
+			add_path(KytyResolveCaseInsensitive(dir, entry.name));
+		}
+	};
+
 	auto root = m_programs.at(0)->file_name.parent_path();
 	if (root.empty()) {
 		return;
@@ -2073,7 +2245,42 @@ void RuntimeLinker::PreloadAdjacentPrograms() {
 	add_dir(root / "sce_module");
 	add_dir(root / "sce_modules");
 
+	// Optional LLE sysmodules: pack dir preferred, staged "sys_modules/" tree
+	// beside the executable as a best-effort fallback.
+	if (KytyLoadAllSysModules()) {
+		const auto deny = KytyLleSysmoduleDenylist();
+
+		const auto pack_dir = KytySysModulesPackDir();
+		if (!pack_dir.empty()) {
+			LOGF("LLE: sysmodule pack dir: %s\n", Common::PathToString(pack_dir).c_str());
+			add_lle_dir(pack_dir, deny);
+		}
+
+		// The staged tree is opt-in only: scanned solely when the user has explicitly
+		// set SHADPS4_USER_DIR. Kyty pre-creates <exe dir>/user/sys_modules as a
+		// drop-in location, but that tree may hold modules built for a different
+		// platform, so it must never be loaded implicitly. Point
+		// SHADPS4_SYSMODULES_PACK_DIR at a specific module set instead.
+		std::filesystem::path staged_root;
+		if (const char* user_dir = std::getenv("SHADPS4_USER_DIR");
+		    user_dir != nullptr && *user_dir != '\0') {
+			staged_root = std::filesystem::path(user_dir);
+		}
+		if (!staged_root.empty()) {
+			const std::filesystem::path staged = staged_root / "sys_modules";
+			if (Common::File::IsDirectoryExisting(staged)) {
+				LOGF("LLE: staged sysmodule tree: %s\n", Common::PathToString(staged).c_str());
+				add_lle_dir(staged, deny);
+			}
+		}
+	}
+
 	for (const auto& path: module_paths) {
+		if (!KytyIsLoadableElf(path)) {
+			LOGF("Skipping invalid module (no ELF header): %s\n",
+			     Common::PathToString(path).c_str());
+			continue;
+		}
 		auto* program                        = LoadProgram(path);
 		program->fail_if_global_not_resolved = false;
 	}
@@ -2279,6 +2486,44 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 
 			program->elf->LoadSegment(segment_addr, phdr[i].p_offset, segment_file_size);
 
+			// Guard: an executable segment whose bytes are not x86-64 machine code means
+			// the eboot payload is still encrypted. KytyPlus does not (and must not)
+			// decrypt SELF payloads, so report it clearly instead of crashing later when
+			// the CPU jumps to the entry point and faults on non-instruction bytes.
+			if (Common::VirtualMemory::IsExecute(mode) && segment_file_size > 0x1000) {
+				const auto* bytes = reinterpret_cast<const uint8_t*>(segment_addr);
+				const auto  n     = static_cast<size_t>(
+				    std::min<uint64_t>(segment_file_size, 1u << 20));
+
+				size_t freq[256] = {};
+				for (size_t k = 0; k < n; k++) {
+					freq[bytes[k]]++;
+				}
+				double ent = 0.0;
+				for (auto c : freq) {
+					if (c > 0) {
+						const double pr = static_cast<double>(c) / static_cast<double>(n);
+						ent -= pr * std::log2(pr);
+					}
+				}
+				size_t prologues = 0;
+				for (size_t k = 0; k + 4 <= n; k++) {
+					if (bytes[k] == 0x55 && bytes[k + 1] == 0x48 && bytes[k + 2] == 0x89 &&
+					    bytes[k + 3] == 0xe5) {
+						prologues++;
+					}
+				}
+
+				if (ent > 7.5 && prologues == 0) {
+					EXIT("Executable segment at 0x%016" PRIx64
+					     " does not contain valid x86-64 code "
+					     "(entropy=%.3f, no function prologues found).\n"
+					     "This eboot.bin is still encrypted. KytyPlus does not decrypt SELF\n"
+					     "payloads - provide an already-decrypted eboot (Prospero/ELF).\n",
+					     segment_addr, ent);
+				}
+			}
+
 			bool skip_protect = (phdr[i].p_type == PT_LOAD && is_next_gen &&
 			                     mode == Common::VirtualMemory::Mode::NoAccess);
 
@@ -2448,7 +2693,9 @@ void RuntimeLinker::ParseProgramDynamicInfo(Program* program) {
 	GetDynValue(elf, &jmprel_type, DT_OS_PLTREL);
 	GetDynValue(elf, &jmprel_type, DT_PLTREL);
 
-	EXIT_NOT_IMPLEMENTED(jmprel_type != DT_RELA);
+	// The PLT jump relocation table is only processed when a DT_RELA-style table is
+	// actually present. Some PS5 SELFs provide no DT_PLTREL/DT_JMPREL pair; in that
+	// case jmprel_type stays 0 and there is nothing to relocate here — do not abort.
 	if (jmprel_type == DT_RELA) {
 		EXIT_NOT_IMPLEMENTED(elf->HasDynValue(DT_OS_JMPREL) && elf->HasDynValue(DT_JMPREL));
 		EXIT_NOT_IMPLEMENTED(elf->HasDynValue(DT_OS_PLTRELSZ) && elf->HasDynValue(DT_PLTRELSZ));
@@ -2562,14 +2809,30 @@ void RuntimeLinker::Relocate(Program* program) {
 	LOGF_COLOR(Log::Color::White, "--- Relocate program: %s ---\n",
 	           Common::PathToString(program->file_name).c_str());
 
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->symbol_table_entry_size != sizeof(Elf64_Sym));
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->rela_table_entry_size != sizeof(Elf64_Rela));
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->jmprela_table == nullptr);
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->rela_table == nullptr);
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->symbol_table == nullptr);
-	EXIT_NOT_IMPLEMENTED(program->dynamic_info->pltgot_vaddr == 0);
+	// symbol_table_entry_size defaults to 0 when no DT_SYMENT/DT_OS_SYMENT is declared
+	// (some PS5 SELFs omit it); 0 means use the standard sizeof(Elf64_Sym).
+	EXIT_NOT_IMPLEMENTED(program->dynamic_info->symbol_table_entry_size != 0 &&
+	                     program->dynamic_info->symbol_table_entry_size != sizeof(Elf64_Sym));
+	// rela_table and jmprela_table may be absent on some PS5 SELFs; RelocateRecords()
+	// skips null tables, so do not abort here.
+	EXIT_NOT_IMPLEMENTED(program->dynamic_info->rela_table_entry_size != 0 &&
+	                     program->dynamic_info->rela_table_entry_size != sizeof(Elf64_Rela));
+	// Some SELFs have no ELF symbol table and/or no OS import/export library
+	// databases fully populated at this stage. Symbol resolution below already
+	// guards against a null symbol table, so warn and continue instead of aborting.
+	if (program->dynamic_info->symbol_table == nullptr &&
+	    program->dynamic_info->import_libs.empty() && program->dynamic_info->export_libs.empty() &&
+	    program->dynamic_info->import_modules.empty()) {
+		LOGF("Relocate: no symbol table or OS import/export info for %s; skipping symbol scan\n",
+		     Common::PathToString(program->file_name).c_str());
+	}
 
-	InstallRelocateHandler(program);
+	if (program->dynamic_info->pltgot_vaddr == 0) {
+		LOGF("Relocate: pltgot_vaddr == 0 for %s; skipping PLT handler install\n",
+		     Common::PathToString(program->file_name).c_str());
+	} else {
+		InstallRelocateHandler(program);
+	}
 
 	std::vector<std::string> unresolved;
 	const bool               imports_only = program->relocated;

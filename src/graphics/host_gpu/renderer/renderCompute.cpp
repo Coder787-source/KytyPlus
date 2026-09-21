@@ -22,6 +22,8 @@
 #include "graphics/shader/recompiler/ir/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/shader.h"
+
+#include <cstdlib>
 #include "kernel/eventQueue.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
@@ -197,8 +199,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 	ShaderComputeInputInfo    input_info {};
 	std::span<const uint32_t> cs_shader;
 	if (!ShaderCompileInfoCS(cs_regs, sh_regs, input_info, cs_shader)) {
-		EXIT("ShaderCompileInfoCS failed for dispatch with CS shader 0x%016" PRIx64 "\n",
+		// KytyPlus: the recompiler already reported the specific gap. Skip this dispatch and
+		// keep the command stream flowing rather than aborting the process.
+		LOGF("GraphicsRenderDispatchDirect: skipping dispatch, CS recompile failed shader=0x%016"
+		     PRIx64 "\n",
 		     cs_regs.cs_regs.data_addr);
+		ResetBindings();
+		return;
 	}
 
 	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
@@ -214,12 +221,77 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 	    (input_info.threads_num[0] * input_info.threads_num[1] * input_info.threads_num[2] >= 512);
 	const auto& program   = *input_info.stage.program;
 	const auto& resources = *input_info.stage.resources;
+
+	// KytyPlus: the dispatcher-fallback path is used when the shader CFG cannot be
+	// structured. For a few large UE5 compute shaders that fallback emits a pathological
+	// amount of SPIR-V (~130-210k words for 1.6k guest instructions, versus <60k words for
+	// every normal shader seen here). Submitting one of those hangs the GPU long enough for
+	// the Windows TDR watchdog to reset the driver, which loses the device and kills the
+	// process. Skip the dispatch and carry on instead of poisoning the whole device.
+	// KytyPlus TEMPORARY DIAGNOSTIC (KYTY_SKIP_ALL_FALLBACK_DISPATCH=1): the dispatcher-fallback
+	// path is used when the shader CFG cannot be structured, and those SPIR-V bodies are not
+	// trustworthy. Set the env var to skip every fallback dispatch at any size, to test whether
+	// the frame-~1673 GPU stall is caused by one of them (rather than by a barrier or a
+	// guest-synchronization mismatch). Remove once the stall is understood.
+	static const bool skip_all_fallback = [] {
+		const char* value = std::getenv("KYTY_SKIP_ALL_FALLBACK_DISPATCH");
+		return value != nullptr && value[0] != '\0' && value[0] != '0';
+	}();
+	if (skip_all_fallback && program.dispatcher_fallback) {
+		LOGF("GraphicsRenderDispatchDirect: skipping fallback dispatch (diagnostic) shader=0x%016"
+		     PRIx64 " words=%zu groups=%ux%ux%u\n", sh_ctx.GetCs().cs_regs.data_addr,
+		     cs_shader.size(), thread_group_x, thread_group_y, thread_group_z);
+		ResetBindings();
+		return;
+	}
+
+	constexpr uint64_t kFallbackDispatchWordLimit = 100000;
+	if (program.dispatcher_fallback && cs_shader.size() > kFallbackDispatchWordLimit) {
+		static std::atomic<uint32_t> fallback_skip_log {0};
+		if (fallback_skip_log.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF("GraphicsRenderDispatchDirect: skipping oversized dispatcher-fallback shader "
+			     "shader=0x%016" PRIx64 " words=%zu (limit=%" PRIu64 ") groups=%ux%ux%u "
+			     "reason=\"%s\"\n",
+			     sh_ctx.GetCs().cs_regs.data_addr, cs_shader.size(), kFallbackDispatchWordLimit,
+			     thread_group_x, thread_group_y, thread_group_z,
+			     program.fallback_reason.c_str());
+		}
+		ResetBindings();
+		return;
+	}
+
 	if (TryConsumeComputeMetaClear(input_info, buffer)) {
 		ResetBindings();
 		return;
 	}
-	if (TryConsumeComputeImageClear(input_info, buffer, thread_group_x, thread_group_y,
-	                                thread_group_z, mode)) {
+	// KytyPlus: the first execution of UE5's volumetric/clipmap build pass (a >20k-word
+	// compute shader writing a 3D R32Uint storage image) reliably wedges the GPU on this
+	// driver: the dispatch never retires, Windows resets the adapter (LiveKernelEvent 141)
+	// and the emulator dies with VK_ERROR_DEVICE_LOST right after the Unreal logo. Contain
+	// it: skip this dispatch, keep the frame loop alive, and leave a marker so the pass can
+	// be revisited in isolation.
+	for (uint32_t i = 0; i < program.info.images.size(); i++) {
+		const auto& resource = program.info.images[i];
+		const bool   storage_binding =
+		    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
+		    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint;
+		if (!storage_binding) {
+			continue;
+		}
+		const auto tex = DecodeNativeDescriptor<ShaderTextureResource>(resources.images[i]);
+		const bool is_3d = static_cast<uint32_t>(tex.Type()) ==
+		                  static_cast<uint32_t>(Prospero::ImageType::kColor3D);
+		if (!is_3d || cs_shader.size() <= 20000) {
+			continue;
+		}
+		static std::atomic<uint32_t> volume_skip_log {0};
+		if (volume_skip_log.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("GraphicsRenderDispatchDirect: skipping volumetric compute dispatch"
+			     " shader=0x%016" PRIx64 " words=%zu groups=%ux%ux%u local=%ux%ux%u\n",
+			     sh_ctx.GetCs().cs_regs.data_addr, cs_shader.size(), thread_group_x,
+			     thread_group_y, thread_group_z, input_info.threads_num[0],
+			     input_info.threads_num[1], input_info.threads_num[2]);
+		}
 		ResetBindings();
 		return;
 	}
@@ -230,16 +302,20 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 	    });
 	const bool                   has_sampler = !program.info.samplers.empty();
 	static std::atomic<uint32_t> dispatch_log_count {0};
-	if ((large_workgroup || has_sampler) &&
-	    dispatch_log_count.fetch_add(1, std::memory_order_relaxed) < 512) {
+	// KytyPlus: per-dispatch line is behind GraphicsDebugDumpEnabled (unconditional logging
+	// produced a 220 MB log per run). Set Debug.debug_dump=true in config.json to restore it
+	// when chasing a wedge. The per-resource dump below stays capped and only for large workgroups.
+	const bool dispatch_log_detail =
+	    (large_workgroup || has_sampler) &&
+	    dispatch_log_count.fetch_add(1, std::memory_order_relaxed) < 512;
+	if (Config::GraphicsDebugDumpEnabled()) {
 		LOGF("GraphicsRenderDispatchDirect: frame=%u shader=0x%016" PRIx64
-		     " groups=%ux%ux%u mode=0x%08" PRIx32 " local=%ux%ux%u "
-		     "buffers=%zu textures=%zu sampled=%zu storage=%zu samplers=%zu push=%u\n",
+		     " groups=%ux%ux%u mode=0x%08" PRIx32 " local=%ux%ux%u\n",
 		     frame_num, sh_ctx.GetCs().cs_regs.data_addr, thread_group_x, thread_group_y,
 		     thread_group_z, mode, input_info.threads_num[0], input_info.threads_num[1],
-		     input_info.threads_num[2], program.info.buffers.size(), program.info.images.size(),
-		     sampled_images, program.info.images.size() - sampled_images,
-		     program.info.samplers.size(), program.bindings.push_constant_size);
+		     input_info.threads_num[2]);
+	}
+	if (dispatch_log_detail) {
 		for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 			const auto& buffer = program.info.buffers[i];
 			const auto  r      = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
@@ -321,7 +397,55 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 	auto bindings = PrepareBindings(buffer, input_info.stage, vk::ShaderStageFlagBits::eCompute,
 	                                DescriptorCache::Stage::Compute);
 	RebindBuffers(buffer, bindings);
-	RebindImages(buffer, bindings);
+	if (!RebindImages(buffer, bindings)) {
+		// KytyPlus: an image binding could not be produced (its backing image was never
+		// created). Nothing usable can be bound, so skip this dispatch and keep the command
+		// stream flowing instead of writing a null view into the descriptor set.
+		ResetBindings();
+		return;
+	}
+
+	// KytyPlus: some guest shaders issue storage-image atomics (or depth-compare samples) whose
+	// host format does not advertise the required feature - here VK_FORMAT_R16_UINT/R16_UNORM,
+	// which lack VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT / SAMPLED_IMAGE_DEPTH_COMPARISON_BIT
+	// on this AMD APU. Vulkan leaves such access undefined; in practice the GPU stops retiring
+	// work and the Windows watchdog resets the adapter (LiveKernelEvent 141), which surfaces as
+	// VK_ERROR_DEVICE_LOST and then kills the process. The dispatch cannot produce a correct
+	// result either way, so skip it and keep the command stream alive instead of hanging.
+	for (uint32_t i = 0; i < program.info.images.size(); i++) {
+		const auto& resource = program.info.images[i];
+		// The IR lowers image atomics to the generic Atomic*U32 opcodes, so
+		// ImageResource::atomic does not distinguish them. Instead check what actually
+		// reaches the driver: every storage-image binding is a candidate for guest
+		// atomic/rdw access, so require the host format to advertise the atomic feature
+		// regardless of how the IR classified the use.
+		const bool storage_binding =
+		    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
+		    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint;
+		if (!storage_binding) {
+			continue;
+		}
+		auto& bound = bindings.resources.images[i];
+		if (bound.image_view == nullptr) {
+			continue;
+		}
+		auto&      image    = m_context.GetTextureCache().GetImage(bound.image_id);
+
+		const auto features =
+		    m_context.GetGraphics().GetFormatProperties(image.backing.format).optimalTilingFeatures;
+		if (!static_cast<bool>(features & vk::FormatFeatureFlagBits::eStorageImageAtomic)) {
+			static std::atomic<uint32_t> feature_skip_log {0};
+			if (feature_skip_log.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF("GraphicsRenderDispatchDirect: skipping dispatch whose storage image lacks "
+				     "host atomic support (format=%d) shader=0x%016" PRIx64 " groups=%ux%ux%u\n",
+				     static_cast<int>(image.backing.format),
+				     sh_ctx.GetCs().cs_regs.data_addr, thread_group_x, thread_group_y,
+				     thread_group_z);
+			}
+			ResetBindings();
+			return;
+		}
+	}
 
 	auto vk_buffer = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline.pipeline_layout, bindings);

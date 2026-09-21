@@ -222,4 +222,18 @@ float GetUpscalerRenderScale() {
 	return 0.67f;
 }
 
+bool DualSenseEnabled() {
+	return g_config->dualsense_enabled;
+}
+
+bool NetworkOnlineEnabled() {
+	return g_config->network_online_enabled;
+}
+
+bool UnimplementedStrictMode() {
+	// Called from guard macros that may run before/without config init; default to the
+	// non-fatal (soft) path so an early call cannot itself fault.
+	return g_config != nullptr && g_config->strict_unimplemented_enabled;
+}
+
 } // namespace Config

@@ -16,10 +16,16 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cstring>
 #include <memory>
 namespace Libs::Graphics {
+
+// KytyPlus: latched once the Vulkan device is lost (driver reset / TDR). Every Vulkan
+// call fails after that point, so the renderer checks this to unwind quietly instead of
+// queueing more work onto a dead device or aborting the process mid-frame.
+static std::atomic<bool> g_device_lost {false};
 
 FenceResourceRetainer::~FenceResourceRetainer() {
 	if (!m_resources.empty()) {
@@ -135,11 +141,29 @@ void CommandBuffer::SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0,
 	m_debug_arg2      = arg2;
 	m_debug_arg3      = arg3;
 	m_debug_arg4      = arg4;
+	// KytyPlus: census of what this submission contains (op = last recorded operation).
+	switch (static_cast<CommandBufferDebugOp>(op)) {
+		case CommandBufferDebugOp::DrawIndex:
+		case CommandBufferDebugOp::DrawIndexAuto: m_debug_draw_count++; break;
+		case CommandBufferDebugOp::DispatchDirect:
+			m_debug_dispatch_count++;
+			m_debug_compute_count++;
+			break;
+		case CommandBufferDebugOp::EopFlip:
+		case CommandBufferDebugOp::EopWriteBackFlip:
+		case CommandBufferDebugOp::EopOnlyFlip: m_debug_flip_count++; break;
+		case CommandBufferDebugOp::EopWrite:
+		case CommandBufferDebugOp::EopInterrupt:
+		case CommandBufferDebugOp::EopWriteBack: m_debug_eop_count++; break;
+		default: break;
+	}
 }
 
 void CommandBuffer::Execute(const SubmitInfo& submit) {
 	EXIT_IF(IsInvalid());
 	EXIT_IF(m_execute);
+	// KytyPlus: census reset moved below (after the census LOGF). Resetting here erased the
+	// counts of the submit being executed, which is why every census printed zeros.
 	EXIT_IF(submit.num_wait_semaphores > SubmitInfo::MaxSemaphores ||
 	        submit.num_signal_semaphores > SubmitInfo::MaxSemaphores);
 
@@ -167,12 +191,24 @@ void CommandBuffer::Execute(const SubmitInfo& submit) {
 	auto& graphics = m_graphics;
 	EXIT_IF(graphics.queue == nullptr);
 
+	if (g_device_lost.load(std::memory_order_relaxed)) {
+		return;
+	}
+
 	auto result = graphics.device.resetFences(1, &fence);
 	if (result != vk::Result::eSuccess) {
 		LOGF("vkResetFences failed before submit: %s (%d)\n", VulkanToString(result).c_str(),
 		     static_cast<int>(result));
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	// Soft-skipped rather than fatal: a lost device is a GPU/driver fault (for example a
+	// Windows TDR reset), not an unimplemented path. Strict mode (--strict-unimplemented)
+	// restores the abort for debugging.
+	if (result != vk::Result::eSuccess) {
+		g_device_lost.store(true, std::memory_order_relaxed);
+		SOFT_EXIT("vkResetFences failed before submit: %s (%d)\n",
+		          VulkanToString(result).c_str(), static_cast<int>(result));
+		return;
+	}
 
 	if (Config::GraphicsDebugDumpEnabled()) {
 		LOGF("vkQueueSubmit begin: slot=%u waits=%u signals=%u debug_op=%u debug_submit=%" PRIu64
@@ -191,6 +227,21 @@ void CommandBuffer::Execute(const SubmitInfo& submit) {
 	m_execute      = true;
 	m_fence_waited = false;
 
+	// KytyPlus: census of THIS submission, behind GraphicsDebugDumpEnabled (~149k lines/run).
+	// The counters below must still reset on every submit. Set Debug.debug_dump=true in
+	// config.json when chasing a wedge.
+	if (Config::GraphicsDebugDumpEnabled()) {
+		LOGF("submit census: seq=%" PRIu64 " slot=%u op=%u draws=%u dispatches=%u"
+		     " flips=%u eop_writes=%u\n",
+		     m_submit_seq, m_slot->id, m_debug_op, m_debug_draw_count, m_debug_dispatch_count,
+		     m_debug_flip_count, m_debug_eop_count);
+	}
+	m_debug_draw_count     = 0;
+	m_debug_dispatch_count = 0;
+	m_debug_compute_count  = 0;
+	m_debug_flip_count     = 0;
+	m_debug_eop_count      = 0;
+
 	if (result != vk::Result::eSuccess) {
 		LOGF("vkQueueSubmit failed: %s (%d), slot=%u submit_seq=%" PRIu64
 		     " debug_op=%u debug_submit=%" PRIu64 " args=%u,%u,%u,%u,0x%016" PRIx64 "\n",
@@ -198,7 +249,17 @@ void CommandBuffer::Execute(const SubmitInfo& submit) {
 		     m_debug_op, m_debug_submit_id, m_debug_arg0, m_debug_arg1, m_debug_arg2, m_debug_arg3,
 		     m_debug_arg4);
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	// Soft-skipped rather than fatal: see the resetFences note above. A failed submit is
+	// almost always VK_ERROR_DEVICE_LOST after a TDR reset; aborting here turned a driver
+	// reset into a hard emulator crash.
+	if (result != vk::Result::eSuccess) {
+		g_device_lost.store(true, std::memory_order_relaxed);
+		SOFT_EXIT("vkQueueSubmit failed: %s (%d), slot=%u submit_seq=%" PRIu64
+		          " debug_op=%u debug_submit=%" PRIu64 "\n",
+		          VulkanToString(result).c_str(), static_cast<int>(result), m_slot->id,
+		          m_submit_seq, m_debug_op, m_debug_submit_id);
+		return;
+	}
 }
 
 void CommandBuffer::WaitForFence() {
@@ -208,6 +269,15 @@ void CommandBuffer::WaitForFence() {
 void CommandBuffer::WaitForFenceOnly() {
 	EXIT_IF(IsInvalid());
 	if (!m_execute || m_fence_waited) {
+		return;
+	}
+	// On a latched device loss there is nothing to wait for, but the caller's bookkeeping
+	// must still run: FinalizeFence() clears m_execute and releases recycled descriptors and
+	// retired buffers. Skipping that left buffers bound to a command buffer that still looked
+	// executable, so the scheduler destroyed them while bound (Vulkan use-after-free, which
+	// then killed the device outright). Report the fence as signalled and let cleanup proceed.
+	if (g_device_lost.load(std::memory_order_relaxed)) {
+		m_fence_waited = true;
 		return;
 	}
 	auto device = m_graphics.device;
@@ -221,8 +291,20 @@ void CommandBuffer::WaitForFenceOnly() {
 		     VulkanToString(result).c_str(), static_cast<int>(result), m_slot->id, m_submit_seq,
 		     m_debug_op, m_debug_submit_id, m_debug_arg0, m_debug_arg1, m_debug_arg2, m_debug_arg3,
 		     m_debug_arg4);
+		// KytyPlus diagnostic: what is actually inside the submission the GPU refused to retire.
+		// debug_op=3 means the submit carries the frame-end EOP WriteBackFlip (the guest cannot
+		// advance until it completes, which is the visible "stall after the logo").
+		LOGF("wedged submit contents: debug_op=%u draws=%u dispatches=%u computes=%u"
+		     " flips=%u eop_writes=%u\n",
+		     m_debug_op, m_debug_draw_count, m_debug_dispatch_count, m_debug_compute_count,
+		     m_debug_flip_count, m_debug_eop_count);
 		// Don't exit - log and continue. The fence might be signaled
 		// by the time we need it, or we can continue without it.
+		// A device-lost result in particular is latched so later submits stop queueing
+		// work onto a dead device and the renderer unwinds instead of crashing.
+		if (result == vk::Result::eErrorDeviceLost) {
+			g_device_lost.store(true, std::memory_order_relaxed);
+		}
 	} else {
 		m_fence_waited = true;
 	}

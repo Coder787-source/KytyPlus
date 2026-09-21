@@ -223,6 +223,13 @@ void ControllerMappingPanel::PollGamepad() {
 	info.dwSize  = sizeof(info);
 	info.dwFlags = JOY_RETURNBUTTONS | JOY_RETURNPOV | JOY_RETURNX | JOY_RETURNY | JOY_RETURNZ | JOY_RETURNR | JOY_RETURNU | JOY_RETURNV;
 
+	// Rows 0-15 are buttons (face/d-pad/shoulders/triggers/options/touch),
+	// rows 16-23 are the analog sticks (up/down/left/right). A button row must
+	// only capture a digital button or d-pad press - never an axis motion - so
+	// the rows are gated separately to avoid axis motion landing in a button row.
+	const bool capture_button = (m_capturing < 16);
+	const bool capture_axis   = !capture_button;
+
 	// Try joystick 0 first.
 	if (joyGetPosEx(JOYSTICKID1, &info) == JOYERR_NOERROR) {
 		// --- Digital buttons ---
@@ -231,13 +238,17 @@ void ControllerMappingPanel::PollGamepad() {
 		m_prev_buttons  = info.dwButtons;
 
 		if (pressed != 0) {
-			int btn = 0;
-			uint32_t mask = pressed;
-			while ((mask & 1) == 0 && btn < 32) {
-				mask >>= 1;
-				btn++;
+			if (capture_button) {
+				int btn = 0;
+				uint32_t mask = pressed;
+				while ((mask & 1) == 0 && btn < 32) {
+					mask >>= 1;
+					btn++;
+				}
+				CaptureInput(QStringLiteral("Pad: Button%1").arg(btn + 1));
+				return;
 			}
-			CaptureInput(QStringLiteral("Pad: Button%1").arg(btn + 1));
+			// Digital press while capturing a stick row: irrelevant, keep polling.
 			return;
 		}
 
@@ -245,18 +256,23 @@ void ControllerMappingPanel::PollGamepad() {
 		const DWORD pov = info.dwPOV;
 		if (pov != m_prev_pov && pov != JOY_POVCENTERED) {
 			m_prev_pov = pov;
-			// POV is in hundredths of a degree: 0=up, 9000=right, 18000=down, 27000=left
-			QString dir;
-			if (pov < 4500 || pov > 31500)      dir = QStringLiteral("DPadUp");
-			else if (pov >= 4500 && pov < 13500) dir = QStringLiteral("DPadRight");
-			else if (pov >= 13500 && pov < 22500) dir = QStringLiteral("DPadDown");
-			else                                 dir = QStringLiteral("DPadLeft");
-			CaptureInput(QStringLiteral("Pad: %1").arg(dir));
+			if (capture_button) {
+				// POV is in hundredths of a degree: 0=up, 9000=right, 18000=down, 27000=left
+				QString dir;
+				if (pov < 4500 || pov > 31500)      dir = QStringLiteral("DPadUp");
+				else if (pov >= 4500 && pov < 13500) dir = QStringLiteral("DPadRight");
+				else if (pov >= 13500 && pov < 22500) dir = QStringLiteral("DPadDown");
+				else                                 dir = QStringLiteral("DPadLeft");
+				CaptureInput(QStringLiteral("Pad: %1").arg(dir));
+				return;
+			}
+			// D-pad while capturing a stick row: irrelevant, keep polling.
 			return;
 		}
 		m_prev_pov = pov;
 
-		// --- Analog sticks and triggers ---
+		// --- Analog sticks and triggers (stick rows only) ---
+		if (capture_axis) {
 		// Axis order varies by controller. X/Y=left stick on most pads.
 		// Z/R or U/V = right stick, depending on the driver.
 		// We check all four candidate right-stick axis pairs.
@@ -294,6 +310,7 @@ void ControllerMappingPanel::PollGamepad() {
 			DWORD diff = (axes[i].val > CENTER) ? (axes[i].val - CENTER) : (CENTER - axes[i].val);
 			if (diff > DEADZONE) m_prev_axes[i] = diff;
 		}
+		} // end if (capture_axis)
 	}
 #else
 	(void)this;

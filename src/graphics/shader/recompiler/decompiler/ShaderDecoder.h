@@ -55,6 +55,10 @@ enum class Opcode {
 	SBcnt1I32B32,
 	SBcnt1I32B64,
 	SFf1I32B32,
+	// KytyPlus: s_flbit_i32_b32 is the MSB-from-high counterpart of s_ff1_i32_b32.
+	// It was missing from the table, so any shader using it hard-failed the recompiler
+	// even though the IR opcode and SPIR-V emitter for it already existed.
+	SFlbitI32B32,
 	SFlbitI32B64,
 	SBitreplicateB64B32,
 	SGetpcB64,
@@ -687,6 +691,12 @@ bool ReadLiteralOperands(std::span<const uint32_t> code, uint32_t word_index, In
 void SetRawWords(Instruction& inst, std::span<const uint32_t> code, uint32_t word_index,
                  uint32_t word_count);
 void SetUnsupported(Instruction& inst, Family family, uint32_t opcode_id, const char* reason);
+// True for instruction families that can carry control flow (branches, s_setpc,
+// s_endpgm, etc.). An unsupported instruction in one of these families cannot be
+// safely skipped -- dropping it would corrupt the control-flow graph -- whereas an
+// unsupported instruction in any other family can be treated as a no-op so a single
+// unknown ALU/memory op does not discard the whole shader.
+bool IsControlFlowFamily(Family family);
 std::string FamilyToString(Family family);
 std::string OpcodeToString(Opcode opcode);
 std::string OperandToString(const Operand& operand);

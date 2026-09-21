@@ -6,6 +6,7 @@
 #include "graphics/presentation/fsrUpscaler.h"
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <algorithm>
@@ -427,17 +428,23 @@ void FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
                            uint32_t dst_w, uint32_t dst_h,
                            float sharpness) {
 	if (!m_ready) return;
+	if (Config::GraphicsDebugDumpEnabled()) {
+		LOGF("FSR dispatch: enter src=%ux%u dst=%ux%u\n", src_w, src_h, dst_w, dst_h);
+	}
 	auto dev = m_gfx->device;
 
 	// dest_format is retained for API compatibility; the result image is always
 	// RGBA16F and the blit handles the format conversion to the swapchain.
 	(void)dest_format;
 
-	if (!EnsureIntermediate(dst_w, dst_h)) return;
-	if (!EnsureResult(dst_w, dst_h)) return;
+	if (!EnsureIntermediate(dst_w, dst_h)) { LOGF("FSR: EnsureIntermediate FAILED\n"); return; }
+	if (!EnsureResult(dst_w, dst_h)) { LOGF("FSR: EnsureResult FAILED\n"); return; }
 
 	// ── Update UBOs ──────────────────────────────────────────────
 	void* mapped = nullptr;
+	if (Config::GraphicsDebugDumpEnabled()) {
+		LOGF("FSR: mapMemory\n");
+	}
 	dev.mapMemory(m_easu_ubo_mem, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags {}, &mapped);
 
 	// EASU UBO at offset 0.
@@ -582,6 +589,9 @@ void FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 	}
 
 	// ── Dispatch EASU ────────────────────────────────────────────
+	if (Config::GraphicsDebugDumpEnabled()) {
+		LOGF("FSR: bind EASU pipeline=%p ds=%p\n", (void*)static_cast<VkPipeline>(m_easu_pipeline), (void*)static_cast<VkDescriptorSet>(m_easu_ds));
+	}
 	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, m_easu_pipeline);
 	cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, m_pipeline_layout,
 	                       0, 1, &m_easu_ds, 0, nullptr);
@@ -647,6 +657,9 @@ void FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 	}
 
 	// ── Dispatch RCAS ────────────────────────────────────────────
+	if (Config::GraphicsDebugDumpEnabled()) {
+		LOGF("FSR: bind RCAS pipeline=%p ds=%p\n", (void*)static_cast<VkPipeline>(m_rcas_pipeline), (void*)static_cast<VkDescriptorSet>(m_rcas_ds));
+	}
 	cmd.bindPipeline(vk::PipelineBindPoint::eCompute, m_rcas_pipeline);
 	cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, m_pipeline_layout,
 	                       0, 1, &m_rcas_ds, 0, nullptr);

@@ -11,6 +11,14 @@ KYTY_SUBSYSTEM_DEFINE(Controller);
 
 constexpr int HOST_INPUT_CONTROLLER_ID = -1000;
 
+// Local-multiplayer support: up to 4 pads, each a distinct player slot with its
+// own input state and its own pad handle (1..4). Player slot N corresponds to
+// user id (PAD_USER_ID_BASE + N) and pad handle (N + 1), matching the PS5 pad
+// service model (scePadOpen(user_id, ...) -> handle, scePadRead(handle, ...)).
+constexpr int PAD_MAX_CONTROLLERS = 4;
+constexpr int PAD_USER_ID_BASE    = 1000;
+constexpr int PAD_HANDLE_BASE     = 1;
+
 constexpr uint32_t PAD_BUTTON_L3        = 0x00000002;
 constexpr uint32_t PAD_BUTTON_R3        = 0x00000004;
 constexpr uint32_t PAD_BUTTON_OPTIONS   = 0x00000008;
@@ -55,6 +63,16 @@ inline int controller_get_axis(int min, int max, int value) {
 	int v = (255 * (value - min)) / (max - min);
 	return (v < 0 ? 0 : (v > 255 ? 255 : v));
 }
+
+// Maps a UserService user id to a 0-based player slot, or -1 if the id is not
+// one of the local pad users.
+int ControllerIndexFromUserId(int user_id);
+
+// Number of physically connected pads (player slots with a real device).
+int ControllerConnectedCount();
+
+// Maps a pad handle (1..PAD_MAX_CONTROLLERS) to a 0-based player slot, or -1.
+int ControllerIndexFromHandle(int handle);
 
 void ControllerConnect(int id);
 void ControllerDisconnect(int id);

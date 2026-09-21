@@ -444,6 +444,13 @@ struct Vop1SdwaRule {
 constexpr Vop1SdwaRule VOP1_SDWA_RULES[] = {
     {Opcode::VMovB32, SdwaSelBytes() | SdwaSelWords() | SdwaSelFull(), SdwaSelWords(),
      SdwaSelWords() | SdwaSelFull(), false},
+    // VNotB32 (VOP1 opcode 0x37) is a bitwise NOT; its SDWA source may select
+    // any byte/word/full, and its destination a word or full write (SDWA
+    // destinations are only ever word/full). Without this rule FindVop1SdwaRule()
+    // returns nullptr and any partial-width encoding (e.g. dst_sel == 4, word-0)
+    // is rejected as unsupported (LEGO 2K Drive shader, upstream issue #349).
+    {Opcode::VNotB32, SdwaSelBytes() | SdwaSelWords() | SdwaSelFull(), SdwaSelWords(),
+     SdwaSelBytes() | SdwaSelWords() | SdwaSelFull(), false},
     {Opcode::VCvtF32U32, SdwaSelBytes() | SdwaSelWords() | SdwaSelFull(), 0, 0, false},
     {Opcode::VCvtF32I32, SdwaSelBytes() | SdwaSelWords() | SdwaSelFull(), 0, 0, false},
     {Opcode::VCvtF32F16, SdwaSelWords() | SdwaSelFull(), 0, 0, true},

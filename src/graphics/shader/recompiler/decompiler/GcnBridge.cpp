@@ -228,6 +228,7 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::S_BCNT1_I32_B32: return Opcode::SBcnt1I32B32;
 		case GcnOpcode::S_BCNT1_I32_B64: return Opcode::SBcnt1I32B64;
 		case GcnOpcode::S_FF1_I32_B32: return Opcode::SFf1I32B32;
+		case GcnOpcode::S_FLBIT_I32_B32: return Opcode::SFlbitI32B32;
 		case GcnOpcode::S_FLBIT_I32_B64: return Opcode::SFlbitI32B64;
 		case GcnOpcode::S_BITSET0_B32: return Opcode::SBitset0B32;
 		case GcnOpcode::S_BITSET1_B32: return Opcode::SBitset1B32;
@@ -615,7 +616,6 @@ Opcode MapOpcode(GcnOpcode op) {
 		case GcnOpcode::S_FF0_I32_B32: break;
 		case GcnOpcode::S_FF0_I32_B64: break;
 		case GcnOpcode::S_FF1_I32_B64: break;
-		case GcnOpcode::S_FLBIT_I32_B32: break;
 		case GcnOpcode::S_FLBIT_I32: break;
 		case GcnOpcode::S_FLBIT_I32_I64: break;
 		case GcnOpcode::S_SEXT_I32_I8: break;

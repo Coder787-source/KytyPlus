@@ -1,5 +1,8 @@
 #include "graphics/shader/recompiler/cfg/ShaderCFG.h"
 
+#include "common/emulatorConfig.h"
+#include "common/logging/log.h"
+
 #include <algorithm>
 #include <fmt/format.h>
 #include <iterator>
@@ -1354,11 +1357,23 @@ bool BuildGraph(const Decoder::Program& program, Graph& graph, std::string* erro
 	for (const auto& inst: program.instructions) {
 		instruction_pcs.insert(inst.pc);
 		if (inst.opcode == Opcode::Unsupported) {
-			SetFailure(graph, FailureKind::UnsupportedInstruction, UINT32_MAX,
-			           fmt::format("unsupported decoded instruction in CFG at pc 0x{:08x}: {}",
-			                       inst.pc, Decoder::InstructionToString(inst).c_str()),
-			           error);
-			return false;
+			if (Decoder::IsControlFlowFamily(inst.family)) {
+				// Control-flow instruction we cannot decode: dropping it would corrupt the
+				// graph, so this stays a hard failure (or is reported in strict mode).
+				SetFailure(graph, FailureKind::UnsupportedInstruction, UINT32_MAX,
+				           fmt::format("unsupported control-flow instruction in CFG at pc 0x{:08x}: {}",
+				                       inst.pc, Decoder::InstructionToString(inst).c_str()),
+				           error);
+				return false;
+			}
+			// Data/ALU/memory instruction we cannot decode: treat it as a no-op instead of
+			// discarding the whole shader. The instruction keeps its decoded pc/word_count,
+			// so block boundaries and label sets stay valid; only its effect is lost.
+			static std::atomic<uint32_t> unsupported_inst_log_count {0};
+			if (unsupported_inst_log_count.fetch_add(1, std::memory_order_relaxed) < 256) {
+				LOGF("unsupported shader instruction treated as no-op (soft): %s\n",
+				     Decoder::InstructionToString(inst).c_str());
+			}
 		}
 	}
 

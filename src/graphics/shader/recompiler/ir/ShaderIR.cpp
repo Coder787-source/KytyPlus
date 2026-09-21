@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIRInternal.h"
 
@@ -1085,11 +1086,16 @@ bool LowerDecodedInstruction(const Decoder::Instruction& inst, BasicBlock& block
                              std::string* error) {
 	switch (inst.opcode) {
 		case Decoder::Opcode::Unsupported:
-			if (error != nullptr) {
-				*error = fmt::format("unsupported decoded instruction: {}",
-				                     Decoder::InstructionToString(inst).c_str());
+			if (Decoder::IsControlFlowFamily(inst.family)) {
+				if (error != nullptr) {
+					*error = fmt::format("unsupported control-flow instruction: {}",
+					                     Decoder::InstructionToString(inst).c_str());
+				}
+				return false;
 			}
-			return false;
+			// Data/ALU/memory instruction we cannot lower: emit nothing (no-op) and keep
+			// the rest of the shader, mirroring the CFG builder's soft handling.
+			return true;
 		case Decoder::Opcode::SGetpcB64: return LowerScalarGetpcB64(inst, block, error);
 		case Decoder::Opcode::VNop: return true;
 		case Decoder::Opcode::Exp: return LowerExportInstruction(inst, block, error);

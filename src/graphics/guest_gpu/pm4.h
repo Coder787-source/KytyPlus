@@ -585,6 +585,24 @@ constexpr uint32_t VGT_GS_MAX_VERT_OUT                                 = 0x2CE;
 constexpr uint32_t GE_NGG_SUBGRP_CNTL                                  = 0x2D3;
 constexpr uint32_t VGT_TESS_DISTRIBUTION                               = 0x2D4;
 constexpr uint32_t VGT_SHADER_STAGES_EN                                = 0x2D5;
+// VGT_SHADER_STAGES_EN field layout (GC 10.3 / RDNA2 shader mask, matching the
+// Linux amdgpu register definitions). Used to classify a draw's active stages
+// generically instead of special-casing one literal value.
+constexpr uint32_t VGT_SHADER_STAGES_EN_LS_EN_SHIFT                 = 0x0;
+constexpr uint32_t VGT_SHADER_STAGES_EN_HS_EN_SHIFT                 = 0x2;
+constexpr uint32_t VGT_SHADER_STAGES_EN_ES_EN_SHIFT                 = 0x3;
+constexpr uint32_t VGT_SHADER_STAGES_EN_GS_EN_SHIFT                 = 0x5;
+constexpr uint32_t VGT_SHADER_STAGES_EN_VS_EN_SHIFT                 = 0x6;
+constexpr uint32_t VGT_SHADER_STAGES_EN_PRIMGEN_EN_SHIFT            = 0xd;
+constexpr uint32_t VGT_SHADER_STAGES_EN_PRIMGEN_PASSTHRU_EN_SHIFT   = 0x19;
+constexpr uint32_t VGT_SHADER_STAGES_EN_LS_EN_MASK                  = 0x00000003u;
+constexpr uint32_t VGT_SHADER_STAGES_EN_HS_EN_MASK                  = 0x00000004u;
+constexpr uint32_t VGT_SHADER_STAGES_EN_ES_EN_MASK                  = 0x00000018u;
+constexpr uint32_t VGT_SHADER_STAGES_EN_GS_EN_MASK                  = 0x00000020u;
+constexpr uint32_t VGT_SHADER_STAGES_EN_VS_EN_MASK                  = 0x000000C0u;
+constexpr uint32_t VGT_SHADER_STAGES_EN_PRIMGEN_EN_MASK             = 0x00002000u;
+constexpr uint32_t VGT_SHADER_STAGES_EN_PRIMGEN_PASSTHRU_EN_MASK    = 0x02000000u;
+
 constexpr uint32_t VGT_LS_HS_CONFIG                                    = 0x2D6;
 constexpr uint32_t VGT_TF_PARAM                                        = 0x2DB;
 constexpr uint32_t DB_ALPHA_TO_MASK                                    = 0x2DC;

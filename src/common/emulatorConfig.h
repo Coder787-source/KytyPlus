@@ -129,6 +129,26 @@ struct ConfigOptions {
 	UpscalerQuality        upscaler_quality            = UpscalerQuality::Quality;
 	// RCAS sharpening strength (0.0 = no sharpening, 1.0 = maximum).
 	float                  upscaler_sharpness          = 0.5f;
+	// Opt-in native DualSense HID driver (adaptive triggers / lightbar / motion via
+	// libPad). DEFAULT OFF: SDL already handles every standard pad (including a
+	// DualSense), and this driver is unvalidated on hardware, so it is gated behind
+	// an explicit flag to avoid any conflict with the SDL controller path.
+	bool                   dualsense_enabled           = false;
+	// Report a CONNECTED console to guest libNetCtl. DEFAULT OFF: Kyty previously
+	// always reported "offline" for this API specifically so games would skip network
+	// features. Turning it on makes sceNetCtl* report the real host adapter state, but
+	// games will then actually attempt online paths (which may hit stubbed Np*/Ssl*
+	// services). Opt-in so it cannot silently change existing titles' behavior.
+	bool                   network_online_enabled      = false;
+	// Strict unimplemented-path handling. DEFAULT OFF: unimplemented graphics paths
+	// (unknown PM4 opcodes, unmapped context/shader registers, non-default shader
+	// config, unsupported shader instructions) are logged and skipped so rendering
+	// continues with (possibly wrong) output instead of terminating the process.
+	// Turn this ON to restore the historical fail-fast behaviour, where the first
+	// unimplemented path aborts with a stack trace -- useful when bisecting a
+	// specific crash. Applies to the SOFT_* guard macros only; genuine invariant
+	// failures (EXIT_IF/EXIT on invalid internal state) always abort.
+	bool                   strict_unimplemented_enabled = false;
 };
 
 void Load(const ConfigOptions& cfg);
@@ -208,6 +228,15 @@ float           GetUpscalerSharpness();
 // Returns the render scale factor for the selected upscaler quality
 // (e.g. Quality = 0.67, meaning render at 67% then upscale to full).
 float GetUpscalerRenderScale();
+
+// Native DualSense HID driver gating. False (default) keeps the unvalidated
+// DualSense driver disabled; the standard SDL controller path is unaffected.
+bool DualSenseEnabled();
+bool NetworkOnlineEnabled();
+
+// When true, unimplemented graphics paths abort (fail-fast) instead of being
+// logged and skipped. False (default) keeps rendering alive past a gap.
+bool UnimplementedStrictMode();
 
 } // namespace Config
 

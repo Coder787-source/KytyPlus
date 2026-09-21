@@ -429,7 +429,17 @@ Audio::Id Audio::AudioOutOpen(int type, uint32_t samples_num, uint32_t freq, For
 			}
 
 			if (type != AUDIO_OUT_PORT_TYPE_VIBRATION) {
-				OpenSdlDevice(&port);
+				// KytyPlus diagnostic: OpenSdlDevice() may fail (no host audio device,
+				// unsupported sample rate/format, or SDL init failure). The return is
+				// otherwise ignored, which silently leaves audio_device == 0 and makes
+				// QueueSdlAudio() drop every buffer with no log. Surfacing it turns
+				// "in-game but silent" into a diagnosable log entry.
+				const bool sdl_opened = OpenSdlDevice(&port);
+				if (!sdl_opened) {
+					LOGF("AudioOut: SDL device open failed for port type=%d format=%s "
+					     "samples=%u freq=%u; this port will be silent\n",
+					     type, Common::EnumName(format).c_str(), samples_num, freq);
+				}
 			}
 
 			return Id::Create(id);

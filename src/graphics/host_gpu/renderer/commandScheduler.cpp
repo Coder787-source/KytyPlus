@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/memoryTracker.h"
 
 #include <algorithm>
 
@@ -244,6 +245,15 @@ void CommandScheduler::PopPendingOperations() {
 void CommandScheduler::PopPendingOperations(bool refresh_gpu_tick) {
 	if (refresh_gpu_tick) {
 		m_master.Refresh();
+	}
+	// KytyPlus: the stream-buffer upload path marks the MemoryTracker thread-local upload owner
+	// (and may hold region locks) while it runs its upload callback. BufferCache::Upload copies
+	// through the staging StreamBuffer, whose Map() waits on the scheduler and pops pending
+	// operations here. Running a deferred callback from that point re-enters MemoryTracker from
+	// inside its own upload callback - a deadlock the tracker guard catches and turns into an
+	// abort. Leave the queue untouched; the operations run at the next pop outside the callback.
+	if (MemoryTracker::InUploadCallback()) {
+		return;
 	}
 	for (;;) {
 		Common::UniqueFunction<void> callback;

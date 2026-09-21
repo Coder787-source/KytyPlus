@@ -196,6 +196,14 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 
 void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destination_access,
                     std::optional<ImageSubresourceRange> range, vk::CommandBuffer command_buffer) {
+	// KytyPlus: an image whose creation was soft-skipped (unsupported format/usage, or an
+	// exhausted device heap) has backing.image == nullptr. GetBarriers() would then build a
+	// barrier carrying image = VK_NULL_HANDLE, which the driver rejects and can fault on.
+	// Skip the transition instead of poisoning the queue.
+	if (backing.image == nullptr) {
+		SOFT_EXIT("image transition skipped: backing image was not created\n");
+		return;
+	}
 	const auto transfer_access =
 	    vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite;
 	vk::PipelineStageFlags2 destination_stage {};
@@ -224,6 +232,15 @@ void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destina
 void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer, uint64_t offset,
                    uint64_t size) {
 	EXIT_IF(m_scheduler == nullptr || copies.empty() || buffer == nullptr || size == 0);
+	// KytyPlus: see the note in Transit(). Uploading into a null backing image hands a null
+	// VkImage to vkCmdCopyBufferToImage / vkCmdPipelineBarrier2. amdvlk dereferences the null
+	// dispatchable handle and raises an access violation inside the driver, which killed the
+	// whole process (reported, misleadingly, from runtimeLinker.cpp). Nothing can be uploaded,
+	// so skip it.
+	if (backing.image == nullptr) {
+		SOFT_EXIT("image upload skipped: backing image was not created\n");
+		return;
+	}
 	m_scheduler->EndRendering();
 	vk::BufferMemoryBarrier2 buffer_barrier {};
 	buffer_barrier.srcStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
@@ -263,6 +280,12 @@ void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffe
 void Image::Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
                      uint64_t offset, uint64_t size) {
 	EXIT_IF(m_scheduler == nullptr || copies.empty() || buffer == nullptr || size == 0);
+	// KytyPlus: same null-backing-image hazard as Upload(); a readback of an image that was
+	// never created cannot produce data, so skip it.
+	if (backing.image == nullptr) {
+		SOFT_EXIT("image download skipped: backing image was not created\n");
+		return;
+	}
 	m_scheduler->EndRendering();
 	vk::BufferMemoryBarrier2 buffer_barrier {};
 	buffer_barrier.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
@@ -322,6 +345,12 @@ std::pair<uint32_t, uint32_t> Image::SanitizeCopyLayers(const Image& source,
 
 void Image::CopyImage(Image& source) {
 	EXIT_IF(m_scheduler == nullptr || source.backing.samples != backing.samples);
+	// KytyPlus: neither side of an image-to-image copy can be a soft-skipped image (no
+	// backing VkImage); a guest copy of an uncreated image has nothing to move, so skip.
+	if (source.backing.image == nullptr || backing.image == nullptr) {
+		SOFT_EXIT("image copy skipped: a backing image was not created\n");
+		return;
+	}
 	m_scheduler->EndRendering();
 	const uint32_t levels     = std::min(source.backing.mip_levels, backing.mip_levels);
 	const uint32_t base_depth = backing.image_type == vk::ImageType::e3D
@@ -442,6 +471,11 @@ uint32_t Image::CopyRows(uint64_t row_size, uint32_t rows, uint64_t capacity) no
 void Image::CopyImageWithBuffer(Image& source, Buffer& buffer) {
 	EXIT_IF(m_scheduler == nullptr || buffer.Handle() == nullptr || source.backing.samples != 1 ||
 	        backing.samples != 1);
+	// KytyPlus: same null-backing-image hazard as CopyImage().
+	if (source.backing.image == nullptr || backing.image == nullptr) {
+		SOFT_EXIT("image copy skipped: a backing image was not created\n");
+		return;
+	}
 	m_scheduler->EndRendering();
 	const uint32_t levels = std::min(source.backing.mip_levels, backing.mip_levels);
 	const auto     source_aspect =
@@ -534,6 +568,11 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer) {
 void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
 	EXIT_IF(m_scheduler == nullptr || source.backing.samples != backing.samples ||
 	        mip >= backing.mip_levels || layer >= backing.layers);
+	// KytyPlus: same null-backing-image hazard as CopyImage().
+	if (source.backing.image == nullptr || backing.image == nullptr) {
+		SOFT_EXIT("image copy skipped: a backing image was not created\n");
+		return;
+	}
 	m_scheduler->EndRendering();
 	const auto width  = std::max(backing.extent.width >> mip, 1u);
 	const auto height = std::max(backing.extent.height >> mip, 1u);
@@ -698,6 +737,18 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	                                      create.usage, create.flags,
 	                                      &properties) != vk::Result::eSuccess ||
 	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
+		// Soft-skipped: an unsupported format/usage combination is a guest request we cannot
+		// satisfy, not a reason to abort the whole process. --strict-unimplemented restores
+		// fail-fast for debugging. Returning here leaves backing.image == nullptr, a state
+		// callers already guard (see textureCache.cpp, blitHelper.cpp, ~Image).
+		SOFT_EXIT("image format does not support required usage: format=%d type=%d usage=0x%x "
+		          "flags=0x%x samples=%u\n",
+		          static_cast<int>(create.format), static_cast<int>(create.imageType),
+		          static_cast<vk::ImageUsageFlags::MaskType>(create.usage),
+		          static_cast<vk::ImageCreateFlags::MaskType>(create.flags), backing.samples);
+		if (!Config::UnimplementedStrictMode()) {
+			return;
+		}
 		EXIT("image format does not support required usage: format=%d type=%d usage=0x%x "
 		     "flags=0x%x samples=%u\n",
 		     static_cast<int>(create.format), static_cast<int>(create.imageType),
@@ -707,6 +758,17 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 
 	backing.memory.property = vk::MemoryPropertyFlagBits::eDeviceLocal;
 	if (!graphics.CreateImage(create, backing)) {
+		// Soft-skipped: usually VK_ERROR_OUT_OF_DEVICE_MEMORY once the shared host heap is
+		// exhausted (an iGPU borrows system RAM, so the budget is small and can be reached
+		// after a device loss when nothing is reclaimed). Returning leaves backing.image ==
+		// nullptr so the renderer skips this resource instead of killing the process.
+		// --strict-unimplemented restores the abort.
+		SOFT_EXIT("failed to create image: extent=%ux%ux%u format=%d layers=%u levels=%u\n",
+		          create.extent.width, create.extent.height, create.extent.depth,
+		          static_cast<int>(create.format), create.arrayLayers, create.mipLevels);
+		if (!Config::UnimplementedStrictMode()) {
+			return;
+		}
 		EXIT("failed to create image: extent=%ux%ux%u format=%d layers=%u levels=%u\n",
 		     create.extent.width, create.extent.height, create.extent.depth,
 		     static_cast<int>(create.format), create.arrayLayers, create.mipLevels);

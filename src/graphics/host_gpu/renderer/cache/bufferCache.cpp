@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cinttypes>
 #include <cstring>
 #include <utility>
@@ -114,43 +115,99 @@ std::pair<uint64_t, uint64_t> BufferCache::DownloadEnvelope(const DownloadCopy& 
 
 std::vector<BufferCache::DownloadRange>
 BufferCache::RecordDownloads(std::span<const DownloadCopy> copies) {
-	uint64_t reservation_size = 0;
+	// KytyPlus: the shared download stream is a fixed-size ring (32 MiB). A single batch can
+	// exceed it -- and so can one dirty range -- which used to abort the whole emulator from
+	// Map() returning nullptr. Pack the copies into capacity-sized batches and skip (with a
+	// log) anything that cannot fit, so a readback gap degrades instead of killing the process.
+	struct PendingCopy {
+		const DownloadCopy* copy;
+		uint64_t            source_begin;
+		uint64_t            envelope_size;
+		uint64_t            aligned_size;
+	};
+
+	std::vector<PendingCopy> pending;
+	pending.reserve(copies.size());
 	for (const auto& copy: copies) {
 		const auto [source_begin, envelope_size] = DownloadEnvelope(copy);
-		(void)source_begin;
 		if (envelope_size > UINT64_MAX - (DOWNLOAD_ALIGNMENT - 1)) {
 			EXIT("BufferCache: download batch alignment overflow\n");
 		}
-		const auto aligned_size = AlignDownload(envelope_size);
-		if (aligned_size > UINT64_MAX - reservation_size) {
-			EXIT("BufferCache: download batch overflow\n");
-		}
-		reservation_size += aligned_size;
+		pending.push_back({&copy, source_begin, envelope_size, AlignDownload(envelope_size)});
 	}
-	if (reservation_size == 0) {
+	if (pending.empty()) {
 		return {};
 	}
 
-	auto& download                   = m_download_buffer;
-	const auto [mapped, base_offset] = download.Map(reservation_size, DOWNLOAD_ALIGNMENT);
-	if (mapped == nullptr) {
-		EXIT("BufferCache: download batch could not reserve the shared stream\n");
-	}
+	auto&          download = m_download_buffer;
+	const uint64_t capacity = download.Size();
 
 	std::vector<DownloadRange> downloads;
 	downloads.reserve(copies.size());
-	uint64_t cursor = 0;
-	for (const auto& copy: copies) {
-		const auto [source_begin, envelope_size] = DownloadEnvelope(copy);
-		const auto prefix                        = copy.source_offset - source_begin;
-		download.CopyFrom(m_scheduler.Current(), *copy.owner, source_begin, base_offset + cursor,
-		                  envelope_size, vk::AccessFlagBits::eMemoryWrite, vk::AccessFlags {},
-		                  vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-		                  vk::AccessFlagBits::eHostRead);
-		downloads.push_back({copy.address, copy.size, base_offset + cursor + prefix});
-		cursor += AlignDownload(envelope_size);
+
+	size_t   next          = 0;
+	uint64_t skipped_bytes = 0;
+	uint32_t skipped_count = 0;
+
+	while (next < pending.size()) {
+		if (pending[next].aligned_size > capacity) {
+			// Larger than the entire stream: no batch can ever hold it.
+			skipped_bytes += pending[next].copy->size;
+			skipped_count++;
+			next++;
+			continue;
+		}
+
+		uint64_t batch_size = 0;
+		size_t   batch_end  = next;
+		while (batch_end < pending.size()) {
+			const auto& entry = pending[batch_end];
+			if (entry.aligned_size > capacity ||
+			    (batch_size != 0 && batch_size + entry.aligned_size > capacity)) {
+				break;
+			}
+			batch_size += entry.aligned_size;
+			batch_end++;
+		}
+
+		const auto [mapped, base_offset] = download.Map(batch_size, DOWNLOAD_ALIGNMENT);
+		if (mapped == nullptr) {
+			LOGF("BufferCache: download batch of %" PRIu64
+			     " bytes could not reserve the shared stream; dropping %zu copies\n",
+			     batch_size, batch_end - next);
+			for (size_t i = next; i < batch_end; i++) {
+				skipped_bytes += pending[i].copy->size;
+				skipped_count++;
+			}
+			next = batch_end;
+			continue;
+		}
+
+		uint64_t offset = 0;
+		for (size_t i = next; i < batch_end; i++) {
+			const auto& entry  = pending[i];
+			const auto  prefix = entry.copy->source_offset - entry.source_begin;
+			download.CopyFrom(m_scheduler.Current(), *entry.copy->owner, entry.source_begin,
+			                  base_offset + offset, entry.envelope_size,
+			                  vk::AccessFlagBits::eMemoryWrite, vk::AccessFlags {},
+			                  vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+			                  vk::AccessFlagBits::eHostRead);
+			downloads.push_back(
+			    {entry.copy->address, entry.copy->size, base_offset + offset + prefix});
+			offset += entry.aligned_size;
+		}
+		download.Commit();
+		next = batch_end;
 	}
-	download.Commit();
+
+	if (skipped_count != 0) {
+		static std::atomic<uint32_t> skip_log {0};
+		if (skip_log.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF("BufferCache: skipped %" PRIu32 " download copies (%" PRIu64
+			     " bytes) that do not fit the %" PRIu64 " byte download stream\n",
+			     skipped_count, skipped_bytes, capacity);
+		}
+	}
 	return downloads;
 }
 
@@ -192,7 +249,11 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_memory_tracker(page_manager),
       m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 512 * MiB),
       m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
-      m_download_buffer(graphics, scheduler, MemoryUsage::Download, 32 * MiB),
+      // KytyPlus: 32 MiB was too small for a single large guest readback (for example a
+      // 2848x1600 RGBA16F image is ~36 MiB), which aborted the emulator from RecordDownloads.
+      // 64 MiB holds the largest single readback seen (~36 MiB for 2848x1600 RGBA16F);
+      // RecordDownloads also packs into capacity-sized batches and degrades gracefully.
+      m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
       m_texture_cache(texture_cache) {
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));

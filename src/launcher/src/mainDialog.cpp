@@ -15,12 +15,14 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QIODevice>
 #include <QLabel>
 #include <QMessageBox>
 #include <QProcess>
 #include <QRadioButton>
 #include <QRegularExpression>
+#include <QScreen>
 #include <QSettings>
 #include <QStringList>
 #include <QTextStream>
@@ -149,8 +151,25 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 
 	m_ui->label_settings_file->setText(tr("Settings file: ") + m_ui->widget->GetSettingsFile());
 
-	m_main_dialog->restoreGeometry(g_last_geometry);
-
+	// KytyPlus: a geometry saved before the minimum size was raised can be too short for
+	// the layout, which makes the tree squeeze over the text labels. A geometry saved while
+	// the launcher was on a larger display also made the window overflow a smaller panel.
+	// Clamp the restored size up to the dialog minimum, then back down to the available
+	// screen work area, so the window always fits and never overlaps its own widgets.
+	const QSize dlg_min = m_main_dialog->minimumSize();
+	if (!g_last_geometry.isEmpty() && m_main_dialog->restoreGeometry(g_last_geometry)) {
+		QSize sz = m_main_dialog->size().expandedTo(dlg_min);
+		QScreen* scr = m_main_dialog->screen() != nullptr ? m_main_dialog->screen()
+		                                                  : QGuiApplication::primaryScreen();
+		if (scr != nullptr) {
+			const QRect avail = scr->availableGeometry();
+			sz.setWidth(qMin(sz.width(), avail.width()));
+			sz.setHeight(qMin(sz.height(), avail.height()));
+		}
+		if (sz != m_main_dialog->size()) {
+			m_main_dialog->resize(sz);
+		}
+	}
 	Update();
 }
 
@@ -558,54 +577,114 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 		// Emulator extracts to <working_dir>/pkg_out/pfs_files (working dir = emulator dir)
 		QString pkg_out_dir = QDir(dir.path()).filePath(QStringLiteral("pkg_out/pfs_files"));
 		QStringList game_dirs = m_ui->widget->GetGameDirectories();
+		// KytyPlus: name the destination from the PKG's real content id, which the
+		// emulator prints as PKG_CONTENT_ID=... Use the filename only as a fallback.
 		QString content_id = QFileInfo(file).completeBaseName();
 
 		QObject::connect(process, &QProcess::finished, m_main_dialog,
-			[this, process, pkg_out_dir, game_dirs, content_id, dir](int exitCode, QProcess::ExitStatus) {
-				if (QDir(pkg_out_dir).exists()) {
-					QString games_dir;
-					if (game_dirs.isEmpty()) {
-						games_dir = QDir(dir.path()).filePath(QStringLiteral("games"));
-						QDir().mkpath(games_dir);
-						m_ui->widget->AddGameDirectory(games_dir);
-					} else {
-						games_dir = game_dirs.first();
+			[this, process, pkg_out_dir, game_dirs, content_id, dir](int exitCode, QProcess::ExitStatus) mutable {
+				const QString out = QString::fromLocal8Bit(process->readAllStandardOutput()) +
+				                    QString::fromLocal8Bit(process->readAllStandardError());
+
+				// KytyPlus: never report success when the emulator failed. Previously a
+				// stale pkg_out/pfs_files from a previous install was copied and a false
+				// "Install complete" was shown. Honour the exit code and the explicit
+				// PKG_ERROR_* markers instead.
+				if (exitCode != 0 || out.contains(QStringLiteral("PKG_ERROR_ENCRYPTED"))) {
+					QString reason = tr("The package could not be installed.");
+					if (out.contains(QStringLiteral("PKG_ERROR_ENCRYPTED"))) {
+						reason = tr("This package is encrypted, which is not supported.\n\n"
+						            "Decrypt it externally first (e.g. with a PKG tool), then "
+						            "import the plaintext .pkg \u2014 or extract it and add the "
+						            "game folder directly.");
+					} else if (out.contains(QStringLiteral("PKG_ERROR_EMPTY"))) {
+						reason = tr("The package parsed but produced no files (extraction failed).");
 					}
-					if (!games_dir.isEmpty() && QDir(games_dir).exists()) {
-						QString dest_dir = QDir(games_dir).filePath(content_id);
-						QDir().mkpath(dest_dir);
+					QMessageBox::warning(m_main_dialog, tr("Install failed"), reason);
+					process->deleteLater();
+					return;
+				}
 
-						// Recursively copy all files AND subdirectories (e.g. sce_sys/param.json)
-						std::function<bool(const QString&, const QString&)> copyRecursively =
-							[&copyRecursively](const QString& srcPath, const QString& dstPath) -> bool {
-							QDir srcDir(srcPath);
-							if (!srcDir.exists()) return false;
-							QDir().mkpath(dstPath);
+				// Prefer the content id reported by the emulator.
+				for (const QString& line : out.split(QLatin1Char('\n'))) {
+					const QString trimmed = line.trimmed();
+					if (trimmed.startsWith(QStringLiteral("PKG_CONTENT_ID="))) {
+						const QString id = trimmed.mid(QStringLiteral("PKG_CONTENT_ID=").size()).trimmed();
+						if (!id.isEmpty()) {
+							content_id = id;
+						}
+					}
+				}
 
-							// Copy files
-							QStringList files = srcDir.entryList(QDir::Files | QDir::NoDotAndDotDot);
-							for (const auto& fname : files) {
-								QString srcFile = srcDir.filePath(fname);
-								QString dstFile = QDir(dstPath).filePath(fname);
-								if (QFile::exists(dstFile)) QFile::remove(dstFile);
-								if (!QFile::copy(srcFile, dstFile)) return false;
-							}
+				if (!QDir(pkg_out_dir).exists()) {
+					QMessageBox::warning(m_main_dialog, tr("Install failed"),
+					                     tr("Extraction produced no output to copy."));
+					process->deleteLater();
+					return;
+				}
 
-							// Recurse into subdirectories
-							QStringList dirs = srcDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-							for (const auto& dname : dirs) {
-								if (!copyRecursively(srcDir.filePath(dname), QDir(dstPath).filePath(dname)))
-									return false;
-							}
-							return true;
-						};
+				// KytyPlus: refuse to copy an empty tree (a stale/blank pkg_out must not
+				// masquerade as a successful install).
+				const QDir src_check(pkg_out_dir);
+				if (src_check.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot).isEmpty()) {
+					QMessageBox::warning(m_main_dialog, tr("Install failed"),
+					                     tr("Extraction directory is empty; nothing to install."));
+					process->deleteLater();
+					return;
+				}
 
-						int moved = copyRecursively(pkg_out_dir, dest_dir) ? 1 : 0;
+				QString games_dir;
+				if (game_dirs.isEmpty()) {
+					games_dir = QDir(dir.path()).filePath(QStringLiteral("games"));
+					QDir().mkpath(games_dir);
+					m_ui->widget->AddGameDirectory(games_dir);
+				} else {
+					games_dir = game_dirs.first();
+				}
+				if (!games_dir.isEmpty() && QDir(games_dir).exists()) {
+					QString dest_dir = QDir(games_dir).filePath(content_id);
+					QDir().mkpath(dest_dir);
 
-						m_ui->widget->ScanGameDirectory();
+					// Recursively copy all files AND subdirectories (e.g. sce_sys/param.json)
+					std::function<int(const QString&, const QString&)> copyRecursively =
+						[&copyRecursively](const QString& srcPath, const QString& dstPath) -> int {
+						QDir srcDir(srcPath);
+						if (!srcDir.exists()) return 0;
+						QDir().mkpath(dstPath);
 
+						int copied = 0;
+						// Copy files
+						QStringList files = srcDir.entryList(QDir::Files | QDir::NoDotAndDotDot);
+						for (const auto& fname : files) {
+							QString srcFile = srcDir.filePath(fname);
+							QString dstFile = QDir(dstPath).filePath(fname);
+							if (QFile::exists(dstFile)) QFile::remove(dstFile);
+							if (!QFile::copy(srcFile, dstFile)) return -1;
+							++copied;
+						}
+
+						// Recurse into subdirectories
+						QStringList dirs = srcDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+						for (const auto& dname : dirs) {
+							const int sub = copyRecursively(srcDir.filePath(dname), QDir(dstPath).filePath(dname));
+							if (sub < 0) return -1;
+							copied += sub;
+						}
+						return copied;
+					};
+
+					const int moved = copyRecursively(pkg_out_dir, dest_dir);
+
+					m_ui->widget->ScanGameDirectory();
+
+					if (moved <= 0) {
+						QMessageBox::warning(m_main_dialog, tr("Install failed"),
+						                     tr("No files could be copied to:\n%1").arg(dest_dir));
+					} else {
 						QMessageBox::information(m_main_dialog, tr("Install complete"),
-						                         tr("Extracted %1 file(s) to:\n%2\n\nThe game should now appear in the list.").arg(moved).arg(dest_dir));
+						                         tr("Installed %1 file(s) to:\n%2\n\nThe game should now appear in the list.")
+						                             .arg(moved)
+						                             .arg(dest_dir));
 					}
 				}
 				process->deleteLater();

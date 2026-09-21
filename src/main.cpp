@@ -17,6 +17,7 @@
 #include <charconv>
 #include <cstdio>
 #include <new>
+#include <system_error>
 #include <fmt/format.h>
 
 using namespace Common;
@@ -72,6 +73,9 @@ static void PrintUsage() {
 	    "  --readback-linear-images <true|false> Read back writable linear images on submit.\n");
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	::printf("  --redzone                            Protect the guest SysV red zone.\n");
+		::printf("  --network-online                     Report the console as online to libNetCtl.\n");
+::printf("  --strict-unimplemented               Abort on the first unimplemented graphics path\n"
+           "                                       (default: log and skip, keep rendering).\n");
 #endif
 	::printf("  --keymap <Control=Input>             DualSense mapping; may be repeated.\n");
 	::printf("  --rd                                 Enable RenderDoc capture.\n");
@@ -179,6 +183,15 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			continue;
 		}
 #endif
+		if (arg == "--network-online") {
+			options.config.network_online_enabled = true;
+			continue;
+		}
+
+		if (arg == "--strict-unimplemented") {
+			options.config.strict_unimplemented_enabled = true;
+			continue;
+		}
 
 		if (!Common::StartsWith(arg, "--")) {
 			::printf("game input must be provided with --game\n");
@@ -404,12 +417,16 @@ int main(int argc, char* argv[]) {
 			slist.DestroyAll(false);
 			return 1;
 		}
+		// KytyPlus: fixed exit code 2 = encrypted/unsupported package. The launcher
+		// checks this and reports a real reason instead of a false "Install complete".
 		if (pr.is_encrypted) {
+			::printf("PKG_ERROR_ENCRYPTED\n");
 			::printf("PKG '%s' is encrypted. Encrypted packages are not supported.\n",
 			         pr.content_id.c_str());
-			::printf("(KytyPlus only parses decrypted/plaintext packages.)\n");
+			::printf("(Decrypt it externally first, then import the plaintext .pkg or the "
+			         "extracted game folder.)\n");
 			slist.DestroyAll(false);
-			return 1;
+			return 2;
 		}
 		// Extract into a deterministic folder that the caller can find.
 		// The launcher sets the working directory to the emulator's own folder
@@ -418,10 +435,28 @@ int main(int argc, char* argv[]) {
 		// install path in sync for every user, regardless of where the .pkg lives.
 		// current_path() is always absolute, so this cannot write to a drive root.
 		const auto out_dir = (std::filesystem::current_path() / "pkg_out").string();
+		// KytyPlus: clear any previous extraction first. Without this, a failed or
+		// encrypted install leaves a stale pkg_out/pfs_files behind and the launcher
+		// copies that stale tree into the new game folder (files from a PREVIOUS
+		// title appear under the new title's name).
+		{
+			std::error_code clean_ec;
+			std::filesystem::remove_all(out_dir, clean_ec);
+		}
 		// KytyPlus: untrusted inode/size fields in a malformed or truncated package
 		// are bounded inside PfsParser::ReadFileData / DecompressPfscStream (reserve
 		// caps), so no unbounded allocation can abort the install console.
 		const uint32_t n = Libs::Firmware::PkgParser::ExtractAll(pr, options.install_pkg.string(), out_dir);
+		if (n == 0) {
+			::printf("PKG_ERROR_EMPTY\n");
+			::printf("PKG '%s' produced no files (extraction failed).\n", pr.content_id.c_str());
+			slist.DestroyAll(false);
+			return 3;
+		}
+		// KytyPlus: print the real content id so the launcher can name the destination
+		// folder from it instead of guessing from the .pkg filename.
+		::printf("PKG_CONTENT_ID=%s\n", pr.content_id.c_str());
+		::printf("PKG_EXTRACTED=%u\n", n);
 		::printf("PKG '%s' parsed OK. Extracted %u file(s) to %s\n",
 		         pr.content_id.c_str(), n, out_dir.c_str());
 		if (!pr.files.empty()) {

@@ -756,8 +756,17 @@ static VKAPI_ATTR vk::Bool32 VKAPI_CALL VulkanDebugMessengerCallback(
 	}
 
 	if (error) {
-		EXIT_COLOR(severity_style, "[Vulkan][%s][%u]: %s\n", severity_str,
-		           static_cast<uint32_t>(message_types), callback_data->pMessage);
+		// Validation errors used to abort the process, which is why every run needed
+		// --vulkan-validation false. With validation explicitly enabled the user is
+		// asking for diagnostics, not a crash: log the message loudly and continue.
+		// Strict mode restores the historical fail-fast abort.
+		if (Config::UnimplementedStrictMode()) {
+			EXIT_COLOR(severity_style, "[Vulkan][%s][%u]: %s\n", severity_str,
+			           static_cast<uint32_t>(message_types), callback_data->pMessage);
+		} else {
+			LOGF_COLOR(severity_style, "[Vulkan][VALIDATION ERROR][%s][%u]: %s\n", severity_str,
+			           static_cast<uint32_t>(message_types), callback_data->pMessage);
+		}
 	}
 
 	if (!skip) {

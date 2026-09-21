@@ -1402,8 +1402,15 @@ void TextureCache::MarkGpuWritten(ImageId id) {
 }
 
 void TextureCache::CommitGpuWrite(Image& image) {
-	if (image.depth_id || image.backing.image == nullptr) {
+	if (image.depth_id) {
 		EXIT("TextureCache: stencil association cannot own image contents\n");
+	}
+	if (image.backing.image == nullptr) {
+		// KytyPlus: the image has no backing VkImage (its creation was soft-skipped). There is
+		// nothing to mark GPU-written or to refresh, and this is reached from FindTexture while
+		// binding an image, so skip instead of aborting the process.
+		SOFT_EXIT("TextureCache: cannot commit a GPU write to an image that was not created\n");
+		return;
 	}
 	image.ClearBufferModified();
 	if (image.IsCpuDirty()) {

@@ -605,7 +605,16 @@ int KYTY_SYSV_ABI AudioOut2PortCreate(AudioOut2ContextHandle ctx, const AudioOut
 	}
 
 	int audio_handle = 0;
-
+	// KytyPlus diagnostic: if data_format is not a recognized PS5 output format,
+	// audio_format stays Unknown and no SDL device is opened (audio_handle == 0),
+	// so AudioOut2ContextPush silently queues nothing. Logging the raw format
+	// turns "playable but silent" into a diagnosable line.
+	if (audio_format == AudioInternal::Format::Unknown &&
+	    !audioout2_port_type_is_object(params->port_type)) {
+		LOGF("AudioOut2: port data_format=0x%08x maps to Format::Unknown (type=%u, "
+		     "freq=%u); no audio device will be opened\n",
+		     params->data_format, params->port_type, params->sampling_freq);
+	}
 	if (audio_format != AudioInternal::Format::Unknown &&
 	    !audioout2_port_type_is_object(params->port_type)) {
 		audio_handle = AudioInternal::AudioOutOpen(audio_type, samples_num, params->sampling_freq,

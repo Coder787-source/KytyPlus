@@ -451,7 +451,12 @@ bool Elf64::IsSelf() const {
 	     m_self->ident[10] == 0x00 && m_self->ident[11] == 0x00 && m_self->unknown == 0x22) ||
 	    (m_self->ident[4] == 0x10 && m_self->ident[5] == 0x01 && m_self->ident[6] == 0x01 &&
 	     m_self->ident[7] == 0x12 && m_self->ident[8] == 0x01 && m_self->ident[9] == 0x01 &&
-	     m_self->ident[10] == 0x00 && m_self->ident[11] == 0x10 && m_self->unknown == 0x32);
+	     m_self->ident[10] == 0x00 && m_self->ident[11] == 0x10 && m_self->unknown == 0x32) ||
+	    // PS5-vintage SELF variant (e.g. Demon's Souls PPSA01342): magic B, but
+	    // ident[7]=0x44 and unknown=0x52 instead of the PS4 0x12/0x32 pair.
+	    (m_self->ident[4] == 0x10 && m_self->ident[5] == 0x01 && m_self->ident[6] == 0x01 &&
+	     m_self->ident[7] == 0x44 && m_self->ident[8] == 0x01 && m_self->ident[9] == 0x12 &&
+	     m_self->ident[10] == 0x00 && m_self->ident[11] == 0x10 && m_self->unknown == 0x52);
 
 	if (!known_ident_tail) {
 		LOGF("Unknown SELF file\n");

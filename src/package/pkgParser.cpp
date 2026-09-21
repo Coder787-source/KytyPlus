@@ -155,6 +155,37 @@ bool PkgParser::ValidatePkgHeader(const PkgHeader& hdr, uint64_t file_size) {
     return true;
 }
 
+// ---- PFS superblock encryption check ----
+//
+// The plaintext-magic heuristic in IsEncrypted() is NOT sufficient: an encrypted
+// PFS image still stores its superblock UNENCRYPTED (so the magic at format+0x08
+// is present), which made this parser report a retail/fake encrypted package as
+// "decrypted" and then extract only garbage. The authoritative signal is the
+// PFS_MODE_ENCRYPTED bit in the superblock mode field, so we read that directly.
+static bool PfsSuperblockIsEncrypted(const std::string& path, uint64_t pfs_image_offset) {
+    if (pfs_image_offset == 0) {
+        return false;
+    }
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        return false;
+    }
+    // Layout: version U64 @0x00, format U64 @0x08, flags[4] @0x10, mode U16 @0x1C.
+    uint8_t hdr[0x20] = {0};
+    f.seekg(static_cast<std::streamoff>(pfs_image_offset), std::ios::beg);
+    f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
+    if (static_cast<size_t>(f.gcount()) < sizeof(hdr)) {
+        return false;
+    }
+    const uint64_t format = *reinterpret_cast<const uint64_t*>(hdr + 0x08);
+    if (format != 20130315ull) { // PFS_FORMAT_MAGIC
+        return false;
+    }
+    const uint16_t mode = *reinterpret_cast<const uint16_t*>(hdr + 0x1C);
+    constexpr uint16_t kPfsModeEncrypted = 0x4;
+    return (mode & kPfsModeEncrypted) != 0;
+}
+
 // ---- Main parse ----
 
 PkgParseResult PkgParser::Parse(const std::string& pkg_path) {
@@ -272,11 +303,19 @@ PkgParseResult PkgParser::Parse(const std::string& pkg_path) {
         result.is_encrypted = IsEncrypted(pkg_path, result.body_offset,
                                            result.body_size, &result.pfs_image_offset);
 
-        if (result.is_encrypted) {
-            LOGF("PKG: body is encrypted (no PFS magic in body region) - requires user keys to extract");
-        } else {
+        if (!result.is_encrypted) {
             LOGF("PKG: body is decrypted (PFS magic at 0x%llX) - can extract without keys",
                  static_cast<unsigned long long>(result.pfs_image_offset));
+        }
+        // KytyPlus: the magic heuristic can be fooled (an encrypted PFS keeps a
+        // plaintext superblock). The superblock mode bit is authoritative.
+        if (PfsSuperblockIsEncrypted(pkg_path, result.pfs_image_offset)) {
+            result.is_encrypted = true;
+            result.keys_required_and_missing = true;
+            LOGF("PKG: PFS superblock mode has the encrypted bit set - decryption required");
+        }
+        if (result.is_encrypted) {
+            LOGF("PKG: body is encrypted - decryption is not supported");
         }
     }
 
@@ -371,8 +410,11 @@ uint32_t PkgParser::ExtractAll(const PkgParseResult& result,
              pfs_extracted, pfs_out_dir.c_str());
         extracted = pfs_extracted;
     } else if (pfs_result.ok && pfs_result.is_encrypted) {
-        LOGF("PKG: PFS body is encrypted (decryption not supported) - extracted raw body.pfs only");
-        extracted = 1;
+        // KytyPlus: refuse instead of pretending success. Returning 0 makes the
+        // caller report failure, so the launcher shows a real reason rather than
+        // copying a raw ciphertext blob into the library as a "game".
+        LOGF("PKG: PFS body is encrypted (decryption not supported) - install refused");
+        return 0;
     } else if (pfs_result.ok && pfs_result.is_compressed) {
         LOGF("PKG: PFS body is PFSC-compressed - extracted raw body.pfs only");
         extracted = 1;
