@@ -7,7 +7,7 @@
 **KytyPlus** is a KytyPS5-based PlayStation 5 emulator for **Windows, macOS, and Linux**. This repository is a
 standalone project derived from [KytyPS5](https://github.com/KytyPS5/KytyPS5) (itself based on
 [Kyty](https://github.com/InoriRus/Kyty)), with additional work focused on **iGPU optimization**,
-**build stability**, and a **unified PS4/PS5 dispatch** (iGPU behavior is **not yet verified**; see [iGPU status](#igpu-status)).
+**build stability**, and a **unified PS4/PS5 dispatch** (iGPU status: first real-game result achieved; see [iGPU status](#igpu-status)).
 
 > [!CAUTION]
 > **Early-development software.** Many games still crash, hang, black-screen, or render incorrectly.
@@ -123,16 +123,24 @@ next unimplemented feature. Always test with a **fresh build** and attach logs w
 ## iGPU status
 
 This project started on an integrated-GPU machine, so several defaults and allocator choices were
-made **with iGPUs / UMA in mind**. That is a **design intent**, not a verified result.
+made **with iGPUs / UMA in mind**. That design intent now has a first real result behind it.
 
-- KytyPlus has **not yet been confirmed to boot or run on any integrated GPU**.
-- An iGPU result would be a meaningful differentiator and is **actively sought**.
+- **First confirmed real-game run on an iGPU:** *Silent Hill 2 Remake* (PPSA08709, UE5,
+  PS5-native) renders on an **AMD Radeon 840M** (Ryzen AI 5 340, shared-memory system): its
+  first interactive screen (the content-warning/title flow) with working FSR 1.0 presentation,
+  thousands of frames over a multi-minute session, no GPU hangs, clean exit. Performance is
+  **single-digit FPS** — a correctness milestone, not a playability claim. See
+  [COMPATIBILITY.md](COMPATIBILITY.md).
+- Two HLE-side GPU-hang workarounds were needed for this title (both emulator fixes, not game
+  patches): one UE5 volumetric compute pass that wedged this specific APU is currently skipped
+  (volumetrics/fog render wrong), and a guard validates storage-image atomics against host
+  format support.
 
 If you have an **iGPU system** (e.g. Radeon 780M, Intel Arc iGPU) **and legally obtained game dumps**,
-a boot/menu report with logs and a rig description would be extremely valuable. Please share it in
+a boot/menu report with logs and a rig description is still extremely valuable — one data point
+does not establish a pattern. Please share it in
 [discussions](https://github.com/Coder787-source/KytyPlus/discussions/2) or as a
 [compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml).
-Until such a report exists, treat iGPU support as **unproven**, not advertised.
 
 ## Press / Coverage
 
