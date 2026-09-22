@@ -114,7 +114,7 @@ next unimplemented feature. Always test with a **fresh build** and attach logs w
 > or [file a compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml).
 > Browse existing results in the [compatibility list](COMPATIBILITY.md).
 >
-> **Have a question or need help (firmware install, config, a game not booting)?** Open an issue —
+> **Have a question or need help (config, a game not booting)?** Open an issue —
 > it's not just for bug reports. I read every one and reply. Questions are welcome, even if it's
 > just "how do I map my controller" or "does this work on my GPU." Better to ask than guess.
 
