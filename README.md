@@ -152,7 +152,9 @@ Multi-minute session on a dev build (post-v3.4).
 
 This is a **correctness milestone, not a playability claim**: geometry, text, compute and the
 full present pipeline demonstrably work on shared-memory iGPU hardware; performance is the next
-frontier. See [COMPATIBILITY.md](COMPATIBILITY.md).
+frontier. The session was ended manually at the warning screen, so the title **could boot
+farther, but that is untested** — nothing in the observed run suggested a wall right behind
+it. See [COMPATIBILITY.md](COMPATIBILITY.md).
 
 If you have an **iGPU system** (e.g. Radeon 780M, Intel Arc iGPU) **and legally obtained game dumps**,
 a boot/menu report with logs and a rig description is still extremely valuable — one data point
