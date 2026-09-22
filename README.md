@@ -185,6 +185,48 @@ KytyPlus itself. Listed for context only.
 Screenshots below are from the KytyPS5 lineage and illustrate early boot capability â€” not KytyPlus
 playability guarantees.
 
+### Silent Hill 2 Remake (PPSA08709)  first rendered run on an iGPU
+
+Boot progression on an **AMD Radeon 840M** (512 MB, shared memory), pure HLE  farthest
+documented result for this title in the PS5 emulation scene (upstream baseline: crash at
+boot/splash on discrete GPUs  [KytyPS5 #210](https://github.com/KytyPS5/KytyPS5/issues/210)).
+Game © Konami Digital Entertainment / Bloober Team  shown here for interoperability
+documentation only.
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <strong>KONAMI splash</strong><br>
+      <img src="docs/screenshots/sh2-01-konami.png" width="300" alt="KONAMI splash on KytyPlus">
+    </td>
+    <td align="center">
+      <strong>Bloober Team</strong><br>
+      <img src="docs/screenshots/sh2-02-bloober.png" width="300" alt="Bloober Team logo on KytyPlus">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Unreal Engine</strong><br>
+      <img src="docs/screenshots/sh2-03-unreal.png" width="300" alt="Unreal Engine logo on KytyPlus">
+    </td>
+    <td align="center">
+      <strong>Content-warning screen</strong><br>
+      <img src="docs/screenshots/sh2-04-warning.png" width="300" alt="Silent Hill 2 content-warning screen on KytyPlus">
+    </td>
+  </tr>
+</table>
+
+### Crash Bandicoot 4 (PPSA02433)  past the upstream logo wall
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <strong>Unreal Engine logo (UE4)</strong><br>
+      <img src="docs/screenshots/cb4-01-logo.png" width="300" alt="Crash Bandicoot 4 Unreal logo on KytyPlus">
+    </td>
+  </tr>
+</table>
+
 <table align="center">
   <tr>
     <td align="center">
