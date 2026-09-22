@@ -196,7 +196,7 @@ documentation only.
 <table align="center">
   <tr>
     <td align="center">
-      <strong>KONAMI splash</strong><br>
+      <strong>Unreal Engine Logo</strong><br>
       <img src="docs/screenshots/sh2-01-konami.png" width="300" alt="KONAMI splash on KytyPlus">
     </td>
     <td align="center">
@@ -206,7 +206,7 @@ documentation only.
   </tr>
   <tr>
     <td align="center">
-      <strong>Unreal Engine</strong><br>
+      <strong>Konami Logo</strong><br>
       <img src="docs/screenshots/sh2-03-unreal.png" width="300" alt="Unreal Engine logo on KytyPlus">
     </td>
     <td align="center">
