@@ -713,15 +713,22 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
 	                           nullptr, 0, nullptr, 1, &to_transfer);
 
-	const bool fsr_active = (m_fsr != nullptr && m_fsr->IsReady()) && !draw_ime_overlay;
+	const bool fsr_available = (m_fsr != nullptr && m_fsr->IsReady());
+	const bool fsr_active    = fsr_available && !draw_ime_overlay;
+	bool       fsr_used      = false;
 	if (fsr_active) {
 		// FSR two-pass upscaler: EASU (edge-adaptive upscale) + RCAS (sharpen).
 		// Dispatch handles all image transitions and leaves the swapchain image in
 		// ePresentSrcKHR, so the to_present barrier below is skipped.
-		m_fsr->Dispatch(vk_command, source, m_images[m_image_index], m_format,
-		               source.extent.width, source.extent.height, m_extent.width, m_extent.height,
-		               Config::GetUpscalerSharpness());
-	} else {
+		fsr_used = m_fsr->Dispatch(vk_command, source, m_images[m_image_index], m_format,
+		                           source.extent.width, source.extent.height, m_extent.width,
+		                           m_extent.height, Config::GetUpscalerSharpness());
+		if (!fsr_used) {
+			LOGF("Swapchain: FSR dispatch unavailable, falling back to blit\n");
+			m_fsr.reset(); // dead instance; a later rebuild creates a fresh one
+		}
+	}
+	if (!fsr_used) {
 		// Aspect ratio is configurable (Config::AspectRatio). Compute the destination
 		// region to letterbox/pillarbox the source instead of stretching it to fill.
 		// Stretch (the default) keeps the original full-surface behavior.
@@ -803,7 +810,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 		                     present_filter);
 	}
 
-	if (!fsr_active) {
+	if (!fsr_used) {
 		vk::ImageMemoryBarrier to_present {};
 		to_present.sType         = vk::StructureType::eImageMemoryBarrier;
 		to_present.srcAccessMask = vk::AccessFlagBits::eTransferWrite;

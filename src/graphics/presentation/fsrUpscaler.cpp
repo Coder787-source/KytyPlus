@@ -76,6 +76,9 @@ bool FsrUpscaler::Create(VulkanInstance& gfx) {
 }
 
 void FsrUpscaler::Destroy() {
+	// Flag not-ready FIRST so an in-flight/next present falls back to blit
+	// instead of touching objects being destroyed.
+	m_ready = false;
 	if (m_gfx == nullptr) return;
 	auto dev = m_gfx->device;
 
@@ -422,12 +425,25 @@ bool FsrUpscaler::EnsureResult(uint32_t width, uint32_t height) {
 	return true;
 }
 
-void FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image dest,
+bool FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image dest,
                            vk::Format dest_format,
                            uint32_t src_w, uint32_t src_h,
                            uint32_t dst_w, uint32_t dst_h,
                            float sharpness) {
-	if (!m_ready) return;
+	// Validate everything before recording any command: a device teardown can race
+	// this present-thread call (IsReady() was checked by the caller a moment ago).
+	// m_gfx == nullptr derefs as fault address 0xc0 inside the driver - the crash
+	// seen on SH2/CB4 first present after a context rebuild. Bail to the blit path.
+	std::lock_guard lock(m_mutex);
+	if (!m_ready || m_gfx == nullptr) {
+		return false;
+	}
+	if (m_easu_pipeline == nullptr || m_rcas_pipeline == nullptr || m_easu_ds == nullptr ||
+	    m_rcas_ds == nullptr || m_easu_ubo == nullptr || m_rcas_ubo == nullptr ||
+	    m_easu_ubo_mem == nullptr) {
+		LOGF("FSR dispatch: resources incomplete, skipping (fallback to blit)\n");
+		return false;
+	}
 	if (Config::GraphicsDebugDumpEnabled()) {
 		LOGF("FSR dispatch: enter src=%ux%u dst=%ux%u\n", src_w, src_h, dst_w, dst_h);
 	}
@@ -437,15 +453,25 @@ void FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 	// RGBA16F and the blit handles the format conversion to the swapchain.
 	(void)dest_format;
 
-	if (!EnsureIntermediate(dst_w, dst_h)) { LOGF("FSR: EnsureIntermediate FAILED\n"); return; }
-	if (!EnsureResult(dst_w, dst_h)) { LOGF("FSR: EnsureResult FAILED\n"); return; }
+	if (!EnsureIntermediate(dst_w, dst_h))
+	{
+		LOGF("FSR: EnsureIntermediate FAILED\n");
+		return false;
+	}
+	if (!EnsureResult(dst_w, dst_h)) { LOGF("FSR: EnsureResult FAILED\n"); return false; }
 
 	// ── Update UBOs ──────────────────────────────────────────────
 	void* mapped = nullptr;
 	if (Config::GraphicsDebugDumpEnabled()) {
 		LOGF("FSR: mapMemory\n");
 	}
-	dev.mapMemory(m_easu_ubo_mem, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags {}, &mapped);
+	const vk::Result map_result =
+	    dev.mapMemory(m_easu_ubo_mem, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags {}, &mapped);
+	if (map_result != vk::Result::eSuccess || mapped == nullptr) {
+		LOGF("FSR dispatch: mapMemory failed (%s), skipping (fallback to blit)\n",
+		     vk::to_string(map_result).c_str());
+		return false;
+	}
 
 	// EASU UBO at offset 0.
 	{
@@ -494,7 +520,7 @@ void FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 		src_view_info.viewType         = vk::ImageViewType::e2D;
 		src_view_info.format           = source.format;
 		src_view_info.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-		if (dev.createImageView(&src_view_info, nullptr, &src_view) != vk::Result::eSuccess) return;
+		if (dev.createImageView(&src_view_info, nullptr, &src_view) != vk::Result::eSuccess) return false;
 		m_src_views.emplace_back(source.image, src_view);
 	}
 
@@ -505,7 +531,7 @@ void FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 		dst_view_info.viewType         = vk::ImageViewType::e2D;
 		dst_view_info.format           = vk::Format::eR8G8B8A8Unorm;
 		dst_view_info.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-		if (dev.createImageView(&dst_view_info, nullptr, &m_dst_view) != vk::Result::eSuccess) return;
+		if (dev.createImageView(&dst_view_info, nullptr, &m_dst_view) != vk::Result::eSuccess) return false;
 	}
 	vk::ImageView dst_view = m_dst_view;
 
@@ -739,6 +765,8 @@ void FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 		                    vk::PipelineStageFlagBits::eAllCommands,
 		                    vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1, &barrier);
 	}
+
+	return true;
 }
 
 } // namespace Libs::Graphics

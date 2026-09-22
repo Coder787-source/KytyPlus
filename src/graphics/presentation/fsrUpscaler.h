@@ -5,6 +5,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/host_gpu/vulkanInstance.h"
 
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -28,12 +29,14 @@ public:
 	// Destroy all Vulkan resources.
 	void Destroy();
 
-	// Run the two-pass upscaler on a command buffer.
+	// Run the two-pass upscaler on a command buffer. Returns false when nothing was
+	// recorded (not ready, device torn down, resource failure): the caller must then
+	// fall back to the plain blit path. Never crashes on a dying device.
 	// source: guest frame (must be in eTransferSrcOptimal or eShaderReadOnlyOptimal).
 	// dest:   swapchain image (will be transitioned from eUndefined → eTransferDstOptimal → ePresentSrcKHR).
 	// src_w/h: guest resolution. dst_w/h: window resolution.
 	// sharpness: 0.0–1.0 RCAS strength.
-	void Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image dest,
+	bool Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image dest,
 	              vk::Format dest_format,
 	              uint32_t src_w, uint32_t src_h,
 	              uint32_t dst_w, uint32_t dst_h,
@@ -59,6 +62,9 @@ private:
 
 	VulkanInstance*      m_gfx   = nullptr;
 	bool                 m_ready = false;
+
+	// Serialises Dispatch (present thread) against Destroy (teardown thread).
+	std::mutex           m_mutex;
 
 	// Descriptor set layout: binding 0 = sampler2D, binding 1 = storageImage, binding 2 = UBO.
 	vk::DescriptorSetLayout m_ds_layout      = nullptr;
