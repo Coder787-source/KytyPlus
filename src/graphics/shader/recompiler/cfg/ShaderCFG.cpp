@@ -4,6 +4,7 @@
 #include "common/logging/log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <fmt/format.h>
 #include <iterator>
 #include <map>

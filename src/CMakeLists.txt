@@ -609,15 +609,17 @@ if (WIN32)
 	# System TLS for https:// via WinHTTP (no third-party TLS dependency).
 	target_link_libraries(kyty_emulator winhttp)
 endif()
-if (NOT WIN32)
-	# Non-Windows TLS for https:// is optional: use OpenSSL when it is present.
-	# Without it, https:// requests report an unsupported scheme rather than failing silently.
-	find_package(OpenSSL QUIET)
-	if (OpenSSL_FOUND)
-		target_compile_definitions(kyty_emulator PRIVATE KYTY_HAVE_OPENSSL)
-		target_link_libraries(kyty_emulator OpenSSL::SSL OpenSSL::Crypto)
-	endif()
-endif()
+# Non-Windows TLS is intentionally NOT wired yet: Homebrew's OpenSSL on the macOS CI
+# runner is arm64-only while the workflow targets x86_64, so linking it breaks the job
+# (undefined SSL_* symbols). network.cpp already handles a missing TLS backend by
+# reporting https:// as unsupported; re-enable this once a CI-viable OpenSSL exists.
+#if (NOT WIN32)
+#	find_package(OpenSSL QUIET)
+#	if (OpenSSL_FOUND)
+#		target_compile_definitions(kyty_emulator PRIVATE KYTY_HAVE_OPENSSL)
+#		target_link_libraries(kyty_emulator OpenSSL::SSL OpenSSL::Crypto)
+#	endif()
+#endif()
 if (KYTY_CLANG_CL)
 	target_link_libraries(kyty_emulator onecore)
 endif()

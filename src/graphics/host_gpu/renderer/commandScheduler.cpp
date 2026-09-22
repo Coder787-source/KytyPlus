@@ -5,6 +5,8 @@
 #include "graphics/host_gpu/memoryTracker.h"
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 
 namespace Libs::Graphics {
 

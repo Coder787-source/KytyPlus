@@ -42,6 +42,8 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 #include <cmath>
 #include <array>
 #include <cstdio>
