@@ -444,6 +444,15 @@ bool FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 		LOGF("FSR dispatch: resources incomplete, skipping (fallback to blit)\n");
 		return false;
 	}
+	// The device handle itself can be null while m_gfx is still non-null: after a driver
+	// reset the window context clears device BEFORE the FSR instance is torn down (the
+	// window's shutdown runs its own sequence). vkCreateImageView(nullptr, ...) faults
+	// inside the driver at address 0xc0 - observed on CB4. Re-verified by disassembly:
+	// rcx for the call comes from m_gfx->device (+0x558).
+	if (m_gfx->device == nullptr) {
+		LOGF("FSR dispatch: device is null (context teardown in progress), fallback to blit\n");
+		return false;
+	}
 	if (Config::GraphicsDebugDumpEnabled()) {
 		LOGF("FSR dispatch: enter src=%ux%u dst=%ux%u\n", src_w, src_h, dst_w, dst_h);
 	}
