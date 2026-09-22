@@ -218,6 +218,8 @@ documentation only.
 
 
 <table align="center">
+### Other titles (KytyPS5 lineage)
+
   <tr>
     <td align="center">
       <strong>Disgaea 6</strong><br>
