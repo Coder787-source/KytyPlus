@@ -1639,6 +1639,9 @@ struct AvPlayerInternal {
 	uint32_t                 minimum_bandwidth = 0;
 	uint32_t                 maximum_bandwidth = 0;
 	std::unique_ptr<Source>  source;
+	// True once AVPLAYER_EVENT_STATE_STOP was emitted for a natural end-of-stream (a guest
+	// -initiated AvPlayerStop emits directly and must not double-emit).
+	bool                     eof_event_emitted = false;
 };
 
 static bool valid_allocators(const AvPlayerMemAllocator& m) {
@@ -1650,6 +1653,24 @@ static void emit_event(AvPlayerInternal* h, int32_t id, void* data = nullptr) {
 		h->event.event_callback(h->event.object_pointer, id, 0, data);
 	}
 }
+// Natural end-of-stream: when playback drained by itself (demuxer/decoders hit EOF and
+// queues are empty) the PS4 firmware reports a STATE_STOP event to the guest. KytyPlus
+// previously emitted nothing, so titles waiting for end-of-video (e.g. CB4's boot-video
+// chain) hung forever on the last frame. Fired once per player, from the guest's poll calls.
+static void poll_natural_eof(AvPlayerInternal* h) {
+	if (h == nullptr || h->source == nullptr || h->eof_event_emitted) {
+		return;
+	}
+	if (!h->source->Active()) {
+		// Gate: only treat inactivity as end-of-stream for players that actually play video
+		// (PostInit-issued demux buffer size or auto_start); avoids firing for unstarted players.
+		if (h->post_init.demux_video_buffer_size != 0 || h->auto_start) {
+			h->eof_event_emitted = true;
+			emit_event(h, AVPLAYER_EVENT_STATE_STOP);
+		}
+	}
+}
+
 static void pump_warnings(AvPlayerInternal* h) {
 	if (h == nullptr || h->source == nullptr) {
 		return;
@@ -1960,6 +1981,7 @@ Bool KYTY_SYSV_ABI AvPlayerGetVideoDataEx(AvPlayerInternal* h, AvPlayerFrameInfo
 	}
 	auto ok = h->source->Video(video_info) ? 1 : 0;
 	pump_warnings(h);
+	poll_natural_eof(h);
 	return ok;
 }
 Bool KYTY_SYSV_ABI AvPlayerGetAudioData(AvPlayerInternal* h, AvPlayerFrameInfo* audio_info) {
@@ -1969,10 +1991,12 @@ Bool KYTY_SYSV_ABI AvPlayerGetAudioData(AvPlayerInternal* h, AvPlayerFrameInfo* 
 	}
 	auto ok = h->source->Audio(audio_info) ? 1 : 0;
 	pump_warnings(h);
+	poll_natural_eof(h);
 	return ok;
 }
 Bool KYTY_SYSV_ABI AvPlayerIsActive(AvPlayerInternal* h) {
 	PRINT_NAME();
+	poll_natural_eof(h);
 	return h != nullptr && h->source != nullptr && h->source->Active() ? 1 : 0;
 }
 uint64_t KYTY_SYSV_ABI AvPlayerCurrentTime(AvPlayerInternal* h) {
