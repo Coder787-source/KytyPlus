@@ -185,12 +185,12 @@ KytyPlus itself. Listed for context only.
 Screenshots below are from the KytyPS5 lineage and illustrate early boot capability — not KytyPlus
 playability guarantees.
 
-### Silent Hill 2 Remake (PPSA08709)  first rendered run on an iGPU
+### Silent Hill 2 Remake (PPSA08709):first rendered run on an iGPU
 
-Boot progression on an **AMD Radeon 840M** (512 MB, shared memory), pure HLE  farthest
+Boot progression on an **AMD Radeon 840M** (512 MB, shared memory), pure HLE, farthest
 documented result for this title in the PS5 emulation scene (upstream baseline: crash at
-boot/splash on discrete GPUs  [KytyPS5 #210](https://github.com/KytyPS5/KytyPS5/issues/210)).
-Game � Konami Digital Entertainment / Bloober Team  shown here for interoperability
+boot/splash on discrete GPUs: [KytyPS5 #210](https://github.com/KytyPS5/KytyPS5/issues/210)).
+Game:Konami Digital Entertainment / Bloober Team  shown here for interoperability
 documentation only.
 
 <table align="center">
