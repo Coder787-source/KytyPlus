@@ -219,13 +219,6 @@ documentation only.
 
 <table align="center">
   <tr>
-    <td align="center"
-    </td>
-  </tr>
-</table>
-
-<table align="center">
-  <tr>
     <td align="center">
       <strong>Disgaea 6</strong><br>
       <img src="docs/screenshots/ps5-01.png" width="300" alt="Disgaea 6">
@@ -256,7 +249,6 @@ documentation only.
     </td>
   </tr>
 </table>
-
 
 
 ---
