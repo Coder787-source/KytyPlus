@@ -216,7 +216,6 @@ documentation only.
   </tr>
 </table>
 
-### Crash Bandicoot 4 (PPSA02433)  past the upstream logo wall
 
 <table align="center">
   <tr>
