@@ -57,7 +57,7 @@ headline compatibility number for the project.
 |---|---|---|---|---|
 | Crash Bandicoot 4: It's About Time | PPSA02433 | Boots / logos only | v3.3 ([@Crispy81](https://github.com/KytyPS5/KytyPS5/issues/88) tester) | [#88](https://github.com/KytyPS5/KytyPS5/issues/88) |
 | Dead Cells | PPSA-15554 | Reaches menu | v1.8 | [#3](https://github.com/Coder787-source/KytyPlus/issues/3) |
-| Silent Hill 2 Remake | PPSA08709 | Other (interactive content-warning screen; stable 4-min run, single-digit FPS, first iGPU result; could boot further but untested  upstream baseline: crash at boot/splash [#210](https://github.com/KytyPS5/KytyPS5/issues/210), [#77](https://github.com/KytyPS5/KytyPS5/issues/77)) | dev build post-v3.4 | maintainer (Radeon 840M) |
+| Silent Hill 2 Remake | PPSA08709 | Other (interactive content-warning screen; stable 4-min run, single-digit FPS, first iGPU result; could boot further but untested, upstream baseline: crash at boot/splash [#210](https://github.com/KytyPS5/KytyPS5/issues/210), [#77](https://github.com/KytyPS5/KytyPS5/issues/77)) | v3.5 | maintainer (Radeon 840M) |
 | Sonic Superstars | PPSA06888 | Ingame (playable-ish) | v3.5 | [#12](https://github.com/Coder787-source/KytyPlus/issues/12) |
 
 <!--
