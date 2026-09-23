@@ -1240,6 +1240,7 @@ private:
 			}
 		}
 		demux_eof = true;
+		::printf("AvPlayer demuxer: EOF reached\n");
 		video_packets.Notify();
 		audio_packets.Notify();
 	}
@@ -1290,6 +1291,7 @@ private:
 			}
 		}
 		done = true;
+		::printf("AvPlayer decoder thread: done\n");
 		NotifyDrainedIfComplete();
 	}
 	bool DecodePacket(AVCodecContext* codec, AVPacket* packet, uint64_t timestamp_offset,
@@ -1734,6 +1736,7 @@ static int add_source(AvPlayerInternal* h, const std::string& filename, AvPlayer
 		return rc;
 	}
 	h->source = std::move(s);
+	::printf("AvPlayer: source added: %s\n", filename.c_str());
 	emit_event(h, AVPLAYER_EVENT_STATE_READY);
 	if (h->auto_start) {
 		auto rc = h->source->Start();
