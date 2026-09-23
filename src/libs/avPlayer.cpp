@@ -1290,6 +1290,7 @@ private:
 			}
 		}
 		done = true;
+		NotifyDrainedIfComplete();
 	}
 	bool DecodePacket(AVCodecContext* codec, AVPacket* packet, uint64_t timestamp_offset,
 	                  WorkQueue<std::unique_ptr<GuestBuffer>>& buffers,
@@ -1626,6 +1627,15 @@ private:
 	std::chrono::steady_clock::time_point    clock_start {};
 	std::chrono::steady_clock::time_point    pause_time {};
 	std::chrono::steady_clock::duration      paused_extra {};
+	// KytyPlus: invoked once when the whole pipeline has drained after a natural EOF so the
+	// owning AvPlayerInternal can emit AVPLAYER_EVENT_STATE_STOP even if the guest never
+	// polls again.
+	std::function<void()>                    on_drained;
+	void NotifyDrainedIfComplete() {
+		if (on_drained) {
+			on_drained();
+		}
+	}
 };
 
 struct AvPlayerInternal {
@@ -1657,6 +1667,19 @@ static void emit_event(AvPlayerInternal* h, int32_t id, void* data = nullptr) {
 // queues are empty) the PS4 firmware reports a STATE_STOP event to the guest. KytyPlus
 // previously emitted nothing, so titles waiting for end-of-video (e.g. CB4's boot-video
 // chain) hung forever on the last frame. Fired once per player, from the guest's poll calls.
+// CB4 diagnosis: sample the video pipeline state on guest video polls (once per 120 calls)
+static void poll_video_state(AvPlayerInternal* h) {
+	static uint32_t counter = 0;
+	if (++counter % 120 != 0) {
+		return;
+	}
+	if (h == nullptr || h->source == nullptr) {
+		return;
+	}
+	::printf("AvPlayerState: active=%d t=%llu ms\n", h->source->Active() ? 1 : 0,
+	         (unsigned long long)h->source->CurrentTime());
+}
+
 static void poll_natural_eof(AvPlayerInternal* h) {
 	if (h == nullptr || h->source == nullptr || h->eof_event_emitted) {
 		return;
@@ -1982,6 +2005,7 @@ Bool KYTY_SYSV_ABI AvPlayerGetVideoDataEx(AvPlayerInternal* h, AvPlayerFrameInfo
 	auto ok = h->source->Video(video_info) ? 1 : 0;
 	pump_warnings(h);
 	poll_natural_eof(h);
+	poll_video_state(h);
 	return ok;
 }
 Bool KYTY_SYSV_ABI AvPlayerGetAudioData(AvPlayerInternal* h, AvPlayerFrameInfo* audio_info) {
