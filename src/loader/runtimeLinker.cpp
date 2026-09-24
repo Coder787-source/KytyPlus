@@ -330,6 +330,7 @@ static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id) {
 			const auto& record = g_stubbed_imports[record_id];
 			printf("Unresolved import stub called: %s\n", record.name.c_str());
 		fflush(stdout);
+		fflush(stdout);
 			LOGF("Unresolved import stub called [%u]: patch_vaddr=0x%016" PRIx64
 			     " jmprela_index=%" PRIu32 " symbol=%s type=%s bind=%s program=%s\n",
 			     log_index, record.patch_vaddr, record.index, record.name.c_str(),
@@ -1033,7 +1034,10 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 	// (stack/global) to guest code. The guest then writes through it: silent host-memory
 	// corruption and confusing fault addresses. Log the register so crash files name the leak.
 	{
-		const uint64_t guest_max = 0x6C8000000ull; // ~12.5 GB guest VA ceiling + slack
+		// Valid guest mappings live below base + total (~27 GB). Pointers above that but
+		// below 32 GB are computed-but-unmapped guest VAs (garbage arithmetic), and pointers
+		// at/above 32 GB would be host addresses. Both are logged.
+		const uint64_t guest_max = 0x6C8000000ull;
 		const char* leaked = nullptr;
 		uint64_t leaked_val = 0;
 		if (info->rax > guest_max && info->rax < 0x800000000ull) { leaked = "rax"; leaked_val = info->rax; }
