@@ -329,6 +329,7 @@ static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id) {
 		if (record_id < g_stubbed_imports.size()) {
 			const auto& record = g_stubbed_imports[record_id];
 			printf("Unresolved import stub called: %s\n", record.name.c_str());
+		fflush(stdout);
 			LOGF("Unresolved import stub called [%u]: patch_vaddr=0x%016" PRIx64
 			     " jmprela_index=%" PRIu32 " symbol=%s type=%s bind=%s program=%s\n",
 			     log_index, record.patch_vaddr, record.index, record.name.c_str(),
@@ -336,6 +337,7 @@ static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id) {
 			     record.program.c_str());
 		} else {
 			printf("Unresolved import stub called: <bad-record>\n");
+		fflush(stdout);
 			LOGF("Unresolved import stub called [%u]: record_id=%" PRIu64 " symbol=<bad-record>\n",
 			     log_index, record_id);
 		}
@@ -1025,6 +1027,16 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		dump_guest_qwords("guest r13", info->r13);
 		dump_guest_qwords("guest r14", info->r14);
 		dump_guest_qwords("guest r15", info->r15);
+	// KytyPlus: name the last stubbed (unresolved) imports that were called, so crash
+	// files identify a missing NID when guest code writes through a stub-derived null pointer.
+	if (!g_stubbed_imports.empty()) {
+		const size_t dump_count = std::min(g_stubbed_imports.size(), static_cast<size_t>(12));
+		const size_t start     = g_stubbed_imports.size() - dump_count;
+		for (size_t i = 0; i < dump_count; ++i) {
+			const auto& record = g_stubbed_imports[start + i];
+			LOGF("recent stubbed import: %s\n", record.name.c_str());
+		}
+	}
 
 		if (info->exception_address == 0x000000090064364e &&
 		    IsDumpableRange(info->rbx, sizeof(uint64_t))) {
