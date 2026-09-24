@@ -440,7 +440,8 @@ bool FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 	}
 	if (m_easu_pipeline == nullptr || m_rcas_pipeline == nullptr || m_easu_ds == nullptr ||
 	    m_rcas_ds == nullptr || m_easu_ubo == nullptr || m_rcas_ubo == nullptr ||
-	    m_easu_ubo_mem == nullptr) {
+	    m_easu_ubo_mem == nullptr || m_dst_view == nullptr || m_intermediate.view == nullptr ||
+	    m_intermediate.image == nullptr || m_result.view == nullptr || m_result.image == nullptr) {
 		LOGF("FSR dispatch: resources incomplete, skipping (fallback to blit)\n");
 		return false;
 	}
