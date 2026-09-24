@@ -853,6 +853,10 @@ public:
 		       (!demux_eof || !video_done || !audio_done || !video_frames.Empty() ||
 		        !audio_frames.Empty());
 	}
+	bool HasOpenedCodecs() const {
+		std::lock_guard lock(mutex);
+		return video_id.has_value() || audio_id.has_value();
+	}
 	uint64_t CurrentTime() const {
 		std::lock_guard lock(mutex);
 		return CurrentTimeNoLock();
@@ -1689,7 +1693,7 @@ static void poll_natural_eof(AvPlayerInternal* h) {
 	if (!h->source->Active()) {
 		// Gate: only treat inactivity as end-of-stream for players that actually play video
 		// (PostInit-issued demux buffer size or auto_start); avoids firing for unstarted players.
-		if (h->post_init.demux_video_buffer_size != 0 || h->auto_start) {
+		if (h->source->HasOpenedCodecs()) {
 			h->eof_event_emitted = true;
 			emit_event(h, AVPLAYER_EVENT_STATE_STOP);
 		}
