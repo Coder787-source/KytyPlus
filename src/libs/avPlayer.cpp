@@ -849,9 +849,11 @@ public:
 	}
 	bool Active() const {
 		std::lock_guard lock(mutex);
+		// Natural end-of-stream = demuxer EOF + both decoders finished. Queued-but-unconsumed
+		// frames do NOT keep the player active: if the game stops polling GetVideoData,
+		// leftovers must not deadlock the state machine (CB4 boot chain hung here).
 		return !stopped && !pipeline_failed &&
-		       (!demux_eof || !video_done || !audio_done || !video_frames.Empty() ||
-		        !audio_frames.Empty());
+		       (!demux_eof || !video_done || !audio_done);
 	}
 	bool HasOpenedCodecs() const {
 		std::lock_guard lock(mutex);
