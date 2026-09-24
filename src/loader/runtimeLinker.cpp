@@ -1027,6 +1027,26 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		dump_guest_qwords("guest r13", info->r13);
 		dump_guest_qwords("guest r14", info->r14);
 		dump_guest_qwords("guest r15", info->r15);
+	// KytyPlus: detect host-pointer leaks at the HLE boundary. A guest register holding a
+	// pointer above the guest VA range (guest mappings live below ~4 GB + a small runtime
+	// window) but in the host user range means an HLE implementation passed a host pointer
+	// (stack/global) to guest code. The guest then writes through it: silent host-memory
+	// corruption and confusing fault addresses. Log the register so crash files name the leak.
+	{
+		const uint64_t guest_max = 0x6C8000000ull; // ~12.5 GB guest VA ceiling + slack
+		const char* leaked = nullptr;
+		uint64_t leaked_val = 0;
+		if (info->rax > guest_max && info->rax < 0x800000000ull) { leaked = "rax"; leaked_val = info->rax; }
+		if (info->rbx > guest_max && info->rbx < 0x800000000ull) { leaked = "rbx"; leaked_val = info->rbx; }
+		if (info->rcx > guest_max && info->rcx < 0x800000000ull) { leaked = "rcx"; leaked_val = info->rcx; }
+		if (info->rdx > guest_max && info->rdx < 0x800000000ull) { leaked = "rdx"; leaked_val = info->rdx; }
+		if (info->rsi > guest_max && info->rsi < 0x800000000ull) { leaked = "rsi"; leaked_val = info->rsi; }
+		if (info->rdi > guest_max && info->rdi < 0x800000000ull) { leaked = "rdi"; leaked_val = info->rdi; }
+		if (leaked != nullptr) {
+			LOGF_COLOR(Log::Color::Red, "host-pointer leak in guest %s: 0x%016" PRIx64 "\n",
+			           leaked, leaked_val);
+		}
+	}
 	// KytyPlus: name the last stubbed (unresolved) imports that were called, so crash
 	// files identify a missing NID when guest code writes through a stub-derived null pointer.
 	if (!g_stubbed_imports.empty()) {
