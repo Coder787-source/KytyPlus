@@ -3145,7 +3145,7 @@ int KYTY_SYSV_ABI PthreadCondTimedwaitAbs(PthreadCond* cond, PthreadMutex* mutex
 		return cond_value->sequence != sequence || thread->cond_sequence != thread_sequence;
 	};
 
-	while (!ready()) {
+while (!ready()) {
 		const auto now = std::chrono::steady_clock::now();
 		if (now >= deadline) {
 			break;
@@ -3220,6 +3220,8 @@ int KYTY_SYSV_ABI PthreadCondWait(PthreadCond* cond, PthreadMutex* mutex) {
 		return (result == EPERM ? KERNEL_ERROR_EPERM : KERNEL_ERROR_EINVAL);
 	}
 
+	const auto cond_wait_started = std::chrono::steady_clock::now();
+	auto       cond_wait_logged  = std::chrono::steady_clock::time_point();
 	auto ready = [cond_value, thread, sequence, thread_sequence] {
 		return cond_value->sequence != sequence || thread->cond_sequence != thread_sequence;
 	};
@@ -3230,6 +3232,15 @@ int KYTY_SYSV_ABI PthreadCondWait(PthreadCond* cond, PthreadMutex* mutex) {
 			cond_lock.unlock();
 			KernelDispatchPendingSignalForCurrentThread();
 			cond_lock.lock();
+		}
+		const auto cond_elapsed =
+		    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - cond_wait_started).count();
+		if (cond_elapsed >= 10 &&
+		    std::chrono::steady_clock::now() - cond_wait_logged > std::chrono::seconds(1)) {
+			cond_wait_logged = std::chrono::steady_clock::now();
+			LOGF("PthreadCondWait: stalled %llds cond=%p mutex=%p thread=%p\n",
+			     static_cast<long long>(cond_elapsed), static_cast<void*>(cond_value),
+			     static_cast<void*>(mutex_value), static_cast<void*>(thread));
 		}
 	}
 	CondRemoveWaiter(cond_value, thread);
