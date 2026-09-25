@@ -62,6 +62,11 @@ private:
 
 	VulkanInstance*      m_gfx   = nullptr;
 	bool                 m_ready = false;
+	// KytyPlus: the device handle this instance's pipelines/descriptors were created
+	// on. The window context is a singleton whose vk::Device handle can be swapped by
+	// a surface/context rebuild; dispatching resources from the old device on the new
+	// handle faults inside the driver (amdvlk64 access violation at 0xc0, CB4).
+	vk::Device            m_created_device = nullptr;
 
 	// Serialises Dispatch (present thread) against Destroy (teardown thread).
 	std::mutex           m_mutex;

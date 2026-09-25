@@ -5,6 +5,8 @@
 
 #include "graphics/presentation/fsrUpscaler.h"
 
+#include <atomic>
+
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -70,7 +72,8 @@ bool FsrUpscaler::Create(VulkanInstance& gfx) {
 	if (!CreatePipelines()) return false;
 	if (!CreateDescriptorResources()) return false;
 
-	m_ready = true;
+	m_ready           = true;
+	m_created_device  = gfx.device;
 	LOGF("FsrUpscaler: initialised (EASU + RCAS compute pipelines ready)\n");
 	return true;
 }
@@ -112,8 +115,9 @@ void FsrUpscaler::Destroy() {
 	if (m_pipeline_layout != nullptr) { dev.destroyPipelineLayout(m_pipeline_layout, nullptr); m_pipeline_layout = nullptr; }
 	if (m_ds_layout != nullptr) { dev.destroyDescriptorSetLayout(m_ds_layout, nullptr); m_ds_layout = nullptr; }
 	if (m_linear_sampler != nullptr) { dev.destroySampler(m_linear_sampler, nullptr); m_linear_sampler = nullptr; }
-	m_gfx   = nullptr;
-	m_ready = false;
+	m_gfx            = nullptr;
+	m_ready          = false;
+	m_created_device = nullptr;
 }
 
 bool FsrUpscaler::CreatePipelines() {
@@ -457,6 +461,20 @@ bool FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 	// rcx for the call comes from m_gfx->device (+0x558).
 	if (m_gfx->device == nullptr) {
 		LOGF("FSR dispatch: device is null (context teardown in progress), fallback to blit\n");
+		return false;
+	}
+	// KytyPlus: the context is a singleton, so m_gfx always points at the same object,
+	// but a surface/context rebuild swaps the vk::Device handle inside it. Pipelines
+	// created on the previous handle are not valid on the new one: dispatching them
+	// faults in amdvlk64 at 0xc0 (observed on CB4). Refuse and let the caller blit;
+	// the swapchain rebuild (Recreate -> Create) constructs a fresh FSR instance bound
+	// to the current device.
+	if (m_gfx->device != m_created_device) {
+		static std::atomic<uint32_t> device_mismatch_log_count {0};
+		if (device_mismatch_log_count.fetch_add(1) < 16) {
+			LOGF("FSR dispatch: device handle changed since creation (context rebuild), "
+			     "fallback to blit for this frame\n");
+		}
 		return false;
 	}
 	if (Config::GraphicsDebugDumpEnabled()) {
