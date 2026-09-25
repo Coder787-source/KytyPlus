@@ -79,6 +79,16 @@ bool FsrUpscaler::Create(VulkanInstance& gfx) {
 }
 
 void FsrUpscaler::Destroy() {
+	// KytyPlus: take the serialisation mutex the header promises. Window resize /
+	// surface events run Swapchain::Recreate() -> Destroy() on the MAIN thread while
+	// the present thread can be inside Dispatch() recording the EASU/RCAS passes.
+	// Freeing the pipelines, UBOs or descriptor sets under the recording thread faults
+	// inside the driver (amdvlk64 access violation reading 0xc0) - observed on CB4 at
+	// the first menu present, when the game switches display mode and the windowed-fit
+	// 1920x1080 surface settles on a 1280x800 display. Locking makes teardown wait for
+	// the in-flight recording; the swapchain's queue waitIdle() already guarantees the
+	// previously submitted command buffers are retired before we get here.
+	std::lock_guard lock(m_mutex);
 	// Flag not-ready FIRST so an in-flight/next present falls back to blit
 	// instead of touching objects being destroyed.
 	m_ready = false;
