@@ -438,10 +438,15 @@ bool FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 	if (!m_ready || m_gfx == nullptr) {
 		return false;
 	}
+	// KytyPlus: only check resources that Create() produces. m_dst_view, m_intermediate and
+	// m_result are created LAZILY below (EnsureIntermediate/EnsureResult and the
+	// m_dst_view creation block) - requiring them non-null here made the guard
+	// impossible to pass, so FSR could never dispatch and every present fell back to
+	// blit (with m_fsr.reset() churn rebuilding the upscaler 4x per run). That was the
+	// CB4 black-screen-after-logo machinery.
 	if (m_easu_pipeline == nullptr || m_rcas_pipeline == nullptr || m_easu_ds == nullptr ||
 	    m_rcas_ds == nullptr || m_easu_ubo == nullptr || m_rcas_ubo == nullptr ||
-	    m_easu_ubo_mem == nullptr || m_dst_view == nullptr || m_intermediate.view == nullptr ||
-	    m_intermediate.image == nullptr || m_result.view == nullptr || m_result.image == nullptr) {
+	    m_easu_ubo_mem == nullptr) {
 		LOGF("FSR dispatch: resources incomplete, skipping (fallback to blit)\n");
 		return false;
 	}
