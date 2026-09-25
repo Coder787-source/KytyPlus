@@ -33,22 +33,23 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 		return;
 	}
 
-	// Performance-floor defaults for integrated-GPU machines (Steam Deck / 780M class):
-	// FSR 1.0 presentation upscaling and a texture LOD bias that skips the highest mip
-	// levels, reducing texture bandwidth. Applied only when the value is still at its
-	// built-in default, so an explicit user choice always wins.
+	// Performance-floor defaults for integrated-GPU machines (Steam Deck / 780M class).
+	// KytyPlus: the FSR 1.0 auto-enable is RETIRED. The FSR compute dispatch faults
+	// inside the current AMD Vulkan driver (amdvlk64 access violation reading 0xc0 from
+	// a null driver object, during vkCmdDispatch/bindPipeline recording at CB4's first
+	// menu present) - the same crash the 143fac3 guards were hiding by making dispatch
+	// impossible. The plain blit presentation path displays the same content without
+	// the compute pass, so the iGPU floor now keeps only the texture LOD bias (skip the
+	// highest mips, reduce bandwidth). Users can still enable FSR explicitly in the
+	// launcher; the auto-default just no longer forces it onto iGPU machines.
 	bool changed = false;
-	if (g_config->upscaler_method == UpscalerMethod::Off) {
-		g_config->upscaler_method = UpscalerMethod::Fsr1;
-		changed                   = true;
-	}
 	if (g_config->texture_lod_bias == 0) {
 		g_config->texture_lod_bias = 1;
 		changed                    = true;
 	}
 	if (changed) {
 		LOGF("Config: integrated GPU detected — applied floor defaults: "
-		     "FSR 1.0 upscaler, texture LOD bias 1\n");
+		     "texture LOD bias 1 (FSR upscaler no longer auto-enabled)\n");
 	}
 }
 
