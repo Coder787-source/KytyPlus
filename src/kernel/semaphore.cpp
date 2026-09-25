@@ -294,6 +294,10 @@ int KYTY_SYSV_ABI KernelWaitSema(KernelSema sem, int need, KernelUseconds* time)
 		return KERNEL_ERROR_ESRCH;
 	}
 
+	if (time == nullptr) {
+		LOGF("KernelWaitSema: infinite wait sem=%p need=%d\n", static_cast<void*>(sem), need);
+	}
+
 	auto result = sem->Wait(need, time);
 
 	int ret = OK;

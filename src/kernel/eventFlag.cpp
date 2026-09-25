@@ -319,6 +319,11 @@ int KYTY_SYSV_ABI KernelWaitEventFlag(KernelEventFlag ef, uint64_t bit_pattern, 
 		return KERNEL_ERROR_EINVAL;
 	}
 
+	if (timeout == nullptr) {
+		LOGF("KernelWaitEventFlag: infinite wait ef=%p bits=%016llx mode=%u clear=%u\n", static_cast<void*>(ef),
+		     static_cast<unsigned long long>(bit_pattern), wait_mode & 0xff, (wait_mode >> 8) & 0xff);
+	}
+
 	const auto mode   = DecodeEventFlagWaitMode(wait_mode);
 	auto       result = ef->Wait(bit_pattern, mode.wait, mode.clear, result_pat, timeout);
 
