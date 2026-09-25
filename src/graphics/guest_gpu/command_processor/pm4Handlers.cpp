@@ -2749,7 +2749,22 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 		return 7;
 	}
 
-	if (release_dst == ReleaseMemDstMemory && dst_gpu_addr == nullptr) {
+	if (dst_gpu_addr == nullptr) {
+		// KytyPlus: null destination guard. Applies to BOTH memory and TC/L2 destinations:
+		// the guest builds release_mem packets with a placeholder (null) label address and
+		// patches the real one in later via GraphicsQueueEndOfPipeActionPatchAddress. When
+		// the patch never lands (label not backed on this HLE path), WriteAtEndOfPipe would
+		// memcpy the fence value to nullptr - a latent crash. Soft-skip instead: flush the
+		// pipe so ordering is preserved, then drop the write. A dropped fence write makes
+		// the paired wait_reg_mem time out into the WaitRegMem watchdog instead of killing
+		// the emulator.
+		static std::atomic<uint32_t> null_dst_log_count {0};
+		if (null_dst_log_count.fetch_add(1) < 16) {
+			LOGF_COLOR(Log::Color::Red,
+			           "release_mem with null destination (soft-skip): event_type=0x%02x "
+			           "data_sel=%u dst=%u interrupt=%u\n",
+			           eop_event_type, data_sel, release_dst, interrupt_selector);
+		}
 		if (eop_event_type != 0x28 || gcr_cntl != 0) {
 			cp.EmitGlobalBarrier();
 		}

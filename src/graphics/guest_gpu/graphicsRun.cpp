@@ -6,6 +6,7 @@
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "common/timer.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/hardwareContext.h"
@@ -28,6 +29,7 @@
 #include <memory>
 #include <semaphore>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -121,6 +123,9 @@ private:
 		bool           command_complete              = false;
 		bool           constant_complete             = false;
 		bool           blocked                       = false;
+		// KytyPlus: QPC timestamp of when this submission was last marked blocked; used
+		// by the anti-starvation re-poll in ThreadRun.
+		uint64_t       blocked_since                 = 0;
 		uint64_t       flip_request_id               = 0;
 	};
 
@@ -405,6 +410,51 @@ bool TestWaitRegMemValue(uint64_t value, uint64_t ref, uint64_t mask, uint32_t f
 	return false;
 }
 
+// KytyPlus: stalled-wait watchdog support. One entry per watched address so that
+// independent queues (which share the single GPU thread and would otherwise reset
+// each other\u2019s timers) each time their own stall independently.
+struct WaitRegMemStallEntry {
+	uint64_t first_wait = 0; // QPC ticks of the first unsatisfied poll at this address
+	uint64_t released   = 0; // total waits force-released at this address (diagnostics)
+};
+static Common::Mutex                                         g_wait_stall_mutex;
+static std::unordered_map<const void*, WaitRegMemStallEntry> g_wait_stall_map;
+static uint64_t                                              g_wait_stall_released_total = 0;
+
+// KytyPlus: stall threshold in QPC ticks (10 seconds). Long enough that legitimate
+// waits (pipeline drains, iGPU shader compilation bursts, queue backpressure) never
+// trip it - a force-release mid-shader-compile was visible as frame flashing on the
+// CB4 splash - but short enough that a wedged stream self-heals quickly.
+static uint64_t WaitRegMemStallTimeoutTicks() {
+	static uint64_t timeout = Common::Timer::QueryPerformanceFrequency() * 10ull;
+	return timeout;
+}
+
+// Records an unsatisfied poll; returns true when the watchdog must release this wait.
+static bool WaitRegMemRecordMiss(const void* addr) {
+	const auto now = Common::Timer::QueryPerformanceCounter();
+	bool release  = false;
+	{
+		Common::LockGuard lock(g_wait_stall_mutex);
+		auto& entry = g_wait_stall_map[addr];
+		if (entry.first_wait == 0) {
+			entry.first_wait = now;
+		} else if (now - entry.first_wait >= WaitRegMemStallTimeoutTicks()) {
+			entry.released++;
+			g_wait_stall_released_total++;
+			entry.first_wait = 0;
+			release          = true;
+		}
+	}
+	return release;
+}
+
+// KytyPlus: the wait at addr was satisfied; clear its watchdog timer.
+static void WaitRegMemClear(const void* addr) {
+	Common::LockGuard lock(g_wait_stall_mutex);
+	g_wait_stall_map.erase(addr);
+}
+
 template <typename T>
 void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, uint32_t poll,
                                   uint32_t wait_op) {
@@ -415,7 +465,36 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 
 	(void)poll;
 	if (!TestWaitRegMemValue(*addr, ref, mask, func)) {
+		// KytyPlus: stalled-wait watchdog (per-address). Our end-of-pipe writes are
+		// host-synchronous memcpys, so a wait that re-polls the same guest label for many
+		// seconds is not a legitimate GPU fence anymore: the value it expects can never
+		// arrive (the producer either crashed, was skipped, or depends on work queued
+		// BEHIND this very wait in the same stream - a self-deadlock). CB4's menu wedged
+		// exactly like this. Normal fences resolve in microseconds, so a multi-second
+		// threshold never triggers on healthy content. After the threshold we log the
+		// wait once (address, expected and observed values) and release it so the stream
+		// self-heals; a wrongly-released fence degrades at most one frame instead of
+		// hanging the whole renderer.
+		if (WaitRegMemRecordMiss(addr)) {
+			LOGF_COLOR(Log::Color::Red,
+			           "WaitRegMem: stalled - releasing (addr=%p ref=0x%llx observed=0x%llx "
+			           "mask=0x%llx func=%u)\n",
+			           static_cast<const void*>(addr), static_cast<uint64_t>(ref),
+			           static_cast<uint64_t>(*addr), static_cast<uint64_t>(mask), func);
+			// Write the awaited value so guest-side bookkeeping that already treats this
+			// fence as complete (and may read the label directly) sees a consistent value
+			// instead of stale garbage. With the 10s threshold this path should be rare.
+			auto* writable = const_cast<T*>(addr);
+			if (writable != nullptr) {
+				const T satisfied = static_cast<T>(ref & mask);
+				*writable          = satisfied;
+			}
+			return;
+		}
 		SuspendPm4();
+	} else {
+		// KytyPlus: wait satisfied - clear this address from the watchdog.
+		WaitRegMemClear(addr);
 	}
 }
 
@@ -565,6 +644,7 @@ void GpuState::ThreadRun(void* data) {
 					}
 				}
 				if (selected_queue < 0) {
+					// All queues empty or blocked: original 100ms retry path.
 					gpu->m_processing = false;
 					gpu->m_work_available.WaitFor(&gpu->m_queue_mutex, 100);
 					for (auto& queue: gpu->m_queues) {
@@ -573,6 +653,34 @@ void GpuState::ThreadRun(void* data) {
 						}
 					}
 					continue;
+				}
+				// KytyPlus: blocked-front anti-starvation. A submission blocked on a
+				// wait_reg_mem sits at the FRONT of its queue and is never re-polled as
+				// long as ANY other queue keeps producing work (the original code only
+				// cleared blocked flags when every queue was idle). CB4 wedged exactly
+				// like this: the RHI re-issued fence pairs to the compute queue forever,
+				// the graphics queue front stayed blocked, and the menu rendered nothing
+				// while flips continued (black screen, live frame counter). Re-poll a
+				// blocked front every 10ms so the wait is re-evaluated; if the wait never
+				// passes, the per-address WaitRegMem watchdog releases it after 3s and
+				// the stream self-heals. A healthy blocked wait (fence resolving in
+				// microseconds-to-milliseconds) is unaffected - it just gets re-polled.
+				const auto now = Common::Timer::QueryPerformanceCounter();
+				for (uint32_t offset = 0; offset < QueueCount; offset++) {
+					const auto id = (gpu->m_next_queue + offset) % QueueCount;
+					if (gpu->m_queues[id].empty()) {
+						continue;
+					}
+					auto& front = gpu->m_queues[id].front();
+					if (front.blocked) {
+						if (front.blocked_since == 0) {
+							front.blocked_since = now;
+						} else if (now - front.blocked_since >=
+						           Common::Timer::QueryPerformanceFrequency() / 100ull) { // 10ms
+							front.blocked       = false;
+							front.blocked_since = 0;
+						}
+					}
 				}
 				auto& queue = gpu->m_queues[static_cast<uint32_t>(selected_queue)];
 				submission  = std::move(queue.front());
@@ -1378,6 +1486,11 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 				}
 			} else {
 				auto write64 = [&](bool with_writeback) {
+					// KytyPlus: null-dst guard (see CpOpReleaseMem). Never memcpy a fence value to null.
+					if (dst_gpu_addr == nullptr) {
+						LOGF_COLOR(Log::Color::Red, "WriteAtEndOfPipe64: null destination (soft-skip)\n");
+						return;
+					}
 					auto* dst = static_cast<uint64_t*>(dst_gpu_addr);
 					std::memcpy(dst, &value, sizeof(value));
 

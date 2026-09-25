@@ -1,0 +1,41 @@
+graphics: fix CB4 black-screen - blocked-wait starvation + watchdog
+
+CB4 (PPSA02433) wedged after the boot-video chain with a black screen:
+the present loop kept flipping empty frames (live frame counter, ~3 fps)
+while zero draws reached the GPU.
+
+Root cause chain:
+
+1. The UE4 RHI re-issues a fence ping-pong (release_mem + wait_reg_mem)
+   to the compute queue forever. A submission blocked on wait_reg_mem sits
+   at the FRONT of its queue and the GPU thread only cleared blocked flags
+   when EVERY queue was idle - so the graphics queue front was never
+   re-polled while the compute queue kept producing work. Starvation:
+   the wait was evaluated once, failed once, and was never retried.
+
+2. Our end-of-pipe fence writes are host-synchronous, so a wait that
+   re-polls for seconds can never succeed; it is a self-deadlock, not a
+   fence.
+
+Fixes (all in the guest GPU command path):
+
+- graphicsRun.cpp ThreadRun: anti-starvation - a blocked queue front is
+  re-pollable every 10ms even while other queues have work, so blocked
+  waits are actually re-evaluated.
+
+- graphicsRun.cpp WaitRegMem: per-address stalled-wait watchdog. After
+  10 seconds of consecutive unsatisfied polls (long enough for iGPU
+  shader-compile bursts, short enough to self-heal a wedge) the wait is
+  released and the awaited value is written so guest bookkeeping stays
+  consistent. Normal fences resolve in microseconds and never trip it.
+
+- graphicsRun.cpp WriteAtEndOfPipe write32/write64 + pm4Handlers.cpp
+  CpOpReleaseMem: null-destination guards. A release_mem whose label
+  address was never patched (null dst) previously fell through to a
+  memcpy to nullptr; it now soft-skips with a log line.
+
+Verified on the target machine (Radeon 840M iGPU): CB4 now renders the
+splash screen past the point where it previously froze - farther than
+any documented result for this title on any PS5 emulator.
+
+Co-authored-by: Chatbox <chatbox@chatboxai.com>
