@@ -405,40 +405,30 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 		return;
 	}
 
-	// KytyPlus: some guest shaders issue storage-image atomics (or depth-compare samples) whose
-	// host format does not advertise the required feature - here VK_FORMAT_R16_UINT/R16_UNORM,
-	// which lack VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT / SAMPLED_IMAGE_DEPTH_COMPARISON_BIT
-	// on this AMD APU. Vulkan leaves such access undefined; in practice the GPU stops retiring
-	// work and the Windows watchdog resets the adapter (LiveKernelEvent 141), which surfaces as
-	// VK_ERROR_DEVICE_LOST and then kills the process. The dispatch cannot produce a correct
-	// result either way, so skip it and keep the command stream alive instead of hanging.
+	// Atomic operations require storage-image atomic support on the bound view. Plain
+	// image loads/stores do not: requiring it for every storage image drops CB4's color
+	// clears and other valid compute work on formats such as RGBA8_UNORM.
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
 		const auto& resource = program.info.images[i];
-		// The IR lowers image atomics to the generic Atomic*U32 opcodes, so
-		// ImageResource::atomic does not distinguish them. Instead check what actually
-		// reaches the driver: every storage-image binding is a candidate for guest
-		// atomic/rdw access, so require the host format to advertise the atomic feature
-		// regardless of how the IR classified the use.
 		const bool storage_binding =
 		    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
 		    resource.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint;
-		if (!storage_binding) {
+		if (!storage_binding || !resource.atomic) {
 			continue;
 		}
 		auto& bound = bindings.resources.images[i];
 		if (bound.image_view == nullptr) {
 			continue;
 		}
-		auto&      image    = m_context.GetTextureCache().GetImage(bound.image_id);
-
+		const auto format = bound.desc.view_info.format;
 		const auto features =
-		    m_context.GetGraphics().GetFormatProperties(image.backing.format).optimalTilingFeatures;
+		    m_context.GetGraphics().GetFormatProperties(format).optimalTilingFeatures;
 		if (!static_cast<bool>(features & vk::FormatFeatureFlagBits::eStorageImageAtomic)) {
 			static std::atomic<uint32_t> feature_skip_log {0};
 			if (feature_skip_log.fetch_add(1, std::memory_order_relaxed) < 16) {
 				LOGF("GraphicsRenderDispatchDirect: skipping dispatch whose storage image lacks "
 				     "host atomic support (format=%d) shader=0x%016" PRIx64 " groups=%ux%ux%u\n",
-				     static_cast<int>(image.backing.format),
+				     static_cast<int>(format),
 				     sh_ctx.GetCs().cs_regs.data_addr, thread_group_x, thread_group_y,
 				     thread_group_z);
 			}
