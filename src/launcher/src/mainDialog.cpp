@@ -406,31 +406,19 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 		}
 	}
 #elif defined(_WIN32)
-	{
-		process->setProgram(CMD_EXE);
-		QStringList process_args;
-		process_args << QStringLiteral("/K") << interpreter;
-		process_args += args;
-		process->setArguments(process_args);
-	}
+	// KytyPlus: spawn the emulator directly instead of through `cmd /K`. The console
+	// host stole the foreground at boot (the game window then lost input focus) and
+	// its console buffer swallowed the emulator's stdout, so the launcher could not
+	// report early failures. QProcess still gives us errorString()/exit codes, and
+	// the game's own log files remain the verbose record.
+	process->setProgram(interpreter);
+	process->setArguments(args);
 #else
 	process->setProgram(interpreter);
 	process->setArguments(args);
 #endif
 	process->setWorkingDirectory(dir.path());
-#if defined(_WIN32)
-	process->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
-		args->flags |= static_cast<uint32_t>(CREATE_NEW_CONSOLE);
-		args->startupInfo->dwFlags &= ~static_cast<DWORD>(STARTF_USESTDHANDLES);
-		args->startupInfo->dwFlags |= static_cast<DWORD>(STARTF_USECOUNTCHARS);
-		args->startupInfo->dwXCountChars = CMD_X_CHARS;
-		args->startupInfo->dwYCountChars = CMD_Y_CHARS;
-		// args->startupInfo->dwFlags |= static_cast<DWORD>(STARTF_USEFILLATTRIBUTE);
-		// args->startupInfo->dwFillAttribute =
-		//     static_cast<DWORD>(BACKGROUND_BLUE) | static_cast<DWORD>(FOREGROUND_RED) |
-		//     static_cast<DWORD>(FOREGROUND_INTENSITY);
-	});
-#endif
+
 	process->start();
 #if !defined(_WIN32)
 	// Report immediate launch failures.
@@ -540,9 +528,10 @@ void MainDialogPrivate::RunInstall(const QString& file, const QString& flag) {
 #elif defined(_WIN32)
 	// /C closes cmd after emulator exits — needed for install so the
 	// QProcess::finished signal fires and post-extraction copy runs.
-	// /K keeps the console open for regular game boots.
+	// KytyPlus: install runs through cmd /C; game boots spawn the emulator
+	// directly (see RunInterpreter) so no console steals the foreground.
 	QStringList process_args;
-	process_args << (flag == QStringLiteral("--install-pkg") ? QStringLiteral("/C") : QStringLiteral("/K")) << m_interpreter;
+	process_args << QStringLiteral("/C") << m_interpreter;
 	process_args += args;
 
 	QProcess* process = new QProcess(m_main_dialog);

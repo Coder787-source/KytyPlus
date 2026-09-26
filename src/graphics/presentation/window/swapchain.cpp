@@ -432,6 +432,18 @@ void Swapchain::Create() {
 		    std::clamp(graphics.screen_height, surface.capabilities.minImageExtent.height,
 		               surface.capabilities.maxImageExtent.height);
 	}
+	// KytyPlus: a minimized window reports currentExtent 0x0. vkCreateSwapchainKHR with a
+	// zero extent is invalid on most drivers and leaves presentation black until the next
+	// out-of-date event, which can be minutes later. Keep the last known-good size
+	// instead (clamped to the surface limits); the next Suboptimal/OutOfDate acquire
+	// re-runs Create() and picks up the real restored size.
+	if (m_extent.width == 0 || m_extent.height == 0) {
+		LOGF("Swapchain: surface reported zero extent (window minimized?), keeping last "
+		     "known size %ux%u\n",
+		     graphics.screen_width, graphics.screen_height);
+		m_extent.width  = std::max(graphics.screen_width, 1u);
+		m_extent.height = std::max(graphics.screen_height, 1u);
+	}
 	// KytyPlus iGPU: prefer the smallest allowed image count. Every swapchain image is a
 	// full-resolution allocation in shared system memory on an APU; minImageCount+1 gives
 	// 3-4 buffers on this driver, which wastes VRAM the render targets need.
@@ -496,19 +508,30 @@ void Swapchain::Create() {
 			default:                            return vk::PresentModeKHR::eFifo;
 		}
 	}();
+	// KytyPlus iGPU: IMMEDIATE/MAILBOX were observed producing a black client area on the
+	// Radeon 840M (amdvlk) windowed path — the game renders internally but nothing is
+	// composed. FIFO is the always-supported mode and the one every verified-good run
+	// used, so on integrated GPUs it is a hard floor. Discrete GPUs keep the user choice.
+	auto effective_present_mode = requested_present_mode;
+	if (graphics.physical_device.getProperties().deviceType ==
+	        vk::PhysicalDeviceType::eIntegratedGpu &&
+	    effective_present_mode != vk::PresentModeKHR::eFifo) {
+		LOGF("Swapchain: iGPU floor: Immediate/Mailbox -> FIFO (black-output workaround)\n");
+		effective_present_mode = vk::PresentModeKHR::eFifo;
+	}
 	// KytyPlus iGPU: make the effective presentation configuration visible at startup.
 	LOGF("Swapchain config: minImageCount=%u extent=%ux%u format=%d presentMode=%s\n",
 	     image_count, m_extent.width, m_extent.height, static_cast<int>(format.format),
-	     vk::to_string(requested_present_mode).c_str());
+	     vk::to_string(effective_present_mode).c_str());
 	const auto supported_modes = EnumerateVulkan<vk::PresentModeKHR>(
 	    "vkGetPhysicalDeviceSurfacePresentModesKHR", [&](uint32_t* count, vk::PresentModeKHR* modes) {
 		    return graphics.physical_device.getSurfacePresentModesKHR(m_window.surface, count, modes);
 	    });
 	create_info.presentMode = (std::find(supported_modes.begin(), supported_modes.end(),
-	                                     requested_present_mode) != supported_modes.end())
-	                               ? requested_present_mode
-	                               : vk::PresentModeKHR::eFifo;
-	if (create_info.presentMode != requested_present_mode) {
+	                                     effective_present_mode) != supported_modes.end())
+	                              ? effective_present_mode
+	                              : vk::PresentModeKHR::eFifo;
+	if (create_info.presentMode != effective_present_mode) {
 		LOGF("Swapchain: requested present mode unsupported, falling back to FIFO\n");
 	}
 	create_info.clipped          = VK_TRUE;
@@ -983,6 +1006,11 @@ void Presenter::Present(Frame& frame, bool reuse) {
 
 		SDL_ShowWindow(window.window);
 		SDL_RaiseWindow(window.window);
+		// KytyPlus: when launched from the Qt launcher the console/console-host takes
+		// foreground at boot and several "black screen" reports turned out to be the
+		// game window simply buried behind other windows. Raise it again once the first
+		// frames are actually being presented (this runs after ShowWindow above).
+		SDL_SetWindowInputFocus(window.window);
 #endif
 
 		window.window_hidden = false;

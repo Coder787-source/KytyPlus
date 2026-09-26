@@ -47,9 +47,17 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 		g_config->texture_lod_bias = 1;
 		changed                    = true;
 	}
+	// KytyPlus iGPU: Immediate/Mailbox present produced a black client area on the
+	// Radeon 840M windowed path (game renders internally, nothing composed). FIFO is
+	// the always-supported mode and was in effect for every verified-good run, so it
+	// is a hard floor on integrated GPUs unless the user explicitly set it.
+	if (g_config->present_mode != Config::PresentMode::Fifo) {
+		g_config->present_mode = Config::PresentMode::Fifo;
+		changed                = true;
+	}
 	if (changed) {
 		LOGF("Config: integrated GPU detected — applied floor defaults: "
-		     "texture LOD bias 1 (FSR upscaler no longer auto-enabled)\n");
+		     "texture LOD bias 1, present mode FIFO, (FSR upscaler no longer auto-enabled)\n");
 	}
 }
 
