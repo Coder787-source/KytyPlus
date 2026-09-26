@@ -510,10 +510,13 @@ static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
 	// vertex-processing front-ends instead.
 	const bool stages_have_vertex_frontend =
 	    stages_have_vs || stages_have_es || stages_primgen_passthru;
+	// Shader base registers retain their values when a stage is disabled. CB4 switches
+	// from ES+GS to primgen passthrough without clearing the old GS address; only the
+	// stage-enable bits determine whether that address still names an active shader.
 	const bool ngg_vertex_path =
 	    stages_have_vertex_frontend && vertex_info.es_regs.data_addr != 0 &&
-	    vertex_info.gs_regs.chksum != 0 &&
-	    vertex_info.gs_regs.data_addr == 0 && (stages_primgen_passthru || stages_primgen || stages_have_es) &&
+	    vertex_info.gs_regs.chksum != 0 && !stages_have_gs &&
+	    (stages_primgen_passthru || stages_primgen || stages_have_es) &&
 	    sh_regs.m_vgtGsMaxVertOut == 0x00000000 &&
 	    is_known_gs_out_prim_type(sh_regs.m_vgtGsOutPrimType);
 
@@ -521,11 +524,9 @@ static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
 	// neither a plain VS draw nor the NGG vertex path.
 	const bool unsupported_stage_mask =
 	    stages != 0 && (stages_tessellation || !stages_have_vertex_frontend) && !ngg_vertex_path;
-	// A real (non-passthrough) geometry stage is unsupported when a GS data address is
-	// present -- either alongside the ES address, or with GS_EN set in the stage mask.
-	const bool unsupported_gs_stage =
-	    !ngg_vertex_path && vertex_info.gs_regs.data_addr != 0 &&
-	    (vertex_info.es_regs.data_addr != 0 || stages_have_gs);
+	// Executing a geometry shader still needs a GS implementation. An inactive GS
+	// register must not reject subsequent vertex-only draws.
+	const bool unsupported_gs_stage = stages_have_gs;
 	const bool ge_group_size =
 	    ge_cntl.primitive_group_size > 0x0040 || ge_cntl.vertex_group_size > 0x0040;
 	const bool ge_shader_regs =
@@ -536,7 +537,7 @@ static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
 
 	if (unsupported_stage_mask || unsupported_gs_stage || ge_group_size || ge_shader_regs) {
 		const auto log_id = g_shader_stage_log_count.fetch_add(1);
-		if (log_id < 32) {
+		if (log_id < 32 || (log_id % 65536) == 0) {
 			LOGF("Skipping unsupported GE shader draw: stages=0x%08" PRIx32
 			     " prim_group=0x%04" PRIx16 " vert_group=0x%04" PRIx16 " ngg=0x%08" PRIx32
 			     " max_out=0x%08" PRIx32 " gs_max_vert=0x%08" PRIx32 " gs_out_prim=0x%08" PRIx32
