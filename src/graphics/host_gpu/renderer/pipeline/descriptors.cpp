@@ -923,6 +923,16 @@ bool RenderExecutor::RebindImages(CommandBuffer&                     buffer,
 		auto&      image   = texture_cache.GetImage(binding.image_id);
 		const bool storage = binding.desc.type == TextureCache::BindingType::Storage;
 		image.usage.storage |= storage;
+		if (storage && image.info.IsDepth()) {
+			static uint32_t depth_storage_logs = 0;
+			if (depth_storage_logs++ < 8) {
+				LOGF("Depth storage binding: stage=%u resource=%u kind=%u written=%d format=%u view=%u address=0x%llx\n",
+				     static_cast<uint32_t>(prepared.stage), i,
+				     static_cast<uint32_t>(program.info.images[i].kind), program.info.images[i].written,
+				     static_cast<uint32_t>(image.info.pixel_format), static_cast<uint32_t>(binding.desc.view_info.format),
+				     static_cast<unsigned long long>(image.info.data.address));
+			}
+		}
 		image.usage.texture |= !storage;
 	}
 	return true;
@@ -1014,6 +1024,15 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 			                  vk::AccessFlagBits2::eColorAttachmentRead |
 			                  vk::AccessFlagBits2::eColorAttachmentWrite,
 			              {}, vk_buffer);
+		} else if (!storage && image.binding.is_target && image.info.IsDepth() &&
+		           (image.backing.state.layout == vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal ||
+		            image.backing.state.layout == vk::ImageLayout::eDepthAttachmentStencilReadOnlyOptimal ||
+		            image.backing.state.layout == vk::ImageLayout::eDepthStencilReadOnlyOptimal)) {
+			// Attachment acquisition already selected the layout for both aspects.
+			// Sampling the read-only aspect must not make the writable aspect read-only.
+			image.Transit(image.backing.state.layout,
+			              image.backing.state.access_mask | vk::AccessFlagBits2::eShaderRead,
+			              range, vk_buffer);
 		} else if (storage) {
 			image.Transit(vk::ImageLayout::eGeneral,
 			              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
