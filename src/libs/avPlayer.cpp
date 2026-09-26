@@ -642,6 +642,11 @@ public:
 	~Source() { Close(); }
 	int Init(const std::string& p, AvPlayerSourceType requested) {
 		path        = p;
+		// File callbacks and the guest filesystem take paths, not URI schemes.
+		// UE movies can use file://../../../... while startup movies use plain paths.
+		if (path.size() >= 7 && ieq(std::string_view(path).substr(0, 7), "file://")) {
+			path.erase(0, 7);
+		}
 		source_type = requested == AvPlayerSourceUnknown ? source_type_from_path(path) : requested;
 		if (source_type == AvPlayerSourceHls) {
 			return AVPLAYER_ERROR_NOT_SUPPORTED;
@@ -660,6 +665,7 @@ public:
 		if (file.open != nullptr) {
 			streamer = std::make_unique<FileStreamer>(file);
 			if (!streamer->Init(path)) {
+				LOGF("\t AvPlayer file callback could not open: %s\n", path.c_str());
 				avformat_free_context(raw);
 				return AVPLAYER_ERROR_OPERATION_FAILED;
 			}
@@ -682,6 +688,7 @@ public:
 			LOGF("\t avformat_find_stream_info failed: %s\n", fferr(rc).c_str());
 			return AVPLAYER_ERROR_OPERATION_FAILED;
 		}
+		LOGF("AvPlayer opened %s: %u streams\n", path.c_str(), fmt->nb_streams);
 		return 0;
 	}
 	int StreamCount() const { return fmt == nullptr ? 0 : static_cast<int>(fmt->nb_streams); }
@@ -776,10 +783,12 @@ public:
 				return AVPLAYER_ERROR_OPERATION_FAILED;
 			}
 			if (!OpenCodecs()) {
+				LOGF("AvPlayer codec initialization failed: %s\n", path.c_str());
 				ResetNoLock(true);
 				return AVPLAYER_ERROR_OPERATION_FAILED;
 			}
 			if (!AllocateBuffers()) {
+				LOGF("AvPlayer buffer allocation failed: %s\n", path.c_str());
 				ResetNoLock(true);
 				return AVPLAYER_ERROR_NO_MEMORY;
 			}
@@ -801,6 +810,7 @@ public:
 			result = AVPLAYER_ERROR_OPERATION_FAILED;
 		}
 		if (result == 0 && video_id) {
+			LOGF("AvPlayer started %s: video=%d audio=%d\n", path.c_str(), video_id.value(), audio_id.value_or(-1));
 			::printf("AvPlayer video started playing\n");
 		}
 		return result;
@@ -855,9 +865,11 @@ public:
 		return !stopped && !pipeline_failed &&
 		       (!demux_eof || !video_done || !audio_done);
 	}
-	bool HasOpenedCodecs() const {
+	bool ReachedNaturalEof() const {
 		std::lock_guard lock(mutex);
-		return video_id.has_value() || audio_id.has_value();
+		// Selecting streams does not start playback. Initial and explicitly stopped
+		// players must not emit an EOF event when the guest polls their state.
+		return !stopped && !pipeline_failed && demux_eof && video_done && audio_done;
 	}
 	uint64_t CurrentTime() const {
 		std::lock_guard lock(mutex);
@@ -939,6 +951,11 @@ public:
 		}
 		current_video = std::move(*frame);
 		*out          = current_video->info;
+		if (video_delivery_logs++ < 3) {
+			LOGF("AvPlayer delivered %s: ts=%llu data=%p size=%ux%u pitch=%u\n", path.c_str(),
+			     static_cast<unsigned long long>(out->time_stamp), out->data,
+			     out->details.video.width, out->details.video.height, out->details.video.pitch);
+		}
 		if (deliver_seek_frame) {
 			seek_video_frame_pending = false;
 		}
@@ -1344,6 +1361,7 @@ private:
 			}
 			ReadyFrame ready {.buffer = std::move(*buffer)};
 			if (!(this->*prepare)(frame, ready.buffer, &ready.info)) {
+				LOGF("AvPlayer preparing %s frame failed: %s\n", kind, path.c_str());
 				buffers.Push(std::move(ready.buffer));
 				av_frame_free(&frame);
 				return false;
@@ -1592,6 +1610,7 @@ private:
 	bool                                     use_vdec2         = false;
 	AvPlayerSourceType                       source_type       = AvPlayerSourceUnknown;
 	std::string                              path;
+	uint32_t                                 video_delivery_logs = 0;
 	std::unique_ptr<FileStreamer>            streamer;
 	AVFormatContext*                         fmt            = nullptr;
 	AVCodecContext*                          video_ctx      = nullptr;
@@ -1692,13 +1711,9 @@ static void poll_natural_eof(AvPlayerInternal* h) {
 	if (h == nullptr || h->source == nullptr || h->eof_event_emitted) {
 		return;
 	}
-	if (!h->source->Active()) {
-		// Gate: only treat inactivity as end-of-stream for players that actually play video
-		// (PostInit-issued demux buffer size or auto_start); avoids firing for unstarted players.
-		if (h->source->HasOpenedCodecs()) {
-			h->eof_event_emitted = true;
-			emit_event(h, AVPLAYER_EVENT_STATE_STOP);
-		}
+	if (h->source->ReachedNaturalEof()) {
+		h->eof_event_emitted = true;
+		emit_event(h, AVPLAYER_EVENT_STATE_STOP);
 	}
 }
 
@@ -1891,6 +1906,7 @@ int KYTY_SYSV_ABI AvPlayerChangeStream(AvPlayerInternal* h, uint32_t old_stream_
 }
 int KYTY_SYSV_ABI AvPlayerStart(AvPlayerInternal* h) {
 	PRINT_NAME();
+	LOGF("AvPlayer start requested\n");
 	if (h == nullptr || h->source == nullptr) {
 		return AVPLAYER_ERROR_INVALID_PARAMS;
 	}
@@ -1902,6 +1918,7 @@ int KYTY_SYSV_ABI AvPlayerStart(AvPlayerInternal* h) {
 }
 int KYTY_SYSV_ABI AvPlayerStartEx(AvPlayerInternal* h, const void* start_info_ex) {
 	PRINT_NAME();
+	LOGF("AvPlayer start-ex requested\n");
 	if (h == nullptr || h->source == nullptr) {
 		return AVPLAYER_ERROR_INVALID_PARAMS;
 	}
