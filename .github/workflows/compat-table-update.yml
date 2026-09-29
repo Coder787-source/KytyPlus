@@ -1,7 +1,7 @@
 name: Update compatibility table
 
 # A maintainer closing a "Compatibility report" issue as completed is treated as
-# the review step (see docs/COMPATIBILITY.md "How this list is maintained").
+# the review step (see COMPATIBILITY.md "How this list is maintained").
 # This job then does the mechanical part: parse the issue form and update the
 # table instead of a maintainer hand-editing markdown.
 #
@@ -36,7 +36,7 @@ jobs:
         with:
           ref: main
 
-      - name: Update docs/COMPATIBILITY.md
+      - name: Update COMPATIBILITY.md
         env:
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -47,7 +47,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/COMPATIBILITY.md
+          git add COMPATIBILITY.md
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
@@ -78,7 +78,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/COMPATIBILITY.md
+          git add COMPATIBILITY.md
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else

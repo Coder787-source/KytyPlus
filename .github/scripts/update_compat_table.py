@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update docs/COMPATIBILITY.md from a closed [Compatibility report] issue.
+"""Update COMPATIBILITY.md from a closed [Compatibility report] issue.
 
 Triggered only for issues closed as "completed" with the `compatibility` label
 (see .github/workflows/compat-table-update.yml) — a maintainer closing the
@@ -9,7 +9,14 @@ import os
 import re
 import sys
 
-COMPAT_PATH = "docs/COMPATIBILITY.md"
+# The table lives at the repository root. It used to live under docs/, and the
+# rename left this script and the workflow pointing at a path that no longer
+# existed, so the job failed at `git add` on every run.
+#
+# Resolve against the repository root rather than the current directory so the
+# script also works when invoked from a workflow step or a subdirectory.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+COMPAT_PATH = os.path.join(REPO_ROOT, "COMPATIBILITY.md")
 
 PLACEHOLDER_ROW = (
     "| _No reports yet — be the first to "
@@ -84,11 +91,32 @@ def main() -> int:
     with open(COMPAT_PATH, "r", encoding="utf-8") as f:
         content = f.read()
 
+    # COMPATIBILITY.md was split into two tables: "## Native (PS5)" (five
+    # columns, maintained from these issues) and "## shadPS4" (four columns,
+    # sourced from the upstream list). The old "## Table" heading is gone, which
+    # is why this lookup stopped matching.
+    #
+    # Anchor on the Native table. Group 1 keeps the heading and its prose, group 2
+    # is the header/separator/rows that render_table() rewrites. Group 2 ends at
+    # the last row, so the blank line before the row-template comment stays in
+    # the untouched tail.
+    #
+    # Do not add a trailing terminator to this pattern. Group 1's `.*?` is lazy,
+    # so a terminator it cannot satisfy with the Native table lets it run all the
+    # way down to the shadPS4 table and rewrite that one instead -- which also
+    # meant the script only ever succeeded once before the anchor moved.
+    # No table content is changed by this.
     table_match = re.search(
-        r"(## Table\n\n)(.*?)(\n\n<!--)", content, flags=re.DOTALL
+        r"(## Native \(PS5\)\n\n.*?\n\n)"
+        r"(\| Title \|[^\n]*\n\|[-| ]+\|\n(?:\|[^\n]*\n)*)",
+        content,
+        flags=re.DOTALL,
     )
     if not table_match:
-        print("Could not locate ## Table block in COMPATIBILITY.md", file=sys.stderr)
+        print(
+            "Could not locate the '## Native (PS5)' table in COMPATIBILITY.md",
+            file=sys.stderr,
+        )
         return 1
 
     rows = parse_table_rows(table_match.group(2))
@@ -112,16 +140,23 @@ def main() -> int:
         rows.append([title, title_id, status, version, report_link])
 
     new_table = render_table(rows)
+    # Group 2 consumed the final row's newline, and render_table() emits no
+    # trailing newline, so put one back. The blank line that separates the
+    # table from the row-template comment is still in the tail and is left
+    # exactly as it was found.
+    new_table += "\n"
     new_content = (
         content[: table_match.start()]
         + table_match.group(1)
         + new_table
-        + table_match.group(3)
-        + content[table_match.end() :]
+        + content[table_match.end(2) :]
     )
 
     if new_content != content:
-        with open(COMPAT_PATH, "w", encoding="utf-8") as f:
+        # newline="\n": the default translates to os.linesep, which on a
+        # Windows dev machine rewrites all 1352 line endings and turns a
+        # one-row change into a whole-file diff. The file is LF in git.
+        with open(COMPAT_PATH, "w", encoding="utf-8", newline="\n") as f:
             f.write(new_content)
         print(f"Updated {COMPAT_PATH} for '{title}' from issue #{issue_number}.")
     else:
