@@ -57,6 +57,7 @@ headline compatibility number for the project.
 |---|---|---|---|---|
 | Crash Bandicoot 4: It's About Time | PPSA02433 | Ingame (broken) (intro cutscene chain plays end-to-end; gameplay starts but is broken - crashes or corrupt visuals; upstream v0.0.5.5 gets farther than KytyPlus - [#88](https://github.com/KytyPS5/KytyPS5/issues/88)) | v3.8 | maintainer (Radeon 840M) + [#88](https://github.com/KytyPS5/KytyPS5/issues/88) |
 | Dead Cells | PPSA-15554 | Reaches menu | v1.8 | [#3](https://github.com/Coder787-source/KytyPlus/issues/3) |
+| PPS401325 |  | Does not boot | 3.8 | [#13](https://github.com/Coder787-source/KytyPlus/issues/13) |
 | Silent Hill 2 Remake | PPSA08709 | Other (interactive content-warning screen; stable 4-min run, single-digit FPS, first iGPU result; could boot further but untested, upstream baseline: crash at boot/splash [#210](https://github.com/KytyPS5/KytyPS5/issues/210), [#77](https://github.com/KytyPS5/KytyPS5/issues/77)) | v3.5 | maintainer (Radeon 840M) |
 | Sonic Superstars | PPSA06888 | Ingame (playable-ish) | v3.5 | [#12](https://github.com/Coder787-source/KytyPlus/issues/12) |
 
