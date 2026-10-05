@@ -54,10 +54,14 @@ struct CContext {
 	std::list<atexit_func_t> atexit;
 };
 
+// Must match Loader::EntryParams in src/loader/runtimeLinker.cpp, which
+// writes the guest argv. The linker reserves 16 slots and (when the guest
+// render-resolution request is enabled) sets argc up to 5; a smaller array
+// here makes argv_capacity too small and aborts legitimate launches.
 struct InitEnvParams {
 	int         argc;
 	uint32_t    pad;
-	const char* argv[3];
+	const char* argv[16];
 };
 
 static int                g_argc = 0;
