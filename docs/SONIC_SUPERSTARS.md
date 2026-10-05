@@ -65,13 +65,13 @@ patch. Game files on disk are not modified.
 From the repository root, first validate your dump:
 
 ```text
-Superstars-Unlock-Levels.bat --game "D:/Games/Superstars" --check
+python scripts/sonic_superstars_unlock.py --game "D:/Games/Superstars" --check
 ```
 
 Then close any running emulator and start the isolated session:
 
 ```text
-Superstars-Unlock-Levels.bat --game "D:/Games/Superstars"
+python scripts/sonic_superstars_unlock.py --game "D:/Games/Superstars"
 ```
 
 The default emulator and normal saves are expected under `build/src/launcher`.
