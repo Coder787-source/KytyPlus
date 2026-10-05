@@ -33,15 +33,8 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 		return;
 	}
 
-	// Performance-floor defaults for integrated-GPU machines (Steam Deck / 780M class).
-	// KytyPlus: the FSR 1.0 auto-enable is RETIRED. The FSR compute dispatch faults
-	// inside the current AMD Vulkan driver (amdvlk64 access violation reading 0xc0 from
-	// a null driver object, during vkCmdDispatch/bindPipeline recording at CB4's first
-	// menu present) - the same crash the 143fac3 guards were hiding by making dispatch
-	// impossible. The plain blit presentation path displays the same content without
-	// the compute pass, so the iGPU floor now keeps only the texture LOD bias (skip the
-	// highest mips, reduce bandwidth). Users can still enable FSR explicitly in the
-	// launcher; the auto-default just no longer forces it onto iGPU machines.
+	// Preserve the user-selected FSR setting. Per-frame upscaler resources are
+	// retired by the presentation fence; iGPU defaults only affect LOD/present mode.
 	bool changed = false;
 	if (g_config->texture_lod_bias == 0) {
 		g_config->texture_lod_bias = 1;
@@ -57,7 +50,7 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 	}
 	if (changed) {
 		LOGF("Config: integrated GPU detected — applied floor defaults: "
-		     "texture LOD bias 1, present mode FIFO, (FSR upscaler no longer auto-enabled)\n");
+		     "texture LOD bias 1, present mode FIFO (upscaler setting preserved)\n");
 	}
 }
 
@@ -67,6 +60,22 @@ uint32_t GetScreenWidth() {
 
 uint32_t GetScreenHeight() {
 	return g_config->screen_height;
+}
+
+uint32_t GetGuestRenderWidth() {
+	return g_config->guest_render_width;
+}
+
+uint32_t GetGuestRenderHeight() {
+	return g_config->guest_render_height;
+}
+
+uint32_t GetFsrOutputWidth() {
+	return g_config->fsr_output_width;
+}
+
+uint32_t GetFsrOutputHeight() {
+	return g_config->fsr_output_height;
 }
 
 bool FullscreenEnabled() {

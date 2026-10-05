@@ -62,6 +62,8 @@ LIB_DEFINE(InitLibKernel_1);
 LIB_DEFINE(InitNet_1);
 LIB_DEFINE(InitPad_1);
 LIB_DEFINE(InitPlayGo_1);
+LIB_DEFINE(InitPlayGoDialog_1);
+LIB_DEFINE(InitNpCommerce_1);
 LIB_DEFINE(InitPngDec_1);
 LIB_DEFINE(InitPlatform_1);
 LIB_DEFINE(InitRudp_1);
@@ -97,6 +99,8 @@ void InitAll(Loader::SymbolDatabase* s) {
 	LIB_LOAD(InitNet_1);
 	LIB_LOAD(InitPad_1);
 	LIB_LOAD(InitPlayGo_1);
+	LIB_LOAD(InitPlayGoDialog_1);
+	LIB_LOAD(InitNpCommerce_1);
 	LIB_LOAD(LibPsml::InitPsml_1);
 	LIB_LOAD(InitPngDec_1);
 	LIB_LOAD(InitPlatform_1);

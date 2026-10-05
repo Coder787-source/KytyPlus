@@ -6,6 +6,7 @@
 #include "graphics/presentation/fsrUpscaler.h"
 
 #include <atomic>
+#include <cstdio>
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -95,27 +96,30 @@ void FsrUpscaler::Destroy() {
 	if (m_gfx == nullptr) return;
 	auto dev = m_gfx->device;
 
+	if (m_dst_view != nullptr) { dev.destroyImageView(m_dst_view, nullptr); m_dst_view = nullptr; }
 	DestroyIntermediate(m_intermediate);
 	DestroyIntermediate(m_result);
-	if (m_dst_view != nullptr) { dev.destroyImageView(m_dst_view, nullptr); m_dst_view = nullptr; }
 	for (auto& [img, view] : m_src_views) {
 		if (view != nullptr) dev.destroyImageView(view, nullptr);
 	}
 	m_src_views.clear();
+	// Both buffers must be destroyed before releasing their shared allocation.
 	if (m_easu_ubo != nullptr) {
 		dev.destroyBuffer(m_easu_ubo, nullptr);
-		dev.freeMemory(m_easu_ubo_mem, nullptr);
 		m_easu_ubo = nullptr;
 	}
 	if (m_rcas_ubo != nullptr) {
 		dev.destroyBuffer(m_rcas_ubo, nullptr);
-		if (m_rcas_ubo_mem != m_easu_ubo_mem) {
-			// m_rcas_ubo_mem aliases m_easu_ubo_mem (a shared allocation); only
-			// free it when distinct to avoid a Vulkan double-free on teardown.
-			dev.freeMemory(m_rcas_ubo_mem, nullptr);
-		}
 		m_rcas_ubo = nullptr;
 	}
+	if (m_rcas_ubo_mem != nullptr && m_rcas_ubo_mem != m_easu_ubo_mem) {
+		dev.freeMemory(m_rcas_ubo_mem, nullptr);
+	}
+	if (m_easu_ubo_mem != nullptr) {
+		dev.freeMemory(m_easu_ubo_mem, nullptr);
+	}
+	m_easu_ubo_mem = nullptr;
+	m_rcas_ubo_mem = nullptr;
 	if (m_desc_pool != nullptr) {
 		dev.destroyDescriptorPool(m_desc_pool, nullptr);
 		m_desc_pool = nullptr;
@@ -250,9 +254,6 @@ bool FsrUpscaler::CreateDescriptorResources() {
 	    std::max<vk::DeviceSize>(m_gfx->GetPhysicalDeviceProperties().limits
 	                                  .minUniformBufferOffsetAlignment,
 	                             ubo_size);
-	const vk::DeviceSize rcas_offset = AlignUp(ubo_size, ubo_alignment);
-	m_rcas_ubo_offset                = rcas_offset;
-	const vk::DeviceSize alloc_size  = rcas_offset + ubo_size;
 
 	for (auto* buf_ptr: {&m_easu_ubo, &m_rcas_ubo}) {
 		vk::BufferCreateInfo buf_info {};
@@ -264,24 +265,25 @@ bool FsrUpscaler::CreateDescriptorResources() {
 	}
 
 	// Allocate host-visible memory for both UBOs.
-	vk::MemoryRequirements mem_req;
+	vk::MemoryRequirements mem_req, rcas_req;
 	dev.getBufferMemoryRequirements(m_easu_ubo, &mem_req);
-	if (rcas_offset + ubo_size < mem_req.size * 2) {
-		// Keep the allocation large enough for the aligned layout.
-		mem_req.size = AlignUp(mem_req.size, ubo_alignment) * 2;
-	}
+	dev.getBufferMemoryRequirements(m_rcas_ubo, &rcas_req);
+	const vk::DeviceSize rcas_offset =
+	    AlignUp(mem_req.size, std::max(ubo_alignment, rcas_req.alignment));
+	m_rcas_ubo_offset = rcas_offset;
+	const uint32_t compatible_types = mem_req.memoryTypeBits & rcas_req.memoryTypeBits;
 	vk::MemoryAllocateInfo mem_alloc {};
-	mem_alloc.allocationSize  = std::max(alloc_size, mem_req.size);
+	mem_alloc.allocationSize  = rcas_offset + rcas_req.size;
 	mem_alloc.memoryTypeIndex = 0;
 
 	bool found_host_memory_type = false;
 	{
 		auto props = m_gfx->GetPhysicalDeviceMemoryProperties();
 		for (uint32_t i = 0; i < props.memoryTypeCount; i++) {
-			if ((mem_req.memoryTypeBits & (1u << i)) &&
-			    (props.memoryTypes[i].propertyFlags &
-			     (vk::MemoryPropertyFlagBits::eHostVisible |
-			      vk::MemoryPropertyFlagBits::eHostCoherent))) {
+			const auto required = vk::MemoryPropertyFlagBits::eHostVisible |
+			                      vk::MemoryPropertyFlagBits::eHostCoherent;
+			if ((compatible_types & (1u << i)) &&
+			    (props.memoryTypes[i].propertyFlags & required) == required) {
 				mem_alloc.memoryTypeIndex = i;
 				found_host_memory_type    = true;
 				break;
@@ -296,8 +298,10 @@ bool FsrUpscaler::CreateDescriptorResources() {
 	if (result != vk::Result::eSuccess) return false;
 	m_rcas_ubo_mem = m_easu_ubo_mem; // shared allocation
 
-	dev.bindBufferMemory(m_easu_ubo, m_easu_ubo_mem, 0);
-	dev.bindBufferMemory(m_rcas_ubo, m_easu_ubo_mem, m_rcas_ubo_offset);
+	if (dev.bindBufferMemory(m_easu_ubo, m_easu_ubo_mem, 0) != vk::Result::eSuccess ||
+	    dev.bindBufferMemory(m_rcas_ubo, m_easu_ubo_mem, m_rcas_ubo_offset) != vk::Result::eSuccess) {
+		return false;
+	}
 
 	return true;
 }
@@ -443,13 +447,15 @@ bool FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
                            vk::Format dest_format,
                            uint32_t src_w, uint32_t src_h,
                            uint32_t dst_w, uint32_t dst_h,
+                           uint32_t present_w, uint32_t present_h,
                            float sharpness) {
 	// Validate everything before recording any command: a device teardown can race
 	// this present-thread call (IsReady() was checked by the caller a moment ago).
 	// m_gfx == nullptr derefs as fault address 0xc0 inside the driver - the crash
 	// seen on SH2/CB4 first present after a context rebuild. Bail to the blit path.
 	std::lock_guard lock(m_mutex);
-	if (!m_ready || m_gfx == nullptr) {
+	if (!m_ready || m_gfx == nullptr || src_w == 0 || src_h == 0 ||
+	    dst_w == 0 || dst_h == 0 || present_w == 0 || present_h == 0) {
 		return false;
 	}
 	// KytyPlus: only check resources that Create() produces. m_dst_view, m_intermediate and
@@ -784,8 +790,8 @@ bool FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 		region.dstSubresource.mipLevel       = 0;
 		region.dstSubresource.baseArrayLayer = 0;
 		region.dstSubresource.layerCount     = 1;
-		region.dstOffsets[1].x               = static_cast<int>(dst_w);
-		region.dstOffsets[1].y               = static_cast<int>(dst_h);
+		region.dstOffsets[1].x               = static_cast<int>(present_w);
+		region.dstOffsets[1].y               = static_cast<int>(present_h);
 		region.dstOffsets[1].z               = 1;
 		cmd.blitImage(m_result.image, vk::ImageLayout::eTransferSrcOptimal,
 		              dest, vk::ImageLayout::eTransferDstOptimal, 1, &region,
@@ -809,6 +815,15 @@ bool FsrUpscaler::Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image
 		                    vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1, &barrier);
 	}
 
+	if (m_logged_src_w != src_w || m_logged_src_h != src_h ||
+	    m_logged_dst_w != dst_w || m_logged_dst_h != dst_h) {
+		std::fprintf(stderr, "[fsr] active: source=%ux%u FSR=%ux%u display=%ux%u sharpness=%.2f\n",
+		             src_w, src_h, dst_w, dst_h, present_w, present_h, sharpness);
+		m_logged_src_w = src_w;
+		m_logged_src_h = src_h;
+		m_logged_dst_w = dst_w;
+		m_logged_dst_h = dst_h;
+	}
 	return true;
 }
 

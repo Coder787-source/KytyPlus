@@ -54,6 +54,13 @@ static void PrintUsage() {
 	::printf("  --install-pkg <pkg>                 Parse/extract a PS4/PS5 .pkg, then exit.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
+	::printf("  --guest-render-width <num>           Engine resolution request. Default: 1920.\n");
+	::printf("  --guest-render-height <num>          Default: 1080; engine may ignore request.\n");
+	::printf("  --fsr-output-width <num>             FSR output width. Default: 3840; 0: window.\n");
+	::printf("  --fsr-output-height <num>            FSR output height. Default: 2160; 0: window.\n");
+	::printf("  --upscaler-method <Off|Fsr1>         Default: Fsr1; Off disables upscaling.\n");
+	::printf("  --upscaler-quality <preset>          Default: Performance (1080p to 4K).\n");
+	::printf("  --upscaler-sharpness <0-1>           Default: 0.3.\n");
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
 	::printf("  --vblank-frequency <num>             Virtual vblank frequency. Default: 60.\n");
 	::printf("  --console-language <0-29>            Console language. Default: 1 (English US).\n");
@@ -155,6 +162,16 @@ static bool ParseConsoleLanguage(const std::string& value, uint32_t& out) {
 	return true;
 }
 
+static bool ParseRenderDimension(const std::string& value, uint32_t& out) {
+	uint32_t parsed = 0;
+	const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+	if (error != std::errc {} || end != value.data() + value.size() || (parsed != 0 && parsed < 240) || parsed > 7680) {
+		return false;
+	}
+	out = parsed;
+	return true;
+}
+
 static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_help) {
 	show_help = false;
 
@@ -238,6 +255,16 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			options.config.screen_width = static_cast<uint32_t>(Common::ToInt32(value));
 		} else if (arg == "--screen-height") {
 			options.config.screen_height = static_cast<uint32_t>(Common::ToInt32(value));
+		} else if (arg == "--guest-render-width" || arg == "--guest-render-height" ||
+		           arg == "--fsr-output-width" || arg == "--fsr-output-height") {
+			auto& dimension = arg == "--guest-render-width" ? options.config.guest_render_width
+			                  : arg == "--guest-render-height" ? options.config.guest_render_height
+			                  : arg == "--fsr-output-width" ? options.config.fsr_output_width
+			                                               : options.config.fsr_output_height;
+			if (!ParseRenderDimension(value, dimension)) {
+				::printf("invalid dimension for %s: %s (expected 0 or 240-7680)\n", arg.c_str(), value.c_str());
+				return false;
+			}
 		} else if (arg == "--vblank-frequency") {
 			const int32_t vblank_frequency = Common::ToInt32(value);
 			options.config.vblank_frequency =
@@ -305,6 +332,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			}
 		} else if (arg == "--upscaler-sharpness") {
 			options.config.upscaler_sharpness = Common::ToFloat(value);
+
 		} else if (arg == "--igpu-optimization") {
 			if (value == "Force") {
 				options.config.force_igpu_mode = true;
@@ -354,6 +382,18 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			::printf("unknown option: %s\n", arg.c_str());
 			return false;
 		}
+	}
+
+	if (!show_help &&
+	    ((options.config.guest_render_width == 0) != (options.config.guest_render_height == 0) ||
+	     (options.config.fsr_output_width == 0) != (options.config.fsr_output_height == 0))) {
+		::printf("guest-render and fsr-output dimensions must each be supplied as a pair\n");
+		return false;
+	}
+	if (!show_help && options.config.fsr_output_width != 0 &&
+	    options.config.upscaler_method != Config::UpscalerMethod::Fsr1) {
+		::printf("--fsr-output dimensions require --upscaler-method Fsr1\n");
+		return false;
 	}
 
 	return show_help || 	       (!options.install_pkg.empty()) ||

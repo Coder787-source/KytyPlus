@@ -67,6 +67,10 @@ namespace Libs::Graphics {
 struct Presenter::Frame {
 	VulkanImage                    image;
 	std::unique_ptr<CommandBuffer> present_commands;
+	// Each frame is reused only after its presentation fence. Keep mutable FSR
+	// descriptors, UBOs and intermediate images under that same ownership.
+	std::unique_ptr<FsrUpscaler>   fsr;
+	bool                          fsr_failed = false;
 	bool                           busy         = false;
 	bool                           reusing_last = false;
 
@@ -84,6 +88,7 @@ public:
 			if (frame->present_commands != nullptr) {
 				frame->present_commands->WaitForFenceOnly();
 			}
+			frame->fsr.reset();
 			if (frame->image.image != nullptr) {
 				m_window.graphic_ctx.DeleteImage(frame->image);
 			}
@@ -232,6 +237,10 @@ void Presenter::Frame::Configure(GraphicContext& graphics, vk::Extent2D extent, 
 	if (compatible) {
 		return;
 	}
+	// Acquire() already waited for this frame's GPU work. Its source image views
+	// must be retired before reallocating the image they reference.
+	fsr.reset();
+	fsr_failed = false;
 	if (dst.image != nullptr) {
 		graphics.DeleteImage(dst);
 		dst.memory = {};
@@ -340,7 +349,7 @@ public:
 	void                 Recreate(bool surface_lost = false);
 	[[nodiscard]] Status AcquireNextImage();
 	[[nodiscard]] bool   PrepareImeOverlay();
-	void RecordPresentCommands(CommandBuffer& command, VulkanImage& source, bool draw_ime_overlay);
+	void RecordPresentCommands(CommandBuffer& command, Presenter::Frame& frame, bool draw_ime_overlay);
 	void Submit(CommandBuffer& command);
 	[[nodiscard]] Status Present();
 
@@ -362,7 +371,6 @@ private:
 	std::vector<vk::Semaphore>  m_image_acquired;
 	std::vector<vk::Semaphore>  m_render_complete;
 	std::unique_ptr<ImeOverlay> m_ime_overlay;
-	std::unique_ptr<FsrUpscaler> m_fsr;
 	uint32_t                    m_image_index = static_cast<uint32_t>(-1);
 	uint32_t                    m_frame_index = 0;
 };
@@ -490,11 +498,8 @@ void Swapchain::Create() {
 	create_info.imageArrayLayers = 1;
 	create_info.imageUsage =
 	    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
-	// FSR writes the upscaled frame to the swapchain image as a storage image (RCAS pass),
-	// so the storage usage flag is required when the upscaler is active.
-	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr1) {
-		create_info.imageUsage |= vk::ImageUsageFlagBits::eStorage;
-	}
+	// RCAS writes to its own result image and blits to the swapchain. Storage
+	// usage on the swapchain is unnecessary and not supported by every surface.
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
 	create_info.preTransform     = transform;
 	create_info.compositeAlpha   = composite;
@@ -563,15 +568,6 @@ void Swapchain::Create() {
 		EXIT_IF(m_image_views[i] == nullptr);
 	}
 
-	// FSR upscaler: create the EASU + RCAS compute pipelines now that the device is ready.
-	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr1) {
-		m_fsr = std::make_unique<FsrUpscaler>();
-		if (!m_fsr->Create(graphics)) {
-			LOGF("Swapchain: FSR upscaler creation failed, falling back to blit\n");
-			m_fsr.reset();
-		}
-	}
-
 	vk::SemaphoreCreateInfo semaphore_info {};
 	semaphore_info.sType = vk::StructureType::eSemaphoreCreateInfo;
 	m_image_acquired.resize(m_images.size());
@@ -610,11 +606,6 @@ void Swapchain::Destroy() {
 			     VulkanToString(wait_result).c_str(), static_cast<int>(wait_result));
 		}
 	}
-	if (m_fsr != nullptr) {
-		m_fsr->Destroy();
-		m_fsr.reset();
-	}
-
 	if (m_ime_overlay != nullptr) {
 		m_ime_overlay->ReleaseVulkan();
 	}
@@ -709,8 +700,9 @@ bool Swapchain::PrepareImeOverlay() {
 	return m_ime_overlay->PrepareFrame(m_extent, m_format, ImageCount());
 }
 
-void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& source,
+void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame& frame,
                                       bool draw_ime_overlay) {
+	auto& source = frame.image;
 	if (source.state.layout != vk::ImageLayout::eTransferSrcOptimal) {
 		EXIT("invalid prepared presentation image, vk_image=%p layout=%d\n",
 		     static_cast<void*>(source.image), static_cast<int>(source.state.layout));
@@ -736,19 +728,33 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
 	                           nullptr, 0, nullptr, 1, &to_transfer);
 
-	const bool fsr_available = (m_fsr != nullptr && m_fsr->IsReady());
-	const bool fsr_active    = fsr_available && !draw_ime_overlay;
-	bool       fsr_used      = false;
+	const bool fsr_requested = Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr1;
+	if (fsr_requested && !draw_ime_overlay && !frame.fsr_failed && frame.fsr == nullptr) {
+		frame.fsr = std::make_unique<FsrUpscaler>();
+		if (!frame.fsr->Create(m_window.graphic_ctx)) {
+			frame.fsr.reset();
+			frame.fsr_failed = true;
+			std::fprintf(stderr, "[fsr] creation failed; using plain blit\n");
+		}
+	}
+	const bool fsr_active = frame.fsr != nullptr && frame.fsr->IsReady() && !draw_ime_overlay;
+	bool fsr_used = false;
 	if (fsr_active) {
 		// FSR two-pass upscaler: EASU (edge-adaptive upscale) + RCAS (sharpen).
 		// Dispatch handles all image transitions and leaves the swapchain image in
 		// ePresentSrcKHR, so the to_present barrier below is skipped.
-		fsr_used = m_fsr->Dispatch(vk_command, source, m_images[m_image_index], m_format,
-		                           source.extent.width, source.extent.height, m_extent.width,
-		                           m_extent.height, Config::GetUpscalerSharpness());
+		const uint32_t fsr_width = Config::GetFsrOutputWidth() != 0
+		                               ? Config::GetFsrOutputWidth() : m_extent.width;
+		const uint32_t fsr_height = Config::GetFsrOutputHeight() != 0
+		                                ? Config::GetFsrOutputHeight() : m_extent.height;
+		fsr_used = frame.fsr->Dispatch(vk_command, source, m_images[m_image_index], m_format,
+		                              source.extent.width, source.extent.height, fsr_width,
+		                              fsr_height, m_extent.width, m_extent.height,
+		                              Config::GetUpscalerSharpness());
 		if (!fsr_used) {
-			LOGF("Swapchain: FSR dispatch unavailable, falling back to blit\n");
-			m_fsr.reset(); // dead instance; a later rebuild creates a fresh one
+			std::fprintf(stderr, "[fsr] dispatch unavailable; using plain blit\n");
+			frame.fsr.reset();
+			frame.fsr_failed = true;
 		}
 	}
 	if (!fsr_used) {
@@ -928,6 +934,18 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}
 
+	if (Config::GetGuestRenderWidth() != 0) {
+		static vk::Extent2D last_source {};
+		const vk::Extent2D actual {image.backing.extent.width, image.backing.extent.height};
+		if (last_source != actual) {
+			std::fprintf(stderr, "[render-source] actual presentation source=%ux%u, "
+			                     "requested engine resolution=%ux%u\n",
+			             actual.width, actual.height, Config::GetGuestRenderWidth(),
+			             Config::GetGuestRenderHeight());
+			last_source = actual;
+		}
+	}
+
 	auto frame_format = info.pixel_format;
 	switch (frame_format) {
 		case vk::Format::eR8G8B8A8Srgb: frame_format = vk::Format::eR8G8B8A8Unorm; break;
@@ -1033,7 +1051,7 @@ void Presenter::Present(Frame& frame, bool reuse) {
 			frame.present_commands->WaitForFenceAndReset();
 			auto&      command          = *frame.present_commands;
 			const bool draw_ime_overlay = ime_visual.active && swapchain.PrepareImeOverlay();
-			swapchain.RecordPresentCommands(command, frame.image, draw_ime_overlay);
+			swapchain.RecordPresentCommands(command, frame, draw_ime_overlay);
 			swapchain.Submit(command);
 		}
 		status = swapchain.Present();

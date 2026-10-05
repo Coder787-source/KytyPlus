@@ -1,0 +1,50 @@
+{
+  "title_id": "PPSA06888",
+  "game_version": "01.001.008",
+  "module": "Media/Modules/Il2CppUserAssemblies.prx",
+  "module_sha256": "f18fc47fd39ed2a214a29c7a3bc5db4c383388b4e94acf9b12821c40cc432e07",
+  "patches": [
+    {
+      "name": "SysSaveDataStory.GetZoneProgress",
+      "offset": "0x20392f0",
+      "expected": "554889e55350803d46a6d404004889fb751f488d3d77a6ad04e842ec41fe488d",
+      "replacement": "b80b000000c3"
+    },
+    {
+      "name": "SysSaveDataStory.GetClearActProgress",
+      "offset": "0x2039500",
+      "expected": "554889e55350803d38a4d404004889fb751f488d3d67a4ad04e832ea41fe488d",
+      "replacement": "b8ffffff7fc3"
+    },
+    {
+      "name": "SysSaveDataStory.IsNormalModeClear",
+      "offset": "0x20391b0",
+      "expected": "0fb6471a2440c0e806c3660f1f440000f64732407408837f4007b001740231c0",
+      "replacement": "b801000000c3"
+    },
+    {
+      "name": "SysSaveDataStory.IsTripModeClear",
+      "offset": "0x20391c0",
+      "expected": "f64732407408837f4007b001740231c0c36666666666662e0f1f840000000000",
+      "replacement": "b801000000c3"
+    },
+    {
+      "name": "SysSaveDataStory.IsFirstPlay",
+      "offset": "0x20391f0",
+      "expected": "554889e55350803d44a7d404004889fb751f488d3d77a7ad04e842ed41fe488d",
+      "replacement": "31c0c3"
+    },
+    {
+      "name": "SysSaveDataStory.GetClearMiniAct",
+      "offset": "0x2039850",
+      "expected": "554889e5415653803deda0d404004189f64889fb751f488d3d13a1ad04e8dee6",
+      "replacement": "b801000000c3"
+    },
+    {
+      "name": "UITimeAttackCommon.IsActSelectEnableFromActProgress",
+      "offset": "0x236d4d0",
+      "expected": "554889e54157415641554154534883ec38488b1d58e758044989f6488b034889",
+      "replacement": "b801000000c3"
+    }
+  ]
+}

@@ -115,6 +115,9 @@ struct ConfigOptions {
 	// Internal resolution scale for iGPU: reduces render target size to save
 	// fill rate and memory bandwidth. The presenter upscales back to window size.
 	ResolutionScale        resolution_scale            = ResolutionScale::Native;
+	// Engine resolution request; games may ignore argv. Do not resize guest attachments.
+	uint32_t               guest_render_width          = 1920;
+	uint32_t               guest_render_height         = 1080;
 	// Texture LOD bias: positive values skip high-resolution mip levels,
 	// reducing memory bandwidth. 0 = no bias, 1 = skip one mip level, etc.
 	int32_t                texture_lod_bias            = 0;
@@ -124,11 +127,15 @@ struct ConfigOptions {
 	bool                   uma_staging_bypass          = false;
 	// --- Upscaler options ---
 	// Upscaling method for the guest->swapchain presentation blit.
-	UpscalerMethod         upscaler_method             = UpscalerMethod::Off;
-	// Quality preset controlling the internal render scale.
-	UpscalerQuality        upscaler_quality            = UpscalerQuality::Quality;
+	UpscalerMethod         upscaler_method             = UpscalerMethod::Fsr1;
+	// Explicit source/output sizes determine the actual upscale ratio.
+	UpscalerQuality        upscaler_quality            = UpscalerQuality::Performance;
 	// RCAS sharpening strength (0.0 = no sharpening, 1.0 = maximum).
-	float                  upscaler_sharpness          = 0.5f;
+	float                  upscaler_sharpness          = 0.3f;
+	// FSR result is independent of the window size; smaller displays downsample it.
+	// Zero selects the window extent instead. Ignored when the upscaler is Off.
+	uint32_t               fsr_output_width            = 3840;
+	uint32_t               fsr_output_height           = 2160;
 	// Opt-in native DualSense HID driver (adaptive triggers / lightbar / motion via
 	// libPad). DEFAULT OFF: SDL already handles every standard pad (including a
 	// DualSense), and this driver is unvalidated on hardware, so it is gated behind
@@ -160,6 +167,10 @@ void ApplyIgpuDefaults(bool integrated_gpu);
 
 uint32_t GetScreenWidth();
 uint32_t GetScreenHeight();
+uint32_t GetGuestRenderWidth();
+uint32_t GetGuestRenderHeight();
+uint32_t GetFsrOutputWidth();
+uint32_t GetFsrOutputHeight();
 bool     FullscreenEnabled();
 uint32_t GetVblankFrequency();
 uint32_t GetConsoleLanguage();

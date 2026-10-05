@@ -458,6 +458,17 @@ add_executable(graphics_audio_semantics_tests EXCLUDE_FROM_ALL
 target_link_libraries(graphics_audio_semantics_tests Vulkan::Headers common fmt::fmt)
 target_include_directories(graphics_audio_semantics_tests PRIVATE ${inc_headers})
 
+add_executable(playgo_api_tests EXCLUDE_FROM_ALL
+	../tests/PlayGoApiTests.cpp
+	libs/libPlayGo.cpp
+	libs/libPlayGoDialog.cpp
+	libs/libNpCommerce.cpp
+	loader/symbolDatabase.cpp
+	loader/timer.cpp
+)
+target_link_libraries(playgo_api_tests common fmt::fmt)
+target_include_directories(playgo_api_tests PRIVATE ${inc_headers})
+
 add_kyty_full_emulator_test(pm4_ngs2_fuzz_tests ../tests/Pm4Ngs2FuzzTests.cpp)
 add_kyty_full_emulator_test(package_parser_tests ../tests/PackageParserTests.cpp)
 target_link_libraries(package_parser_tests pkg_parser gcn_decoder)
@@ -551,6 +562,7 @@ foreach(kyty_exception_test scalar_provenance_tests resource_tracking_tests
 endforeach()
 
 if(BUILD_TESTING)
+	add_test(NAME playgo_api COMMAND $<TARGET_FILE:playgo_api_tests>)
 	add_test(NAME image_page_table COMMAND $<TARGET_FILE:image_page_table_tests>)
 	add_test(NAME memory_tracker COMMAND $<TARGET_FILE:memory_tracker_tests>)
 	add_test(NAME page_manager COMMAND $<TARGET_FILE:page_manager_tests>)

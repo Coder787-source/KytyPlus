@@ -121,9 +121,9 @@ public:
 #if defined(_WIN32)
 	bool red_zone_protection_enabled = false;
 #endif
-	UpscalerMethod upscaler_method    = UpscalerMethod::Off;
-	UpscalerQuality upscaler_quality  = UpscalerQuality::Quality;
-	float upscaler_sharpness          = 0.5f;
+	UpscalerMethod upscaler_method    = UpscalerMethod::Fsr1;
+	UpscalerQuality upscaler_quality  = UpscalerQuality::Performance;
+	float upscaler_sharpness          = 0.3f;
 	IgpuOptimization igpu_optimization  = IgpuOptimization::Auto;
 	int  texture_lod_bias               = 0;
 	PresentMode    present_mode    = PresentMode::Fifo;
@@ -239,8 +239,8 @@ public:
 		red_zone_protection_enabled =
 		    s->value("red_zone_protection_enabled", red_zone_protection_enabled).toBool();
 #endif
-		KYTY_CFG_GET(upscaler_method);
-		KYTY_CFG_GET(upscaler_quality);
+		upscaler_method = s->value("upscaler_method", QVariant::fromValue(upscaler_method).toString()).value<decltype(upscaler_method)>();
+		upscaler_quality = s->value("upscaler_quality", QVariant::fromValue(upscaler_quality).toString()).value<decltype(upscaler_quality)>();
 		upscaler_sharpness = s->value("upscaler_sharpness", upscaler_sharpness).toFloat();
 		KYTY_CFG_GET(igpu_optimization);
 		texture_lod_bias  = s->value("texture_lod_bias", texture_lod_bias).toInt();

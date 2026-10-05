@@ -94,7 +94,7 @@ ThreadLocalStorage::~ThreadLocalStorage() {
 struct EntryParams {
 	int         argc;
 	uint32_t    pad;
-	const char* argv[3];
+	const char* argv[16];
 };
 
 #pragma pack()
@@ -1695,6 +1695,22 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 		std::memset(params, 0, sizeof(EntryParams));
 		params->argc    = 1;
 		params->argv[0] = "KytyEmu";
+		// Keep the numeric arguments on the guest stack for the entire execution.
+		// This asks the engine to allocate matching targets, rather than rewriting
+		// video-out attributes or shrinking host attachments behind its back.
+		if (Config::GetGuestRenderWidth() != 0 && Config::GetGuestRenderHeight() != 0) {
+			auto* width = reinterpret_cast<char*>(params + 1);
+			auto* height = width + 16;
+			std::snprintf(width, 16, "%u", Config::GetGuestRenderWidth());
+			std::snprintf(height, 16, "%u", Config::GetGuestRenderHeight());
+			params->argc = 5;
+			params->argv[1] = "-screen-width";
+			params->argv[2] = width;
+			params->argv[3] = "-screen-height";
+			params->argv[4] = height;
+			std::fprintf(stderr, "[render-request] guest argv requests %sx%s; "
+			                     "engine support is not guaranteed\n", width, height);
+		}
 
 		LOGF("stack_addr = %" PRIx64 "\n", reinterpret_cast<uint64_t>(params));
 
