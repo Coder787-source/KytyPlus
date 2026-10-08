@@ -3,9 +3,9 @@
 > 📢 **CALL FOR HARDWARE TESTERS:** Because the maintainer does not personally own a physical PlayStation 5 console, community validation is critical. If you own a jailbroken console and want to help us push past the *Dead Cells* menu milestone using your legally obtained backups, please submit your boot logs and game footage! You can submit an automated format instantly via our **[New Compatibility Report Form](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)**.
 
 
-Community-reported results for KytyPlus. Entries here come from user-submitted
+Community-reported results for KytyPlus. Entries here come **only** from user-submitted
 [Compatibility report](https://github.com/Coder787-source/KytyPlus/issues/new?template=compatibility.yml)
-issues and linked maintainer test notes — nobody on this project claims to have personally verified every row.
+issues — nobody on this project claims to have personally verified every row.
 
 > [!CAUTION]
 > "Boots further" is not "playable." This table tracks how far a title gets, not whether it's
@@ -42,7 +42,7 @@ directly onto a row here.
 4. Rows are sorted alphabetically by title automatically. Keep one row per title; the bot matches
    existing rows by Title ID first, falling back to title text.
 
-Filing accurate reports for titles you already own is the
+Don't have games to test yourself? Filing accurate reports for titles you already own is the
 single most useful contribution you can make here — see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for details.
 
@@ -55,10 +55,12 @@ headline compatibility number for the project.
 
 | Title | Title ID | Status | Last tested (version) | Reports |
 |---|---|---|---|---|
-| Crash Bandicoot 4: It's About Time | PPSA02433 | Ingame (broken) (intro cutscene chain plays end-to-end; gameplay starts but is broken - crashes or corrupt visuals; upstream v0.0.5.5 gets farther than KytyPlus - [#88](https://github.com/KytyPS5/KytyPS5/issues/88)) | v3.8 | maintainer (Radeon 840M) + [#88](https://github.com/KytyPS5/KytyPS5/issues/88) |
+| Crash Bandicoot 4: It's About Time | PPSA02433 | Ingame (broken) (intro cutscene chain plays end-to-end; gameplay starts but is broken - crashes or corrupt visuals; upstream v0.0.5.5 gets farther than KytyPlus - #88) | v3.8 | maintainer (Radeon 840M) + [#88](https://github.com/KytyPS5/KytyPS5/issues/88) |
 | Dead Cells | PPSA-15554 | Reaches menu | v1.8 | [#3](https://github.com/Coder787-source/KytyPlus/issues/3) |
-| Silent Hill 2 Remake | PPSA08709 | Other (interactive content-warning screen; stable 4-min run, single-digit FPS, first iGPU result; could boot further but untested, upstream baseline: crash at boot/splash [#210](https://github.com/KytyPS5/KytyPS5/issues/210), [#77](https://github.com/KytyPS5/KytyPS5/issues/77)) | v3.5 | maintainer (Radeon 840M) |
-| Sonic Superstars | PPSA06888 | Playable | Source build (game 01.001.008; see notes) | [#12](https://github.com/Coder787-source/KytyPlus/issues/12), [test notes](docs/SONIC_SUPERSTARS.md#compatibility) |
+| Klonoa Phantasy Reverie Series | PPSA04795 | Playable | v3.9 | [#WBa1htjsqc8](https://www.youtube.com/watch?v=WBa1htjsqc8&t=2s) |
+| Silent Hill 2 Remake | PPSA08709 | Other (interactive content-warning screen; stable 4-min run, single-digit FPS, first iGPU result; could boot further but untested, upstream baseline: crash at boot/splash #210, #77) | v3.5 | maintainer (Radeon 840M) |
+| Smurfs Kart | PPSA14050 | Reaches menu (in-menu display works; black screen when race starts) | v3.9 | [#HI2zP3J08RQ](https://www.youtube.com/watch?v=HI2zP3J08RQ) |
+| Sonic Superstars | PPSA06888 | Playable | Source build (game 01.001.008; see notes) | [#12](https://github.com/Coder787-source/KytyPlus/issues/12), [test notes](https://github.com/Coder787-source/KytyPlus/issues/12) |
 
 <!--
 Row template (copy/paste and fill in from the issue). Use a full issue URL, not a relative link:
