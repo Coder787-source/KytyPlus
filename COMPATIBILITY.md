@@ -61,6 +61,7 @@ headline compatibility number for the project.
 | Silent Hill 2 Remake | PPSA08709 | Other (interactive content-warning screen; stable 4-min run, single-digit FPS, first iGPU result; could boot further but untested, upstream baseline: crash at boot/splash #210, #77) | v3.5 | maintainer (Radeon 840M) |
 | Smurfs Kart | PPSA14050 | Reaches menu (in-menu display works; black screen when race starts) | v3.9 | [#HI2zP3J08RQ](https://www.youtube.com/watch?v=HI2zP3J08RQ) |
 | Sonic Superstars | PPSA06888 | Playable | Source build (game 01.001.008; see notes) | [#12](https://github.com/Coder787-source/KytyPlus/issues/12), [test notes](https://github.com/Coder787-source/KytyPlus/issues/12) |
+| Minecraft | PPSA17221 | Playable | v4.0 | maintainer |
 
 <!--
 Row template (copy/paste and fill in from the issue). Use a full issue URL, not a relative link:
