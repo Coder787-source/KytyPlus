@@ -757,6 +757,20 @@ bool TryRecompile(std::span<const uint32_t> code, const CompileOptions& options,
 			     rewritten);
 		}
 	}
+	// In the folded NGG path POS1.z is the raw render-target layer, not a
+	// second position. Keep it distinct through reflection and SPIR-V emission.
+	if (options.stage == ShaderType::Vertex && options.vertex_input_info != nullptr &&
+	    options.vertex_input_info->folded_triangle_copy && options.vertex_input_info->export_layer) {
+		for (auto& block: ir.blocks) {
+			for (auto& inst: block.instructions) {
+				if (inst.op == IR::Opcode::Export &&
+				    inst.export_info.kind == IR::ExportTargetKind::Position &&
+				    inst.export_info.index == 1 && inst.export_info.en == 4) {
+					inst.export_info.kind = IR::ExportTargetKind::Layer;
+				}
+			}
+		}
+	}
 	if (!IR::BuildScalarProvenance(ir, error)) {
 		return false;
 	}

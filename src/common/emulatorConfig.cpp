@@ -59,6 +59,15 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 		LOGF("Config: integrated GPU detected — applied floor defaults: "
 		     "texture LOD bias 1, present mode FIFO, (FSR upscaler no longer auto-enabled)\n");
 	}
+	// Keep native attachments until a coordinated internal-resolution path exists.
+	// Earlier host-only scaling experiments broke rendering; menu/intro FPS did
+	// not establish a gameplay improvement. --guest-render-width/height requests
+	// a resolution from the engine instead, but acceptance must be verified.
+	if (g_config->render_scale == 0.0f) {
+		g_config->render_scale = 1.0f;
+		LOGF("Config: integrated GPU detected — rendering at the guest's native "
+		     "resolution.\n");
+	}
 }
 
 uint32_t GetScreenWidth() {
@@ -67,6 +76,22 @@ uint32_t GetScreenWidth() {
 
 uint32_t GetScreenHeight() {
 	return g_config->screen_height;
+}
+
+uint32_t GetGuestRenderWidth() {
+	return g_config->guest_render_width;
+}
+
+uint32_t GetGuestRenderHeight() {
+	return g_config->guest_render_height;
+}
+
+uint32_t GetFsrOutputWidth() {
+	return g_config->fsr_output_width;
+}
+
+uint32_t GetFsrOutputHeight() {
+	return g_config->fsr_output_height;
 }
 
 bool FullscreenEnabled() {
@@ -205,6 +230,14 @@ float GetResolutionScaleFactor() {
 		case ResolutionScale::Quarter: return 0.25f;
 	}
 	return 1.0f;
+}
+
+float GetRenderScale() {
+	const float scale = g_config->render_scale;
+	if (!(scale > 0.0f) || scale > 1.0f) {
+		return 1.0f;
+	}
+	return scale;
 }
 
 // --- Upscaler accessors ---

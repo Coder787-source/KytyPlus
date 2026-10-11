@@ -91,11 +91,11 @@ std::vector<uint8_t> MakePkgHeader(uint32_t body_size) {
 	// 0x2400: the parser bounds-checks name_off + 8192 <= file_size
 	std::vector<uint8_t> v(0x2400, 0);
 
-	// magic "\x7FPKG" (bytes as stored in the file)
+	// Actual PS4 package-container magic "\x7FCNT".
 	v[0] = 0x7F;
-	v[1] = 'P';
-	v[2] = 'K';
-	v[3] = 'G';
+	v[1] = 'C';
+	v[2] = 'N';
+	v[3] = 'T';
 	PutBe32(v, 0x0C, 2);                    // file_count
 	PutBe32(v, 0x10, 2);                    // table_entries (16-byte entries)
 	PutBe32(v, 0x18, PKG_ENTRY_TABLE_OFF);  // table_offset

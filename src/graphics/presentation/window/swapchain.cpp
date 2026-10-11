@@ -46,6 +46,7 @@
 #include <mutex>
 #include <cmath>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -67,6 +68,10 @@ namespace Libs::Graphics {
 struct Presenter::Frame {
 	VulkanImage                    image;
 	std::unique_ptr<CommandBuffer> present_commands;
+	// Each frame is reused only after its presentation fence. Keep mutable FSR
+	// descriptors, UBOs and intermediate images under that same ownership.
+	std::unique_ptr<FsrUpscaler>   fsr;
+	bool                          fsr_failed = false;
 	bool                           busy         = false;
 	bool                           reusing_last = false;
 
@@ -84,6 +89,7 @@ public:
 			if (frame->present_commands != nullptr) {
 				frame->present_commands->WaitForFenceOnly();
 			}
+			frame->fsr.reset();
 			if (frame->image.image != nullptr) {
 				m_window.graphic_ctx.DeleteImage(frame->image);
 			}
@@ -232,6 +238,10 @@ void Presenter::Frame::Configure(GraphicContext& graphics, vk::Extent2D extent, 
 	if (compatible) {
 		return;
 	}
+	// Acquire() already waited for this frame's GPU work. Its source image views
+	// must be retired before reallocating the image they reference.
+	fsr.reset();
+	fsr_failed = false;
 	if (dst.image != nullptr) {
 		graphics.DeleteImage(dst);
 		dst.memory = {};
@@ -340,7 +350,7 @@ public:
 	void                 Recreate(bool surface_lost = false);
 	[[nodiscard]] Status AcquireNextImage();
 	[[nodiscard]] bool   PrepareImeOverlay();
-	void RecordPresentCommands(CommandBuffer& command, VulkanImage& source, bool draw_ime_overlay);
+	void RecordPresentCommands(CommandBuffer& command, Presenter::Frame& frame, bool draw_ime_overlay);
 	void Submit(CommandBuffer& command);
 	[[nodiscard]] Status Present();
 
@@ -348,6 +358,18 @@ public:
 		return static_cast<uint32_t>(m_images.size());
 	}
 	[[nodiscard]] vk::Format Format() const noexcept { return m_format; }
+	[[nodiscard]] vk::Extent2D Extent() const noexcept { return m_extent; }
+	[[nodiscard]] uint32_t     FrameIndex() const noexcept { return m_frame_index; }
+
+	// KytyPlus frame-time breakdown accessors. The present thread sets the last
+	// fence-wait duration after its presentation command buffer's fence wait; the
+	// [fps] sampler reads it.
+	void SetLastPresentFenceWaitNs(double ns) noexcept {
+		last_present_fence_wait_ns.store(ns, std::memory_order_relaxed);
+	}
+	[[nodiscard]] double LastPresentFenceWaitNs() const noexcept {
+		return last_present_fence_wait_ns.load(std::memory_order_relaxed);
+	}
 
 private:
 	void Destroy();
@@ -362,9 +384,17 @@ private:
 	std::vector<vk::Semaphore>  m_image_acquired;
 	std::vector<vk::Semaphore>  m_render_complete;
 	std::unique_ptr<ImeOverlay> m_ime_overlay;
-	std::unique_ptr<FsrUpscaler> m_fsr;
 	uint32_t                    m_image_index = static_cast<uint32_t>(-1);
 	uint32_t                    m_frame_index = 0;
+	// KytyPlus: this iGPU keeps reporting SuboptimalKHR (which still composites per spec)
+	// but does not actually show content until it gets ONE clean, correct-sized recreate
+	// after the window settles. Recreate exactly once on the first suboptimal, then present
+	// through so we never re-enter the per-frame recreate storm.
+	bool                        m_suboptimal_recovered = false;
+	// KytyPlus frame-time breakdown written once per present; read by the [fps] sampler.
+	// Present-thread only, so relaxed ordering is enough.
+	std::atomic<double>        last_present_fence_wait_ns {0.0};
+	uint64_t                   presented_frame_count       = 0;
 };
 
 struct Presenter::Impl {
@@ -423,14 +453,22 @@ void Swapchain::Create() {
 	const auto&       surface = m_window.surface_capabilities;
 	EXIT_NOT_IMPLEMENTED(surface.formats.empty());
 
-	m_extent = surface.capabilities.currentExtent;
-	if (m_extent.width == std::numeric_limits<uint32_t>::max()) {
-		m_extent.width =
-		    std::clamp(graphics.screen_width, surface.capabilities.minImageExtent.width,
-		               surface.capabilities.maxImageExtent.width);
-		m_extent.height =
-		    std::clamp(graphics.screen_height, surface.capabilities.minImageExtent.height,
-		               surface.capabilities.maxImageExtent.height);
+	// KytyPlus: do NOT blindly trust currentExtent. On the Ryzen iGPU the driver reports a
+	// transitional size mid-resize (observed 1280x729 instead of the requested window
+	// extent); recreating to that changing extent every frame caused a recreate/present
+	// thrash and a black screen. Latch the swapchain to the requested window extent,
+	// clamped to the surface limits - stable across recreates.
+	m_extent.width  = std::clamp(graphics.screen_width, surface.capabilities.minImageExtent.width,
+	                           surface.capabilities.maxImageExtent.width);
+	m_extent.height = std::clamp(graphics.screen_height, surface.capabilities.minImageExtent.height,
+	                           surface.capabilities.maxImageExtent.height);
+	{
+		const auto& ce = surface.capabilities.currentExtent;
+		if (ce.width != std::numeric_limits<uint32_t>::max() &&
+		    (ce.width != m_extent.width || ce.height != m_extent.height)) {
+			LOGF("Swapchain: driver currentExtent=%ux%u differs from requested %ux%u; using requested (stable) extent\n",
+			     ce.width, ce.height, m_extent.width, m_extent.height);
+		}
 	}
 	// KytyPlus: a minimized window reports currentExtent 0x0. vkCreateSwapchainKHR with a
 	// zero extent is invalid on most drivers and leaves presentation black until the next
@@ -490,11 +528,8 @@ void Swapchain::Create() {
 	create_info.imageArrayLayers = 1;
 	create_info.imageUsage =
 	    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
-	// FSR writes the upscaled frame to the swapchain image as a storage image (RCAS pass),
-	// so the storage usage flag is required when the upscaler is active.
-	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr1) {
-		create_info.imageUsage |= vk::ImageUsageFlagBits::eStorage;
-	}
+	// RCAS writes to its own result image and blits to the swapchain. Storage
+	// usage on the swapchain is unnecessary and not supported by every surface.
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
 	create_info.preTransform     = transform;
 	create_info.compositeAlpha   = composite;
@@ -523,6 +558,39 @@ void Swapchain::Create() {
 	LOGF("Swapchain config: minImageCount=%u extent=%ux%u format=%d presentMode=%s\n",
 	     image_count, m_extent.width, m_extent.height, static_cast<int>(format.format),
 	     vk::to_string(effective_present_mode).c_str());
+	// KytyPlus diagnostics: expose the real presentation decision on iGPUs that can
+	// accept a swapchain but still render a black window (cf. Radeon 840M amdvlk
+	// black client area with Immediate/Mailbox).
+	{
+		const auto device_type =
+		    graphics.physical_device.getProperties().deviceType;
+		const bool is_integrated =
+		    device_type == vk::PhysicalDeviceType::eIntegratedGpu ||
+		    device_type == vk::PhysicalDeviceType::eVirtualGpu;
+		LOGF("Swapchain diag: deviceType=%s integrated=%s requestedPresentMode=%s effectivePresentMode=%s "
+		     "format=%d optimalTilingCanBlit=%s imageCount=%u",
+		     vk::to_string(device_type).c_str(),
+		     is_integrated ? "yes" : "no",
+		     vk::to_string(requested_present_mode).c_str(),
+		     vk::to_string(effective_present_mode).c_str(),
+		     static_cast<int>(format.format),
+		     (swapchain_features & vk::FormatFeatureFlagBits::eBlitDst) ? "yes" : "no",
+		     image_count);
+		if (!surface.formats.empty()) {
+			LOGF("Swapchain diag: surface offers %u format(s)",
+			     static_cast<uint32_t>(surface.formats.size()));
+			// Dump the first few offered formats so we can see whether the chosen one is
+			// near the driver's preferred entry or something exotic.
+			for (uint32_t i = 0; i < surface.formats.size() && i < 6; ++i) {
+				LOGF("Swapchain diag: offered[%u] format=%d colorSpace=%s",
+				     i, static_cast<int>(surface.formats[i].format),
+				     vk::to_string(surface.formats[i].colorSpace).c_str());
+			}
+		}
+		LOGF("Swapchain diag: surfaceCapabilities currentTransform=%s compositeAlpha=%s",
+		     vk::to_string(transform).c_str(),
+		     vk::to_string(composite).c_str());
+	}
 	const auto supported_modes = EnumerateVulkan<vk::PresentModeKHR>(
 	    "vkGetPhysicalDeviceSurfacePresentModesKHR", [&](uint32_t* count, vk::PresentModeKHR* modes) {
 		    return graphics.physical_device.getSurfacePresentModesKHR(m_window.surface, count, modes);
@@ -563,15 +631,6 @@ void Swapchain::Create() {
 		EXIT_IF(m_image_views[i] == nullptr);
 	}
 
-	// FSR upscaler: create the EASU + RCAS compute pipelines now that the device is ready.
-	if (Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr1) {
-		m_fsr = std::make_unique<FsrUpscaler>();
-		if (!m_fsr->Create(graphics)) {
-			LOGF("Swapchain: FSR upscaler creation failed, falling back to blit\n");
-			m_fsr.reset();
-		}
-	}
-
 	vk::SemaphoreCreateInfo semaphore_info {};
 	semaphore_info.sType = vk::StructureType::eSemaphoreCreateInfo;
 	m_image_acquired.resize(m_images.size());
@@ -610,11 +669,6 @@ void Swapchain::Destroy() {
 			     VulkanToString(wait_result).c_str(), static_cast<int>(wait_result));
 		}
 	}
-	if (m_fsr != nullptr) {
-		m_fsr->Destroy();
-		m_fsr.reset();
-	}
-
 	if (m_ime_overlay != nullptr) {
 		m_ime_overlay->ReleaseVulkan();
 	}
@@ -685,8 +739,12 @@ Swapchain::Status Swapchain::AcquireNextImage() {
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
-			LOGF("vkAcquireNextImageKHR returned vk::Result::eSuboptimalKHR\n");
-			return Status::Recreate;
+			if (!m_suboptimal_recovered) {
+				m_suboptimal_recovered = true;
+				LOGF("Swapchain: first SuboptimalKHR on acquire - doing one clean recreate\n");
+				return Status::Recreate;
+			}
+			return Status::Success;
 		case vk::Result::eErrorOutOfDateKHR:
 			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorOutOfDateKHR\n");
 			return Status::Recreate;
@@ -709,8 +767,9 @@ bool Swapchain::PrepareImeOverlay() {
 	return m_ime_overlay->PrepareFrame(m_extent, m_format, ImageCount());
 }
 
-void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& source,
+void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame& frame,
                                       bool draw_ime_overlay) {
+	auto& source = frame.image;
 	if (source.state.layout != vk::ImageLayout::eTransferSrcOptimal) {
 		EXIT("invalid prepared presentation image, vk_image=%p layout=%d\n",
 		     static_cast<void*>(source.image), static_cast<int>(source.state.layout));
@@ -736,19 +795,33 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
 	                           nullptr, 0, nullptr, 1, &to_transfer);
 
-	const bool fsr_available = (m_fsr != nullptr && m_fsr->IsReady());
-	const bool fsr_active    = fsr_available && !draw_ime_overlay;
-	bool       fsr_used      = false;
+	const bool fsr_requested = Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr1;
+	if (fsr_requested && !draw_ime_overlay && !frame.fsr_failed && frame.fsr == nullptr) {
+		frame.fsr = std::make_unique<FsrUpscaler>();
+		if (!frame.fsr->Create(m_window.graphic_ctx)) {
+			frame.fsr.reset();
+			frame.fsr_failed = true;
+			std::fprintf(stderr, "[fsr] creation failed; using plain blit\n");
+		}
+	}
+	const bool fsr_active = frame.fsr != nullptr && frame.fsr->IsReady() && !draw_ime_overlay;
+	bool fsr_used = false;
 	if (fsr_active) {
 		// FSR two-pass upscaler: EASU (edge-adaptive upscale) + RCAS (sharpen).
 		// Dispatch handles all image transitions and leaves the swapchain image in
 		// ePresentSrcKHR, so the to_present barrier below is skipped.
-		fsr_used = m_fsr->Dispatch(vk_command, source, m_images[m_image_index], m_format,
-		                           source.extent.width, source.extent.height, m_extent.width,
-		                           m_extent.height, Config::GetUpscalerSharpness());
+		const uint32_t fsr_width = Config::GetFsrOutputWidth() != 0
+		                               ? Config::GetFsrOutputWidth() : m_extent.width;
+		const uint32_t fsr_height = Config::GetFsrOutputHeight() != 0
+		                                ? Config::GetFsrOutputHeight() : m_extent.height;
+		fsr_used = frame.fsr->Dispatch(vk_command, source, m_images[m_image_index], m_format,
+		                              source.extent.width, source.extent.height, fsr_width,
+		                              fsr_height, m_extent.width, m_extent.height,
+		                              Config::GetUpscalerSharpness());
 		if (!fsr_used) {
-			LOGF("Swapchain: FSR dispatch unavailable, falling back to blit\n");
-			m_fsr.reset(); // dead instance; a later rebuild creates a fresh one
+			std::fprintf(stderr, "[fsr] dispatch unavailable; using plain blit\n");
+			frame.fsr.reset();
+			frame.fsr_failed = true;
 		}
 	}
 	if (!fsr_used) {
@@ -897,11 +970,51 @@ Swapchain::Status Swapchain::Present() {
 		Common::LockGuard lock(m_window.graphic_ctx.queue_mutex);
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
 	}
+	// KytyPlus diagnostics: log the first few presents so we can see whether the
+	// swapchain is actually being presented on a Ryzen iGPU that otherwise reports
+	// black. We only log the first 3 and any non-success so the log stays readable.
+	{
+		// KytyPlus diag: log first 12 presents, then every 120th, plus any non-success,
+		// always with swapchain extent, so a black-screen run shows exact result/geometry.
+		static uint64_t shown = 0;
+		++shown;
+		if (shown <= 12 || (shown % 120) == 0 || result != vk::Result::eSuccess) {
+			LOGF("Swapchain diag: present #%llu imageIndex=%u extent=%ux%u result=%s\n",
+			     static_cast<unsigned long long>(shown), m_image_index, m_extent.width,
+			     m_extent.height, VulkanToString(result).c_str());
+		}
+	}
+	// Presented-frame-rate meter. Written straight to stderr rather than through
+	// LOGF so it survives `--printf-direction Silent`: tuning render scale needs an
+	// fps number, and silencing the (very chatty) guest log is the first thing
+	// anyone does when chasing performance. One line per second, always.
+	{
+		static auto                 start    = std::chrono::steady_clock::now();
+		static uint64_t             frames   = 0;
+		const auto                  now      = std::chrono::steady_clock::now();
+		// Count this present before sampling. Otherwise a frame taking over a
+		// second resets the counter without ever being counted (false 0 FPS).
+		++frames;
+		const double                elapsed  =
+		    std::chrono::duration<double>(now - start).count();
+		if (elapsed >= 1.0) {
+			::fprintf(stderr, "[fps] %.1f (%llu frames / %.2fs)\n",
+			          static_cast<double>(frames) / elapsed,
+			          static_cast<unsigned long long>(frames), elapsed);
+			::fflush(stderr);
+			frames = 0;
+			start  = now;
+		}
+	}
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
-			LOGF("vkQueuePresentKHR returned vk::Result::eSuboptimalKHR\n");
-			return Status::Recreate;
+			if (!m_suboptimal_recovered) {
+				m_suboptimal_recovered = true;
+				LOGF("Swapchain: first SuboptimalKHR on present - doing one clean recreate\n");
+				return Status::Recreate;
+			}
+			break;
 		case vk::Result::eErrorOutOfDateKHR:
 			LOGF("vkQueuePresentKHR returned vk::Result::eErrorOutOfDateKHR\n");
 			return Status::Recreate;
@@ -926,6 +1039,38 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	auto&             image = m_impl->ResolveSurface(info);
 	if (image.backing.format == vk::Format::eUndefined) {
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
+	}
+	{
+		// KytyPlus diag: log the video-out (present source) the guest hands us so a black
+		// screen can be traced to a blank/black buffer vs a real render target. Log the
+		// first 8, then every 120th, and every time the source address/format changes.
+		static uint64_t n = 0;
+		static uint64_t last_addr = ~0ull;
+		static int      last_fmt  = -1;
+		const uint64_t  addr = info.data.address;
+		const int       fmt  = static_cast<int>(info.pixel_format);
+		++n;
+		if (n <= 8 || (n % 120) == 0 || addr != last_addr || fmt != last_fmt) {
+			LOGF("Present-source #%llu addr=0x%llx size=0x%llx extent=%ux%u fmt=%d type=%d pitch=%u\n",
+			     static_cast<unsigned long long>(n),
+			     static_cast<unsigned long long>(addr),
+			     static_cast<unsigned long long>(info.data.size),
+			     info.extent.width, info.extent.height, fmt, static_cast<int>(info.type),
+			     info.pitch);
+			last_addr = addr; last_fmt = fmt;
+		}
+	}
+
+	if (Config::GetGuestRenderWidth() != 0) {
+		static vk::Extent2D last_source {};
+		const vk::Extent2D actual {image.backing.extent.width, image.backing.extent.height};
+		if (last_source != actual) {
+			std::fprintf(stderr, "[render-source] actual presentation source=%ux%u, "
+			                     "requested engine resolution=%ux%u\n",
+			             actual.width, actual.height, Config::GetGuestRenderWidth(),
+			             Config::GetGuestRenderHeight());
+			last_source = actual;
+		}
 	}
 
 	auto frame_format = info.pixel_format;
@@ -987,6 +1132,13 @@ RenderContext& Presenter::Renderer() const noexcept {
 void Presenter::Present(Frame& frame, bool reuse) {
 	KYTY_PROFILER_FUNCTION();
 	const auto present_start = std::chrono::steady_clock::now();
+	static const bool timing_enabled = std::getenv("KYTY_PRESENT_TIMING") != nullptr;
+	static auto previous_present_end = present_start;
+	static uint64_t timing_frame = 0;
+	const double producer_gap_ms =
+	    std::chrono::duration<double, std::milli>(present_start - previous_present_end).count();
+	double acquire_ms = 0.0;
+	double record_submit_ms = 0.0;
 	m_impl->frames.ValidateForPresent(&frame, reuse);
 
 	auto& window = m_impl->window;
@@ -1020,7 +1172,10 @@ void Presenter::Present(Frame& frame, bool reuse) {
 	const auto ime_visual = GetImeVisualState();
 	auto&      swapchain  = m_impl->swapchain;
 	for (uint32_t attempt = 0; attempt < 2; attempt++) {
+		const auto acquire_start = std::chrono::steady_clock::now();
 		auto status = swapchain.AcquireNextImage();
+		acquire_ms += std::chrono::duration<double, std::milli>(
+		    std::chrono::steady_clock::now() - acquire_start).count();
 		if (status != Swapchain::Status::Success) {
 			m_impl->RecoverSwapchain(status);
 			continue;
@@ -1028,14 +1183,17 @@ void Presenter::Present(Frame& frame, bool reuse) {
 		if (frame.present_commands == nullptr) {
 			frame.present_commands = std::make_unique<CommandBuffer>(m_impl->present_scheduler);
 		}
+		const auto record_start = std::chrono::steady_clock::now();
 		{
 			Common::LockGuard render_lock(m_impl->renderer.GetMutex());
 			frame.present_commands->WaitForFenceAndReset();
 			auto&      command          = *frame.present_commands;
 			const bool draw_ime_overlay = ime_visual.active && swapchain.PrepareImeOverlay();
-			swapchain.RecordPresentCommands(command, frame.image, draw_ime_overlay);
+			swapchain.RecordPresentCommands(command, frame, draw_ime_overlay);
 			swapchain.Submit(command);
 		}
+		record_submit_ms += std::chrono::duration<double, std::milli>(
+		    std::chrono::steady_clock::now() - record_start).count();
 		status = swapchain.Present();
 		if (status != Swapchain::Status::Success) {
 			m_impl->RecoverSwapchain(status);
@@ -1047,13 +1205,25 @@ void Presenter::Present(Frame& frame, bool reuse) {
 		window.UpdateTitle();
 		{
 			const auto present_end = std::chrono::steady_clock::now();
+			previous_present_end = present_end;
+			++timing_frame;
+			const double host_ms = std::chrono::duration<double, std::milli>(
+			    present_end - present_start).count();
+			if (timing_enabled && (timing_frame <= 8 || timing_frame % 60 == 0 ||
+			                       producer_gap_ms > 100.0 || host_ms > 100.0)) {
+				std::fprintf(stderr, "[present-timing] frame=%llu reuse=%d producer_gap_ms=%.2f "
+				                     "host_ms=%.2f acquire_ms=%.2f record_submit_ms=%.2f\n",
+				             static_cast<unsigned long long>(timing_frame), reuse ? 1 : 0,
+				             producer_gap_ms, host_ms, acquire_ms, record_submit_ms);
+			}
 			const float frame_ms = std::chrono::duration<float, std::milli>(present_end - present_start).count();
 			Config::BandwidthControllerInstance().OnFrame(frame_ms);
 		}
 		m_impl->frames.Release(&frame, true);
 		return;
 	}
-	LOGF("Vulkan presentation retry exhausted; dropping frame\n");
+	LOGF("Swapchain diag: presentation retry EXHAUSTED; dropping frame extent=%ux%u frame_index=%u (host discarding, not presenting)\n",
+	     swapchain.Extent().width, swapchain.Extent().height, swapchain.FrameIndex());
 	m_impl->frames.Release(&frame, reuse);
 }
 

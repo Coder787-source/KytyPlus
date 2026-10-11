@@ -558,6 +558,8 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const V
 	EXIT_NOT_IMPLEMENTED(supported_features2.features.sampleRateShading != VK_TRUE);
 	EXIT_NOT_IMPLEMENTED(supported_features2.features.depthBiasClamp != VK_TRUE);
 	features12.timelineSemaphore = VK_TRUE;
+	features12.shaderOutputLayer = supported_features12.shaderOutputLayer;
+	graphics.shader_output_layer_enabled = features12.shaderOutputLayer == VK_TRUE;
 
 	vk::PhysicalDeviceFeatures device_features {};
 	device_features.fragmentStoresAndAtomics = VK_TRUE;

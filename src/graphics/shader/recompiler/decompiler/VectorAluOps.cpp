@@ -61,7 +61,7 @@ constexpr Vop2OpcodeInfo VOP2_OPS[] = {
     {0x22u, Opcode::VBcntU32B32},
     {0x23u, Opcode::VMbcntLoU32B32},
     {0x24u, Opcode::VMbcntHiU32B32},
-    {0x25u, Opcode::VAddNcU32, Vop2SdwaProfile::IntegerFullDestination},
+    {0x25u, Opcode::VAddNcU32, Vop2SdwaProfile::IntegerPartialDestination},
     {0x28u, Opcode::VAddcU32},
     {0x26u, Opcode::VSubNcU32, Vop2SdwaProfile::IntegerPartialDestination},
     {0x27u, Opcode::VSubrevNcU32, Vop2SdwaProfile::IntegerFullDestination},
@@ -249,6 +249,7 @@ constexpr OpcodeMap VOP3_OPS[] = {
     {0x155u, Opcode::VMax3I32},         {0x156u, Opcode::VMax3U32},
     {0x354u, Opcode::VMax3F16},         {0x157u, Opcode::VMed3F32},
     {0x158u, Opcode::VMed3I32},         {0x159u, Opcode::VMed3U32},
+    {0x358u, Opcode::VMed3I16},
     {0x357u, Opcode::VMed3F16},         {0x15du, Opcode::VSadU32},
     {0x15eu, Opcode::VCvtPkU8F32},      {0x178u, Opcode::VXor3B32},
     {0x12fu, Opcode::VCvtPkrtzF16F32},  {0x169u, Opcode::VMulLoU32},
@@ -1302,6 +1303,16 @@ void ApplyNativeVop3TernaryModifiers(Instruction& inst, uint32_t op_sel, uint32_
 	inst.dst.sdwa_sel = ((op_sel & 0x8u) != 0) ? 5u : 4u;
 }
 
+void ApplyNativeVop3I16TernaryModifiers(Instruction& inst, uint32_t op_sel) {
+	Operand* sources[] = {&inst.src0, &inst.src1, &inst.src2};
+	for (uint32_t i = 0; i < 3u; i++) {
+		// Reuse the signed 32-bit median after extracting/sign-extending each half.
+		sources[i]->sdwa_sel  = ((op_sel >> i) & 1u) != 0 ? 5u : 4u;
+		sources[i]->sdwa_sext = true;
+	}
+	inst.dst.sdwa_sel = (op_sel & 0x8u) != 0 ? 5u : 4u;
+}
+
 void ApplyNativeVop3B16BinaryModifiers(Instruction& inst, uint32_t op_sel) {
 	inst.src0.op_sel  = (op_sel & 0x1u) != 0;
 	inst.src1.op_sel  = (op_sel & 0x2u) != 0;
@@ -1393,7 +1404,7 @@ bool HasUnsupportedNativeVop3Modifiers(Opcode opcode, bool permlane, bool mad_mi
 	if (IsNativeVop3F16TernaryOpcode(opcode)) {
 		return opcode != Opcode::VFmaF16 && (clamp != 0u || omod != 0u);
 	}
-	if (IsNativeVop3B16BinaryOpcode(opcode)) {
+	if (IsNativeVop3B16BinaryOpcode(opcode) || opcode == Opcode::VMed3I16) {
 		return abs != 0u || clamp != 0u || omod != 0u || neg != 0u;
 	}
 	if (addc || scalar_dst) {
@@ -1737,6 +1748,8 @@ bool DecodeVop3(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 		ApplyNativeVop3TernaryModifiers(inst, op_sel, abs, neg);
 	} else if (f16_ternary) {
 		ApplyNativeVop3TernaryModifiers(inst, op_sel, abs, neg);
+	} else if (inst.opcode == Opcode::VMed3I16) {
+		ApplyNativeVop3I16TernaryModifiers(inst, op_sel);
 	} else if (b16_binary) {
 		ApplyNativeVop3B16BinaryModifiers(inst, op_sel);
 	} else if (pack_b32_f16) {

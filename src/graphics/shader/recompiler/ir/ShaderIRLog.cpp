@@ -178,6 +178,7 @@ std::string ExportTargetKindToString(ExportTargetKind kind) {
 		case ExportTargetKind::Null: return "null";
 		case ExportTargetKind::Position: return "position";
 		case ExportTargetKind::Primitive: return "primitive";
+		case ExportTargetKind::Layer: return "layer";
 		case ExportTargetKind::Parameter: return "parameter";
 		case ExportTargetKind::Mrt: return "mrt";
 		case ExportTargetKind::MrtZ: return "mrtz";

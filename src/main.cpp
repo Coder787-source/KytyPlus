@@ -1,4 +1,4 @@
-﻿#include "common/common.h"
+#include "common/common.h"
 #include "common/mmioBus.h"
 #include "common/ps5_nvme_lle.h"
 #include "common/commonSubsystem.h"
@@ -11,6 +11,11 @@
 #include "common/threads.h"
 #include "emulator.h"
 #include "package/pkgParser.h"
+#include "package/gameImageVolume.h"
+#include "common/readOnlyFileSystem.h"
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 #include "kytyGitVersion.h"
 #include "platformDispatch.h"
 
@@ -54,6 +59,10 @@ static void PrintUsage() {
 	::printf("  --install-pkg <pkg>                 Parse/extract a PS4/PS5 .pkg, then exit.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
+	::printf("  --guest-render-width <num>           Request engine resolution via guest argv.\n");
+	::printf("  --guest-render-height <num>          Engine may ignore this request.\n");
+	::printf("  --fsr-output-width <num>             FSR output width; default: window width.\n");
+	::printf("  --fsr-output-height <num>            FSR output height; default: window height.\n");
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
 	::printf("  --vblank-frequency <num>             Virtual vblank frequency. Default: 60.\n");
 	::printf("  --console-language <0-29>            Console language. Default: 1 (English US).\n");
@@ -155,6 +164,16 @@ static bool ParseConsoleLanguage(const std::string& value, uint32_t& out) {
 	return true;
 }
 
+static bool ParseRenderDimension(const std::string& value, uint32_t& out) {
+	uint32_t parsed = 0;
+	const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+	if (error != std::errc {} || end != value.data() + value.size() || parsed < 240 || parsed > 7680) {
+		return false;
+	}
+	out = parsed;
+	return true;
+}
+
 static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_help) {
 	show_help = false;
 
@@ -214,6 +233,14 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				options.app0_dir = value;
 				options.elf      = "/app0/eboot.bin";
 			} else if (Common::File::IsFileExisting(value)) {
+				if (Common::ToLower(std::filesystem::path(value).extension().string()) == ".ffpfsc") {
+					options.game_image = std::filesystem::absolute(value);
+					// This root exists only in the virtual filesystem; no game files
+					// are extracted or staged on disk.
+					options.app0_dir = options.game_image / "__kyty_image_root__";
+					options.elf = "/app0/eboot.bin";
+					continue;
+				}
 				options.app0_dir = Common::DirectoryWithoutFilename(value);
 				if (options.app0_dir.empty()) {
 					options.app0_dir = ".";
@@ -238,6 +265,16 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			options.config.screen_width = static_cast<uint32_t>(Common::ToInt32(value));
 		} else if (arg == "--screen-height") {
 			options.config.screen_height = static_cast<uint32_t>(Common::ToInt32(value));
+		} else if (arg == "--guest-render-width" || arg == "--guest-render-height" ||
+		           arg == "--fsr-output-width" || arg == "--fsr-output-height") {
+			auto& dimension = arg == "--guest-render-width" ? options.config.guest_render_width
+			                  : arg == "--guest-render-height" ? options.config.guest_render_height
+			                  : arg == "--fsr-output-width" ? options.config.fsr_output_width
+			                                               : options.config.fsr_output_height;
+			if (!ParseRenderDimension(value, dimension)) {
+				::printf("invalid dimension for %s: %s (expected 240-7680)\n", arg.c_str(), value.c_str());
+				return false;
+			}
 		} else if (arg == "--vblank-frequency") {
 			const int32_t vblank_frequency = Common::ToInt32(value);
 			options.config.vblank_frequency =
@@ -305,6 +342,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			}
 		} else if (arg == "--upscaler-sharpness") {
 			options.config.upscaler_sharpness = Common::ToFloat(value);
+		} else if (arg == "--render-scale") {
+			options.config.render_scale = Common::ToFloat(value);
 		} else if (arg == "--igpu-optimization") {
 			if (value == "Force") {
 				options.config.force_igpu_mode = true;
@@ -354,6 +393,18 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			::printf("unknown option: %s\n", arg.c_str());
 			return false;
 		}
+	}
+
+	if (!show_help &&
+	    ((options.config.guest_render_width == 0) != (options.config.guest_render_height == 0) ||
+	     (options.config.fsr_output_width == 0) != (options.config.fsr_output_height == 0))) {
+		::printf("guest-render and fsr-output dimensions must each be supplied as a pair\n");
+		return false;
+	}
+	if (!show_help && options.config.fsr_output_width != 0 &&
+	    options.config.upscaler_method != Config::UpscalerMethod::Fsr1) {
+		::printf("--fsr-output dimensions require --upscaler-method Fsr1\n");
+		return false;
 	}
 
 	return show_help || 	       (!options.install_pkg.empty()) ||
@@ -413,6 +464,7 @@ int main(int argc, char* argv[]) {
 	if (!options.install_pkg.empty()) {
 		const auto pr = Libs::Firmware::PkgParser::Parse(options.install_pkg.string());
 		if (!pr.ok) {
+			::printf("PKG_ERROR_REASON=%s\n", pr.error.c_str());
 			::printf("PKG parse failed: %s\n", pr.error.c_str());
 			slist.DestroyAll(false);
 			return 1;
@@ -427,6 +479,11 @@ int main(int argc, char* argv[]) {
 			         "extracted game folder.)\n");
 			slist.DestroyAll(false);
 			return 2;
+		}
+		if (!pr.extraction_error.empty()) {
+			::printf("PKG_ERROR_REASON=%s\n", pr.extraction_error.c_str());
+			slist.DestroyAll(false);
+			return 4;
 		}
 		// Extract into a deterministic folder that the caller can find.
 		// The launcher sets the working directory to the emulator's own folder
@@ -470,6 +527,31 @@ int main(int argc, char* argv[]) {
 	}
 
 
+	if (!options.game_image.empty()) {
+		{
+			std::filesystem::path executable = std::filesystem::absolute(argv[0]);
+#if defined(_WIN32)
+			wchar_t module[32768]{};
+			const auto length = GetModuleFileNameW(nullptr, module, 32768);
+			if (length != 0 && length < 32768) executable = module;
+			const auto helper = executable.parent_path() / "naps" / "kyty_naps_extractor.exe";
+#else
+			const auto helper = executable.parent_path() / "naps" / "kyty_naps_extractor";
+#endif
+			::printf("IMAGE_MOUNT_START\n"); ::fflush(stdout);
+			std::string error;
+			auto image = Libs::Firmware::OpenGameImage(options.game_image, helper, error,
+			    [](uint32_t done, uint32_t total) { ::printf("KYTY_PROGRESS=%u/%u\n", done, total); ::fflush(stdout); });
+			if (!image) {
+				::printf("IMAGE_MOUNT_ERROR=%s\n", error.c_str()); ::fflush(stdout);
+				slist.DestroyAll(false);
+				return 1;
+			}
+			Common::MountReadOnlyFileSystem(options.app0_dir, std::move(image));
+			::printf("IMAGE_MOUNT_READY\n"); ::fflush(stdout);
+		}
+	}
+
 	// KytyPlus: platform dispatch gate. A PS4 (Orbis) eboot is delegated to
 	// shadPS4; only PS5 (Prospero) titles reach the native Run() path. This
 	// must happen BEFORE Run() so no PS5 Vulkan/memory subsystems are
@@ -480,6 +562,11 @@ int main(int argc, char* argv[]) {
 		const auto eboot = ResolveEbootHostPath(options.app0_dir, options.elf);
 		const auto platform = DetectPlatform(eboot);
 
+		if (platform == GuestPlatform::Ps4 && !options.game_image.empty()) {
+			::printf("IMAGE_MOUNT_ERROR=Direct PS4 image loading is unavailable in the external shadPS4 backend; no files were extracted.\n"); ::fflush(stdout);
+			slist.DestroyAll(false);
+			return 1;
+		}
 		if (platform == GuestPlatform::Ps4) {
 			// Subprocess delegation is the only backend (see platformDispatch.h).
 			const auto result = DispatchToShadps4(eboot, BackendMode::Subprocess, {});

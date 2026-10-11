@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <fmt/format.h>
 #include <memory>
 #include <mutex>
@@ -41,12 +42,42 @@ std::shared_ptr<spdlog::logger> MakeLogger(std::string name, spdlog::sink_ptr si
 	return logger;
 }
 
+// Emulator logs are unbounded by default, and a long play session can produce tens of
+// gigabytes, which makes the log painful to search and risks filling the disk. Keep the
+// most recent tail when the file exceeds the cap.
+constexpr uintmax_t kMaxLogBytes   = 256ull * 1024ull * 1024ull; // 256 MiB
+constexpr uintmax_t kKeepTailBytes = 32ull * 1024ull * 1024ull;  // 32 MiB
+
+void TrimLogFile(const std::filesystem::path& file) {
+	std::error_code ec;
+	const auto      size = std::filesystem::file_size(file, ec);
+	if (ec || size <= kMaxLogBytes) {
+		return;
+	}
+	std::filesystem::path temp = file;
+	temp += ".tail";
+	{
+		std::ifstream in(file, std::ios::binary);
+		if (!in) {
+			return;
+		}
+		in.seekg(static_cast<std::streamoff>(size - kKeepTailBytes), std::ios::beg);
+		std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+		if (!out) {
+			return;
+		}
+		out << in.rdbuf();
+	}
+	std::filesystem::rename(temp, file, ec);
+}
+
 std::shared_ptr<spdlog::logger> MakeFileLogger(std::string                  name,
                                                const std::filesystem::path& path) {
 	const auto parent = path.parent_path();
 	if (!parent.empty()) {
 		std::filesystem::create_directories(parent);
 	}
+	TrimLogFile(path);
 
 	auto sink =
 	    std::make_shared<spdlog::sinks::basic_file_sink_mt>(Common::PathToString(path), true);

@@ -1,4 +1,4 @@
-﻿#include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"

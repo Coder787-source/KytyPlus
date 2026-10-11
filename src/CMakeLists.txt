@@ -108,7 +108,7 @@ endif()
 
 project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 0.2.2)
 
-include_directories(	
+include_directories(
 	${KYTY_THIRD_PARTY_DIR}/gtest/include
 	${KYTY_THIRD_PARTY_DIR}/gtest
 	${KYTY_THIRD_PARTY_DIR}/fmt/include
@@ -155,7 +155,7 @@ endif()
 add_dependencies(kyty_git_version KytyGitVersion)
 
 if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0.0)
-	list(APPEND KYTY_IWYU 
+	list(APPEND KYTY_IWYU
 		kyty_emulator
 		common
 		#launcher
@@ -168,9 +168,9 @@ if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0.0)
 endif()
 
 option(KYTY_BUILD_LAUNCHER "Build Qt launcher" ON)
-  
-config_compiler_and_linker()  
-  
+
+config_compiler_and_linker()
+
 add_subdirectory("${KYTY_THIRD_PARTY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/3rdparty")
 add_subdirectory(common)
 add_subdirectory(package)
@@ -397,7 +397,7 @@ set(inc_headers
 
 if (KYTY_CLANG_CL)
 	list(APPEND kyty_emulator_link_libraries winpthread)
-	list(APPEND inc_headers 
+	list(APPEND inc_headers
 		${KYTY_THIRD_PARTY_DIR}/winpthread/include
 	)
 endif()
@@ -458,9 +458,31 @@ add_executable(graphics_audio_semantics_tests EXCLUDE_FROM_ALL
 target_link_libraries(graphics_audio_semantics_tests Vulkan::Headers common fmt::fmt)
 target_include_directories(graphics_audio_semantics_tests PRIVATE ${inc_headers})
 
+add_executable(shader_failure_cache_tests EXCLUDE_FROM_ALL
+	../tests/ShaderControlFlowFailureCacheTests.cpp
+)
+target_include_directories(shader_failure_cache_tests PRIVATE ${inc_headers})
+
+add_executable(playgo_api_tests EXCLUDE_FROM_ALL
+	../tests/PlayGoApiTests.cpp
+	libs/libPlayGo.cpp
+	libs/libPlayGoDialog.cpp
+	libs/libNpCommerce.cpp
+	loader/symbolDatabase.cpp
+	loader/timer.cpp
+)
+target_link_libraries(playgo_api_tests common fmt::fmt)
+target_include_directories(playgo_api_tests PRIVATE ${inc_headers})
+
 add_kyty_full_emulator_test(pm4_ngs2_fuzz_tests ../tests/Pm4Ngs2FuzzTests.cpp)
 add_kyty_full_emulator_test(package_parser_tests ../tests/PackageParserTests.cpp)
 target_link_libraries(package_parser_tests pkg_parser gcn_decoder)
+# emulator.cpp uses shared-user-directory resolution even in parser tests.
+target_sources(package_parser_tests PRIVATE shadps4Embedder.cpp)
+
+add_kyty_full_emulator_test(game_image_mount_tests ../tests/GameImageMountTests.cpp)
+target_sources(game_image_mount_tests PRIVATE shadps4Embedder.cpp)
+target_link_libraries(game_image_mount_tests pkg_parser gcn_decoder)
 
 add_kyty_full_emulator_test(soft_ignore_evidence_tests ../tests/SoftIgnoreEvidenceTests.cpp)
 
@@ -551,6 +573,8 @@ foreach(kyty_exception_test scalar_provenance_tests resource_tracking_tests
 endforeach()
 
 if(BUILD_TESTING)
+	add_test(NAME shader_failure_cache COMMAND $<TARGET_FILE:shader_failure_cache_tests>)
+	add_test(NAME playgo_api COMMAND $<TARGET_FILE:playgo_api_tests>)
 	add_test(NAME image_page_table COMMAND $<TARGET_FILE:image_page_table_tests>)
 	add_test(NAME memory_tracker COMMAND $<TARGET_FILE:memory_tracker_tests>)
 	add_test(NAME page_manager COMMAND $<TARGET_FILE:page_manager_tests>)

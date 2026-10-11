@@ -43,7 +43,7 @@ inline int closesocket(SOCKET s) {
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
-
+#include "libs/networkStubs.h"
 #if !defined(_WIN32) && defined(KYTY_HAVE_OPENSSL)
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -2415,7 +2415,8 @@ int KYTY_SYSV_ABI SslGetCaCerts(int ssl_ctx_id, void* ca_certs) {
 	for (const auto& d: g_ca_ders) {
 		total += d.size();
 	}
-	void* guest_block = nullptr;
+
+	void* guest_block = nullptr;
 	if (LibKernel::Memory::KernelMapNamedFlexibleMemory(&guest_block, AlignUpPage(total),
 	                                                    kProtCpuRead, 0,
 	                                                    "kyty_ca_certs") != OK ||
@@ -2425,7 +2426,8 @@ int KYTY_SYSV_ABI SslGetCaCerts(int ssl_ctx_id, void* ca_certs) {
 		certs->pool          = nullptr;
 		return SSL_ERROR_OUT_OF_SIZE;
 	}
-	size_t off = 0;
+
+	size_t off = 0;
 	for (const auto& d: g_ca_ders) {
 		std::memcpy(static_cast<uint8_t*>(guest_block) + off, d.data(), d.size());
 		off += d.size();
@@ -4215,8 +4217,44 @@ static int np_complete_signed_out_locked(NpRequest* request) {
 	return (request->async ? OK : np_error_signed_out);
 }
 
+// PSN simulation: the game registers Np state / reachability callbacks and then
+// blocks in sceNpCheckCallback waiting for an async "signed in / network reachable"
+// event. Without firing them the game shows "Downloading data" forever. Record the
+// callbacks and invoke them once from NpCheckCallback() so the game gets the event
+// on its own poll thread.
+using NpStateCallbackFn        = void (KYTY_SYSV_ABI*)(int, int, void*);
+using NpReachabilityCallbackFn = void (KYTY_SYSV_ABI*)(int, int, void*);
+
+static NpStateCallbackFn        s_np_state_cb        = nullptr;
+static void*                    s_np_state_ud        = nullptr;
+static NpReachabilityCallbackFn s_np_reachability_cb = nullptr;
+static void*                    s_np_reachability_ud = nullptr;
+static bool                     s_np_cbs_fired       = false;
+
+static void NpFireRegisteredCallbacks(int user_id) {
+	if (s_np_cbs_fired) {
+		return;
+	}
+
+	constexpr int SCE_NP_STATE_SIGNED_IN              = 0;
+	constexpr int SCE_NP_REACHABILITY_STATE_REACHABLE = 2;
+
+	if (s_np_state_cb != nullptr) {
+		LOGF("NetworkStubs: firing NpStateCallback(user_id=%d, state=SignedIn)\n", user_id);
+		s_np_state_cb(user_id, SCE_NP_STATE_SIGNED_IN, s_np_state_ud);
+	}
+	if (s_np_reachability_cb != nullptr) {
+		LOGF("NetworkStubs: firing NpReachabilityStateCallback(user_id=%d, state=Reachable)\n", user_id);
+		s_np_reachability_cb(user_id, SCE_NP_REACHABILITY_STATE_REACHABLE, s_np_reachability_ud);
+	}
+
+	s_np_cbs_fired = true;
+}
+
 int KYTY_SYSV_ABI NpCheckCallback() {
 	PRINT_NAME();
+
+	NpFireRegisteredCallbacks(0);
 
 	return OK;
 }
@@ -4254,14 +4292,21 @@ int KYTY_SYSV_ABI NpSetContentRestriction(const NpContentRestriction* restrictio
 	return OK;
 }
 
-int KYTY_SYSV_ABI NpRegisterStateCallback(void* /*callback*/, void* /*userdata*/) {
+int KYTY_SYSV_ABI NpRegisterStateCallback(void* callback, void* userdata) {
 	PRINT_NAME();
+
+	s_np_state_cb = reinterpret_cast<NpStateCallbackFn>(callback);
+	s_np_state_ud = userdata;
+	LOGF("NetworkStubs: registered NpStateCallback=%p userdata=%p\n", callback, userdata);
 
 	return OK;
 }
 
 int KYTY_SYSV_ABI NpUnregisterStateCallback() {
 	PRINT_NAME();
+
+	s_np_state_cb = nullptr;
+	s_np_state_ud = nullptr;
 
 	return OK;
 }
@@ -4282,10 +4327,27 @@ int KYTY_SYSV_ABI NpRegisterPremiumEventCallback(void* /*callback*/, void* /*use
 	return OK;
 }
 
-int KYTY_SYSV_ABI NpRegisterNpReachabilityStateCallback(void* /*callback*/, void* /*userdata*/) {
+int KYTY_SYSV_ABI NpRegisterNpReachabilityStateCallback(void* callback, void* userdata) {
 	PRINT_NAME();
 
+	s_np_reachability_cb = reinterpret_cast<NpReachabilityCallbackFn>(callback);
+	s_np_reachability_ud = userdata;
+	LOGF("NetworkStubs: registered NpReachabilityStateCallback=%p userdata=%p\n", callback, userdata);
+
 	return OK;
+}
+
+// PSN simulation: if the game queries identity before any explicit sign-in,
+// lazily start a sign-in through NetworkStubsManager so story-mode games get a
+// stable local PSN profile instead of np_error_signed_out forever.
+static void NpEnsureStubSignedIn() {
+	auto& mgr = NetworkStubs::NetworkStubsManager::Instance();
+	// SignIn() no-ops with SignedOut until the manager is initialized, so make
+	// sure the story-mode network stubs are up when the game asks for identity.
+	mgr.Initialize(/*allow_story_mode*/ true, /*log_calls*/ false);
+	if (!mgr.IsSignedIn()) {
+		mgr.SignIn("KytyLocal", 0);
+	}
 }
 
 int KYTY_SYSV_ABI NpGetNpId(int user_id, NpId* np_id) {
@@ -4295,13 +4357,13 @@ int KYTY_SYSV_ABI NpGetNpId(int user_id, NpId* np_id) {
 
 	EXIT_NOT_IMPLEMENTED(np_id == nullptr);
 
-	// int s = snprintf(np_id->handle.data, 16, "Kyty");
-	// EXIT_NOT_IMPLEMENTED(s >= 16);
-	// np_id->handle.term = 0;
+	NpEnsureStubSignedIn();
 	std::memset(np_id, 0, sizeof(*np_id));
+	// Stable deterministic local identity for a signed-in story-mode profile.
+	snprintf(np_id->handle.data, 16, "KytyLocal");
+	np_id->handle.term = 0;
 
-	// return OK;
-	return np_error_signed_out;
+	return OK;
 }
 
 int KYTY_SYSV_ABI NpGetOnlineId(int user_id, NpOnlineId* online_id) {
@@ -4311,13 +4373,12 @@ int KYTY_SYSV_ABI NpGetOnlineId(int user_id, NpOnlineId* online_id) {
 
 	EXIT_NOT_IMPLEMENTED(online_id == nullptr);
 
-	// int s = snprintf(online_id->data, 16, "Kyty");
-	// EXIT_NOT_IMPLEMENTED(s >= 16);
-	// online_id->term = 0;
+	NpEnsureStubSignedIn();
 	std::memset(online_id, 0, sizeof(*online_id));
+	snprintf(online_id->data, 16, "KytyLocal");
+	online_id->term = 0;
 
-	// return OK;
-	return np_error_signed_out;
+	return OK;
 }
 
 int KYTY_SYSV_ABI NpGetAccountIdA(int user_id, uint64_t* account_id) {
@@ -4327,11 +4388,10 @@ int KYTY_SYSV_ABI NpGetAccountIdA(int user_id, uint64_t* account_id) {
 
 	EXIT_NOT_IMPLEMENTED(account_id == nullptr);
 
-	// *account_id = 0x00000000feedfaceull;
-	*account_id = 0;
+	NpEnsureStubSignedIn();
+	*account_id = 0x00000000feedfaceull;
 
-	// return OK;
-	return np_error_signed_out;
+	return OK;
 }
 
 int KYTY_SYSV_ABI NpGetAccountCountryA(int user_id, void* country_code) {
@@ -4571,7 +4631,7 @@ int KYTY_SYSV_ABI NpGetState(int user_id, uint32_t* state) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	*state = 1; // Signed out
+	*state = 0; // Signed in (local stub account)
 
 	return OK;
 }
@@ -4585,8 +4645,7 @@ int KYTY_SYSV_ABI NpGetNpReachabilityState(int user_id, uint32_t* state) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	// *state = 2; // SCE_NP_REACHABILITY_STATE_REACHABLE
-	*state = 0; // SCE_NP_REACHABILITY_STATE_UNAVAILABLE
+	*state = 2; // SCE_NP_REACHABILITY_STATE_REACHABLE (local stub: PSN is up)
 
 	return OK;
 }
@@ -4600,7 +4659,7 @@ int KYTY_SYSV_ABI NpHasSignedUp(int user_id, bool* has_signed_up) {
 
 	LOGF("\t user_id = %d\n", user_id);
 
-	*has_signed_up = false;
+	*has_signed_up = true;
 
 	return OK;
 }

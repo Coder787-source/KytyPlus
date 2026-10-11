@@ -15,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -741,6 +742,10 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		EXIT("BufferCache: fill range must be dword aligned\n");
 	}
 	if (is_gds) {
+		if (std::getenv("KYTY_GPU_DISPATCH_TIMING") != nullptr) {
+			std::fprintf(stderr, "[gds-fill] offset=0x%llx size=%llu value=%u\n",
+			             static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size), value);
+		}
 		if (vaddr > m_gds_buffer.Size() || size > m_gds_buffer.Size() - vaddr) {
 			EXIT("BufferCache: GDS fill range is out of bounds\n");
 		}
@@ -806,7 +811,10 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 				const auto chunk = std::min<uint64_t>(size - offset, bytes.size());
 				if (!Libs::LibKernel::Memory::TryReadBacking(src_vaddr + offset, bytes.data(),
 				                                             chunk)) {
-					EXIT("BufferCache: host DMA source has no direct backing\n");
+					EXIT("BufferCache: host DMA source has no direct backing: src=0x%016" PRIx64
+					     " dst=0x%016" PRIx64 " size=0x%016" PRIx64
+					     " offset=0x%016" PRIx64 "\n",
+					     src_vaddr, dst_vaddr, size, offset);
 				}
 				WriteHostMemory(dst_vaddr + offset, std::span {bytes}.first(chunk));
 				offset += chunk;

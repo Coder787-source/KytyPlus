@@ -17,6 +17,7 @@
 #include <QAction>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QCursor>
 #include <QDesktopServices>
 #include <QDialog>
@@ -32,11 +33,14 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QProcess>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStyle>
+#include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QUrl>
@@ -124,6 +128,9 @@ static QStringList SettingsStringList(const QVariant& value) {
 }
 
 static QString GetPic0Path(const Configuration& info) {
+	if (!info.artwork_background_path.isEmpty() && QFileInfo::exists(info.artwork_background_path)) {
+		return info.artwork_background_path;
+	}
 	if (info.basedir.isEmpty()) {
 		return {};
 	}
@@ -477,6 +484,60 @@ static QString GetFirmwareVersion(const QJsonObject& root) {
 	return version;
 }
 
+static QString GetCachedImageMetadataDirectory(const QFileInfo& image) {
+	const QString image_path = image.canonicalFilePath().isEmpty() ? image.absoluteFilePath()
+	                                                           : image.canonicalFilePath();
+	const QByteArray identity = QStringLiteral("%1\n%2\n%3")
+	                                .arg(image_path, QString::number(image.size()),
+	                                     QString::number(image.lastModified().toMSecsSinceEpoch()))
+	                                .toUtf8();
+	const QString key = QString::fromLatin1(QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex());
+	const QString root = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+	                         .filePath(QStringLiteral("image_metadata"));
+	const QString cached = QDir(root).filePath(key);
+	if (QFileInfo::exists(QDir(cached).filePath(QStringLiteral("sce_sys/param.json")))) {
+		return cached;
+	}
+
+	if (!QDir().mkpath(root)) {
+		return {};
+	}
+	QTemporaryDir temporary(QDir(root).filePath(QStringLiteral("extract-XXXXXX")));
+	if (!temporary.isValid()) {
+		return {};
+	}
+
+#ifdef _WIN32
+	const QString extractor_name = QStringLiteral("kyty_naps_extractor.exe");
+#else
+	const QString extractor_name = QStringLiteral("kyty_naps_extractor");
+#endif
+	const QString extractor = QDir(QCoreApplication::applicationDirPath())
+	                              .filePath(QStringLiteral("naps/") + extractor_name);
+	if (!QFileInfo::exists(extractor)) {
+		return {};
+	}
+	QProcess process;
+	process.setProgram(extractor);
+	process.setArguments({QStringLiteral("--image-metadata"), image.absoluteFilePath(), temporary.path()});
+	process.start();
+	if (!process.waitForFinished(15000)) {
+		process.kill();
+		process.waitForFinished();
+		return {};
+	}
+	if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 ||
+	    !QFileInfo::exists(QDir(temporary.path()).filePath(QStringLiteral("sce_sys/param.json")))) {
+		return {};
+	}
+
+	if (!QDir().rename(temporary.path(), cached)) {
+		return QFileInfo::exists(QDir(cached).filePath(QStringLiteral("sce_sys/param.json"))) ? cached
+		                                                                                    : QString();
+	}
+	return cached;
+}
+
 static GameMetadata GetGameMetadata(const QString& param_file, const QString& fallback) {
 	GameMetadata ret;
 	ret.title_name = fallback;
@@ -554,6 +615,61 @@ void ConfigurationListWidget::AddGameDirectory(const QString& dir) {
 	}
 }
 
+bool ConfigurationListWidget::HasRunningGame() const {
+	if (m_game_running) {
+		return true;
+	}
+	for (int i = 0; i < m_ui->cfgs_list->topLevelItemCount(); ++i) {
+		if (static_cast<ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(i))->IsRunning()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ConfigurationListWidget::SelectGameImage(const QString& path) {
+	if (HasRunningGame()) {
+		QMessageBox::information(this, tr("Open game image"),
+		                         tr("Close the running game before opening another image."));
+		return false;
+	}
+	const QFileInfo image(path);
+	if (!image.isFile() || !image.isReadable() || image.isSymLink() ||
+	    image.suffix().compare(QStringLiteral("ffpfsc"), Qt::CaseInsensitive) != 0) {
+		QMessageBox::warning(this, tr("Open game image"),
+		                     tr("Select an existing, readable .ffpfsc file (not a shortcut):\n%1")
+		                         .arg(image.absoluteFilePath()));
+		return false;
+	}
+	const auto key = PathKey(image.absoluteFilePath());
+	const auto select_image = [this, &key]() {
+		for (int i = 0; i < m_ui->cfgs_list->topLevelItemCount(); ++i) {
+			auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(i));
+			if (PathKey(item->GetInfo().basedir) == key) {
+				m_ui->search_line_edit->clear();
+				m_ui->cfgs_list->setCurrentItem(item);
+				m_ui->cfgs_list->scrollToItem(item);
+				SelectItem(item);
+				return true;
+			}
+		}
+		return false;
+	};
+	if (select_image()) {
+		return true;
+	}
+	AddGameDirectory(image.absolutePath());
+	ScanGameDirectory();
+	WriteSettings();
+	if (select_image()) {
+		return true;
+	}
+	QMessageBox::warning(this, tr("Open game image"),
+	                     tr("The image could not be added to the game list:\n%1")
+	                         .arg(image.absoluteFilePath()));
+	return false;
+}
+
 bool ConfigurationListWidget::EnsureGameDirectory() {
 	if (HasValidGameDirectory()) {
 		return true;
@@ -585,6 +701,51 @@ void ConfigurationListWidget::ScanGameDirectory() {
 
 	const QString eboot_name = QStringLiteral("eboot.bin");
 	QSet<QString> found_games;
+	const auto add_item = [this](std::unique_ptr<Configuration> info) {
+		const auto* compatibility = m_compatibility->Find(info->title_id);
+		if (compatibility != nullptr) {
+			info->game_status  = compatibility->status;
+			info->game_comment = compatibility->comment;
+		}
+
+		auto* item = new ConfigurationItem(std::move(info), m_ui->cfgs_list);
+		item->SetCompatibilityEditable(m_compatibility->IsLocal() &&
+		                               !item->GetInfo().title_id.trimmed().isEmpty());
+		connect(item->GetStatusCombo(), &QComboBox::currentIndexChanged, this,
+		        [this, item](int /*index*/) {
+			        if (!m_compatibility->IsLocal()) {
+				        return;
+			        }
+
+			        const auto& title_id = item->GetInfo().title_id;
+			        if (title_id.trimmed().isEmpty()) {
+				        return;
+			        }
+			        item->GetInfo().game_status = static_cast<Configuration::GameStatus>(
+			            item->GetStatusCombo()->currentData().toInt());
+			        item->Update();
+			        m_compatibility->SetStatus(title_id, item->GetInfo().game_status);
+			        m_ui->cfgs_list->setCurrentItem(item);
+			        SelectItem(item);
+		        });
+		connect(item->GetCommentEdit(), &QLineEdit::editingFinished, this, [this, item]() {
+			if (!m_compatibility->IsLocal()) {
+				return;
+			}
+
+			const auto& title_id = item->GetInfo().title_id;
+			if (title_id.trimmed().isEmpty()) {
+				return;
+			}
+			item->GetInfo().game_comment = item->GetCommentEdit()->text();
+			item->Update();
+			m_compatibility->SetComment(title_id, item->GetInfo().game_comment);
+			m_ui->cfgs_list->setCurrentItem(item);
+			SelectItem(item);
+		});
+	};
+	const QRegularExpression image_title_id(QStringLiteral("(PPSA\\d{5}|CUSA\\d{5})"),
+	                                        QRegularExpression::CaseInsensitiveOption);
 
 	for (const auto& root_path: m_game_dirs) {
 		QDir root(root_path);
@@ -592,17 +753,68 @@ void ConfigurationListWidget::ScanGameDirectory() {
 			continue;
 		}
 
-		QList<QDir> pending_dirs;
-		const auto  root_subdirs =
-		    root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
-		for (const auto& subdir: root_subdirs) {
-			pending_dirs.append(QDir(subdir.absoluteFilePath()));
-		}
+		QList<QDir> pending_dirs {root};
 
 		while (!pending_dirs.isEmpty()) {
 			QDir game_dir = pending_dirs.takeFirst();
+			// A compressed image is a launchable game itself. Listing it does not
+			// extract or index its potentially large contents.
+			const auto files = game_dir.entryInfoList(QDir::Files | QDir::NoSymLinks);
+			for (const auto& file: files) {
+				if (file.suffix().compare(QStringLiteral("ffpfsc"), Qt::CaseInsensitive) != 0) {
+					continue;
+				}
+				const QString image_path = QDir::cleanPath(file.absoluteFilePath());
+				const QString image_key  = PathKey(image_path);
+				if (image_key.isEmpty() || found_games.contains(image_key)) {
+					continue;
+				}
+				found_games.insert(image_key);
 
-			if (game_dir.exists(eboot_name)) {
+				auto info = std::make_unique<Configuration>();
+				auto* custom = FindCustomInfo(&m_custom_infos, image_path,
+				                              root.relativeFilePath(image_path));
+				if (custom != nullptr) {
+					info->CopyFrom(*custom);
+					info->custom_settings = true;
+				} else {
+					info->CopyEmulatorSettingsFrom(m_global_info);
+				}
+				info->game_path = image_path;
+				info->basedir   = image_path;
+				info->elf.clear();
+				info->name = file.completeBaseName();
+				const auto title_match = image_title_id.match(info->name);
+				info->title_id = title_match.hasMatch() ? title_match.captured(1).toUpper() : QString();
+				if (title_match.hasMatch() && title_match.capturedStart() == 0) {
+					const auto display_name = info->name.mid(title_match.capturedEnd())
+					                              .remove(QRegularExpression(QStringLiteral("^[\\s._-]+")));
+					if (!display_name.isEmpty()) {
+						info->name = display_name;
+					}
+				}
+				const QString metadata_dir = GetCachedImageMetadataDirectory(file);
+				if (!metadata_dir.isEmpty()) {
+					const QDir metadata_files(metadata_dir);
+					const auto metadata = GetGameMetadata(
+					    metadata_files.filePath(QStringLiteral("sce_sys/param.json")), info->name);
+					info->name = metadata.title_name;
+					if (!metadata.title_id.isEmpty()) {
+						info->title_id = metadata.title_id;
+					}
+					info->gameVersion = metadata.gameVersion;
+					info->firmwareVer = metadata.firmwareVer;
+					const QString icon = metadata_files.filePath(QStringLiteral("sce_sys/icon0.png"));
+					const QString background = metadata_files.filePath(QStringLiteral("sce_sys/pic0.png"));
+					info->artwork_icon_path = QFileInfo::exists(icon) ? icon : QString();
+					info->artwork_background_path = QFileInfo::exists(background) ? background : QString();
+				}
+				add_item(std::move(info));
+			}
+
+			// The configured root is a library directory. A loose eboot.bin there
+			// must not prevent scanning its game subdirectories.
+			if (game_dir.absolutePath() != root.absolutePath() && game_dir.exists(eboot_name)) {
 				const QString game_path        = NormalizeGameDirectory(game_dir.absolutePath());
 				const QString legacy_game_path = root.relativeFilePath(game_dir.absolutePath());
 				const QString game_key         = PathKey(game_path);
@@ -625,47 +837,7 @@ void ConfigurationListWidget::ScanGameDirectory() {
 				}
 
 				SetGameFiles(*info, game_dir.absolutePath(), game_path, metadata);
-				const auto* compatibility = m_compatibility->Find(info->title_id);
-				if (compatibility != nullptr) {
-					info->game_status  = compatibility->status;
-					info->game_comment = compatibility->comment;
-				}
-
-				auto* item = new ConfigurationItem(std::move(info), m_ui->cfgs_list);
-				item->SetCompatibilityEditable(m_compatibility->IsLocal() &&
-				                               !item->GetInfo().title_id.trimmed().isEmpty());
-				connect(item->GetStatusCombo(), &QComboBox::currentIndexChanged, this,
-				        [this, item](int /*index*/) {
-					        if (!m_compatibility->IsLocal()) {
-						        return;
-					        }
-
-					        const auto& title_id = item->GetInfo().title_id;
-					        if (title_id.trimmed().isEmpty()) {
-						        return;
-					        }
-					        item->GetInfo().game_status = static_cast<Configuration::GameStatus>(
-					            item->GetStatusCombo()->currentData().toInt());
-					        item->Update();
-					        m_compatibility->SetStatus(title_id, item->GetInfo().game_status);
-					        m_ui->cfgs_list->setCurrentItem(item);
-					        SelectItem(item);
-				        });
-				connect(item->GetCommentEdit(), &QLineEdit::editingFinished, this, [this, item]() {
-					if (!m_compatibility->IsLocal()) {
-						return;
-					}
-
-					const auto& title_id = item->GetInfo().title_id;
-					if (title_id.trimmed().isEmpty()) {
-						return;
-					}
-					item->GetInfo().game_comment = item->GetCommentEdit()->text();
-					item->Update();
-					m_compatibility->SetComment(title_id, item->GetInfo().game_comment);
-					m_ui->cfgs_list->setCurrentItem(item);
-					SelectItem(item);
-				});
+				add_item(std::move(info));
 				continue;
 			}
 
@@ -768,7 +940,8 @@ void ConfigurationListWidget::open_game_folder() {
 		return;
 	}
 
-	const QDir game_dir(item->GetInfo().basedir);
+	const QFileInfo source(item->GetInfo().basedir);
+	const QDir game_dir = source.isFile() ? source.absoluteDir() : QDir(source.absoluteFilePath());
 	if (!game_dir.exists()) {
 		QMessageBox::warning(this, tr("Open game folder"), tr("Game folder does not exist."));
 		return;
@@ -779,34 +952,65 @@ void ConfigurationListWidget::open_game_folder() {
 	}
 }
 
+bool ConfigurationListWidget::CanDeleteGame(const ConfigurationItem* item) const {
+	if (item == nullptr || HasRunningGame() || item->IsRunning()) {
+		return false;
+	}
+	const auto& info = item->GetInfo();
+	const QFileInfo source(info.basedir);
+	if (info.basedir.isEmpty() || !source.exists() || source.isSymLink()) {
+		return false;
+	}
+	if (source.isFile()) {
+		return source.suffix().compare(QStringLiteral("ffpfsc"), Qt::CaseInsensitive) == 0;
+	}
+	if (!source.isDir() || QDir(source.absoluteFilePath()).isRoot() ||
+	    !QFileInfo(QDir(source.absoluteFilePath()).filePath(QStringLiteral("eboot.bin"))).isFile()) {
+		return false;
+	}
+	// Never trash a library root or a directory containing a configured library,
+	// the launcher, or the user's home. Use canonical paths to resolve aliases.
+	const auto key = PathKey(source.absoluteFilePath());
+	QStringList protected_paths = m_game_dirs;
+	protected_paths << QCoreApplication::applicationDirPath() << QDir::homePath();
+	for (const auto& path: protected_paths) {
+		const auto protected_key = PathKey(path);
+		if (!protected_key.isEmpty() &&
+		    (key == protected_key || protected_key.startsWith(key + QLatin1Char('/')))) {
+			return false;
+		}
+	}
+	return true;
+}
+
 void ConfigurationListWidget::delete_game() {
 	auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->currentItem());
-	if (item == nullptr) {
+	if (!CanDeleteGame(item)) {
 		return;
 	}
-
-	const auto& info  = item->GetInfo();
-	QDir        dir(info.basedir);
-	if (!dir.exists()) {
+	const QString path = QFileInfo(item->GetInfo().basedir).absoluteFilePath();
+	const QString name = item->GetInfo().name;
+	const bool is_image = QFileInfo(path).isFile();
+	const auto ret = QMessageBox::question(
+	    this, tr("Delete game"),
+	    tr("Move \"%1\" to the Recycle Bin / Trash?\n\n%2\n%3\n\n"
+	       "Save data and the compressed-image cache are not deleted.\n"
+	       "You can restore the game from the Recycle Bin / Trash.")
+	        .arg(name, is_image ? tr("Only this .ffpfsc file will be moved:")
+	                            : tr("This game folder and all its contents will be moved:"), path),
+	    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+	if (ret != QMessageBox::Yes || !CanDeleteGame(item)) {
 		return;
 	}
-
-	const auto ret = QMessageBox::question(this, tr("Delete game"),
-	                                       tr("Delete \"%1\" from your game library?\n\n"
-	                                          "This will permanently remove all files in:\n"
-	                                          "%2")
-	                                           .arg(info.name, dir.absolutePath()),
-	                                       QMessageBox::Yes | QMessageBox::No,
-	                                       QMessageBox::No);
-	if (ret != QMessageBox::Yes) {
+	// No permanent-deletion fallback if the OS cannot recycle this path.
+	if (!QFile::moveToTrash(path)) {
+		QMessageBox::warning(this, tr("Delete game"),
+		                     tr("Could not move the game to the Recycle Bin / Trash.\n"
+		                        "No permanent deletion was attempted.\n\n%1").arg(path));
 		return;
 	}
-
-	if (!dir.removeRecursively()) {
-		QMessageBox::warning(this, tr("Delete game"), tr("Could not delete the game folder."));
-		return;
-	}
-
+	ClearCustomSettings(item);
+	WriteSettings();
 	ScanGameDirectory();
 }
 
@@ -970,12 +1174,13 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 
 	if (item != nullptr) {
 		action_run->setDisabled(item->IsRunning());
-		action_open_folder->setDisabled(!QDir(item->GetInfo().basedir).exists());
+		const QFileInfo source(item->GetInfo().basedir);
+		action_open_folder->setDisabled(!source.isFile() && !QDir(source.absoluteFilePath()).exists());
 		action_view_trophies->setDisabled(!has_trophy_data);
 		action_remove_save_data->setDisabled(item->IsRunning() || save_data_dirs.isEmpty());
 		action_edit->setDisabled(item->IsRunning());
 		action_delete->setDisabled(item->IsRunning() || !item->GetInfo().custom_settings);
-		action_delete_game->setDisabled(item->IsRunning());
+		action_delete_game->setDisabled(!CanDeleteGame(item));
 	} else {
 		action_run->setDisabled(true);
 		action_open_folder->setDisabled(true);

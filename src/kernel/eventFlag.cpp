@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -319,7 +320,9 @@ int KYTY_SYSV_ABI KernelWaitEventFlag(KernelEventFlag ef, uint64_t bit_pattern, 
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	if (timeout == nullptr) {
+	// KytyPlus: debug-only. Games block on an event flag for every fence/vsync (1.17M lines in a
+	// 20s gameplay capture), so this sprintf+write ran on the hot path continuously. Gate it.
+	if (timeout == nullptr && Config::GraphicsDebugDumpEnabled()) {
 		LOGF("KernelWaitEventFlag: infinite wait ef=%p bits=%016llx mode=%u clear=%u\n", static_cast<void*>(ef),
 		     static_cast<unsigned long long>(bit_pattern), wait_mode & 0xff, (wait_mode >> 8) & 0xff);
 	}

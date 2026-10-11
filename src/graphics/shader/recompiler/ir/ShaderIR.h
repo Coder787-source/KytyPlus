@@ -139,7 +139,7 @@ struct MemoryInfo {
 	bool operator==(const MemoryInfo& other) const = default;
 };
 
-enum class ExportTargetKind { Unknown, Null, Position, Primitive, Parameter, Mrt, MrtZ };
+enum class ExportTargetKind { Unknown, Null, Position, Primitive, Parameter, Mrt, MrtZ, Layer };
 
 struct ExportInfo {
 	ExportTargetKind kind   = ExportTargetKind::Unknown;
@@ -214,6 +214,10 @@ enum class ScalarValueOp {
 	ShiftLeft,
 	ShiftRight,
 	ShiftRightArithmetic,
+	ShiftLeftU64Low,
+	ShiftLeftU64High,
+	ShiftRightU64Low,
+	ShiftRightU64High,
 	BitFieldMaskU32,
 	BitFieldMaskU64Low,
 	BitFieldMaskU64High,
@@ -351,7 +355,7 @@ enum class StageInputKind {
 	Parameter,
 };
 
-enum class StageOutputKind { Position, Parameter, Mrt, Depth, SampleMask };
+enum class StageOutputKind { Position, Parameter, Mrt, Depth, SampleMask, Layer };
 
 struct StageInput {
 	StageInputKind kind            = StageInputKind::VertexIndex;

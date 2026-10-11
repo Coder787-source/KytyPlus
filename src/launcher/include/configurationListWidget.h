@@ -28,6 +28,7 @@ public:
 	~ConfigurationListWidget() override;
 
 	void               SetRunEnabled(bool flag) { m_run_enabled = flag; }
+	void               SetGameRunning(bool flag) { m_game_running = flag; }
 	[[nodiscard]] bool IsRunEnabled() const { return m_run_enabled; }
 
 	[[nodiscard]] const ConfigurationItem* GetSelectedItem() const { return m_selected_item; }
@@ -46,6 +47,7 @@ public:
 
 	bool EnsureGameDirectory();
 	void ScanGameDirectory();
+	bool SelectGameImage(const QString& path);
 	void ViewTrophies();
 	void edit_global_settings();
 
@@ -79,9 +81,12 @@ private:
 	void               SelectItem(QTreeWidgetItem* witem);
 	void               ApplyCompatibility();
 	[[nodiscard]] bool HasValidGameDirectory() const;
+	[[nodiscard]] bool HasRunningGame() const;
+	[[nodiscard]] bool CanDeleteGame(const ConfigurationItem* item) const;
 
 	ConfigurationItem*            m_selected_item = nullptr;
 	bool                          m_run_enabled   = true;
+	bool                          m_game_running  = false;
 	Ui::ConfigurationListWidget*  m_ui            = nullptr;
 	MainDialog*                   m_main_dialog   = nullptr;
 	QString                       m_settings_file;

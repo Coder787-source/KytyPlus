@@ -404,4 +404,13 @@ void CommandBuffer::EndRendering() const {
 	m_render_state = {};
 }
 
+void CommandBuffer::PipelineMemoryBarrier(vk::PipelineStageFlags src_stage, vk::AccessFlags src_access,
+                                          vk::PipelineStageFlags dst_stage, vk::AccessFlags dst_access) const {
+	VulkanMemoryBarrier barrier {};
+	barrier.srcAccessMask = src_access;
+	barrier.dstAccessMask = dst_access;
+	Handle().pipelineBarrier(src_stage, dst_stage, vk::DependencyFlags{}, 1, &barrier, 0, nullptr, 0,
+	                         nullptr);
+}
+
 } // namespace Libs::Graphics

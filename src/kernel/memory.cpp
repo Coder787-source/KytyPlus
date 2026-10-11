@@ -682,19 +682,19 @@ public:
 		// KytyPlus: PS5 titles expect ~12.5 GB of game-visible memory (direct + flexible).
 		// 8 GB made large UE4 titles fail streaming allocations at level load (Sonic
 		// Superstars #12: stutters then null-write crash); the failure surfaced as a guest
-		// write-to-null. Cap by host RAM (leave ~3.5 GB for the host) with an 8 GB floor.
+		// write-to-null. Limit by installed RAM rather than currently free RAM:
+		// the latter varies with other applications and incorrectly reduced a 16 GB
+		// machine to an 8 GB guest, which makes Astro Bot's 4.5 GB allocation fail.
 		static const uint64_t cached = [] {
 			constexpr uint64_t megabyte       = 1024ull * 1024ull;
 			constexpr uint64_t ps5_game_total = 12800ull * megabyte; // ~12.5 GiB
 			constexpr uint64_t minimum        = 8192ull * megabyte;
 			uint64_t host_total               = 0;
-			uint64_t host_avail               = 0;
 		#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 			MEMORYSTATUSEX st {};
 			st.dwLength     = sizeof(st);
 			if (GlobalMemoryStatusEx(&st)) {
 				host_total = st.ullTotalPhys;
-				host_avail = st.ullAvailPhys;
 			}
 		#elif KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 			long pages = sysconf(_SC_PHYS_PAGES);
@@ -702,13 +702,12 @@ public:
 			if (pages > 0 && page > 0) {
 				host_total = static_cast<uint64_t>(pages) * static_cast<uint64_t>(page);
 			}
-			host_avail = host_total;
 		#endif
 			uint64_t target = ps5_game_total;
-			if (host_total > 0 && host_total < ps5_game_total + 3500ull * megabyte) {
-				// Small host: leave ~3.5 GB for the OS/emulator, floor at minimum.
-				const uint64_t capped = host_avail > 3500ull * megabyte
-				                            ? host_avail - 3500ull * megabyte
+			if (host_total > 0 && host_total < ps5_game_total + 2048ull * megabyte) {
+				// Small host: leave 2 GB for the OS/emulator, floor at minimum.
+				const uint64_t capped = host_total > 2048ull * megabyte
+				                            ? host_total - 2048ull * megabyte
 				                            : minimum;
 				target = std::max(minimum, std::min(ps5_game_total, capped));
 			}

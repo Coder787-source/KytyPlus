@@ -21,6 +21,7 @@
 #include <atomic>
 #include <bit>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -1664,6 +1665,10 @@ static void HwUcSetGdsOaRegister(CommandProcessor& cp, uint32_t cmd_offset, uint
 
 	const auto                   index = ucfg.GetGdsOaState().GetIndex();
 	const auto&                  oa    = ucfg.GetGdsOaCounter(index);
+	if (std::getenv("KYTY_GPU_DISPATCH_TIMING") != nullptr) {
+		std::fprintf(stderr, "[gds-oa] reg=0x%x index=%u addr=0x%x counter=%u value=0x%x\n",
+		             cmd_offset, index, oa.address, oa.counter, value);
+	}
 	static std::atomic<uint32_t> log_count {0};
 	if (oa.IsCounterEnabled() && log_count.fetch_add(1, std::memory_order_relaxed) < 128) {
 		LOGF("GDS_OA: index=%u address_bytes=0x%04" PRIx32 " space=0x%08" PRIx32
@@ -1777,6 +1782,11 @@ KYTY_CP_OP_PARSER(CpOpDispatchIndirect) {
 		uint32_t mode = buffer[2];
 
 		EXIT_NOT_IMPLEMENTED(args == nullptr);
+		if (std::getenv("KYTY_GPU_DISPATCH_TIMING") != nullptr) {
+			std::fprintf(stderr, "[indirect-absolute] args=0x%016" PRIx64 " groups=%ux%ux%u\n",
+			             reinterpret_cast<uint64_t>(args), args->thread_group_x,
+			             args->thread_group_y, args->thread_group_z);
+		}
 		cp.DispatchDirect(args->thread_group_x, args->thread_group_y, args->thread_group_z, mode);
 
 		return 3;
@@ -2475,7 +2485,7 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 		auto value          = indirect_buffer[1];
 
 		// Not sure if this is correct
-		if (raw_cmd_offset != cmd_offset) {
+		if (raw_cmd_offset != cmd_offset && Config::GraphicsDebugDumpEnabled()) {
 			LOGF_COLOR(Log::Color::Red,
 			           "\t temporary: normalized indirect SH register offset 0x%08" PRIx32
 			           " -> 0x%08" PRIx32 "\n",
@@ -2544,7 +2554,7 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 		auto value          = indirect_buffer[1];
 
 		// Not sure if this is correct
-		if (raw_cmd_offset != cmd_offset) {
+		if (raw_cmd_offset != cmd_offset && Config::GraphicsDebugDumpEnabled()) {
 			LOGF_COLOR(Log::Color::Red,
 			           "\t temporary: normalized indirect UC register offset 0x%08" PRIx32
 			           " -> 0x%08" PRIx32 "\n",
@@ -2644,6 +2654,13 @@ KYTY_CP_OP_PARSER(CpOpNop) {
 	}
 
 	auto cp_op = g_cp_op_custom_func[r];
+	if (cp_op == nullptr && std::getenv("KYTY_GPU_DISPATCH_TIMING") != nullptr &&
+	    (r == Pm4::R_DMA_DATA || r == Pm4::R_WRITE_DATA)) {
+		const uint32_t payload = KYTY_PM4_LEN(cmd_id) - 1u;
+		std::fprintf(stderr, "[unhandled-custom] r=0x%x header=0x%08x payload=%u data=", r, cmd_id, payload);
+		for (uint32_t i = 0; i < std::min(payload, 10u); ++i) std::fprintf(stderr, "%08x/", buffer[i]);
+		std::fprintf(stderr, "\n");
+	}
 
 	if (cp_op != nullptr) {
 		return cp_op(cp, cmd_id, buffer, dw, num_dw);
@@ -2789,8 +2806,18 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 		cp.WriteAtEndOfPipe32(cache_policy, event_write_dest, eop_event_type, cache_action,
 		                      event_index, event_source, dst_gpu_addr, static_cast<uint32_t>(value),
 		                      interrupt_selector, interrupt_context_id);
-		cp.BufferFlush();
-
+		// KytyPlus: do NOT flush here. This is Sonic Superstars' per-fence path (~1000 release_mem
+		// per frame); the old unconditional BufferFlush() cost a full vkQueueSubmit plus a
+		// BeginNext() buffer recycle (FindReusableBuffer / m_master.Refresh / m_master.Wait /
+		// WaitForFenceAndReset) for every single fence on the single hot GPU thread, serialising
+		// against the present thread on the shared queue. The fence VALUE is already published
+		// host-side by WriteAtEndOfPipe32's synchronous memcpy at this end-of-pipe point, and
+		// WaitRegMem re-polls that same host word (with the stall watchdog) rather than waiting on
+		// a host queue submission - so the fence resolves without a submit. Interrupt-carrying
+		// fences are already submitted by trigger_interrupt()->BufferFlush() above, and every
+		// Graphics/Compute submission ends with cp.BufferFlush() in GpuState::Process, so the
+		// recorded EOP signal is still submitted (and guest-visible ordering is preserved) once per
+		// submission instead of once per fence.
 		return 7;
 	}
 
@@ -2945,7 +2972,7 @@ KYTY_CP_OP_PARSER(CpOpSetUconfigReg) {
 		cmd_offset = raw_cmd_offset & 0x0fffffffu;
 	}
 
-	if (raw_cmd_offset != cmd_offset) {
+	if (raw_cmd_offset != cmd_offset && Config::GraphicsDebugDumpEnabled()) {
 		LOGF_COLOR(Log::Color::Red,
 		           "\t temporary: normalized UC register offset 0x%08" PRIx32 " -> 0x%08" PRIx32
 		           "\n",
@@ -3375,6 +3402,14 @@ void GraphicsInitJmpTablesCxIndirect() {
 			attrib2.height         = KYTY_PM4_GET(value, CB_COLOR0_ATTRIB2, MIP0_HEIGHT);
 			attrib2.width          = KYTY_PM4_GET(value, CB_COLOR0_ATTRIB2, MIP0_WIDTH);
 			attrib2.num_mip_levels = KYTY_PM4_GET(value, CB_COLOR0_ATTRIB2, MAX_MIP);
+
+			// Render-target dimensions are recorded verbatim. Shrinking them here is
+			// NOT a valid way to lower the guest's resolution: the compute shaders that
+			// write the same buffers address them with descriptors the guest built from
+			// its own full-size extent, so the two views disagree about the same memory
+			// and the frame flickers. The guest's resolution is lowered at the video-out
+			// surface instead (see VideoOutSetBufferAttribute2), which is upstream of
+			// every render target the guest ever creates.
 			cp.GetCtx().SetColorAttrib2(slot, attrib2);
 		};
 	}

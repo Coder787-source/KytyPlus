@@ -99,6 +99,8 @@ public:
 	QString    firmwareVer; /* requiredSystemSoftwareVersion from sce_sys/param.json */
 	QString    basedir;     /* Game base directory */
 	QString    game_path;   /* Launcher-unique game path */
+	QString    artwork_icon_path;       /* Cached image artwork; not saved in settings */
+	QString    artwork_background_path; /* Cached image artwork; not saved in settings */
 	bool       custom_settings = false;
 	GameStatus game_status     = GameStatus::Unknown;
 	QString    game_comment;
@@ -124,6 +126,10 @@ public:
 	UpscalerMethod upscaler_method    = UpscalerMethod::Off;
 	UpscalerQuality upscaler_quality  = UpscalerQuality::Quality;
 	float upscaler_sharpness          = 0.5f;
+	int  guest_render_width           = 0;
+	int  guest_render_height          = 0;
+	int  fsr_output_width             = 0;
+	int  fsr_output_height            = 0;
 	IgpuOptimization igpu_optimization  = IgpuOptimization::Auto;
 	int  texture_lod_bias               = 0;
 	PresentMode    present_mode    = PresentMode::Fifo;
@@ -155,6 +161,10 @@ public:
 		upscaler_method    = other.upscaler_method;
 		upscaler_quality   = other.upscaler_quality;
 		upscaler_sharpness = other.upscaler_sharpness;
+		guest_render_width = other.guest_render_width;
+		guest_render_height = other.guest_render_height;
+		fsr_output_width   = other.fsr_output_width;
+		fsr_output_height  = other.fsr_output_height;
 		igpu_optimization  = other.igpu_optimization;
 		texture_lod_bias   = other.texture_lod_bias;
 		present_mode    = other.present_mode;
@@ -170,6 +180,8 @@ public:
 		firmwareVer     = other.firmwareVer;
 		basedir         = other.basedir;
 		game_path       = other.game_path;
+		artwork_icon_path       = other.artwork_icon_path;
+		artwork_background_path = other.artwork_background_path;
 		custom_settings = other.custom_settings;
 		game_status     = other.game_status;
 		game_comment    = other.game_comment;
@@ -203,6 +215,10 @@ public:
 		KYTY_CFG_SET(upscaler_method);
 		KYTY_CFG_SET(upscaler_quality);
 		s->setValue("upscaler_sharpness", upscaler_sharpness);
+		s->setValue("guest_render_width", guest_render_width);
+		s->setValue("guest_render_height", guest_render_height);
+		s->setValue("fsr_output_width", fsr_output_width);
+		s->setValue("fsr_output_height", fsr_output_height);
 		KYTY_CFG_SET(igpu_optimization);
 		s->setValue("texture_lod_bias", texture_lod_bias);
 		KYTY_CFG_SET(present_mode);
@@ -242,6 +258,10 @@ public:
 		KYTY_CFG_GET(upscaler_method);
 		KYTY_CFG_GET(upscaler_quality);
 		upscaler_sharpness = s->value("upscaler_sharpness", upscaler_sharpness).toFloat();
+		guest_render_width  = s->value("guest_render_width", guest_render_width).toInt();
+		guest_render_height = s->value("guest_render_height", guest_render_height).toInt();
+		fsr_output_width    = s->value("fsr_output_width", fsr_output_width).toInt();
+		fsr_output_height   = s->value("fsr_output_height", fsr_output_height).toInt();
 		KYTY_CFG_GET(igpu_optimization);
 		texture_lod_bias  = s->value("texture_lod_bias", texture_lod_bias).toInt();
 		KYTY_CFG_GET(present_mode);

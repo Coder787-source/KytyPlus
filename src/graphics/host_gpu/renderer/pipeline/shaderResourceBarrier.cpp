@@ -4,6 +4,7 @@
 #include "graphics/shader/shader.h"
 #include "graphics/shader/shaderBindings.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace Libs::Graphics {
@@ -29,7 +30,9 @@ VulkanMemoryBarrier MakeShaderWriteDependency() {
 	barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
 	barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
 	                        vk::AccessFlagBits::eVertexAttributeRead |
-	                        vk::AccessFlagBits::eIndexRead | vk::AccessFlagBits::eUniformRead |
+	                        vk::AccessFlagBits::eIndexRead |
+	                        vk::AccessFlagBits::eIndirectCommandRead |
+	                        vk::AccessFlagBits::eUniformRead |
 	                        vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite |
 	                        vk::AccessFlagBits::eColorAttachmentRead |
 	                        vk::AccessFlagBits::eColorAttachmentWrite;
@@ -100,6 +103,16 @@ bool HasShaderBufferWrites(const ShaderStageRuntime& runtime) {
 	return !CollectShaderBufferWrites(*runtime.program, *runtime.resources).empty();
 }
 
+bool HasShaderImageWrites(const ShaderStageRuntime& runtime) {
+	EXIT_IF(!runtime);
+	return std::any_of(runtime.program->info.images.begin(), runtime.program->info.images.end(),
+	                   [](const auto& image) {
+		                   return image.written &&
+		                          (image.kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
+		                           image.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint);
+	                   });
+}
+
 void ShaderAccessBarrier(vk::CommandBuffer vk_buffer, vk::PipelineStageFlags source_stages) {
 	EXIT_IF(vk_buffer == nullptr || !source_stages);
 	const auto barrier = MakeShaderAccessDependency();
@@ -120,7 +133,8 @@ void ShaderWriteBarrier(vk::CommandBuffer vk_buffer, vk::PipelineStageFlags sour
 	const auto barrier = MakeShaderWriteDependency();
 	vk_buffer.pipelineBarrier(
 	    source_stages,
-	    vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexInput |
+	    vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect |
+	        vk::PipelineStageFlagBits::eVertexInput |
 	        vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader |
 	        vk::PipelineStageFlagBits::eTransfer |
 	        vk::PipelineStageFlagBits::eColorAttachmentOutput,

@@ -30,6 +30,10 @@ uint32_t ScalarValueArgCount(ScalarValueOp op) {
 		case ScalarValueOp::SubBorrow:
 		case ScalarValueOp::Borrow:
 		case ScalarValueOp::Add3:
+		case ScalarValueOp::ShiftLeftU64Low:
+		case ScalarValueOp::ShiftLeftU64High:
+		case ScalarValueOp::ShiftRightU64Low:
+		case ScalarValueOp::ShiftRightU64High:
 		case ScalarValueOp::ShiftLeftAdd:
 		case ScalarValueOp::ShiftLeftAddCarry:
 		case ScalarValueOp::AddShiftLeft:
@@ -604,6 +608,34 @@ private:
 					state.regs[dst + 1] = Define(inst, ScalarValueOp::BitFieldMaskU64High, before);
 				}
 				break;
+			case Opcode::ShiftLeftLogicalU64:
+			case Opcode::ShiftRightLogicalU64: {
+				if (inst.src_count < 2 || dst + 1 >= ScalarRegisters) {
+					break;
+				}
+				uint32_t src_reg = 0;
+				const uint32_t low = OperandValue(inst.src[0], before);
+				const uint32_t high = ScalarRegister(inst.src[0], src_reg) &&
+				                              src_reg + 1 < ScalarRegisters
+				                          ? before.regs[src_reg + 1]
+				                          : Constant(inst.src[0].kind == OperandKind::ImmediateU32 &&
+				                                             inst.src[0].sext_64
+				                                         ? UINT32_MAX
+				                                         : 0u);
+				ScalarValue node;
+				node.pc = inst.pc;
+				node.args[0] = low;
+				node.args[1] = high;
+				node.args[2] = OperandValue(inst.src[1], before);
+				const bool left = inst.op == Opcode::ShiftLeftLogicalU64;
+				node.op = left ? ScalarValueOp::ShiftLeftU64Low
+				               : ScalarValueOp::ShiftRightU64Low;
+				value = InternValue(node);
+				node.op = left ? ScalarValueOp::ShiftLeftU64High
+				               : ScalarValueOp::ShiftRightU64High;
+				state.regs[dst + 1] = InternValue(node);
+				break;
+			}
 			case Opcode::SLoadDword: value = ReadConst(inst, before, false); break;
 			case Opcode::SBufferLoadDword: value = ReadConst(inst, before, true); break;
 			case Opcode::ReadLaneU32: value = ReadVectorLane(inst, before); break;

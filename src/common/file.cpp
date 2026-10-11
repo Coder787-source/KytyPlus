@@ -1,4 +1,5 @@
 #include "common/file.h"
+#include "common/readOnlyFileSystem.h"
 
 #include "common/assert.h"
 #include "common/common.h"
@@ -6,6 +7,7 @@
 #include "common/platform/sysTimer.h"
 #include "common/stringUtils.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <utility>
@@ -65,6 +67,10 @@ SysFileTimeStruct DateTimeToFileTimeUtc(const DateTime& date_time) {
 
 struct File::FilePrivate {
 	sys_file_t* f;
+	std::shared_ptr<ReadOnlyFileSystem> volume;
+	std::string relative;
+	uint64_t virtual_size = 0;
+	uint64_t virtual_offset = 0;
 };
 
 File::File(): m_p(std::make_unique<FilePrivate>()) {
@@ -88,13 +94,15 @@ File::File(const std::filesystem::path& name, Mode mode): m_p(std::make_unique<F
 }
 
 bool File::IsInvalid() const {
-	return m_p->f == nullptr;
+	return m_p->f == nullptr && !m_p->volume;
 }
 
 bool File::Create(const std::filesystem::path& name) {
 	EXIT_IF(m_p->f != nullptr);
 
 	m_file_name = name;
+	std::string relative;
+	if (FindReadOnlyFileSystem(name, relative)) return false;
 
 	m_p->f = SysFileCreate(name);
 
@@ -110,6 +118,13 @@ bool File::Open(const std::filesystem::path& name, Mode mode) {
 	EXIT_IF(m_p->f != nullptr);
 
 	m_file_name = name;
+	if (auto volume = FindReadOnlyFileSystem(name, m_p->relative)) {
+		bool directory = false;
+		if (mode != Mode::Read || !volume->Stat(m_p->relative, m_p->virtual_size, directory) || directory) return false;
+		m_p->volume = std::move(volume);
+		m_p->virtual_offset = 0;
+		return true;
+	}
 
 	switch (mode) {
 		case Mode::Read: m_p->f = SysFileOpenR(name); break;
@@ -157,6 +172,9 @@ bool File::CreateInMem() {
 }
 
 void File::Close() {
+	m_p->volume.reset();
+	m_p->relative.clear();
+	m_p->virtual_offset = 0;
 	if (m_p->f != nullptr) {
 		SysFileClose(m_p->f);
 		m_p->f = nullptr;
@@ -164,6 +182,7 @@ void File::Close() {
 }
 
 uint64_t File::Size() const {
+	if (m_p->volume) return m_p->virtual_size;
 	EXIT_IF(m_p->f == nullptr);
 
 	if (m_p->f == nullptr) {
@@ -174,40 +193,58 @@ uint64_t File::Size() const {
 }
 
 uint64_t File::Remaining() const {
-	EXIT_IF(m_p->f == nullptr);
+	EXIT_IF(IsInvalid());
 
-	return Size() - Tell();
+	return Size() - std::min(Tell(), Size());
 }
 
 uint64_t File::Size(const std::filesystem::path& name) {
+	std::string relative;
+	if (auto volume = FindReadOnlyFileSystem(name, relative)) {
+		uint64_t size = 0; bool directory = false;
+		return volume->Stat(relative, size, directory) && !directory ? size : 0;
+	}
 	return SysFileSize(name);
 }
 
 bool File::Seek(uint64_t offset) {
+	if (m_p->volume) { m_p->virtual_offset = offset; return true; }
 	EXIT_IF(m_p->f == nullptr);
 
 	return SysFileSeek(*m_p->f, offset);
 }
 
 bool File::Truncate(uint64_t size) {
+	if (m_p->volume) return false;
 	EXIT_IF(m_p->f == nullptr);
 
 	return SysFileTruncate(*m_p->f, size);
 }
 
 bool File::Unlink() {
+	if (m_p->volume) return false;
 	EXIT_IF(m_p->f == nullptr);
 
 	return SysFileUnlink(*m_p->f, m_file_name);
 }
 
 uint64_t File::Tell() const {
+	if (m_p->volume) return m_p->virtual_offset;
 	EXIT_IF(m_p->f == nullptr);
 
 	return SysFileTell(*m_p->f);
 }
 
 void File::Read(void* data, uint32_t size, uint32_t* bytes_read) {
+	if (m_p->volume) {
+		const auto available = m_p->virtual_size - std::min(m_p->virtual_offset, m_p->virtual_size);
+		const auto take = static_cast<uint32_t>(std::min<uint64_t>(size, available));
+		const bool ok = take == 0 || m_p->volume->Read(m_p->relative, m_p->virtual_offset, data, take);
+		if (bytes_read != nullptr) *bytes_read = ok ? take : 0;
+		if (ok) m_p->virtual_offset += take;
+		else { ::printf("Image read failed: %s\n", m_p->relative.c_str()); m_p->volume.reset(); }
+		return;
+	}
 	EXIT_IF(m_p->f == nullptr);
 
 	if (m_p->f != nullptr) {
@@ -216,6 +253,7 @@ void File::Read(void* data, uint32_t size, uint32_t* bytes_read) {
 }
 
 void File::Write(const void* data, uint32_t size, uint32_t* bytes_written) {
+	if (m_p->volume) { if (bytes_written != nullptr) *bytes_written = 0; return; }
 	EXIT_IF(m_p->f == nullptr);
 
 	SysFileWrite(data, size, *m_p->f, bytes_written);
@@ -253,12 +291,22 @@ void File::Printf(const char* format, ...) {
 }
 
 bool File::IsDirectoryExisting(const std::filesystem::path& path) {
+	std::string relative;
+	if (auto volume = FindReadOnlyFileSystem(path, relative)) {
+		uint64_t size = 0; bool directory = false;
+		return volume->Stat(relative, size, directory) && directory;
+	}
 	auto path_str = PathToGenericString(path);
 	return SysFileIsDirectoryExisting(
 	    Common::EndsWith(path_str, "/") ? Common::RemoveLast(path_str, 1) : path_str);
 }
 
 bool File::IsFileExisting(const std::filesystem::path& name) {
+	std::string relative;
+	if (auto volume = FindReadOnlyFileSystem(name, relative)) {
+		uint64_t size = 0; bool directory = false;
+		return volume->Stat(relative, size, directory) && !directory;
+	}
 	return SysFileIsFileExisting(name);
 }
 
@@ -343,6 +391,7 @@ bool File::DeleteFile(
 }
 
 bool File::Flush() {
+	if (m_p->volume) return true;
 	EXIT_IF(m_p->f == nullptr);
 
 	return SysFileFlush(*m_p->f);
@@ -376,6 +425,8 @@ void File::Write(const ByteBuffer& buf, uint32_t* bytes_written) {
 }
 
 DateTime File::GetLastAccessTimeUTC(const std::filesystem::path& name) {
+	std::string relative;
+	if (FindReadOnlyFileSystem(name, relative)) return DateTime::FromSystemUTC();
 	SysTimeStruct t {};
 	SysFileToSystemTimeUtc(SysFileGetLastAccessTimeUtc(name), t);
 
@@ -387,6 +438,8 @@ DateTime File::GetLastAccessTimeUTC(const std::filesystem::path& name) {
 }
 
 DateTime File::GetLastWriteTimeUTC(const std::filesystem::path& name) {
+	std::string relative;
+	if (FindReadOnlyFileSystem(name, relative)) return DateTime::FromSystemUTC();
 	SysTimeStruct t {};
 	SysFileToSystemTimeUtc(SysFileGetLastWriteTimeUtc(name), t);
 
@@ -399,6 +452,8 @@ DateTime File::GetLastWriteTimeUTC(const std::filesystem::path& name) {
 
 void File::GetLastAccessAndWriteTimeUTC(const std::filesystem::path& name, DateTime* access,
                                         DateTime* write) {
+	std::string relative;
+	if (FindReadOnlyFileSystem(name, relative)) { *access = DateTime::FromSystemUTC(); *write = *access; return; }
 	EXIT_IF(access == nullptr);
 	EXIT_IF(write == nullptr);
 
@@ -424,6 +479,7 @@ void File::GetLastAccessAndWriteTimeUTC(const std::filesystem::path& name, DateT
 }
 
 void File::GetLastAccessAndWriteTimeUTC(DateTime* access, DateTime* write) {
+	if (m_p->volume) { *access = DateTime::FromSystemUTC(); *write = *access; return; }
 	EXIT_IF(access == nullptr);
 	EXIT_IF(write == nullptr);
 
@@ -519,6 +575,12 @@ std::vector<File::FindInfo> File::FindFiles(const std::filesystem::path& path) {
 }
 
 std::vector<File::DirEntry> File::GetDirEntries(const std::filesystem::path& path) {
+	std::string relative;
+	if (auto volume = FindReadOnlyFileSystem(path, relative)) {
+		std::vector<DirEntry> result;
+		for (const auto& entry: volume->List(relative)) result.push_back({entry.name, entry.is_file});
+		return result;
+	}
 	std::vector<sys_dir_entry_t> files;
 
 	SysFileGetDents(path, files);

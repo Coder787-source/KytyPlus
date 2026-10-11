@@ -459,6 +459,7 @@ std::string OpcodeToString(Opcode opcode) {
 		case Opcode::SBcnt1I32B32: return "s_bcnt1_i32_b32";
 		case Opcode::SBcnt1I32B64: return "s_bcnt1_i32_b64";
 		case Opcode::SFf1I32B32: return "s_ff1_i32_b32";
+		case Opcode::SFf1I32B64: return "s_ff1_i32_b64";
 		case Opcode::SFlbitI32B32: return "s_flbit_i32_b32";
 		case Opcode::SFlbitI32B64: return "s_flbit_i32_b64";
 		case Opcode::SBitreplicateB64B32: return "s_bitreplicate_b64_b32";
@@ -643,6 +644,7 @@ std::string OpcodeToString(Opcode opcode) {
 		case Opcode::VMed3I32: return "v_med3_i32";
 		case Opcode::VMed3U32: return "v_med3_u32";
 		case Opcode::VMed3F16: return "v_med3_f16";
+		case Opcode::VMed3I16: return "v_med3_i16";
 		case Opcode::VSadU32: return "v_sad_u32";
 		case Opcode::VAdd3U32: return "v_add3_u32";
 		case Opcode::VLshlAddU32: return "v_lshl_add_u32";
@@ -946,6 +948,7 @@ std::string OpcodeToString(Opcode opcode) {
 		case Opcode::SCbranchExecz: return "s_cbranch_execz";
 		case Opcode::SCbranchExecnz: return "s_cbranch_execnz";
 		case Opcode::SSendmsg: return "s_sendmsg";
+		case Opcode::STrap: return "s_trap";
 		case Opcode::SSetregB32: return "s_setreg_b32";
 		case Opcode::SSleep: return "s_sleep";
 		case Opcode::STtraceData: return "s_ttracedata";
@@ -1026,6 +1029,7 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::SBrevB32:
 		case Opcode::SBcnt1I32B32:
 		case Opcode::SFf1I32B32:
+		case Opcode::SFf1I32B64:
 		case Opcode::SFlbitI32B32:
 		case Opcode::SNotB64:
 		case Opcode::SWqmB64:
@@ -1052,6 +1056,7 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::SWaitcnt:
 		case Opcode::SSleep:
 		case Opcode::SSendmsg:
+		case Opcode::STrap:
 		case Opcode::STtraceData:
 		case Opcode::SInstPrefetch:
 			return WithUnsupportedReason(inst, fmt::format("0x{:08x}: {} {}", inst.pc,

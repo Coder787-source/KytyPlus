@@ -115,6 +115,16 @@ struct ConfigOptions {
 	// Internal resolution scale for iGPU: reduces render target size to save
 	// fill rate and memory bandwidth. The presenter upscales back to window size.
 	ResolutionScale        resolution_scale            = ResolutionScale::Native;
+	// Multiplier applied to display-sized guest render targets (>= 1920x1080).
+	// 0 means "not set": the iGPU auto-detection picks a default, otherwise the
+	// guest renders at its native resolution. This is the only knob that actually
+	// reduces the guest's own fill rate; the presenter-side upscaler runs too late
+	// to save any work.
+	float                  render_scale                = 0.0f;
+	// Opt-in guest launch request, separate from the host window. Engines may
+	// ignore these arguments; never shrink attachments to pretend it worked.
+	uint32_t               guest_render_width          = 0;
+	uint32_t               guest_render_height         = 0;
 	// Texture LOD bias: positive values skip high-resolution mip levels,
 	// reducing memory bandwidth. 0 = no bias, 1 = skip one mip level, etc.
 	int32_t                texture_lod_bias            = 0;
@@ -129,6 +139,10 @@ struct ConfigOptions {
 	UpscalerQuality        upscaler_quality            = UpscalerQuality::Quality;
 	// RCAS sharpening strength (0.0 = no sharpening, 1.0 = maximum).
 	float                  upscaler_sharpness          = 0.5f;
+	// Zero uses the window extent. Explicit values permit an FSR output such as
+	// 3840x2160 even on a smaller display (followed by a presentation downsample).
+	uint32_t               fsr_output_width            = 0;
+	uint32_t               fsr_output_height           = 0;
 	// Opt-in native DualSense HID driver (adaptive triggers / lightbar / motion via
 	// libPad). DEFAULT OFF: SDL already handles every standard pad (including a
 	// DualSense), and this driver is unvalidated on hardware, so it is gated behind
@@ -160,6 +174,10 @@ void ApplyIgpuDefaults(bool integrated_gpu);
 
 uint32_t GetScreenWidth();
 uint32_t GetScreenHeight();
+uint32_t GetGuestRenderWidth();
+uint32_t GetGuestRenderHeight();
+uint32_t GetFsrOutputWidth();
+uint32_t GetFsrOutputHeight();
 bool     FullscreenEnabled();
 uint32_t GetVblankFrequency();
 uint32_t GetConsoleLanguage();
@@ -218,7 +236,11 @@ bool             UmaStagingBypass();
 void             SetUmaStagingBypass(bool value);
 
 // Returns the scale factor for the selected resolution scale (1.0, 0.5, or 0.25).
-float GetResolutionScaleFactor();
+[[nodiscard]] float GetResolutionScaleFactor();
+
+// Multiplier applied to display-sized guest render targets. Always in (0, 1];
+// 1.0 means the guest renders at its native resolution.
+[[nodiscard]] float GetRenderScale();
 
 // --- Upscaler accessors ---
 UpscalerMethod  GetUpscalerMethod();

@@ -175,6 +175,9 @@ void CollectOutputs(const Program& program, const ShaderPixelInputInfo* pixel, S
 					AddOutput(info, StageOutputKind::Position, inst.export_info.index, 0,
 					          "out_position");
 					break;
+				case ExportTargetKind::Layer:
+					AddOutput(info, StageOutputKind::Layer, 0, 0, "gl_Layer");
+					break;
 				case ExportTargetKind::Parameter:
 					AddOutput(info, StageOutputKind::Parameter, inst.export_info.index,
 					          inst.export_info.index,

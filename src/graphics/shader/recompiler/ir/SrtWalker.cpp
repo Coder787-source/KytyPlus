@@ -73,6 +73,22 @@ bool ApplyOperation(ScalarValueOp op, const std::array<uint32_t, 3>& args, uint3
 		case ScalarValueOp::ShiftRightArithmetic:
 			result = static_cast<uint32_t>(static_cast<int32_t>(args[0]) >> shift);
 			break;
+		case ScalarValueOp::ShiftLeftU64Low:
+		case ScalarValueOp::ShiftLeftU64High:
+		case ScalarValueOp::ShiftRightU64Low:
+		case ScalarValueOp::ShiftRightU64High: {
+			const auto input = uint64_t {args[0]} | (uint64_t {args[1]} << 32u);
+			const auto shifted =
+			    op == ScalarValueOp::ShiftLeftU64Low ||
+			            op == ScalarValueOp::ShiftLeftU64High
+			        ? input << (args[2] & 63u)
+			        : input >> (args[2] & 63u);
+			result = op == ScalarValueOp::ShiftLeftU64Low ||
+			                 op == ScalarValueOp::ShiftRightU64Low
+			             ? static_cast<uint32_t>(shifted)
+			             : static_cast<uint32_t>(shifted >> 32u);
+			break;
+		}
 		case ScalarValueOp::BitFieldMaskU32: {
 			const auto count  = args[0] & 31u;
 			const auto offset = args[1] & 31u;

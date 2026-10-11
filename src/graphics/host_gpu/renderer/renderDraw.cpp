@@ -37,6 +37,7 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -72,6 +73,61 @@ static std::atomic<uint32_t> g_mrt_state_log_count    = 0;
 static std::atomic<uint32_t> g_shader_stage_log_count = 0;
 
 static std::atomic<uint32_t> g_framebuffer_skip_log_count = 0;
+
+static std::atomic<uint64_t> g_draw_attempts {0};
+static std::atomic<uint64_t> g_draw_submitted {0};
+
+static std::atomic<uint64_t> g_draw_metadata {0};
+static std::atomic<uint64_t> g_draw_geometry {0};
+static std::atomic<uint64_t> g_draw_invalid_vs {0};
+static std::atomic<uint64_t> g_draw_framebuffer {0};
+static std::atomic<uint64_t> g_draw_pipeline_pending {0};
+static std::atomic<uint64_t> g_draw_bindings_missing {0};
+static std::atomic<uint64_t> g_draw_rt_missing {0};
+static std::atomic<uint64_t> g_draw_resolves {0};
+static std::atomic<uint64_t> g_draw_video_attempts {0};
+static std::atomic<uint64_t> g_draw_video_submitted {0};
+static std::atomic<uint64_t> g_draw_video_pending {0};
+static std::atomic<uint64_t> g_draw_indirect_submitted {0};
+static std::atomic<uint64_t> g_draw_indirect_unsupported {0};
+static std::atomic<uint64_t> g_draw_vertices {0};
+// Index/instance counts of the draw currently being tested for a GE skip, so the
+// skip log can report how much geometry a rejected draw would have produced.
+static std::atomic<uint32_t> g_skip_debug_index_count {0};
+static std::atomic<uint32_t> g_skip_debug_instance_count {0};
+static std::atomic<uint64_t> g_draw_instances {0};
+static void ReportDrawProgress() {
+	// These counters are diagnostic only. In a normal (silent) game run, avoid a
+	// clock read and atomic update for every draw submitted by the guest.
+	if (Log::IsSilent()) {
+		return;
+	}
+	g_draw_attempts.fetch_add(1, std::memory_order_relaxed);
+	static std::atomic<int64_t> last {0};
+	const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+	    std::chrono::steady_clock::now().time_since_epoch()).count();
+	auto previous = last.load(std::memory_order_relaxed);
+	if (now - previous >= 2000 && last.compare_exchange_strong(previous, now)) {
+		LOGF("Draw progress: attempts=%llu submitted=%llu metadata=%llu geometry_skipped=%llu invalid_vs=%llu framebuffer=%llu pipeline_pending=%llu bindings_missing=%llu rt_missing=%llu resolves=%llu video_attempts=%llu video_submitted=%llu video_pending=%llu indirect_submitted=%llu indirect_unsupported=%llu vertices=%llu instances=%llu\n",
+		     static_cast<unsigned long long>(g_draw_attempts.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_submitted.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_metadata.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_geometry.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_invalid_vs.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_framebuffer.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_pipeline_pending.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_bindings_missing.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_rt_missing.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_resolves.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_video_attempts.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_video_submitted.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_video_pending.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_indirect_submitted.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_indirect_unsupported.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_vertices.exchange(0)),
+		     static_cast<unsigned long long>(g_draw_instances.exchange(0)));
+	}
+}
 
 static float ConvertPolygonOffsetConstantFactor(float guest_factor, const HW::PolyOffset& offset,
                                                 vk::Format host_depth_format) {
@@ -466,7 +522,33 @@ static bool PixelShaderHasDepthOrCoverageSideEffects(const HW::ShaderRegisters& 
 	       db.shader_execute_on_noop;
 }
 
+static bool CanFoldTriangleCopyDraw(const RenderCommandBuffer& buffer) {
+	const auto& ctx = buffer.GetRegisters();
+	const auto& sh = ctx.GetShaderRegisters();
+	const auto& ucfg = buffer.GetUserConfig();
+	const auto& ge = ucfg.GetGeControl();
+	const auto stages = ctx.GetShaderStages();
+	const auto required = Pm4::VGT_SHADER_STAGES_EN_GS_EN_MASK |
+	                      Pm4::VGT_SHADER_STAGES_EN_PRIMGEN_EN_MASK;
+	return (stages & required) == required &&
+	       (stages & Pm4::VGT_SHADER_STAGES_EN_ES_EN_MASK) != 0 &&
+	       (stages & (Pm4::VGT_SHADER_STAGES_EN_LS_EN_MASK |
+	                  Pm4::VGT_SHADER_STAGES_EN_HS_EN_MASK)) == 0 &&
+	       sh.m_geNggSubgrpCntl == 1 && sh.m_vgtGsMaxVertOut == 3 &&
+	       sh.m_vgtGsOutPrimType == 2 && sh.m_geMaxOutputPerSubgroup == 0xc0 &&
+	       ge.primitive_group_size <= 0x40 && ge.vertex_group_size <= 0x40 &&
+	       (sh.m_paClVsOutCntl & (1u << 19u)) == 0 &&
+	       ((sh.m_paClVsOutCntl & (1u << 18u)) == 0 ||
+	        buffer.GetContext().GetGraphics().shader_output_layer_enabled) &&
+	       (ucfg.GetPrimType() == Prospero::GpuEnumValue(Prospero::PrimitiveType::kTriList) ||
+	        ucfg.GetPrimType() == Prospero::GpuEnumValue(Prospero::PrimitiveType::kTriStrip)) &&
+	       ShaderCanFoldTriangleCopyGeometry(buffer.GetShaders().GetVs());
+}
+
 static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
+	if (CanFoldTriangleCopyDraw(buffer)) {
+		return false;
+	}
 	const auto& ctx         = buffer.GetRegisters();
 	const auto& ucfg        = buffer.GetUserConfig();
 	const auto& sh_ctx      = buffer.GetShaders();
@@ -520,32 +602,63 @@ static bool ShouldSkipGeShader(const RenderCommandBuffer& buffer) {
 	    sh_regs.m_vgtGsMaxVertOut == 0x00000000 &&
 	    is_known_gs_out_prim_type(sh_regs.m_vgtGsOutPrimType);
 
+	// A GS-enabled draw normally needs a real geometry-shader implementation, which this
+	// renderer does not have. It can still be executed when the GS provably passes its input
+	// through unchanged: one primitive in, one primitive out, emitted as triangles, with no
+	// amplification. The ES output is then already the final vertex stream, so the draw can
+	// run with the GS stage folded away.
+	//   max_vert_out == 3 with out-prim == triangles means three vertices per input
+	//   primitive (a single triangle); max_output_per_subgroup bounds the vertices emitted
+	//   per subgroup.
+	const bool gs_passthrough = stages_have_gs && stages_have_es && stages_primgen &&
+	                          !stages_tessellation && vertex_info.es_regs.data_addr != 0 &&
+	                          vertex_info.gs_regs.chksum != 0 &&
+	                          sh_regs.m_geNggSubgrpCntl <= 0x00000001 &&
+	                          sh_regs.m_vgtGsMaxVertOut == 0x00000003 &&
+	                          sh_regs.m_vgtGsOutPrimType == 0x00000002 &&
+	                          sh_regs.m_geMaxOutputPerSubgroup <= 0x00000040 &&
+	                          ge_cntl.primitive_group_size <= 0x0040 &&
+	                          ge_cntl.vertex_group_size <= 0x0040;
 	// A stage combination we do not model: tessellation stages, or a mask that enables
 	// neither a plain VS draw nor the NGG vertex path.
 	const bool unsupported_stage_mask =
-	    stages != 0 && (stages_tessellation || !stages_have_vertex_frontend) && !ngg_vertex_path;
+	    stages != 0 && (stages_tessellation || !stages_have_vertex_frontend) &&
+	    !ngg_vertex_path && !gs_passthrough;
 	// Executing a geometry shader still needs a GS implementation. An inactive GS
-	// register must not reject subsequent vertex-only draws.
-	const bool unsupported_gs_stage = stages_have_gs;
+	// register must not reject subsequent vertex-only draws; a passthrough GS needs
+	// no implementation at all.
+	const bool unsupported_gs_stage = stages_have_gs && !gs_passthrough;
 	const bool ge_group_size =
 	    ge_cntl.primitive_group_size > 0x0040 || ge_cntl.vertex_group_size > 0x0040;
 	const bool ge_shader_regs =
 	    (sh_regs.m_geNggSubgrpCntl != 0x00000000 && sh_regs.m_geNggSubgrpCntl != 0x00000001) ||
-	    (sh_regs.m_vgtGsMaxVertOut != 0x00000000 && !ngg_vertex_path) ||
-	    !is_known_gs_out_prim_type(sh_regs.m_vgtGsOutPrimType) ||
-	    sh_regs.m_geMaxOutputPerSubgroup > 0x00000040;
+	    (sh_regs.m_vgtGsMaxVertOut != 0x00000000 && !ngg_vertex_path && !gs_passthrough) ||
+	    (!is_known_gs_out_prim_type(sh_regs.m_vgtGsOutPrimType) && !gs_passthrough) ||
+	    (sh_regs.m_geMaxOutputPerSubgroup > 0x00000040 && !gs_passthrough);
 
 	if (unsupported_stage_mask || unsupported_gs_stage || ge_group_size || ge_shader_regs) {
+		g_draw_geometry.fetch_add(1, std::memory_order_relaxed);
+		if ((ctx.GetRenderTarget(0).base.addr & 0xfffffe000000ULL) == 0x8fc0000000ULL) {
+			static std::atomic<uint32_t> cb4_output_ge_skip_log {0};
+			const auto count = cb4_output_ge_skip_log.fetch_add(1);
+			if (count < 12 || count % 64 == 0) {
+				LOGF("CB4 output GE skip: rt=0x%016" PRIx64 " mask=0x%08" PRIx32
+				     " ps=0x%016" PRIx64 "\n", ctx.GetRenderTarget(0).base.addr,
+				     ctx.GetRenderTargetMask(), sh_ctx.GetPs().ps_regs.data_addr);
+			}
+		}
 		const auto log_id = g_shader_stage_log_count.fetch_add(1);
-		if (log_id < 32 || (log_id % 65536) == 0) {
+		if (log_id < 32 || (log_id % 256) == 0) {
 			LOGF("Skipping unsupported GE shader draw: stages=0x%08" PRIx32
 			     " prim_group=0x%04" PRIx16 " vert_group=0x%04" PRIx16 " ngg=0x%08" PRIx32
 			     " max_out=0x%08" PRIx32 " gs_max_vert=0x%08" PRIx32 " gs_out_prim=0x%08" PRIx32
-			     " es=0x%016" PRIx64 " gs=0x%016" PRIx64 "\n",
+			     " es=0x%016" PRIx64 " gs=0x%016" PRIx64 " vertices=%u instances=%u\n",
 			     stages, ge_cntl.primitive_group_size, ge_cntl.vertex_group_size,
 			     sh_regs.m_geNggSubgrpCntl, sh_regs.m_geMaxOutputPerSubgroup,
 			     sh_regs.m_vgtGsMaxVertOut, sh_regs.m_vgtGsOutPrimType,
-			     vertex_info.es_regs.data_addr, vertex_info.gs_regs.data_addr);
+			     vertex_info.es_regs.data_addr, vertex_info.gs_regs.data_addr,
+			     g_skip_debug_index_count.load(std::memory_order_relaxed),
+			     g_skip_debug_instance_count.load(std::memory_order_relaxed));
 		}
 		return true;
 	}
@@ -733,6 +846,20 @@ enum class CbColorMode : uint8_t {
 static bool ConsumeMetadataColorOperation(const RenderCommandBuffer& buffer) {
 	const auto& ctx  = buffer.GetRegisters();
 	const auto  mode = ctx.GetColorControl().mode;
+	const auto& rt0 = ctx.GetRenderTarget(0);
+	if (mode == 2 || mode == 5 || mode == 6) {
+		static std::atomic<uint64_t> cb4_output_metadata_count {0};
+		const auto count = cb4_output_metadata_count.fetch_add(1);
+		if (count < 128 || count % 1024 == 0) {
+			LOGF("CB4 metadata: count=%llu mode=%u rt0=0x%016" PRIx64
+			     " cmask=0x%016" PRIx64 " fast_clear=%u clear0=0x%08" PRIx32
+			     " clear1=0x%08" PRIx32 " rt1=0x%016" PRIx64 "\n",
+			     static_cast<unsigned long long>(count), mode, rt0.base.addr,
+			     rt0.cmask.addr, rt0.info.cmask_fast_clear_enable ? 1u : 0u,
+			     rt0.clear_word0.word0, rt0.clear_word1.word1,
+			     ctx.GetRenderTarget(1).base.addr);
+		}
+	}
 	// These AGC CB modes run color-buffer metadata/decompression operations. The shader is a
 	// dummy vehicle for the CB, and its exported color must not be applied as a normal draw.
 	// Kyty currently stores host images as expanded Vulkan images and does not track CMASK/DCC
@@ -922,9 +1049,12 @@ static bool GetDrawTopology(const HW::UserConfig& ucfg, bool auto_draw, bool use
 			                                               : vk::PrimitiveTopology::eTriangleList);
 			break;
 		case Prospero::PrimitiveType::kRectListLegacy:
-			if (!auto_draw) {
-				EXIT("unknown primitive type: %u\n", ucfg.GetPrimType());
-			}
+			// Legacy rect lists are drawn as triangle strips. The previous code treated
+			// this as fatal whenever auto_draw was false, which is exactly the case for
+			// *indexed indirect* draws (the path PS5 GPU-driven culling uses), so the
+			// entire 3D world was killed here while 2D/UI draws kept working. Resolve it
+			// to a real topology instead; the indirect submit path decides on its own
+			// whether it can honour the per-draw counts.
 			topology = vk::PrimitiveTopology::eTriangleStrip;
 			break;
 		case Prospero::PrimitiveType::kQuadListLegacy:
@@ -959,14 +1089,59 @@ bool RenderExecutor::PrepareDrawRenderState(uint64_t submit_id, RenderCommandBuf
 			}
 		}
 	}
+	for (uint32_t i = 0; i < state.color_count; i++) {
+		const auto& color = state.color_info[i];
+		const auto& blend = ctx.GetBlendControl(color.target_slot);
+		if (color.format == vk::Format::eR16G16B16A16Sfloat && blend.enable &&
+		    blend.separate_alpha_blend &&
+		    blend.alpha_srcblend == static_cast<uint8_t>(Prospero::BlendFactor::kZero) &&
+		    blend.alpha_destblend == static_cast<uint8_t>(Prospero::BlendFactor::kOneMinusSrcAlpha)) {
+			static std::atomic<uint64_t> alpha_preserve_log {0};
+			const auto count = alpha_preserve_log.fetch_add(1);
+			if (count < 64 || count % 512 == 0) {
+				const auto& rt = ctx.GetRenderTarget(color.target_slot);
+				LOGF("CB4 alpha preserve: count=%llu frame=%llu addr=0x%016" PRIx64
+				     " cmask=0x%016" PRIx64 " fast_clear=%u clear0=0x%08" PRIx32
+				     " clear1=0x%08" PRIx32 " ps=0x%016" PRIx64
+				     " dcc=0x%016" PRIx64 " dcc_enable=%u dcc_key=%u\n",
+				     static_cast<unsigned long long>(count),
+				     static_cast<unsigned long long>(m_context.GetGpu().GetFrameNum()),
+				     rt.base.addr, rt.cmask.addr, rt.info.cmask_fast_clear_enable ? 1u : 0u,
+				     rt.clear_word0.word0, rt.clear_word1.word1,
+				     buffer.GetShaders().GetPs().ps_regs.data_addr, rt.dcc_addr.addr,
+				     rt.info.dcc_compression_enable ? 1u : 0u,
+				     rt.dcc.dcc_clear_key_enable ? 1u : 0u);
+			}
+		}
+	}
 	if (log_setup_phases) {
 		LogDrawPhase(draw.name, "ResolveRenderDepthTarget");
 	}
 	ResolveRenderDepthTarget(submit_id, buffer, state.depth_info);
+	for (uint32_t i = 0; i < state.color_count; i++) {
+		if ((state.color_info[i].base_addr & 0xfffffe000000ULL) == 0x8fc0000000ULL) {
+			g_draw_video_attempts.fetch_add(1, std::memory_order_relaxed);
+			break;
+		}
+	}
 
 	const bool with_depth = (state.depth_info.format != vk::Format::eUndefined &&
 	                         static_cast<bool>(state.depth_info.image_id));
 	if (state.color_count == 0 && !with_depth) {
+		g_draw_framebuffer.fetch_add(1, std::memory_order_relaxed);
+		if (m_context.GetGpu().GetFrameNum() >= 14500) {
+			static std::atomic<uint32_t> cb4_no_fb_log {0};
+			if (cb4_no_fb_log.fetch_add(1) < 64) {
+				const auto& shaders = buffer.GetShaders();
+				LOGF("CB4 no framebuffer: frame=%d mode=%u mask=0x%08" PRIx32
+				     " rt0=0x%016" PRIx64 " rt1=0x%016" PRIx64
+				     " vs=0x%016" PRIx64 " ps=0x%016" PRIx64 "\n",
+				     m_context.GetGpu().GetFrameNum(), ctx.GetColorControl().mode,
+				     ctx.GetRenderTargetMask(), ctx.GetRenderTarget(0).base.addr,
+				     ctx.GetRenderTarget(1).base.addr, shaders.GetVs().es_regs.data_addr,
+				     shaders.GetPs().ps_regs.data_addr);
+			}
+		}
 		LogFramebufferSkip(draw.name, state.color_info[0], state.depth_info, buffer,
 		                   draw.index_count, draw.flags);
 		return false;
@@ -1000,7 +1175,7 @@ static bool RefreshShaders(RenderCommandBuffer& buffer, const DrawCallInfo& draw
 		LogDrawPhase(draw.name, "ShaderCompileInfoVS");
 	}
 	if (!ShaderCompileInfoVS(vertex_shader_info, shader_regs, lane_mask_mode, state.vs_input_info,
-	                         state.vs_shader)) {
+	                         state.vs_shader, CanFoldTriangleCopyDraw(buffer))) {
 		// KytyPlus: the recompiler already reported the specific gap. Skip this draw and
 		// keep rendering rather than aborting the process on one unsupported instruction.
 		LOGF("GraphicsRender%s: skipping draw, VS recompile failed\n", draw.name);
@@ -1105,6 +1280,28 @@ static void CommitIndexBuffer(RenderCommandBuffer& buffer, vk::CommandBuffer vk_
 	vk_buffer.bindIndexBuffer(prepared.buffer, prepared.offset, prepared.type);
 }
 
+// Acquire the guest buffer holding GPU-written indirect draw arguments so it can serve as a
+// Vulkan indirect buffer. Buffer-cache allocations already carry eIndirectBuffer usage (see
+// ReadFlags in streamBuffer.h), so the compute shader writes stay in place and no host
+// round-trip is required.
+static PreparedIndexBuffer PrepareIndirectBuffer(RenderCommandBuffer& buffer,
+                                                  const DrawIndirectSource& source) {
+	PreparedIndexBuffer prepared;
+	if (!source.enabled || source.draw_count == 0) {
+		return prepared;
+	}
+	EXIT_IF(source.args_vaddr == 0);
+	const uint32_t stride    = source.stride_bytes != 0 ? source.stride_bytes : 1;
+	const uint64_t args_size = static_cast<uint64_t>(source.draw_count) * stride;
+	auto binding = buffer.GetContext().GetBufferCache().ObtainBuffer(
+	    buffer, source.args_vaddr, args_size, /*is_written=*/false, /*is_read=*/true);
+	prepared.owner  = std::move(binding.owner);
+	prepared.buffer = binding.buffer;
+	prepared.offset = binding.offset;
+	prepared.size   = args_size;
+	return prepared;
+}
+
 static void LogDrawStateIfNeeded(const RenderCommandBuffer& buffer, const DrawCallInfo& draw,
                                  const DrawRenderState& state, bool always_log,
                                  bool force_legacy_rect_log, uint32_t index_type_and_size,
@@ -1202,7 +1399,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
                                          vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
                                          const DrawIndexBufferSource& index_source,
                                          bool log_pipeline_phase, bool set_bind_debug,
-                                         bool set_auto_debug) {
+                                         bool set_auto_debug,
+                                         const DrawIndirectSource& indirect) {
 	EXIT_IF(draw.name == nullptr);
 	auto& ucfg = buffer.GetUserConfig();
 
@@ -1214,6 +1412,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 		// created). The descriptor set would receive a null view, so skip this draw entirely
 		// rather than aborting the process.
 		LogDrawPhase(draw.name, "BindingsUnavailable-SkipDraw");
+		g_draw_bindings_missing.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
 	auto vertex_bindings = PrepareVertexBuffers(submit_id, buffer, draw, state.vs_input_info);
@@ -1225,6 +1424,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 		    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info);
 		if (!rendering.has_value()) {
 			LogDrawPhase(draw.name, "RenderTargetUnavailable-SkipDraw");
+			g_draw_rt_missing.fetch_add(1, std::memory_order_relaxed);
 			return;
 		}
 		state.rendering = *rendering;
@@ -1244,14 +1444,21 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	// A few skipped draws are far cheaper than blocking the GPU thread on a
 	// multi-100 ms vkCreateGraphicsPipelines call.
 	if (pipeline.pipeline == nullptr) {
+		for (uint32_t i = 0; i < state.color_count; i++) {
+			if ((state.color_info[i].base_addr & 0xfffffe000000ULL) == 0x8fc0000000ULL) {
+				g_draw_video_pending.fetch_add(1, std::memory_order_relaxed);
+				break;
+			}
+		}
 		LogDrawPhase(draw.name, "PipelinePending-SkipDraw");
+		g_draw_pipeline_pending.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
 
 	// Resource preparation above may synchronously finish and restart the scheduler. From this
 	// point onward, every operation targets the current command buffer and cannot touch guest
 	// memory.
-	auto vk_buffer = buffer.Handle();
+	auto       vk_buffer = buffer.Handle();
 	if (set_bind_debug) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x100u);
 	}
@@ -1269,9 +1476,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 		               *bindings.pixel);
 	}
 	CommitIndexBuffer(buffer, vk_buffer, index_binding);
+	auto indirect_binding = indirect.enabled ? PrepareIndirectBuffer(buffer, indirect)
+	                                        : PreparedIndexBuffer {};
 
 	const auto dynamic_params =
 	    BuildGraphicsDynamicParams(buffer, state.color_info, state.color_count, state.depth_info);
+	// No viewport scaling here: the guest's render targets are scaled where the guest
+	// declares them (CB_COLOR0_ATTRIB2), so the viewports it derives from those
+	// dimensions are already correct. Overriding them too would double-apply the scale.
 	SetDynamicParams(buffer, vk_buffer, dynamic_params);
 
 	LogDrawPhase(draw.name, "BeginRendering");
@@ -1283,16 +1495,126 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, RenderCommandBuffer
 	if (set_auto_debug) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
-	EmitDrawPrimitives(ucfg, vk_buffer, state.vs_input_info, draw, emit);
+	if (indirect.enabled && indirect_binding.buffer != nullptr) {
+		// GPU-driven draw. The vertex/index counts, instance counts and base offsets are read
+		// by the GPU straight out of the guest buffer the culling compute shader wrote, so no
+		// host synchronization (and no per-draw GPU stall) is needed. The record count is
+		// clamped to the argument records that actually fit in the acquired range.
+		if (indirect_binding.owner != nullptr) {
+			buffer.RetainResourceUntilFence(std::move(indirect_binding.owner));
+		}
+		const auto     stride    = static_cast<vk::DeviceSize>(indirect.stride_bytes);
+		const uint32_t max_draws = static_cast<uint32_t>(indirect_binding.size / stride);
+		const uint32_t count     = std::min(indirect.draw_count, max_draws);
+		if (count == 0) {
+			return;
+		}
+		switch (static_cast<Prospero::PrimitiveType>(ucfg.GetPrimType())) {
+			case Prospero::PrimitiveType::kPointList:
+			case Prospero::PrimitiveType::kLineList:
+			case Prospero::PrimitiveType::kLineStrip:
+			case Prospero::PrimitiveType::kTriList:
+			case Prospero::PrimitiveType::kTriFan:
+			case Prospero::PrimitiveType::kTriStrip:
+			// Rect lists (NGG and legacy) are the dominant PS5 geometry type. They carry
+			// their per-vertex count in the indirect args, which the GPU reads directly, so
+			// they can be issued as indirect draws exactly like the topologies above. These
+			// were previously rejected as "unsupported", which silently dropped every
+			// GPU-driven draw and left only the non-indirect 2D/UI geometry on screen.
+			case Prospero::PrimitiveType::kRectList:
+			case Prospero::PrimitiveType::kRectListLegacy:
+				// Each record supplies its own counts, instance count and base vertex, so the
+				// host never needs to read any of them. One command per record is issued
+				// because this Vulkan-Hpp only exposes the single-draw form.
+				if (indirect.indexed) {
+					for (uint32_t i = 0; i < count; i++) {
+						vk_buffer.drawIndexedIndirect(indirect_binding.buffer,
+						                             indirect_binding.offset + i * stride, 1,
+						                             static_cast<uint32_t>(stride));
+					}
+				} else {
+					for (uint32_t i = 0; i < count; i++) {
+						vk_buffer.drawIndirect(indirect_binding.buffer,
+						                       indirect_binding.offset + i * stride, 1,
+						                       static_cast<uint32_t>(stride));
+					}
+				}
+				break;
+			default:
+				// The remaining primitive types need per-draw CPU knowledge of the vertex or
+				// index count (triangle fans, rect lists, legacy quads), which only an indirect
+				// readback could provide. Skip rather than draw garbage.
+				LogDrawPhase(draw.name, "IndirectUnsupportedTopology-SkipDraw");
+				g_draw_indirect_unsupported.fetch_add(1, std::memory_order_relaxed);
+				return;
+		}
+		g_draw_indirect_submitted.fetch_add(count, std::memory_order_relaxed);
+	} else {
+		EmitDrawPrimitives(ucfg, vk_buffer, state.vs_input_info, draw, emit);
+	}
+	if (!Log::IsSilent()) {
+		g_draw_submitted.fetch_add(1, std::memory_order_relaxed);
+		// Per-draw geometry detail for non-video targets is diagnostic only.
+		if (m_context.GetGpu().GetFrameNum() >= 900) {
+			bool is_video = false;
+			for (uint32_t i = 0; i < state.color_count; i++) {
+				if ((state.color_info[i].base_addr & 0xfffffe000000ULL) == 0x8fc0000000ULL) {
+					is_video = true;
+				}
+			}
+			if (!is_video) {
+				static std::atomic<uint32_t> cb4_world_draw_log {0};
+				const auto                   n = cb4_world_draw_log.fetch_add(1);
+				if (n < 20 || (n % 2000) == 0) {
+					const auto& c0 = state.color_count != 0 ? state.color_info[0] : RenderColorInfo {};
+					LOGF("WorldDraw: n=%llu frame=%d idx=%u inst=%u vbuf=%d rt=0x%016llx depth=%u ps=%d\n",
+					     static_cast<unsigned long long>(n + 1), m_context.GetGpu().GetFrameNum(),
+					     draw.index_count, draw.instance_count, state.vs_input_info.buffers_num,
+					     c0.base_addr, state.depth_info.format != vk::Format::eUndefined ? 1u : 0u,
+					     state.ps_active ? 1 : 0);
+				}
+			}
+		}
+		g_draw_vertices.fetch_add(
+		    static_cast<uint64_t>(draw.index_count) * std::max<uint32_t>(draw.instance_count, 1u),
+		    std::memory_order_relaxed);
+		g_draw_instances.fetch_add(std::max<uint32_t>(draw.instance_count, 1u),
+		                            std::memory_order_relaxed);
+	}
+	for (uint32_t i = 0; i < state.color_count; i++) {
+		if ((state.color_info[i].base_addr & 0xfffffe000000ULL) != 0x8fc0000000ULL) {
+			continue;
+		}
+		g_draw_video_submitted.fetch_add(1, std::memory_order_relaxed);
+		if (m_context.GetGpu().GetFrameNum() >= 14500) {
+			static std::atomic<uint32_t> cb4_output_submit_log {0};
+			const auto count = cb4_output_submit_log.fetch_add(1);
+			if (count < 12 || count % 64 == 0) {
+				LOGF("CB4 output submit: frame=%d ps=0x%016" PRIx64 " rt=0x%016" PRIx64 " sources=%zu\n",
+				     m_context.GetGpu().GetFrameNum(), buffer.GetShaders().GetPs().ps_regs.data_addr,
+				     state.color_info[i].base_addr, bindings.pixel ? bindings.pixel->resources.images.size() : 0);
+				if (bindings.pixel) {
+					for (uint32_t j = 0; j < std::min<uint32_t>(bindings.pixel->resources.images.size(), 4); j++) {
+						LOGF("CB4 output source[%u]: addr=0x%016" PRIx64 "\n", j,
+						     bindings.pixel->resources.images[j].desc.info.data.address);
+					}
+				}
+			}
+		}
+		break;
+	}
 
 	if (set_auto_debug) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x600u);
 	}
 	vk::PipelineStageFlags shader_write_stages = {};
-	if (HasShaderBufferWrites(state.vs_input_info.stage)) {
+	if (HasShaderBufferWrites(state.vs_input_info.stage) ||
+	    HasShaderImageWrites(state.vs_input_info.stage)) {
 		shader_write_stages |= vk::PipelineStageFlagBits::eVertexShader;
 	}
-	if (state.ps_active && HasShaderBufferWrites(state.ps_input_info.stage)) {
+	if (state.ps_active &&
+	    (HasShaderBufferWrites(state.ps_input_info.stage) ||
+	     HasShaderImageWrites(state.ps_input_info.stage))) {
 		shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
 	}
 	if (shader_write_stages) {
@@ -1325,15 +1647,23 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 		return;
 	}
 
+	ReportDrawProgress();
 	if (ConsumeMetadataColorOperation(buffer)) {
+		g_draw_metadata.fetch_add(1, std::memory_order_relaxed);
 		ResetBindings();
 		return;
 	}
 
 	if (!DrawHasValidVertexShader(sh_ctx)) {
+		g_draw_invalid_vs.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
 
+	// Record what this draw would have produced before the GE skip test runs.
+	if (!Log::IsSilent()) {
+		g_skip_debug_index_count.store(index_count, std::memory_order_relaxed);
+		g_skip_debug_instance_count.store(instance_count, std::memory_order_relaxed);
+	}
 	if (ShouldSkipGeShader(buffer)) {
 		return;
 	}
@@ -1438,6 +1768,110 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, RenderCommandBuffer& buffer,
 	ResetBindings();
 }
 
+void RenderExecutor::SetIndirectIndexBuffer(uint64_t index_vaddr, uint64_t index_size) {
+	m_indirect_index_vaddr = index_vaddr;
+	m_indirect_index_size  = index_size;
+}
+
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+void RenderExecutor::DrawIndirect(uint64_t submit_id, RenderCommandBuffer& buffer,
+                                  uint32_t index_type_and_size, uint64_t args_vaddr,
+                                  uint32_t draw_count, uint32_t stride_bytes, bool indexed,
+                                  uint32_t flags, uint32_t instance_count,
+                                  uint32_t render_target_slice_offset) {
+	KYTY_PROFILER_FUNCTION();
+
+	EXIT_IF(buffer.IsInvalid());
+	EXIT_IF(draw_count == 0);
+	EXIT_IF(args_vaddr == 0);
+	auto& ucfg   = buffer.GetUserConfig();
+	auto& sh_ctx = buffer.GetShaders();
+
+	buffer.SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DrawIndex), submit_id,
+	                    draw_count, flags, 1, instance_count, args_vaddr);
+
+	Common::LockGuard lock(m_context.GetMutex());
+
+	// The argument records are produced by a compute shader, so the counts are only known to
+	// the GPU. Account for the call, but never read the buffer from the host here: a CPU load
+	// races the producing dispatch and observes stale zeros (which is why GPU-driven geometry
+	// used to vanish).
+	ReportDrawProgress();
+	if (ConsumeMetadataColorOperation(buffer)) {
+		g_draw_metadata.fetch_add(1, std::memory_order_relaxed);
+		ResetBindings();
+		return;
+	}
+
+	if (!DrawHasValidVertexShader(sh_ctx)) {
+		g_draw_invalid_vs.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+
+	// Record what this draw would have produced before the GE skip test runs.
+	if (!Log::IsSilent()) {
+		g_skip_debug_index_count.store(draw_count, std::memory_order_relaxed);
+		g_skip_debug_instance_count.store(instance_count, std::memory_order_relaxed);
+	}
+	if (ShouldSkipGeShader(buffer)) {
+		return;
+	}
+
+	uc_check(ucfg);
+	hw_check(buffer);
+
+	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
+	if (!GetDrawTopology(ucfg, !indexed, false, topology)) {
+		return;
+	}
+
+	// 8-bit indices are widened to 16-bit on the host, which cannot be expressed as an
+	// indirect draw; that front-end has to keep using the CPU-read path.
+	const auto index_type = static_cast<Prospero::IndexType>(index_type_and_size);
+	if (indexed && index_type == Prospero::IndexType::kIndex8) {
+		g_draw_indirect_unsupported.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+
+	DrawIndexBufferSource index_source {};
+	if (indexed) {
+		index_source.enabled = true;
+		index_source.address = m_indirect_index_vaddr;
+		index_source.type    = index_type == Prospero::IndexType::kIndex16 ? vk::IndexType::eUint16
+		                                                                  : vk::IndexType::eUint32;
+		index_source.size    = m_indirect_index_size;
+	}
+
+	const DrawCallInfo draw {"DrawIndirect", CommandBufferDebugOp::DrawIndex, draw_count, flags,
+	                         instance_count, 0};
+
+	DrawRenderState state {};
+	if (!PrepareDrawRenderState(submit_id, buffer, draw, render_target_slice_offset, true, state)) {
+		ResetBindings();
+		return;
+	}
+
+	if (!RefreshShaders(buffer, draw, !indexed, state)) {
+		ResetBindings();
+		return;
+	}
+
+	DrawEmitInfo emit {};
+	emit.indexed       = indexed;
+	emit.vertex_offset = ResolveVertexOffset(ucfg.GetIndexOffset(), state.vs_input_info);
+
+	DrawIndirectSource indirect {};
+	indirect.enabled      = true;
+	indirect.args_vaddr   = args_vaddr;
+	indirect.draw_count   = draw_count;
+	indirect.stride_bytes = stride_bytes;
+	indirect.indexed      = indexed;
+
+	ExecutePreparedDraw(submit_id, buffer, draw, state, topology, emit, index_source, true, true,
+	                    false, indirect);
+	ResetBindings();
+}
+
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t index_count,
                               uint32_t flags, uint32_t render_target_slice_offset,
@@ -1457,15 +1891,23 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer, u
 		return;
 	}
 
+	ReportDrawProgress();
 	if (ConsumeMetadataColorOperation(buffer)) {
+		g_draw_metadata.fetch_add(1, std::memory_order_relaxed);
 		ResetBindings();
 		return;
 	}
 
 	if (!DrawHasValidVertexShader(sh_ctx)) {
+		g_draw_invalid_vs.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
 
+	// Record what this draw would have produced before the GE skip test runs.
+	if (!Log::IsSilent()) {
+		g_skip_debug_index_count.store(index_count, std::memory_order_relaxed);
+		g_skip_debug_instance_count.store(instance_count, std::memory_order_relaxed);
+	}
 	if (ShouldSkipGeShader(buffer)) {
 		return;
 	}
@@ -1555,9 +1997,19 @@ bool RenderExecutor::ResolveColorTargets(uint64_t submit_id, RenderCommandBuffer
 	if (hw.GetColorControl().mode != 3) {
 		return false;
 	}
+	g_draw_resolves.fetch_add(1, std::memory_order_relaxed);
 
 	const auto& src_rt = hw.GetRenderTarget(0);
 	const auto& dst_rt = hw.GetRenderTarget(1);
+	if ((dst_rt.base.addr & 0xfffffe000000ULL) == 0x8fc0000000ULL) {
+		static std::atomic<uint64_t> cb4_output_resolve_count {0};
+		const auto count = cb4_output_resolve_count.fetch_add(1);
+		if (count < 12 || count % 1000 == 0) {
+			LOGF("CB4 output resolve: frame=%llu src=0x%016" PRIx64 " dst=0x%016" PRIx64 "\n",
+			     static_cast<unsigned long long>(m_context.GetGpu().GetFrameNum()),
+			     src_rt.base.addr, dst_rt.base.addr);
+		}
+	}
 	if (src_rt.base.addr == 0 || dst_rt.base.addr == 0) {
 		return false;
 	}

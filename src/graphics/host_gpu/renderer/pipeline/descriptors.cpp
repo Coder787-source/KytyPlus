@@ -285,11 +285,15 @@ bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor, co
 	const uint32_t     field4_expected = descriptor.Depth() | (descriptor.BaseArray5() << 16u);
 	const uint32_t     field5_expected =
 	    0x00700000u | (static_cast<uint32_t>(descriptor.MaxMip()) << 4u);
+	// Some PS5 depth views leave the sampler-control dword at zero for a
+	// single-level image. Astro Bot uses this encoding for its main depth target.
+	const bool field5_ok = descriptor.fields[5] == field5_expected ||
+	                       (descriptor.fields[5] == 0 && descriptor.MaxMip() == 0);
 	const bool common = (descriptor.fields[1] & field1_reserved_mask) == 0 &&
 	                    (descriptor.fields[2] & field2_reserved_mask) == 0 &&
 	                    descriptor.fields[3] == field3_expected &&
 	                    descriptor.fields[4] == field4_expected &&
-	                    descriptor.fields[5] == field5_expected;
+	                    field5_ok;
 	if (!common || (descriptor.fields[6] == 0 && descriptor.fields[7] != 0)) {
 		return false;
 	}
@@ -405,7 +409,7 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	    (swizzle == DstSel(4, 5, 6, 7) || !resource.read || resource.atomic);
 	return (is_1d || is_1d_array || is_2d || is_2d_array || is_3d) && supported_tile &&
 	       descriptor.BaseLevel() == descriptor.LastLevel() &&
-	       descriptor.LastLevel() <= descriptor.MaxMip() && descriptor.MinLod() == 0 &&
+	       descriptor.LastLevel() <= descriptor.MaxMip() + 1u && descriptor.MinLod() == 0 &&
 	       supported_swizzle && descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth();
 }
 
@@ -632,7 +636,11 @@ RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   reso
 	const auto last_level   = descriptor.LastLevel();
 	const auto type         = TextureType(descriptor);
 	const bool multisampled = IsMultisampledTexture(type);
-	const auto levels       = multisampled ? 1u : static_cast<uint32_t>(descriptor.MaxMip()) + 1u;
+	// Storage views may write the next mip while MaxMip still names the last
+	// readable mip. Include that destination in the backing image.
+	const auto levels       = multisampled ? 1u
+	                                      : std::max(static_cast<uint32_t>(descriptor.MaxMip()),
+	                                                 storage ? static_cast<uint32_t>(last_level) : 0u) + 1u;
 	const auto tile         = descriptor.TileMode();
 	const bool depth_tile   = tile == Prospero::GpuEnumValue(Prospero::TileMode::kDepth);
 	const bool msaa_tile =

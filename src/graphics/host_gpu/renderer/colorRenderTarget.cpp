@@ -1,9 +1,11 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -19,7 +21,7 @@
 
 namespace Libs::Graphics {
 
-static std::atomic<uint32_t> g_render_color_log_count = 0;
+static std::atomic_uint32_t g_render_color_log_count = 0;
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandBuffer& buffer,
@@ -33,6 +35,15 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 	const auto  rt_slot = (render_target_slot == UINT32_MAX ? render_target_first_bound_slot(buffer)
 	                                                        : render_target_slot);
 	const auto& rt      = hw.GetRenderTarget(rt_slot);
+	if ((rt.base.addr & 0xfffffe000000ULL) == 0x8fc0000000ULL) {
+		static std::atomic<uint64_t> cb4_output_target_count {0};
+		const auto count = cb4_output_target_count.fetch_add(1);
+		if (count < 12 || count % 1000 == 0) {
+			LOGF("CB4 output target: frame=%llu slot=%u addr=0x%016" PRIx64 " mask=0x%08" PRIx32 "\n",
+			     static_cast<unsigned long long>(m_context.GetGpu().GetFrameNum()),
+			     rt_slot, rt.base.addr, hw.GetRenderTargetMask());
+		}
+	}
 	auto        mask    = render_target_mask_slot(hw.GetRenderTargetMask(), rt_slot);
 	if (ignore_target_mask && rt.base.addr != 0 && mask == 0) {
 		mask = 0x0f;
@@ -76,7 +87,7 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 		EXIT("unsupported render-target sample configuration: samples=%u fragments=%u\n",
 		     rt.attrib.num_samples, rt.attrib.num_fragments);
 	}
-	const auto view = ResolveTargetViewInfo(
+	auto view = ResolveTargetViewInfo(
 	    rt.view.base_array_slice_index, rt.view.last_array_slice_index, render_target_slice_offset);
 	switch (view.type) {
 		case TargetViewType::Image2D:
@@ -130,6 +141,17 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 		EXIT("multisampled 3D render targets are unsupported\n");
 	}
 	const uint32_t depth = volume ? rt.attrib3.depth + 1u : 1u;
+	if (volume) {
+		const uint32_t mip_depth = std::max(depth >> rt.view.current_mip_level, 1u);
+		view = ResolveVolumeTargetViewInfo(rt.view.base_array_slice_index,
+		                                   rt.view.last_array_slice_index, mip_depth,
+		                                   render_target_slice_offset);
+		if (view.type == TargetViewType::Unsupported) {
+			EXIT("3D render-target view has no valid mip slices: base=%u last=%u depth=%u mip=%u\n",
+			     rt.view.base_array_slice_index, rt.view.last_array_slice_index, mip_depth,
+			     rt.view.current_mip_level);
+		}
+	}
 	const bool     standard64 =
 	    rt.attrib3.tile_mode == Prospero::GpuEnumValue(Prospero::TileMode::kStandard64KB);
 
@@ -148,6 +170,12 @@ void RenderExecutor::ResolveRenderColorTarget(uint64_t submit_id, RenderCommandB
 		EXIT("multisampled render targets require a single-mip tiled surface\n");
 	}
 
+	// Render-target dimensions come straight from the guest. The guest's resolution is
+	// lowered upstream, at the video-out surface (see VideoOutSetBufferAttribute2), so
+	// by the time a render target is declared it is already the size the guest intends
+	// and raster, compute and the swapchain all agree. Do NOT scale here: a host-only
+	// shrink makes compute write the guest's full-size image over a smaller surface and
+	// the frame flickers.
 	width  = rt.attrib2.width + 1;
 	height = rt.attrib2.height + 1;
 	const auto target_format =

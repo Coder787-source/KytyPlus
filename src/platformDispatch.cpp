@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright 2026 KytyPlus / KytyPS5 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 KytyPlus / KytyPS5 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "platformDispatch.h"
@@ -81,21 +81,14 @@ GuestPlatform DetectPlatform(const std::filesystem::path& eboot_host_path) {
 		return GuestPlatform::Unknown;
 	}
 
-	std::ifstream f(eboot_host_path, std::ios::binary);
-	if (!f) {
-		return GuestPlatform::Unknown;
-	}
-
-	std::vector<uint8_t> buf(std::min<std::streamoff>(
-	    static_cast<std::streamoff>(kSelfScanWindow),
-	    static_cast<std::streamoff>(
-	        std::filesystem::file_size(eboot_host_path))));
-	if (buf.empty()) {
-		return GuestPlatform::Unknown;
-	}
-	f.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
-	const auto got = static_cast<size_t>(f.gcount());
+	Common::File f;
+	if (!f.Open(eboot_host_path, Common::File::Mode::Read)) return GuestPlatform::Unknown;
+	std::vector<uint8_t> buf(static_cast<size_t>(std::min<uint64_t>(kSelfScanWindow, f.Size())));
+	uint32_t got = 0;
+	f.Read(buf.data(), static_cast<uint32_t>(buf.size()), &got);
+	f.Close();
 	buf.resize(got);
+	if (buf.empty()) return GuestPlatform::Unknown;
 
 	const size_t elf_off = FindElfHeaderOffset(buf);
 	if (elf_off == SIZE_MAX) {

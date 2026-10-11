@@ -326,6 +326,90 @@
        </widget>
       </item>
       <item row="14" column="0">
+       <widget class="QLabel" name="label_guest_render">
+        <property name="text">
+         <string>Guest render (W×H):</string>
+        </property>
+       </widget>
+      </item>
+      <item row="14" column="1">
+       <widget class="QWidget" name="widget_guest_render" native="true">
+        <property name="toolTip">
+         <string>Request engine internal resolution via guest argv. 0×0 = leave at game/engine default. Both fields must be non-zero to take effect.</string>
+        </property>
+        <layout class="QHBoxLayout" name="horizontalLayout_guest_render">
+         <item>
+          <widget class="QSpinBox" name="spinBox_guest_render_width">
+           <property name="minimum">
+            <number>0</number>
+           </property>
+           <property name="maximum">
+            <number>7680</number>
+           </property>
+           <property name="specialValueText">
+            <string>default</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QSpinBox" name="spinBox_guest_render_height">
+           <property name="minimum">
+            <number>0</number>
+           </property>
+           <property name="maximum">
+            <number>4320</number>
+           </property>
+           <property name="specialValueText">
+            <string>default</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item row="15" column="0">
+       <widget class="QLabel" name="label_fsr_output">
+        <property name="text">
+         <string>FSR output (W×H):</string>
+        </property>
+       </widget>
+      </item>
+      <item row="15" column="1">
+       <widget class="QWidget" name="widget_fsr_output" native="true">
+        <property name="toolTip">
+         <string>Resolution FSR upscales to before present. 0×0 = match window size. Requires Upscaler = Fsr1.</string>
+        </property>
+        <layout class="QHBoxLayout" name="horizontalLayout_fsr_output">
+         <item>
+          <widget class="QSpinBox" name="spinBox_fsr_output_width">
+           <property name="minimum">
+            <number>0</number>
+           </property>
+           <property name="maximum">
+            <number>7680</number>
+           </property>
+           <property name="specialValueText">
+            <string>window</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QSpinBox" name="spinBox_fsr_output_height">
+           <property name="minimum">
+            <number>0</number>
+           </property>
+           <property name="maximum">
+            <number>4320</number>
+           </property>
+           <property name="specialValueText">
+            <string>window</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item row="16" column="0">
        <widget class="QLabel" name="label_igpu_optimization">
         <property name="text">
          <string>iGPU optimization:</string>
@@ -339,14 +423,14 @@
         </property>
        </widget>
       </item>
-      <item row="15" column="0">
+      <item row="17" column="0">
        <widget class="QLabel" name="label_texture_lod_bias">
         <property name="text">
          <string>Texture LOD bias:</string>
         </property>
        </widget>
       </item>
-      <item row="15" column="1">
+      <item row="17" column="1">
        <widget class="QSpinBox" name="spinBox_texture_lod_bias">
         <property name="toolTip">
          <string>Shifts texture sampling toward coarser mip levels to save bandwidth on iGPUs. 0 = no bias, 1 = skip one mip level. Applied per-sampler.</string>

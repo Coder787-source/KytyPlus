@@ -1,6 +1,7 @@
 #include "kernel/semaphore.h"
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -294,7 +295,8 @@ int KYTY_SYSV_ABI KernelWaitSema(KernelSema sem, int need, KernelUseconds* time)
 		return KERNEL_ERROR_ESRCH;
 	}
 
-	if (time == nullptr) {
+	// KytyPlus: debug-only (same hot-path spam as KernelWaitEventFlag, 78k lines/20s).
+	if (time == nullptr && Config::GraphicsDebugDumpEnabled()) {
 		LOGF("KernelWaitSema: infinite wait sem=%p need=%d\n", static_cast<void*>(sem), need);
 	}
 

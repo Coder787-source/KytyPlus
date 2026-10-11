@@ -39,6 +39,9 @@ elseif(LINUX)
 endif()
 
 add_dependencies(launcher kyty_emulator)
+if(TARGET naps_extractor)
+    add_dependencies(launcher naps_extractor)
+endif()
 
 if(KYTY_CLANG_CL)
 	add_custom_command(TARGET launcher POST_BUILD
@@ -47,6 +50,18 @@ if(KYTY_CLANG_CL)
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${KYTY_THIRD_PARTY_DIR}/winpthread/bin/libwinpthread-1.dll" $<TARGET_FILE_DIR:launcher>/libwinpthread-1.dll
 	)
 endif()
+
+# FindInterpreter() runs the emulator from the launcher directory. Stage it on
+# every launcher build: a POST_BUILD command only runs when launcher.exe itself
+# is relinked, so an emulator-only rebuild otherwise leaves a stale copy here.
+add_custom_target(stage_emulator_for_launcher
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		$<TARGET_FILE:kyty_emulator>
+		$<TARGET_FILE_DIR:launcher>/$<TARGET_FILE_NAME:kyty_emulator>
+	DEPENDS kyty_emulator
+	VERBATIM
+)
+add_dependencies(launcher stage_emulator_for_launcher)
 
 if(WIN32)
     find_program(QT_WINDEPLOYQT NAMES windeployqt PATHS "${Qt6_DIR}/../../../bin")

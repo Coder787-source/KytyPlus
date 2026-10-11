@@ -55,6 +55,7 @@ enum class Opcode {
 	SBcnt1I32B32,
 	SBcnt1I32B64,
 	SFf1I32B32,
+	SFf1I32B64,
 	// KytyPlus: s_flbit_i32_b32 is the MSB-from-high counterpart of s_ff1_i32_b32.
 	// It was missing from the table, so any shader using it hard-failed the recompiler
 	// even though the IR opcode and SPIR-V emitter for it already existed.
@@ -243,6 +244,7 @@ enum class Opcode {
 	VMed3I32,
 	VMed3U32,
 	VMed3F16,
+	VMed3I16,
 	VSadU32,
 	VAdd3U32,
 	VLshlAddU32,
@@ -548,6 +550,7 @@ enum class Opcode {
 	SCbranchExecz,
 	SCbranchExecnz,
 	SSendmsg,
+	STrap,
 	SSetregB32,
 	SSleep,
 	STtraceData,

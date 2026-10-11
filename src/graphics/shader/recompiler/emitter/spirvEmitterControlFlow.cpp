@@ -459,6 +459,7 @@ void EmitInstruction(EmitterState& state, const IR::Instruction& inst) {
 		case IR::Opcode::MaskedBitCountHighU32: EmitMaskedBitCountU32(state, inst, 1); break;
 		case IR::Opcode::BitReplicateB64B32: EmitBitReplicateB64B32(state, inst); break;
 		case IR::Opcode::FindLsbU32: EmitFindLsbU32(state, inst); break;
+		case IR::Opcode::FindLsbU64: EmitFindLsbU64(state, inst); break;
 		case IR::Opcode::FindMsbFromHighU32: EmitFindMsbFromHighU32(state, inst); break;
 		case IR::Opcode::FindMsbFromHighU64: EmitFindMsbFromHighU64(state, inst); break;
 		case IR::Opcode::BitFieldMaskU32: EmitBitFieldMaskU32(state, inst); break;

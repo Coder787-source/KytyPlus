@@ -1,4 +1,5 @@
 #include "graphics/shader/shader.h"
+#include "graphics/shader/shaderControlFlowFailureCache.h"
 
 #include "common/assert.h"
 #include "common/common.h"
@@ -16,6 +17,7 @@
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/decompiler/ShaderDecoder.h"
 #include "graphics/shader/shaderVertexMetadata.h"
+#include "graphics/shader/geometryShaderFold.h"
 #include "libs/errno.h"
 #include "spirv-tools/libspirv.h"
 #include "spirv-tools/libspirv.hpp"
@@ -23,6 +25,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fmt/format.h>
@@ -273,6 +277,23 @@ static std::span<const uint32_t> ShaderGetMappedCode(uint64_t shader_addr, const
 	     " (%" PRIu32 " dwords)\n",
 	     label, shader_hash, shader_addr, data.code_size_bytes, code_words);
 	return {reinterpret_cast<const uint32_t*>(shader_addr), code_words};
+}
+
+bool ShaderCanFoldTriangleCopyGeometry(const HW::VertexShaderInfo& regs) {
+	ShaderMappedData es;
+	ShaderMappedData gs;
+	if (regs.es_regs.data_addr == 0 || regs.gs_regs.data_addr == 0 ||
+	    !ShaderGetMappedData(regs.es_regs.data_addr, es) ||
+	    !ShaderGetMappedData(regs.gs_regs.data_addr, gs) ||
+	    es.code_size_bytes % sizeof(uint32_t) != 0 ||
+	    gs.code_size_bytes % sizeof(uint32_t) != 0) {
+		return false;
+	}
+	return CanFoldTriangleCopyGeometry(
+	    {reinterpret_cast<const uint32_t*>(regs.es_regs.data_addr),
+	     es.code_size_bytes / sizeof(uint32_t)},
+	    {reinterpret_cast<const uint32_t*>(regs.gs_regs.data_addr),
+	     gs.code_size_bytes / sizeof(uint32_t)});
 }
 
 #if 0
@@ -661,7 +682,13 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 		uint32_t reg  = in.hardware_mapping;
 		uint32_t size = in.size_in_elements;
 
-		LOGF("reg = %u, size = %u, va[%u] = 0x%08" PRIx32 "\n", reg, size, i, attrib[in.semantic]);
+		// KytyPlus: debug-only. This sprintf+write ran per vertex semantic of EVERY draw (631k
+		// lines in a 20s capture, ~1GB of stdout) and was the single biggest cost on the hot
+		// CPU command thread in gameplay (ShaderApplyAttribSemantics ~72us/call). Gate it.
+		if (Config::GraphicsDebugDumpEnabled()) {
+			LOGF("reg = %u, size = %u, va[%u] = 0x%08" PRIx32 "\n", reg, size, i,
+			     attrib[in.semantic]);
+		}
 
 		size_t   index       = attrib[in.semantic] & 0x1fu;
 		uint32_t format      = (attrib[in.semantic] >> 5u) & 0x1ffu;
@@ -1105,12 +1132,15 @@ static std::span<const uint32_t> AddShaderProgramPermutation(const char* stage,
 
 bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
                          ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& info,
-                         std::span<const uint32_t>& spirv) {
+                         std::span<const uint32_t>& spirv, bool fold_triangle_copy) {
 	spirv = {};
 
 	if (!ShaderGetStaticInputInfoVS(regs, sh, info)) {
 		return false;
 	}
+	info.folded_triangle_copy = fold_triangle_copy && ShaderCanFoldTriangleCopyGeometry(regs);
+	info.export_layer = info.folded_triangle_copy &&
+	                    (sh.m_paClVsOutCntl & (1u << 18u)) != 0;
 	const auto shader_hash = regs.gs_regs.chksum;
 	const auto program_id  = ShaderGetIdVS(regs, info, false);
 	const auto key =
@@ -1420,7 +1450,18 @@ bool ShaderCompileSpirvVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegi
 	EXIT_NOT_IMPLEMENTED(regs.es_regs.data_addr == 0 || regs.gs_regs.chksum == 0);
 
 	const uint64_t shader_addr = regs.es_regs.data_addr;
-	const auto code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler VS", regs.gs_regs.chksum);
+	auto code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler VS", regs.gs_regs.chksum);
+	std::vector<uint32_t> folded_code;
+	if (input_info.folded_triangle_copy) {
+		const auto gs_code = ShaderGetMappedCode(regs.gs_regs.data_addr,
+		                                        "ShaderRecompiler GS fold", regs.gs_regs.chksum);
+		if (!FoldTriangleCopyGeometry(code, gs_code, input_info.export_layer, folded_code)) {
+			return false;
+		}
+		code = folded_code;
+		LOGF("ShaderRecompiler VS: folded inspected triangle-copy ES/GS pair, layer=%s\n",
+		     input_info.export_layer ? "yes" : "no");
+	}
 
 	ShaderRecompiler::CompileOptions options;
 	options.stage                = ShaderType::Vertex;
@@ -1530,6 +1571,20 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
 	const uint64_t shader_addr = regs.cs_regs.data_addr;
 	const auto     code = ShaderGetMappedCode(shader_addr, "ShaderRecompiler CS", shader_addr);
 
+	// Cache deterministic pre-materialization failures only. Runtime resources
+	// remain retryable; both code and stage layout must match before reuse.
+	const std::array<uint32_t, 12> failure_layout {
+	    regs.cs_regs.user_sgpr, input_info.wave_size, static_cast<uint32_t>(input_info.thread_ids_num),
+	    static_cast<uint32_t>(input_info.workgroup_register), input_info.threads_num[0], input_info.threads_num[1],
+	    input_info.threads_num[2], static_cast<uint32_t>(input_info.group_id[0]),
+	    static_cast<uint32_t>(input_info.group_id[1]), static_cast<uint32_t>(input_info.group_id[2]),
+	    static_cast<uint32_t>(input_info.tg_size_en),
+	    static_cast<uint32_t>(Config::GetShaderOptimizationType())};
+	static ShaderControlFlowFailureCache control_flow_failures;
+	if (control_flow_failures.Contains(shader_addr, code, failure_layout)) {
+		return false;
+	}
+
 	ShaderRecompiler::CompileOptions options;
 	options.stage                = ShaderType::Compute;
 	options.shader_hash          = shader_addr;
@@ -1546,9 +1601,26 @@ bool ShaderCompileSpirvCS(const HW::ComputeShaderInfo& regs, const HW::ShaderReg
 
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
+	static const bool compile_timing = std::getenv("KYTY_SHADER_TIMING") != nullptr;
+	const auto compile_start = std::chrono::steady_clock::now();
 	if (!ShaderRecompiler::TryRecompile(code, options, result, &error)) {
+		if (compile_timing) {
+			std::fprintf(stderr, "[shader-timing] CS=0x%016" PRIx64 " failed ms=%.2f reason=%s\n",
+			             shader_addr, std::chrono::duration<double, std::milli>(
+			                 std::chrono::steady_clock::now() - compile_start).count(), error.c_str());
+		}
+		if (control_flow_failures.Remember(shader_addr, code, error, failure_layout)) {
+			std::fprintf(stderr, "[shader-failure-cache] CS=0x%016" PRIx64
+			                     " words=%zu; deterministic compile failure cached: %s\n",
+			             shader_addr, code.size(), error.c_str());
+		}
 		ExitShaderRecompilerFailure("ShaderRecompiler CS", options.shader_hash, error.c_str());
 		return false;
+	}
+	if (compile_timing) {
+		std::fprintf(stderr, "[shader-timing] CS=0x%016" PRIx64 " success ms=%.2f words=%zu\n",
+		             shader_addr, std::chrono::duration<double, std::milli>(
+		                 std::chrono::steady_clock::now() - compile_start).count(), result.spirv.size());
 	}
 	DumpShaderRecompilerOriginal("cs", options.shader_hash, code, result.decoded_dump);
 	if (!SpirvValidateBinary("ShaderRecompiler CS", options.shader_hash, result.spirv)) {
@@ -1590,6 +1662,8 @@ ShaderId ShaderGetIdVS(const HW::VertexShaderInfo& regs, const ShaderVertexInput
 
 	ret.ids.push_back(static_cast<uint32_t>(input_info.fetch_external));
 	ret.ids.push_back(static_cast<uint32_t>(input_info.fetch_embedded));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.folded_triangle_copy));
+	ret.ids.push_back(static_cast<uint32_t>(input_info.export_layer));
 	ret.ids.push_back(input_info.resources_num);
 	ret.ids.push_back(input_info.export_count);
 

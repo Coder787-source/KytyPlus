@@ -156,6 +156,15 @@ void EmitExport(EmitterState& state, const IR::Instruction& inst) {
 		return;
 	}
 
+	if (inst.export_info.kind == IR::ExportTargetKind::Layer) {
+		if (state.layer_variable != 0 && inst.src_count > 2) {
+			const auto value = state.builder.AllocateId();
+			state.builder.AddFunction(
+			    {OpBitcast, state.int_type, value, EmitValueLoad(state, inst.src[2])});
+			state.builder.AddFunction({OpStore, state.layer_variable, value});
+		}
+		return;
+	}
 	if (inst.export_info.kind == IR::ExportTargetKind::MrtZ) {
 		EmitMrtZExport(state, inst);
 		return;

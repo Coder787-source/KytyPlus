@@ -188,6 +188,10 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	ListInit(m_ui->comboBox_upscaler_quality, info.upscaler_quality);
 	m_ui->horizontalSlider_upscaler_sharpness->setValue(
 	    static_cast<int>(info.upscaler_sharpness * 100.0f));
+	m_ui->spinBox_guest_render_width->setValue(info.guest_render_width);
+	m_ui->spinBox_guest_render_height->setValue(info.guest_render_height);
+	m_ui->spinBox_fsr_output_width->setValue(info.fsr_output_width);
+	m_ui->spinBox_fsr_output_height->setValue(info.fsr_output_height);
 	ListInit(m_ui->comboBox_igpu_optimization, info.igpu_optimization);
 	m_ui->spinBox_texture_lod_bias->setValue(info.texture_lod_bias);
 	ListInit(m_ui->comboBox_present_mode, info.present_mode);
@@ -338,6 +342,10 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui) {
 	    TextToEnum<Configuration::UpscalerQuality>(ui.comboBox_upscaler_quality->currentText());
 	info.upscaler_sharpness =
 	    static_cast<float>(ui.horizontalSlider_upscaler_sharpness->value()) / 100.0f;
+	info.guest_render_width  = ui.spinBox_guest_render_width->value();
+	info.guest_render_height = ui.spinBox_guest_render_height->value();
+	info.fsr_output_width    = ui.spinBox_fsr_output_width->value();
+	info.fsr_output_height   = ui.spinBox_fsr_output_height->value();
 	info.igpu_optimization =
 	    TextToEnum<Configuration::IgpuOptimization>(ui.comboBox_igpu_optimization->currentText());
 	info.texture_lod_bias = ui.spinBox_texture_lod_bias->value();

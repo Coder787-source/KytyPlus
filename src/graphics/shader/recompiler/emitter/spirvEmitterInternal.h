@@ -34,6 +34,7 @@ enum : uint32_t {
 	AddressingModelLogical                   = 0,
 	MemoryModelGLSL450                       = 1,
 	CapabilityShader                         = 1,
+	CapabilityShaderViewportIndexLayerEXT     = 5254,
 	CapabilityImageGatherExtended            = 25,
 	CapabilitySampled1D                      = 43,
 	CapabilityImage1D                        = 44,
@@ -71,6 +72,7 @@ enum : uint32_t {
 
 enum : uint32_t {
 	BuiltInPosition                  = 0,
+	BuiltInLayer                     = 9,
 	BuiltInFragCoord                 = 15,
 	BuiltInFrontFacing               = 17,
 	BuiltInSampleMask                = 20,
@@ -406,6 +408,7 @@ struct EmitterState {
 	uint32_t                                         subgroup_local_invocation_id_variable = 0;
 	uint32_t                                         per_vertex_variable                   = 0;
 	uint32_t                                         depth_variable                        = 0;
+	uint32_t                                         layer_variable                        = 0;
 	uint32_t                                         sample_mask_variable                  = 0;
 	bool                                             needs_subgroup_ballot                 = false;
 	bool                                             needs_subgroup_shuffle                = false;
@@ -1132,6 +1135,7 @@ void EmitUnaryU32(EmitterState& state, const IR::Instruction& inst, uint32_t opc
 void EmitUnaryU64(EmitterState& state, const IR::Instruction& inst, uint32_t opcode);
 
 void EmitFindLsbU32(EmitterState& state, const IR::Instruction& inst);
+void EmitFindLsbU64(EmitterState& state, const IR::Instruction& inst);
 
 void EmitFindMsbFromHighU32(EmitterState& state, const IR::Instruction& inst);
 

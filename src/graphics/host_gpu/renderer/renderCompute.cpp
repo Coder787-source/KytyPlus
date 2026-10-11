@@ -29,10 +29,12 @@
 #include "libs/errno.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -221,6 +223,39 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 	    (input_info.threads_num[0] * input_info.threads_num[1] * input_info.threads_num[2] >= 512);
 	const auto& program   = *input_info.stage.program;
 	const auto& resources = *input_info.stage.resources;
+	if (std::getenv("KYTY_GPU_DISPATCH_TIMING") != nullptr) {
+		static std::unordered_map<uint64_t, bool> seen_shaders;
+		if (seen_shaders.size() < 256 && seen_shaders.emplace(cs_regs.cs_regs.data_addr, true).second) {
+			for (uint32_t i = 0; i < resources.buffers.size(); ++i) {
+				const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
+				std::fprintf(stderr, "[gpu-resource] shader=0x%016" PRIx64 " buffer=%u addr=0x%016" PRIx64
+				                     " bytes=%llu written=%u stride=%u\n", cs_regs.cs_regs.data_addr, i,
+				             descriptor.Base48(), static_cast<unsigned long long>(BufferDescriptorSize(descriptor)),
+				             program.info.buffers[i].written ? 1u : 0u, descriptor.Stride());
+			}
+		}
+	}
+	if (program.info.images.empty() && program.info.buffers.size() == 2 &&
+	    resources.buffers.size() == 2 && cs_shader.size() < 2048) {
+		const auto source = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[0]);
+		const auto target = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[1]);
+		if (!program.info.buffers[0].written && program.info.buffers[1].written &&
+		    BufferDescriptorSize(source) == 16 && BufferDescriptorSize(target) >= 4096) {
+			static std::atomic<uint64_t> clear_probe_count {0};
+			const auto count = clear_probe_count.fetch_add(1);
+			if (count < 64 || count % 256 == 0) {
+				uint32_t values[4] {};
+				std::memcpy(values, reinterpret_cast<const void*>(source.Base48()), sizeof(values));
+				LOGF("CB4 compute fill: frame=%u shader=0x%016" PRIx64
+				     " hash=0x%016" PRIx64 " addr=0x%016" PRIx64 " size=%llu"
+				     " value=%08x/%08x/%08x/%08x groups=%u/%u/%u mode=%08x stride=%u\n",
+				     frame_num, cs_regs.cs_regs.data_addr, program.shader_hash, target.Base48(),
+				     static_cast<unsigned long long>(BufferDescriptorSize(target)),
+				     values[0], values[1], values[2], values[3], thread_group_x, thread_group_y,
+				     thread_group_z, mode, target.Stride());
+			}
+		}
+	}
 
 	// KytyPlus: the dispatcher-fallback path is used when the shader CFG cannot be
 	// structured. For a few large UE5 compute shaders that fallback emits a pathological
@@ -438,21 +473,68 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, RenderCommandBuffer& buf
 	}
 
 	auto vk_buffer = buffer.Handle();
+	// Diagnostic only: collect actual device execution time after this submission
+	// retires. Never stall the CPU per query, and keep each pool alive until then.
+	static const bool gpu_timing = std::getenv("KYTY_GPU_DISPATCH_TIMING") != nullptr;
+	struct DispatchQueries {
+		vk::Device device;
+		vk::QueryPool pool = nullptr;
+		~DispatchQueries() { if (pool != nullptr) device.destroyQueryPool(pool, nullptr); }
+	};
+	std::shared_ptr<DispatchQueries> queries;
+	uint32_t timestamp_bits = 0;
+	if (gpu_timing) {
+		auto& graphics = m_context.GetGraphics();
+		const auto families = graphics.physical_device.getQueueFamilyProperties();
+		if (graphics.queue_family < families.size()) {
+			timestamp_bits = families[graphics.queue_family].timestampValidBits;
+		}
+		if (timestamp_bits != 0) {
+			queries = std::make_shared<DispatchQueries>();
+			queries->device = graphics.device;
+			vk::QueryPoolCreateInfo create {};
+			create.queryType = vk::QueryType::eTimestamp;
+			create.queryCount = 2;
+			if (graphics.device.createQueryPool(&create, nullptr, &queries->pool) != vk::Result::eSuccess) {
+				queries.reset();
+			} else {
+				vk_buffer.resetQueryPool(queries->pool, 0, 2);
+				vk_buffer.writeTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, queries->pool, 0);
+			}
+		}
+	}
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline.pipeline_layout, bindings);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
 
-	bool has_storage_writes = HasShaderBufferWrites(input_info.stage);
-	has_storage_writes =
-	    std::any_of(program.info.images.begin(), program.info.images.end(),
-	                [](const auto& image) {
-		                return image.written &&
-		                       (image.kind == ShaderRecompiler::IR::ResourceKind::StorageImage ||
-		                        image.kind == ShaderRecompiler::IR::ResourceKind::StorageImageUint);
-	                }) ||
-	    has_storage_writes;
+	const bool has_storage_writes = HasShaderBufferWrites(input_info.stage) ||
+	                                HasShaderImageWrites(input_info.stage);
 	if (has_storage_writes) {
 		ShaderWriteBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	}
+	if (queries) {
+		vk_buffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, queries->pool, 1);
+		const auto shader = sh_ctx.GetCs().cs_regs.data_addr;
+		const double period = m_context.GetGraphics().physical_device_properties.limits.timestampPeriod;
+		const size_t words = cs_shader.size();
+		const bool fallback = program.dispatcher_fallback;
+		m_context.GetCommandScheduler().DeferOperation(
+		    [queries, shader, period, timestamp_bits, words, fallback,
+		     thread_group_x, thread_group_y, thread_group_z, frame_num] {
+			    std::array<uint64_t, 2> ticks {};
+			    const auto result = queries->device.getQueryPoolResults(
+			        queries->pool, 0, 2, sizeof(ticks), ticks.data(), sizeof(uint64_t),
+			        vk::QueryResultFlagBits::e64);
+			    if (result != vk::Result::eSuccess) return;
+			    const uint64_t mask = timestamp_bits >= 64 ? UINT64_MAX : (uint64_t{1} << timestamp_bits) - 1;
+			    const double ms = static_cast<double>((ticks[1] - ticks[0]) & mask) * period / 1e6;
+			    if (ms >= 0.25) {
+				    std::fprintf(stderr, "[gpu-dispatch] frame=%u shader=0x%016" PRIx64
+				                         " ms=%.3f groups=%ux%ux%u words=%zu fallback=%u\n",
+				                 frame_num, shader, ms, thread_group_x, thread_group_y,
+				                 thread_group_z, words, fallback ? 1u : 0u);
+			    }
+		    });
 	}
 	ResetBindings();
 }

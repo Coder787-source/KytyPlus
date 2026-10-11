@@ -5,6 +5,7 @@
 #include "common/dateTime.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/readOnlyFileSystem.h"
 #include "common/hash.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
@@ -435,6 +436,13 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 
 	file->real_name = (directory ? g_mount_points->GetRealDirectory(file->name)
 	                             : g_mount_points->GetRealFilename(file->name));
+
+	std::string image_relative;
+	if (Common::FindReadOnlyFileSystem(file->real_name, image_relative) &&
+	    (rw_mode != Common::File::Mode::Read || creat || trunc || append)) {
+		g_files->DeleteDescriptor(descriptor);
+		return KERNEL_ERROR_EROFS;
+	}
 
 	if (trunc && rw_mode == Common::File::Mode::Read) {
 		return KERNEL_ERROR_EACCES;

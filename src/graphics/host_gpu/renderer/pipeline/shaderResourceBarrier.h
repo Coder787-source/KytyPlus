@@ -26,6 +26,7 @@ std::vector<ShaderBufferWriteRange>
 CollectShaderBufferWrites(const ShaderRecompiler::IR::Program&          program,
                           const ShaderRecompiler::IR::ResourceSnapshot& resources);
 bool HasShaderBufferWrites(const ShaderStageRuntime& runtime);
+bool HasShaderImageWrites(const ShaderStageRuntime& runtime);
 void ShaderAccessBarrier(vk::CommandBuffer vk_buffer, vk::PipelineStageFlags source_stages);
 void ShaderWriteHazardBarrier(vk::CommandBuffer      vk_buffer,
                               vk::PipelineStageFlags destination_stages);

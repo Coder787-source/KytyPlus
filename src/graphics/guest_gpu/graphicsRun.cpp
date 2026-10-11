@@ -11,6 +11,7 @@
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
+#include "graphics/host_gpu/hostMemory.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/sync.h"
@@ -24,6 +25,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <deque>
 #include <memory>
@@ -347,6 +350,7 @@ void CommandProcessor::BufferInit() {
 }
 
 void CommandProcessor::BufferFlush() {
+	KYTY_PROFILER_FUNCTION();
 	GetScheduler().Flush();
 }
 
@@ -548,6 +552,12 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
                                uint64_t src_address_or_offset_or_immediate, uint32_t num_bytes,
                                uint8_t wait_for_previous, uint8_t write_confirm,
                                uint8_t block_engine) {
+	if (std::getenv("KYTY_GPU_DISPATCH_TIMING") != nullptr) {
+		static uint32_t dma_seen = 0;
+		if (++dma_seen <= 2000) std::fprintf(stderr, "[dma-trace] engine=%u dst_sel=%u dst=0x%llx src_sel=%u src=0x%llx bytes=%u\n",
+		    engine, dst_sel, static_cast<unsigned long long>(dst_address_or_offset), src_sel,
+		    static_cast<unsigned long long>(src_address_or_offset_or_immediate), num_bytes);
+	}
 	EXIT_NOT_IMPLEMENTED(engine > 1);
 	if (num_bytes == 0) {
 		return;
@@ -560,6 +570,12 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	if (static_cast<uint32_t>(dst_address_or_offset) == 0x3022cu) {
 		return;
 	}
+	// PFP emits this one-byte marker while setting up Astro Bot's command stream.
+	// Both addresses are below the guest address space and have no DMA backing.
+	if (engine == 1 && dst_sel == 3 && src_sel == 3 && dst_address_or_offset == 2 &&
+	    src_address_or_offset_or_immediate == 4 && num_bytes == 1) {
+		return;
+	}
 	auto decode_gds = [](uint8_t selector, bool& is_gds) {
 		switch (selector) {
 			case 0:
@@ -570,7 +586,19 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	};
 	bool dst_gds = false;
 	if (!decode_gds(dst_sel, dst_gds)) {
-		EXIT("unsupported dmaData destination selector 0x%02" PRIx8 "\n", dst_sel);
+		// DMA_DATA DST_SEL 2 selects the shader memory/scratch block. That has no host
+		// image to write: the recompiled shader allocates its own LDS, so the copy is
+		// unobservable on the host and must simply be dropped. PS5 titles also use
+		// reserved selectors above 3 now that the field is four bits wide. Neither case
+		// may abort the game, so report once and continue.
+		static std::atomic<uint32_t> dst_sel_log {0};
+		if (dst_sel_log.fetch_add(1) < 16) {
+			LOGF("\t temporary: ignoring dmaData destination selector 0x%02" PRIx8
+			     " (scratch/reserved), dst=0x%016" PRIx64 ", num_bytes=%" PRIu32
+			     ", src_sel=0x%02" PRIx8 "\n",
+			     dst_sel, dst_address_or_offset, num_bytes, src_sel);
+		}
+		return;
 	}
 	auto& buffer_cache = GetGpuResources().GetBufferCache();
 	if (src_sel == 2) {
@@ -581,7 +609,13 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	}
 	bool src_gds = false;
 	if (!decode_gds(src_sel, src_gds)) {
-		EXIT("unsupported dmaData source selector 0x%02" PRIx8 "\n", src_sel);
+		static std::atomic<uint32_t> src_sel_log {0};
+		if (src_sel_log.fetch_add(1) < 16) {
+			LOGF("\t temporary: ignoring dmaData source selector 0x%02" PRIx8
+			     " (scratch/reserved), src=0x%016" PRIx64 ", num_bytes=%" PRIu32 "\n",
+			     src_sel, src_address_or_offset_or_immediate, num_bytes);
+		}
+		return;
 	}
 	if (src_gds && dst_gds) {
 		EXIT("unsupported dmaData GDS-to-GDS copy\n");
@@ -1120,40 +1154,14 @@ void CommandProcessor::DrawIndirect(uint32_t data_offset, uint32_t draw_initiato
 	EXIT_NOT_IMPLEMENTED((draw_initiator & ~0x20u) != 2u);
 	EXIT_NOT_IMPLEMENTED(m_draw_indirect_args_base_addr == 0);
 
-	const auto* args_addr =
-	    reinterpret_cast<const void*>(m_draw_indirect_args_base_addr + data_offset);
-
 	if (!indexed) {
-		DrawIndirectArgs args {};
-		std::memcpy(&args, args_addr, sizeof(args));
-		if (args.instance_count != 1u || args.start_vertex_location != 0u ||
-		    args.start_instance_location != 0u) {
-			static std::atomic<uint32_t> log_count {0};
-			if (log_count.fetch_add(1) < 64) {
-				LOGF("\t warning: partial DrawIndirect args: vertex_count=%" PRIu32
-				     ", instance_count=%" PRIu32 ", start_vertex=%" PRIu32
-				     ", start_instance=%" PRIu32 "\n",
-				     args.vertex_count_per_instance, args.instance_count,
-				     args.start_vertex_location, args.start_instance_location);
-			}
-		}
-		m_num_instances = args.instance_count;
-		SubmitNonIndexedDraw(args.vertex_count_per_instance, 0, 0, args.start_vertex_location,
-		                     args.start_instance_location);
+		m_renderer.GetRenderExecutor().SetIndirectIndexBuffer(0, 0);
+		m_renderer.GetRenderExecutor().DrawIndirect(
+		    m_submit_id, CurrentBuffer(), m_index_type_and_size,
+		    m_draw_indirect_args_base_addr + data_offset,
+		    /*draw_count=*/1, /*stride_bytes=*/sizeof(DrawIndirectArgs), /*indexed=*/false,
+		    /*flags=*/0, /*instance_count=*/1);
 		return;
-	}
-
-	DrawIndexedIndirectArgs args {};
-	std::memcpy(&args, args_addr, sizeof(args));
-	if (args.base_vertex_location != 0u || args.start_instance_location != 0u) {
-		static std::atomic<uint32_t> log_count {0};
-		if (log_count.fetch_add(1) < 64) {
-			LOGF("\t warning: partial DrawIndexIndirect args: index_count=%" PRIu32
-			     ", instance_count=%" PRIu32 ", start_index=%" PRIu32 ", base_vertex=%" PRIu32
-			     ", start_instance=%" PRIu32 "\n",
-			     args.index_count_per_instance, args.instance_count, args.start_index_location,
-			     args.base_vertex_location, args.start_instance_location);
-		}
 	}
 
 	uint64_t index_size = 0;
@@ -1164,24 +1172,24 @@ void CommandProcessor::DrawIndirect(uint32_t data_offset, uint32_t draw_initiato
 		default: EXIT("unknown index_type_and_size: %u\n", m_index_type_and_size);
 	}
 
-	auto* index_addr = reinterpret_cast<const void*>(
-	    m_index_base_addr + static_cast<uint64_t>(args.start_index_location) * index_size);
-
-	const uint32_t index_count =
-	    (m_index_buffer_size != 0 ? std::min(args.index_count_per_instance, m_index_buffer_size)
-	                              : args.index_count_per_instance);
-	if (GraphicsRunDebugDumpEnabled() && index_count != args.index_count_per_instance) {
-		static std::atomic<uint32_t> log_count {0};
-		if (log_count.fetch_add(1, std::memory_order_relaxed) < 64) {
-			LOGF("\t DrawIndexIndirect: clamped index_count from %" PRIu32 " to %" PRIu32
-			     " using INDEX_BUFFER_SIZE\n",
-			     args.index_count_per_instance, index_count);
+	// The counts live in a buffer the culling compute shader wrote. Do not read them
+	// on the host (that raced the dispatch and yielded zeros); hand the buffer to the
+	// GPU and let it consume the arguments itself.
+	uint64_t index_buffer_bytes = static_cast<uint64_t>(m_index_buffer_size) * index_size;
+	if (index_buffer_bytes == 0) {
+		// Some command streams omit INDEX_BUFFER_SIZE. Bind the mapped range, with a
+		// reasonable upper bound, so GPU-provided start/count fields remain valid.
+		if (!HostMemoryQueryRange(m_index_base_addr, 16 * 1024 * 1024,
+		                          HostMemoryAccess::Mapped, index_buffer_bytes)) {
+			EXIT("indirect index buffer is not mapped\n");
 		}
 	}
-
-	m_num_instances = args.instance_count;
-	DrawIndex(index_count, index_addr, 0, 1, args.instance_count, nullptr, 0,
-	          static_cast<int32_t>(args.base_vertex_location), args.start_instance_location);
+	m_renderer.GetRenderExecutor().SetIndirectIndexBuffer(m_index_base_addr, index_buffer_bytes);
+	m_renderer.GetRenderExecutor().DrawIndirect(
+	    m_submit_id, CurrentBuffer(), m_index_type_and_size,
+	    m_draw_indirect_args_base_addr + data_offset, /*draw_count=*/1,
+	    /*stride_bytes=*/sizeof(DrawIndexedIndirectArgs), /*indexed=*/true,
+	    /*flags=*/0, /*instance_count=*/1);
 }
 
 void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_count_or_count,
@@ -1207,6 +1215,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 	uint32_t draw_count = max_count_or_count;
 	if (count_addr != nullptr) {
+		BufferFlushAndWait();
 		draw_count = *count_addr;
 		if (draw_count > max_count_or_count) {
 			draw_count = max_count_or_count;
@@ -1219,6 +1228,35 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 	const auto args_size = indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs);
 	EXIT_NOT_IMPLEMENTED(stride_in_bytes < args_size);
+
+	// A multi-draw is a contiguous run of argument records; issue them all on the GPU.
+	const uint64_t args_vaddr = m_draw_indirect_args_base_addr + data_offset;
+	if (indexed) {
+		// Bind the guest index buffer the records index into.
+		uint64_t index_size = 0;
+		switch (m_index_type_and_size) {
+			case 0: index_size = 2; break;
+			case 1: index_size = 4; break;
+			case 2: index_size = 1; break;
+			default: EXIT("unknown index_type_and_size: %u\n", m_index_type_and_size);
+		}
+		uint64_t index_buffer_bytes = static_cast<uint64_t>(m_index_buffer_size) * index_size;
+		if (index_buffer_bytes == 0) {
+			if (!HostMemoryQueryRange(m_index_base_addr, 16 * 1024 * 1024,
+			                          HostMemoryAccess::Mapped, index_buffer_bytes)) {
+				EXIT("indirect index buffer is not mapped\n");
+			}
+		}
+		m_renderer.GetRenderExecutor().SetIndirectIndexBuffer(m_index_base_addr,
+		                                                      index_buffer_bytes);
+	} else {
+		m_renderer.GetRenderExecutor().SetIndirectIndexBuffer(0, 0);
+	}
+	m_num_instances = 1;
+	m_renderer.GetRenderExecutor().DrawIndirect(
+	    m_submit_id, CurrentBuffer(), m_index_type_and_size, args_vaddr, draw_count,
+	    stride_in_bytes, indexed, /*flags=*/0, m_num_instances);
+	return;
 
 	for (uint32_t i = 0; i < draw_count; i++) {
 		const auto args_addr = m_draw_indirect_args_base_addr + data_offset +
@@ -1365,9 +1403,30 @@ void CommandProcessor::DispatchIndirect(uint32_t data_offset, uint32_t mode) {
 
 	EXIT_NOT_IMPLEMENTED(m_dispatch_indirect_args_base_addr == 0);
 
+	// DispatchDirect records a concrete vkCmdDispatch, so unlike a draw the group counts
+	// must be known on the host. The producing compute shader has to complete first,
+	// otherwise the counts read back as the pre-dispatch (usually zero) values.
+	const auto wait_start = std::chrono::steady_clock::now();
+	BufferFlushAndWait();
+	static const bool indirect_timing = std::getenv("KYTY_SHADER_TIMING") != nullptr;
+	if (indirect_timing) {
+		const double wait_ms = std::chrono::duration<double, std::milli>(
+		    std::chrono::steady_clock::now() - wait_start).count();
+		if (wait_ms > 5.0) {
+			std::fprintf(stderr, "[indirect-wait] shader=0x%016" PRIx64 " ms=%.2f\n",
+			             m_sh_ctx.GetCs().cs_regs.data_addr, wait_ms);
+		}
+	}
+
 	const auto args_addr = m_dispatch_indirect_args_base_addr + data_offset;
 	auto*      args      = reinterpret_cast<const DispatchIndirectArgs*>(args_addr);
 
+	if (std::getenv("KYTY_GPU_DISPATCH_TIMING") != nullptr) {
+		std::fprintf(stderr, "[indirect-args] shader=0x%016" PRIx64 " args=0x%016" PRIx64
+		                     " groups=%ux%ux%u mode=0x%x\n",
+		             m_sh_ctx.GetCs().cs_regs.data_addr, args_addr, args->thread_group_x,
+		             args->thread_group_y, args->thread_group_z, mode);
+	}
 	DispatchDirect(args->thread_group_x, args->thread_group_y, args->thread_group_z, mode);
 }
 
@@ -1401,6 +1460,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
                                         uint32_t interrupt_context_id) {
 	static_assert(sizeof(T) == sizeof(uint32_t) || sizeof(T) == sizeof(uint64_t));
 
+	KYTY_PROFILER_BLOCK("EOP::WriteAndSignal");
 	CheckBuffer();
 
 	if (GraphicsRunDebugDumpEnabled()) {
@@ -1573,8 +1633,14 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 			break;
 		case 0x04:
 			if constexpr (sizeof(T) == sizeof(uint64_t)) {
-				const auto clock = Sync::ReadReferenceClock();
-				std::memcpy(dst_gpu_addr, &clock, sizeof(clock));
+				const auto clock = [&] {
+					KYTY_PROFILER_BLOCK("EOP::ReferenceClock");
+					return Sync::ReadReferenceClock();
+				}();
+				{
+					KYTY_PROFILER_BLOCK("EOP::ClockPublish");
+					std::memcpy(dst_gpu_addr, &clock, sizeof(clock));
+				}
 				switch (cache_action) {
 					case 0x00:
 						if (((eop_event_type == 0x04 && event_index == 0x05) ||
@@ -1631,9 +1697,16 @@ void CommandProcessor::WriteAtEndOfPipe64(uint32_t cache_policy, uint32_t event_
 }
 
 void CommandProcessor::EmitGlobalBarrier() {
+	KYTY_PROFILER_FUNCTION();
 	CheckBuffer();
 
 	Common::LockGuard lock(m_renderer.GetMutex());
+
+	auto& buffer = CurrentBuffer();
+	// A global memory barrier with all-command stages and memory-wide accesses is
+	// invalid inside dynamic rendering. Finish the pass before recording it; the
+	// next draw resumes with attachment load operations.
+	GetScheduler().EndRendering();
 
 	vk::MemoryBarrier2 barrier {};
 	barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
@@ -1644,8 +1717,7 @@ void CommandProcessor::EmitGlobalBarrier() {
 	vk::DependencyInfo dependency {};
 	dependency.memoryBarrierCount = 1;
 	dependency.pMemoryBarriers    = &barrier;
-	GetScheduler().EndRendering();
-	CurrentBuffer().Handle().pipelineBarrier2(dependency);
+	buffer.Handle().pipelineBarrier2(dependency);
 }
 
 void CommandProcessor::TriggerEopEventAtEndOfPipe(uint32_t interrupt_context_id) {

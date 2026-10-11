@@ -243,7 +243,9 @@ void ConfigurationItem::SetCompatibilityEditable(bool editable) {
 }
 
 void ConfigurationItem::UpdateIcon() {
-	const QString icon_file = QDir(m_info->basedir).filePath(QStringLiteral("sce_sys/icon0.png"));
+	const QString icon_file = m_info->artwork_icon_path.isEmpty()
+	                              ? QDir(m_info->basedir).filePath(QStringLiteral("sce_sys/icon0.png"))
+	                              : m_info->artwork_icon_path;
 	if (QFileInfo::exists(icon_file)) {
 		setIcon(NameColumn, QIcon(icon_file));
 		return;

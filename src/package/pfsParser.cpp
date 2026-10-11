@@ -697,8 +697,12 @@ uint32_t PfsParser::ExtractAll(const PfsParseResult& result,
     }
 
     uint32_t extracted = 0;
+    uint64_t completed = 0;
+    const auto total_files = static_cast<uint64_t>(result.files.size());
+    ::printf("KYTY_PROGRESS=0/%llu\n", static_cast<unsigned long long>(total_files)); ::fflush(stdout);
 
     for (const auto& file : result.files) {
+        ::printf("KYTY_PROGRESS=%llu/%llu\n", static_cast<unsigned long long>(completed++), static_cast<unsigned long long>(total_files)); ::fflush(stdout);
         if (file.name.empty() || file.name == "." || file.name == "..") continue;
         if (!IsSafeRelativePath(file.name)) {
             LOGF("PFS: skipping unsafe path in package: %s", file.name.c_str());
@@ -737,6 +741,7 @@ uint32_t PfsParser::ExtractAll(const PfsParseResult& result,
         out.close();
     }
 
+    ::printf("KYTY_PROGRESS=%llu/%llu\n", static_cast<unsigned long long>(total_files), static_cast<unsigned long long>(total_files)); ::fflush(stdout);
     LOGF("PFS: extracted %u file(s) to %s", extracted, output_dir.c_str());
     return extracted;
 }

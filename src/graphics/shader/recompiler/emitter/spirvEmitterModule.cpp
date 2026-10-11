@@ -211,6 +211,9 @@ void AllocateOutputVariables(EmitterState& state) {
 				binding.variable_id =
 				    AllocateSharedOutputVariable(state, state.per_vertex_variable);
 				break;
+			case IR::StageOutputKind::Layer:
+				binding.variable_id = AllocateSharedOutputVariable(state, state.layer_variable);
+				break;
 			case IR::StageOutputKind::Depth:
 				binding.variable_id = AllocateSharedOutputVariable(state, state.depth_variable);
 				break;
@@ -277,6 +280,11 @@ void AddInputAnnotationsAndNames(EmitterState& state) {
 }
 
 void AddOutputAnnotationsAndNames(EmitterState& state) {
+	if (state.layer_variable != 0) {
+		state.builder.AddName(state.layer_variable, "gl_Layer");
+		state.builder.AddAnnotation(
+		    {OpDecorate, state.layer_variable, DecorationBuiltIn, BuiltInLayer});
+	}
 	if (state.per_vertex_variable != 0) {
 		state.builder.AddName(state.per_vertex_type, "gl_PerVertex");
 		state.builder.AddName(state.per_vertex_variable, "outPerVertex");
@@ -478,6 +486,10 @@ void EmitHeaderAndTypes(EmitterState& state) {
 	state.glsl_std450               = state.builder.AllocateId();
 
 	state.builder.AddCapability({CapabilityShader});
+	if (state.layer_variable != 0) {
+		state.builder.AddExtension("SPV_EXT_shader_viewport_index_layer");
+		state.builder.AddCapability({CapabilityShaderViewportIndexLayerEXT});
+	}
 	state.builder.AddCapability({CapabilitySampled1D});
 	state.builder.AddCapability({CapabilityImage1D});
 	state.builder.AddCapability({CapabilityImageQuery});
@@ -647,6 +659,10 @@ void EmitHeaderAndTypes(EmitterState& state) {
 			state.builder.AddType(
 			    {OpVariable, pointer_type, binding.variable_id, StorageClassOutput});
 		}
+	}
+	if (state.layer_variable != 0) {
+		state.builder.AddType(
+		    {OpVariable, state.ptr_output_int, state.layer_variable, StorageClassOutput});
 	}
 	if (state.depth_variable != 0) {
 		state.builder.AddType(

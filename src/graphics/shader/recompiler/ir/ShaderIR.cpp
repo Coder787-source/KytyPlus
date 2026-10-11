@@ -864,6 +864,13 @@ bool LowerVInterpP1F32(const Decoder::Instruction& decoded, BasicBlock& block) {
 
 bool LowerVInterpLoadF32(const Decoder::Instruction& decoded, BasicBlock& block,
                          std::string* error) {
+	if (decoded.opcode == Decoder::Opcode::VInterpMovF32 && decoded.src0.value < 2u) {
+		// The host input already contains the interpolated attribute. Pixel barycentric
+		// I/J registers are not supplied yet, so represent P0 by that value and
+		// P10/P20 by zero. This preserves P0 + I*P10 + J*P20 for shaders that
+		// explicitly assemble the interpolated value (including Astro Bot's menu PS).
+		return LowerMoveImmediateU32(decoded.pc, decoded.dst, 0u, block, error);
+	}
 	if (decoded.opcode == Decoder::Opcode::VInterpMovF32 && decoded.src0.value != 2u) {
 		if (error != nullptr) {
 			*error = fmt::format("v_interp_mov_f32 mode {} is not implemented at pc 0x{:08x}",
@@ -969,6 +976,10 @@ bool LowerControlInstruction(const Decoder::Instruction& decoded, BasicBlock& bl
 			return LowerControlMarker(decoded, block, Opcode::Barrier, false, error);
 		case Decoder::Opcode::SSendmsg:
 			return LowerControlMarker(decoded, block, Opcode::Sendmsg, true, error);
+		case Decoder::Opcode::STrap:
+			// Trap ID 1 is a shader-debugger breakpoint. The host shader has no
+			// console trap handler, so continue execution when no debugger is attached.
+			return LowerControlMarker(decoded, block, Opcode::ControlNop, true, error);
 		case Decoder::Opcode::SSetregB32:
 		case Decoder::Opcode::SSleep:
 			return LowerControlMarker(decoded, block, Opcode::ControlNop, true, error);
@@ -1045,6 +1056,7 @@ bool IsControlOpcode(Decoder::Opcode opcode) {
 		case Decoder::Opcode::SWaitcnt:
 		case Decoder::Opcode::SBarrier:
 		case Decoder::Opcode::SSendmsg:
+		case Decoder::Opcode::STrap:
 		case Decoder::Opcode::SSetregB32:
 		case Decoder::Opcode::SSleep:
 		case Decoder::Opcode::STtraceData:

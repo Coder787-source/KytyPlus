@@ -23,3 +23,13 @@ dualsense_trigger_test.*
 /_kyty_*.log
 /build_*log*.txt
 /scriptsenv-*.cmd
+
+# Local debugging captures, runtime data, and configuration backups
+/_*/
+/_*
+
+# Generated .NET package-helper and regression-test output
+/src/package/naps/bin/
+/src/package/naps/obj/
+/tests/naps/bin/
+/tests/naps/obj/

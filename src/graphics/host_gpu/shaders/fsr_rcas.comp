@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright 2024 AMD (algorithm), KytyPlus (GLSL implementation)
+// SPDX-FileCopyrightText: Copyright 2024 AMD (algorithm), KytyPlus (GLSL implementation)
 // SPDX-License-Identifier: MIT
 //
 // RCAS — Robust Contrast Adaptive Sharpening (FSR 1.0 algorithm, GLSL port).

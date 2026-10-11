@@ -5,6 +5,7 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
+#include "libs/networkStubs.h"
 #include "loader/symbolDatabase.h"
 
 #include <cctype>
@@ -1726,6 +1727,22 @@ static int np_auth_wait_or_poll_async(int req_id, int* result) {
 	return 0;
 }
 
+// PSN simulation: complete an NpAuth request as a successful sign-in instead of
+// NP_ERROR_SIGNED_OUT, so libSceNpCppWebApi receives a usable auth code / id token
+// and the game's online fetch can proceed against the local stub account.
+static int np_auth_complete_success(NpAuthRequest* request) {
+	if (request->state == NpAuthRequestState::Aborted) {
+		request->result = NP_AUTH_ERROR_ABORTED;
+		return NP_AUTH_ERROR_ABORTED;
+	}
+
+	request->state  = NpAuthRequestState::Complete;
+	request->result = 0;
+
+	// async: caller sees result via WaitAsync/PollAsync; sync: 0 = OK
+	return 0;
+}
+
 static int np_auth_complete_signed_out(NpAuthRequest* request) {
 	if (request->state == NpAuthRequestState::Complete) {
 		request->result = NP_AUTH_ERROR_INVALID_ARGUMENT;
@@ -1791,7 +1808,7 @@ static int KYTY_SYSV_ABI NpAuthGetAuthorizationCodeV3(int req_id, const void* pa
 	// request->result = 0;
 
 	// return 0;
-	return np_auth_complete_signed_out(request);
+	return np_auth_complete_success(request);
 }
 
 static int KYTY_SYSV_ABI NpAuthGetIdTokenV3(int req_id, const void* param, void* id_token) {
@@ -1820,7 +1837,7 @@ static int KYTY_SYSV_ABI NpAuthGetIdTokenV3(int req_id, const void* param, void*
 	// request->result = 0;
 
 	// return 0;
-	return np_auth_complete_signed_out(request);
+	return np_auth_complete_success(request);
 }
 
 LIB_DEFINE(InitNet_1_NpAuth) {
@@ -3368,7 +3385,15 @@ NpWebApi2SendRequest(int64_t request_id, const void* data, size_t data_size,
 		}
 	}
 
-	// return 0;
+	// PSN simulation: report the request as successfully sent when the local
+	// stub account is signed in, so titles waiting on cloud-sync completion
+	// (e.g. titleCloudStorage "Downloading data" overlays) proceed offline.
+	if (NetworkStubs::NetworkStubsManager::Instance().IsSignedIn()) {
+		if (response_info_option != nullptr) {
+			response_info_option->http_status = 200;
+		}
+		return 0;
+	}
 	return NP_WEBAPI2_ERROR_NOT_SIGNED_IN;
 }
 
@@ -3526,6 +3551,78 @@ static int KYTY_SYSV_ABI NpWebApi2PushEventRegisterCallback(int user_context_id,
 	return callback_id++;
 }
 
+static int KYTY_SYSV_ABI NpWebApi2PushEventCreatePushContext(int user_context_id,
+                                                             void* push_context_id) {
+	PRINT_NAME();
+
+	LOGF("\t user_context_id = %d\n", user_context_id);
+	LOGF("\t push_context_id = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(push_context_id));
+
+	if (push_context_id == nullptr) {
+		return NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+	}
+
+	// On Prospero the id is a 16-byte UUID. An incrementing 64-bit value in the
+	// first 8 bytes is sufficient for callers that only pass it back verbatim.
+	static int64_t next_push_context_id = 0;
+	int64_t        id                   = ++next_push_context_id;
+
+	std::memset(push_context_id, 0, 16);
+	std::memcpy(push_context_id, &id, sizeof(int64_t));
+
+	return 0;
+}
+
+static int KYTY_SYSV_ABI NpWebApi2PushEventRegisterPushContextCallback(int user_context_id, int filter_id,
+                                                                       void* callback, void* user_arg) {
+	PRINT_NAME();
+
+	LOGF("\t user_context_id = %d\n", user_context_id);
+	LOGF("\t filter_id       = %d\n", filter_id);
+	LOGF("\t callback        = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(callback));
+	LOGF("\t user_arg        = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(user_arg));
+
+	if (callback == nullptr) {
+		return NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+	}
+
+	static int callback_id = 100;
+
+	return callback_id++;
+}
+
+static int KYTY_SYSV_ABI NpWebApi2PushEventStartPushContextCallback(int         user_context_id,
+                                                                    const void* push_context_id) {
+	PRINT_NAME();
+
+	LOGF("\t user_context_id = %d\n", user_context_id);
+	LOGF("\t push_context_id = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(push_context_id));
+
+	if (push_context_id == nullptr) {
+		return NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+	}
+
+	return 0;
+}
+
+static int KYTY_SYSV_ABI NpWebApi2PushEventUnregisterCallback(int user_context_id, int callback_id) {
+	PRINT_NAME();
+
+	LOGF("\t user_context_id = %d\n", user_context_id);
+	LOGF("\t callback_id     = %d\n", callback_id);
+
+	return 0;
+}
+
+static int KYTY_SYSV_ABI NpWebApi2PushEventDeleteFilter(int lib_ctx_id, int filter_id) {
+	PRINT_NAME();
+
+	LOGF("\t lib_ctx_id = %d\n", lib_ctx_id);
+	LOGF("\t filter_id  = %d\n", filter_id);
+
+	return 0;
+}
+
 static void KYTY_SYSV_ABI NpWebApi2CheckTimeout() {
 	// Timeout processing is an internal maintenance tick in Prospero. Requests
 	// complete synchronously in this implementation, so there is no pending
@@ -3557,6 +3654,21 @@ LIB_DEFINE(InitNet_1_NpWebApi2) {
 	LIB_FUNC("QafxeZM3WK4", LibNpWebApi2::NpWebApi2PushEventDeletePushContext);
 	LIB_FUNC("MsaFhR+lPE4", LibNpWebApi2::NpWebApi2PushEventCreateFilter);
 	LIB_FUNC("fY3QqeNkF8k", LibNpWebApi2::NpWebApi2PushEventRegisterCallback);
+	LIB_FUNC("NNVf18SlbT8", LibNpWebApi2::NpWebApi2PushEventCreatePushContext);
+	LIB_FUNC("lxtHJMwBsaU", LibNpWebApi2::NpWebApi2PushEventRegisterPushContextCallback);
+	LIB_FUNC("AAj9X+4aGYA", LibNpWebApi2::NpWebApi2PushEventStartPushContextCallback);
+	LIB_FUNC("hOnIlcGrO6g", LibNpWebApi2::NpWebApi2PushEventUnregisterCallback);
+	LIB_FUNC("KJdPcOGmK58", LibNpWebApi2::NpWebApi2PushEventDeleteFilter);
+	LIB_FUNC("NNVf18SlbT8", LibNpWebApi2::NpWebApi2PushEventCreatePushContext);
+	LIB_FUNC("lxtHJMwBsaU", LibNpWebApi2::NpWebApi2PushEventRegisterPushContextCallback);
+	LIB_FUNC("AAj9X+4aGYA", LibNpWebApi2::NpWebApi2PushEventStartPushContextCallback);
+	LIB_FUNC("hOnIlcGrO6g", LibNpWebApi2::NpWebApi2PushEventUnregisterCallback);
+	LIB_FUNC("KJdPcOGmK58", LibNpWebApi2::NpWebApi2PushEventDeleteFilter);
+	LIB_FUNC("NNVf18SlbT8", LibNpWebApi2::NpWebApi2PushEventCreatePushContext);
+	LIB_FUNC("lxtHJMwBsaU", LibNpWebApi2::NpWebApi2PushEventRegisterPushContextCallback);
+	LIB_FUNC("AAj9X+4aGYA", LibNpWebApi2::NpWebApi2PushEventStartPushContextCallback);
+	LIB_FUNC("hOnIlcGrO6g", LibNpWebApi2::NpWebApi2PushEventUnregisterCallback);
+	LIB_FUNC("KJdPcOGmK58", LibNpWebApi2::NpWebApi2PushEventDeleteFilter);
 	LIB_FUNC("3Tt9zL3tkoc", LibNpWebApi2::NpWebApi2CheckTimeout);
 	LIB_FUNC("bEvXpcEk200", LibNpWebApi2::NpWebApi2Terminate);
 }

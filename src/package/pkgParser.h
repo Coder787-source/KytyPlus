@@ -77,7 +77,17 @@ struct PkgParseResult {
     // Absolute file offset of the located PFS superblock inside the PKG.
     // 0 if no PFS image was found. The PFS image is NOT guaranteed to start at
     // body_offset; it commonly starts at body_offset + body_size.
-    uint64_t pfs_image_offset;
+    uint64_t pfs_image_offset = 0;
+
+    // PS5 finalized-image (FIH) wrapper. PFS block pointers are relative to
+    // pfs_segment_offset, NOT to a data-first superblock near the segment end.
+    bool is_finalized_image = false;
+    uint64_t pfs_segment_offset = 0;
+    uint64_t pfs_segment_size = 0;
+    uint64_t metadata_offset = 0;
+    uint64_t metadata_size = 0;
+    bool is_plaintext_patched = false;
+    std::string extraction_error;          // Unsupported layout, distinct from encryption
 
     // Encryption status
     bool is_encrypted;                    // True if body appears encrypted (no PFS magic)
@@ -123,6 +133,17 @@ private:
     // Convert big-endian fields to host byte order
     static uint16_t Be16(uint16_t val);
     static uint32_t Be32(uint32_t val);
+
+    // PS5 data-first / NAPS extraction. Used when the shared PFS superblock does
+    // NOT sit at the start of the segment: it scans the segment for the outer
+    // superblock, locates the inode table, pulls out pfs_image.dat (the inner
+    // PFS image), then walks the inner image and writes the game file tree.
+    // Returns the number of files extracted, 0 on failure.
+    static uint32_t ExtractDataFirst(const std::string& pkg_path,
+                                     uint64_t pfs_segment_offset,
+                                     uint64_t pfs_segment_size,
+                                     uint64_t superblock_offset,
+                                     const std::string& output_dir);
 };
 
 } // namespace Libs::Firmware

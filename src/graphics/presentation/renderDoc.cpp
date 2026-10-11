@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -233,6 +234,18 @@ void RenderDocInit() {
 	bool expected = false;
 	if (!g_init_done.compare_exchange_strong(expected, true)) {
 		return;
+	}
+	// A portable RenderDoc build has no installer registry key. Allow an explicit DLL
+	// path for diagnostics without registering a Vulkan layer system-wide.
+	if (const char* library = std::getenv("KYTY_RENDERDOC_LIBRARY");
+	    library != nullptr && library[0] != '\0') {
+		if (auto* module = LoadLibraryA(library); module != nullptr) {
+			if (BindRenderDocApi(module)) {
+				return;
+			}
+			FreeLibrary(module);
+		}
+		LOGF("RenderDoc: could not load portable library %s\n", library);
 	}
 
 	HKEY h_reg_key;

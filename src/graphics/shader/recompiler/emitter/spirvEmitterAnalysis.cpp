@@ -184,7 +184,8 @@ void CollectRegisters(const IR::Program& program, std::vector<RegisterBinding>& 
 					CollectSequentialRegisters(registers, inst.src[i], 2);
 				}
 			}
-			if (inst.op == IR::Opcode::BitCountU64 || inst.op == IR::Opcode::FindMsbFromHighU64) {
+			if (inst.op == IR::Opcode::BitCountU64 || inst.op == IR::Opcode::FindLsbU64 ||
+			    inst.op == IR::Opcode::FindMsbFromHighU64) {
 				CollectSequentialRegisters(registers, inst.src[0], 2);
 			}
 			if (IR::IsCompare64Opcode(inst.op)) {

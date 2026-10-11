@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <StartupObject>NapsRegressionTests</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/package/naps/Program.cs" Link="NapsExtractor.cs" />
+    <Compile Include="../../src/package/naps/KrakenDecoder.cs" Link="KrakenDecoder.cs" />
+    <Compile Include="../../src/package/naps/GameImage.cs" Link="GameImage.cs" />
+    <Compile Include="../../src/package/naps/FakePackage.cs" Link="FakePackage.cs" />
+    <Compile Include="../../src/package/naps/FakePkgKeys.cs" Link="FakePkgKeys.cs" />
+    <Compile Include="../../src/package/naps/ImageServer.cs" Link="ImageServer.cs" />
+  </ItemGroup>
+</Project>

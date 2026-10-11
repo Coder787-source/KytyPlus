@@ -68,6 +68,37 @@ void EmitFindLsbU32(EmitterState& state, const IR::Instruction& inst) {
 	EmitStoreU32(state, inst.dst, u32);
 }
 
+void EmitFindLsbU64(EmitterState& state, const IR::Instruction& inst) {
+	const auto low  = EmitSequentialValueLoad(state, inst.src[0], 0);
+	const auto high = EmitSequentialValueLoad(state, inst.src[0], 1);
+	const auto low_index = state.builder.AllocateId();
+	const auto high_index = state.builder.AllocateId();
+	const auto low_bits = state.builder.AllocateId();
+	const auto high_bits = state.builder.AllocateId();
+	const auto high_offset = state.builder.AllocateId();
+	const auto high_nonzero = state.builder.AllocateId();
+	const auto low_nonzero = state.builder.AllocateId();
+	const auto high_result = state.builder.AllocateId();
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction({OpExtInst, state.int_type, low_index, state.glsl_std450,
+	                           GlslFindILsb, low});
+	state.builder.AddFunction({OpExtInst, state.int_type, high_index, state.glsl_std450,
+	                           GlslFindILsb, high});
+	state.builder.AddFunction({OpBitcast, state.uint_type, low_bits, low_index});
+	state.builder.AddFunction({OpBitcast, state.uint_type, high_bits, high_index});
+	state.builder.AddFunction({OpIAdd, state.uint_type, high_offset, high_bits,
+	                           ConstantU32(state, 32)});
+	state.builder.AddFunction({OpINotEqual, state.bool_type, high_nonzero, high,
+	                           ConstantU32(state, 0)});
+	state.builder.AddFunction({OpINotEqual, state.bool_type, low_nonzero, low,
+	                           ConstantU32(state, 0)});
+	state.builder.AddFunction({OpSelect, state.uint_type, high_result, high_nonzero, high_offset,
+	                           ConstantU32(state, 0xffffffffu)});
+	state.builder.AddFunction({OpSelect, state.uint_type, result, low_nonzero, low_bits,
+	                           high_result});
+	EmitStoreU32(state, inst.dst, result);
+}
+
 void EmitFindMsbFromHighU32(EmitterState& state, const IR::Instruction& inst) {
 	const auto src      = EmitValueLoad(state, inst.src[0]);
 	const auto i32      = state.builder.AllocateId();

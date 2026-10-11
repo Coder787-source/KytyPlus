@@ -67,6 +67,21 @@ inline constexpr TargetViewInfo ResolveTargetViewInfo(uint32_t base_layer, uint3
 	        base_layer, last_layer - base_layer + 1u, last_layer + 1u};
 }
 
+// A volume attachment can only address Z slices that exist at the selected mip.
+// Intersect the guest's inclusive view limit with that depth, without enlarging
+// the backing image or accepting a range whose first slice does not exist.
+inline constexpr TargetViewInfo ResolveVolumeTargetViewInfo(uint32_t base_layer,
+                                                            uint32_t last_layer,
+                                                            uint32_t mip_depth,
+                                                            uint32_t draw_layer_offset = 0) {
+	if (mip_depth == 0 || base_layer >= mip_depth || base_layer > last_layer ||
+	    draw_layer_offset != 0) {
+		return {};
+	}
+	return ResolveTargetViewInfo(base_layer,
+	                             last_layer < mip_depth ? last_layer : mip_depth - 1u);
+}
+
 #pragma pack(push, 1)
 
 struct PipelineStencilStaticState {

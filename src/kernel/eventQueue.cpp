@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -402,12 +403,14 @@ int KYTY_SYSV_ABI KernelWaitEqueue(KernelEqueue eq, KernelEvent* ev, int num, in
 
 	EXIT_NOT_IMPLEMENTED(out == nullptr);
 
-	LOGF("\tEqueue wait: %s, caller = 0x%016" PRIx64 ", eq = 0x%016" PRIx64 ", ev = 0x%016" PRIx64
-	     ", num = %d, timo = %s, thread_id = %d\n",
-	     owner->GetName().c_str(), reinterpret_cast<uint64_t>(__builtin_return_address(0)),
-	     static_cast<uint64_t>(eq), reinterpret_cast<uint64_t>(ev), num,
-	     (timo == nullptr ? "inf" : fmt::format("{}", *timo).c_str()),
-	     Common::Thread::GetThreadIdUnique());
+	if (Config::GraphicsDebugDumpEnabled()) {
+		LOGF("\tEqueue wait: %s, caller = 0x%016" PRIx64 ", eq = 0x%016" PRIx64 ", ev = 0x%016" PRIx64
+		     ", num = %d, timo = %s, thread_id = %d\n",
+		     owner->GetName().c_str(), reinterpret_cast<uint64_t>(__builtin_return_address(0)),
+		     static_cast<uint64_t>(eq), reinterpret_cast<uint64_t>(ev), num,
+		     (timo == nullptr ? "inf" : fmt::format("{}", *timo).c_str()),
+		     Common::Thread::GetThreadIdUnique());
+	}
 
 	if (timo == nullptr) {
 		*out = owner->WaitForEvents(ev, num, 0);
@@ -425,15 +428,19 @@ int KYTY_SYSV_ABI KernelWaitEqueue(KernelEqueue eq, KernelEvent* ev, int num, in
 		return KERNEL_ERROR_EBADF;
 	}
 	if (*out == 0) {
-		LOGF("\tEqueue wait timedout: %s\n", owner->GetName().c_str());
+		if (Config::GraphicsDebugDumpEnabled()) {
+			LOGF("\tEqueue wait timedout: %s\n", owner->GetName().c_str());
+		}
 		return KERNEL_ERROR_ETIMEDOUT;
 	}
 
-	LOGF("\tEqueue wait received %u events: ident = 0x%016" PRIx64
-	     ", filter = %d, flags = 0x%04" PRIx16 ", fflags = 0x%08" PRIx32 ", data = 0x%016" PRIx64
-	     ", udata = 0x%016" PRIx64 "\n",
-	     *out, static_cast<uint64_t>(ev[0].ident), ev[0].filter, ev[0].flags, ev[0].fflags,
-	     static_cast<uint64_t>(ev[0].data), reinterpret_cast<uint64_t>(ev[0].udata));
+	if (Config::GraphicsDebugDumpEnabled()) {
+		LOGF("\tEqueue wait received %u events: ident = 0x%016" PRIx64
+		     ", filter = %d, flags = 0x%04" PRIx16 ", fflags = 0x%08" PRIx32 ", data = 0x%016" PRIx64
+		     ", udata = 0x%016" PRIx64 "\n",
+		     *out, static_cast<uint64_t>(ev[0].ident), ev[0].filter, ev[0].flags, ev[0].fflags,
+		     static_cast<uint64_t>(ev[0].data), reinterpret_cast<uint64_t>(ev[0].udata));
+	}
 
 	return OK;
 }

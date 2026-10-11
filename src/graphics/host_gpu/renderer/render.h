@@ -31,6 +31,15 @@ struct RenderColorInfo;
 struct DrawCallInfo;
 struct DrawEmitInfo;
 struct DrawIndexBufferSource;
+
+// Guest-side indirect draw arguments, consumed on the GPU via vkCmdDraw[Indexed]Indirect.
+struct DrawIndirectSource {
+	bool     enabled      = false;
+	uint64_t args_vaddr   = 0;
+	uint32_t draw_count   = 1;
+	uint32_t stride_bytes = 20;
+	bool     indexed      = true;
+};
 struct DrawRenderState;
 class RenderContext;
 class CommandScheduler;
@@ -105,6 +114,15 @@ public:
 	                  uint32_t arg2 = 0, uint32_t arg3 = 0, uint64_t arg4 = 0);
 	void BeginRendering(const RenderState& state) const;
 	void EndRendering() const;
+	// KytyPlus: true while a dynamic-rendering pass is open (between BeginRendering and
+	// EndRendering). EmitGlobalBarrier uses this to avoid splitting the pass for an
+	// in-pass partial flush.
+	[[nodiscard]] bool IsRendering() const { return m_rendering; }
+	// KytyPlus: a cheap in-render-pass execution+memory barrier (vkCmdPipelineBarrier, no
+	// render-pass split). Used for guest partial flushes that ask for a TC/L2 writeback -
+	// the barrier still performs the cache flush, we just don't end/restart the pass.
+	void PipelineMemoryBarrier(vk::PipelineStageFlags src_stage, vk::AccessFlags src_access,
+	                           vk::PipelineStageFlags dst_stage, vk::AccessFlags dst_access) const;
 	void WaitForFenceOnly();
 	void WaitForFence();
 	void WaitForFenceAndReset();
@@ -180,6 +198,16 @@ public:
 	               uint32_t index_count, const void* index_addr, uint32_t flags, uint32_t type,
 	               uint32_t instance_count = 1, uint32_t render_target_slice_offset = 0,
 	               int32_t vertex_offset_add = 0, uint32_t first_instance = 0);
+	// GPU-driven draw: the vertex/index counts come from a guest buffer written by a compute
+	// shader, so the arguments are consumed on the GPU instead of being read by the CPU.
+	void DrawIndirect(uint64_t submit_id, RenderCommandBuffer& buffer,
+	                  uint32_t index_type_and_size, uint64_t args_vaddr,
+	                  uint32_t draw_count, uint32_t stride_bytes, bool indexed,
+	                  uint32_t flags, uint32_t instance_count,
+	                  uint32_t render_target_slice_offset = 0);
+	// Records the guest index buffer that GPU-driven draws should bind. Indirect arguments
+	// supply counts and offsets only, never the index buffer itself.
+	void SetIndirectIndexBuffer(uint64_t index_vaddr, uint64_t index_size);
 	void DrawAuto(uint64_t submit_id, RenderCommandBuffer& buffer, uint32_t index_count,
 	              uint32_t flags, uint32_t render_target_slice_offset = 0,
 	              uint32_t instance_count = 1, uint32_t first_vertex = 0,
@@ -226,7 +254,8 @@ private:
 	                         const DrawCallInfo& draw, DrawRenderState& state,
 	                         vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
 	                         const DrawIndexBufferSource& index_source, bool log_pipeline_phase,
-	                         bool set_bind_debug, bool set_auto_debug);
+	                         bool set_bind_debug, bool set_auto_debug,
+	                         const DrawIndirectSource& indirect = {});
 	// Returns std::nullopt when a render target cannot be acquired (for example its backing
 	// image was never created); callers skip the draw in that case.
 	[[nodiscard]] std::optional<RenderState>
@@ -243,6 +272,9 @@ private:
 
 	RenderContext&                      m_context;
 	std::vector<std::shared_ptr<Image>> m_bound_images;
+	// Guest index buffer currently bound for GPU-driven (indirect) draws.
+	uint64_t                            m_indirect_index_vaddr = 0;
+	uint64_t                            m_indirect_index_size  = 0;
 
 	friend struct RenderExecutorTestAccess;
 };

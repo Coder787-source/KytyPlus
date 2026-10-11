@@ -331,6 +331,30 @@ bool TileGetTiledTextureLayout(const TileSurfaceDescription& description, TileSu
 		return false;
 	}
 
+	// Layouts depend only on the surface description, never on guest memory or
+	// image ownership. Reuse this math across descriptor bindings and uploads;
+	// dirty tracking and resource acquisition still run on every draw.
+	using LayoutKey = std::array<uint32_t, 8>;
+	struct CachedLayout {
+		LayoutKey         key {};
+		TileSurfaceLayout layout {};
+		bool              valid = false;
+	};
+	static thread_local std::array<CachedLayout, 128> cache {};
+	const LayoutKey key {description.format, description.tile_mode,
+	                     static_cast<uint32_t>(description.dimension), description.width,
+	                     description.height, description.depth, description.levels,
+	                     description.layers};
+	uint64_t hash = 0;
+	for (const auto value: key) {
+		hash ^= value + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u);
+	}
+	auto& cached = cache[hash & (cache.size() - 1u)];
+	if (cached.valid && cached.key == key) {
+		out = cached.layout;
+		return true;
+	}
+
 	TileTextureBlockLayout texture {};
 	if (!TileGetTextureBlockLayout(description.format, description.tile_mode, volume, texture)) {
 		return false;
@@ -398,6 +422,9 @@ bool TileGetTiledTextureLayout(const TileSurfaceDescription& description, TileSu
 		return false;
 	}
 	result.total_size = result.block_slice_size * block_slices;
+	cached.key        = key;
+	cached.layout     = result;
+	cached.valid      = true;
 	out               = result;
 	return true;
 }

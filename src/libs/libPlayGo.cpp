@@ -51,19 +51,36 @@ union PlayGoOptionalChunk {
 	uint64_t scenarios;
 };
 
+static bool g_manifest_missing = false;
+static bool g_chunks_loaded = false;
+
+// A file-based dump may omit the install manifest. Keep enumeration consistent with
+// its local-install fallback instead of returning an empty list (GetChunkId lists
+// all chunks, not pending downloads). The dumped PS5 PlayGo stub uses IDs 0..999
+// when playgo_stub.dat is absent; use the same bounded fallback here.
+static constexpr uint32_t PLAYGO_FALLBACK_CHUNKS = 1000;
+
 static bool ensure_chunks_loaded() {
-	if (g_chunks_num != 0) {
-		return true;
-	}
-	if (!Loader::SystemContentGetChunksNum(&g_chunks_num)) {
-		LOGF("Warning: assume that chunks count is 1\n");
-		g_chunks_num = 1;
+	if (!g_chunks_loaded) {
+		g_manifest_missing = !Loader::SystemContentGetChunksNum(&g_chunks_num);
+		if (g_manifest_missing) {
+			g_chunks_num = PLAYGO_FALLBACK_CHUNKS;
+			LOGF("PlayGo: manifest unavailable; local-install fallback enumerates %u chunks\n",
+			     g_chunks_num);
+		}
+		g_chunks_loaded = true;
 	}
 	return g_chunks_num != 0;
 }
 
 static bool is_valid_chunk(uint16_t chunk_id) {
-	return ensure_chunks_loaded() && chunk_id < g_chunks_num;
+	if (!ensure_chunks_loaded()) {
+		return false;
+	}
+	if (g_manifest_missing) {
+		return true; // no manifest: any chunk id is plausible, treat as installed
+	}
+	return chunk_id < g_chunks_num;
 }
 
 static bool is_valid_locus(int8_t locus) {
@@ -103,12 +120,19 @@ int KYTY_SYSV_ABI PlayGoInitialize(const PlayGoInitParams* init) {
 	     "\t reserved = %" PRId32 "\n",
 	     reinterpret_cast<uint64_t>(init->buf_addr), init->buf_size, init->reserved);
 
+	g_chunks_num = 0;
+	g_manifest_missing = false;
+	g_chunks_loaded = false;
+
 	return OK;
 }
 
 int KYTY_SYSV_ABI PlayGoTerminate() {
 	PRINT_NAME();
 
+	g_chunks_num = 0;
+	g_manifest_missing = false;
+	g_chunks_loaded = false;
 	return OK;
 }
 
@@ -155,16 +179,16 @@ int KYTY_SYSV_ABI PlayGoGetLocus(int handle, const uint16_t* chunk_ids, uint32_t
 		return PLAYGO_ERROR_BAD_SIZE;
 	}
 	ensure_chunks_loaded();
-
 	for (uint32_t i = 0; i < number_of_entries; i++) {
-		LOGF("\t chunk_ids[%u] = %" PRIu16 "\n", i, chunk_ids[i]);
-
 		if (is_valid_chunk(chunk_ids[i])) {
 			out_loci[i] = PLAYGO_LOCUS_LOCAL_FAST;
 		} else {
 			return PLAYGO_ERROR_BAD_CHUNK_ID;
 		}
 	}
+
+	LOGF("PlayGoGetLocus: entries=%u first=%u last=%u -> LOCAL_FAST\n",
+	     number_of_entries, chunk_ids[0], chunk_ids[number_of_entries - 1]);
 
 	return OK;
 }
@@ -220,16 +244,24 @@ int KYTY_SYSV_ABI PlayGoGetChunkId(int handle, uint16_t* out_chunk_id_list,
 	if (out_entries == nullptr) {
 		return PLAYGO_ERROR_BAD_POINTER;
 	}
-	if (number_of_entries != 0 && out_chunk_id_list == nullptr) {
-		return PLAYGO_ERROR_BAD_POINTER;
-	}
 	ensure_chunks_loaded();
+
+	// The first pass supplies no buffer: return the total independently of capacity.
+	if (out_chunk_id_list == nullptr) {
+		*out_entries = g_chunks_num;
+		LOGF("PlayGoGetChunkId: count query -> %u\n", *out_entries);
+		return OK;
+	}
+	if (number_of_entries == 0) {
+		return PLAYGO_ERROR_BAD_SIZE;
+	}
 
 	const uint32_t entries = std::min(number_of_entries, g_chunks_num);
 	for (uint32_t i = 0; i < entries; i++) {
 		out_chunk_id_list[i] = static_cast<uint16_t>(i);
 	}
 	*out_entries = entries;
+	LOGF("PlayGoGetChunkId: filled %u of %u chunks\n", entries, g_chunks_num);
 
 	return OK;
 }
@@ -379,6 +411,7 @@ int KYTY_SYSV_ABI PlayGoGetProgress(int handle, const uint16_t* chunk_ids,
 
 	out_progress->total_size    = number_of_entries;
 	out_progress->progress_size = number_of_entries;
+	LOGF("PlayGoGetProgress: %u chunks -> fully installed\n", number_of_entries);
 
 	return OK;
 }

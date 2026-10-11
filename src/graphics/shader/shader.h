@@ -81,6 +81,8 @@ struct ShaderVertexInputInfo {
 	uint32_t                param_export_mask = 0;
 	bool                    fetch_external    = false;
 	bool                    fetch_embedded    = false;
+	bool                    folded_triangle_copy = false;
+	bool                    export_layer         = false;
 };
 
 struct ShaderComputeInputInfo {
@@ -221,6 +223,8 @@ struct ShaderMappedData {
 
 void ShaderInit();
 void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
+// True only for the inspected ES/GS pair, never inferred from register limits alone.
+bool ShaderCanFoldTriangleCopyGeometry(const HW::VertexShaderInfo& regs);
 
 void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);
 void     ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info);
@@ -234,7 +238,7 @@ ShaderId ShaderGetIdCS(const HW::ComputeShaderInfo& regs, const ShaderComputeInp
 // Returned SPIR-V spans are read-only views backed by the shader program cache.
 bool ShaderCompileInfoVS(const HW::VertexShaderInfo& regs, const HW::ShaderRegisters& sh,
                          ShaderLaneMaskMode lane_mask_mode, ShaderVertexInputInfo& input_info,
-                         std::span<const uint32_t>& spirv);
+                         std::span<const uint32_t>& spirv, bool fold_triangle_copy = false);
 bool ShaderCompileInfoPS(const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
                          ShaderLaneMaskMode lane_mask_mode, const ShaderVertexInputInfo& vs_info,
                          std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,

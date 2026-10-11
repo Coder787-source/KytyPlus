@@ -1,4 +1,4 @@
-﻿#ifndef EMULATOR_SRC_GRAPHICS_PRESENTATION_FSR_UPSCALER_H_
+#ifndef EMULATOR_SRC_GRAPHICS_PRESENTATION_FSR_UPSCALER_H_
 #define EMULATOR_SRC_GRAPHICS_PRESENTATION_FSR_UPSCALER_H_
 
 #include "common/common.h"
@@ -34,12 +34,15 @@ public:
 	// fall back to the plain blit path. Never crashes on a dying device.
 	// source: guest frame (must be in eTransferSrcOptimal or eShaderReadOnlyOptimal).
 	// dest:   swapchain image (will be transitioned from eUndefined → eTransferDstOptimal → ePresentSrcKHR).
-	// src_w/h: guest resolution. dst_w/h: window resolution.
+	// src_w/h: guest resolution. dst_w/h: FSR output resolution.
+	// present_w/h: actual swapchain resolution (may be smaller than FSR output).
+	// Caller must wait for its frame fence before updating this instance.
 	// sharpness: 0.0–1.0 RCAS strength.
 	bool Dispatch(vk::CommandBuffer cmd, VulkanImage& source, vk::Image dest,
 	              vk::Format dest_format,
 	              uint32_t src_w, uint32_t src_h,
 	              uint32_t dst_w, uint32_t dst_h,
+	              uint32_t present_w, uint32_t present_h,
 	              float sharpness);
 
 	// Returns true if Create() succeeded and the pipelines are ready.
@@ -112,6 +115,10 @@ private:
 	// so source views are cached per image handle.
 	vk::ImageView m_dst_view = nullptr;
 	std::vector<std::pair<vk::Image, vk::ImageView>> m_src_views;
+	uint32_t m_logged_src_w = 0;
+	uint32_t m_logged_src_h = 0;
+	uint32_t m_logged_dst_w = 0;
+	uint32_t m_logged_dst_h = 0;
 };
 
 } // namespace Libs::Graphics

@@ -340,7 +340,12 @@ struct RenderExecutorTestAccess {
 	static RenderState AcquireRenderTargets(RenderExecutor& executor, CommandBuffer& buffer,
 	                                        RenderColorInfo* colors, uint32_t color_count,
 	                                        RenderDepthInfo& depth) {
-		return executor.AcquireRenderTargets(buffer, colors, color_count, depth);
+		const auto state = executor.AcquireRenderTargets(buffer, colors, color_count, depth);
+		if (!state.has_value()) {
+			std::fprintf(stderr, "AcquireRenderTargets failed in a valid attachment test\n");
+			std::abort();
+		}
+		return *state;
 	}
 
 	static void ResetBindings(RenderExecutor& executor) { executor.ResetBindings(); }
@@ -5582,6 +5587,24 @@ public:
 			            sliced_rendering.num_color_attachments == 1 && sliced_rendering.num_layers == 1,
 			        "a nonzero 3D attachment slice was treated as a Vulkan array layer");
 
+			RenderExecutorTestAccess::ResetBindings(executor);
+			registers.SetColorView(
+			    0, {.base_array_slice_index = 0, .last_array_slice_index = 32});
+			RenderColorInfo full_volume {};
+			RenderExecutorTestAccess::ResolveRenderColorTarget(
+			    executor, 3, scheduler.Current(), full_volume, 0);
+			const auto full_rendering = RenderExecutorTestAccess::AcquireRenderTargets(
+			    executor, scheduler.Current(), &full_volume, 1, no_depth);
+			Require(name, "captured oversized view limit",
+			        full_volume.image_id == color.image_id && full_volume.image_view != nullptr &&
+			            full_volume.desc.info.extent == vk::Extent3D {32, 32, 32} &&
+			            full_volume.desc.info.data.size == allocation_size &&
+			            full_volume.desc.view_info.type == vk::ImageViewType::e2DArray &&
+			            full_volume.desc.view_info.base_layer == 0 &&
+			            full_volume.desc.view_info.layer_count == 32 &&
+			            full_rendering.num_layers == 32,
+			        "0..32 did not reuse the full 32-slice backing with a valid attachment view");
+
 			auto storage_desc = color.desc;
 			storage_desc.type = BindingType::Storage;
 			storage_desc.info.guest_format =
@@ -10378,6 +10401,103 @@ TestCase VectorIntegerOps() {
 	         O::VLshlrevB32, O::VLshrB32,         O::VLshrrevB32,  O::VAshrI32,   O::VAshrrevI32,
 	         O::VNotB32,     O::VBfrevB32,        O::VFfblB32,     O::VFfbhU32,   O::VCmpEqU32,
 	         O::VCndmaskB32, O::BufferStoreDword, O::SEndpgm}};
+}
+
+TestCase Vop2SdwaAddNcCrossWorlds() {
+	using O = ShaderOpcode;
+	std::vector<u32> code;
+	AppendVMovLiteral(&code, 10, 0xa1b2fff0u);
+	AppendSMovLiteral(&code, 15, 0x30u);
+	code.insert(code.end(), {0x4a1414f9u, 0x0686140fu});
+	AppendStoreVgpr(&code, 10, 0);
+	AppendVMovLiteral(&code, 26, 0xa1b2c3d4u);
+	AppendVMovU32(&code, 23, 7);
+	AppendSMovLiteral(&code, 14, 9);
+	code.insert(code.end(), {0x4a342ef9u, 0x0686140eu});
+	AppendStoreVgpr(&code, 26, 1);
+	AppendVMovLiteral(&code, 28, 0x12345678u);
+	AppendVMovLiteral(&code, 27, 0xffffffffu);
+	code.insert(code.end(), {0x4a3836f9u, 0x0686140eu});
+	AppendStoreVgpr(&code, 28, 2);
+	AppendEnd(&code);
+	TestCase test;
+	test.name = "Vop2SdwaAddNcCrossWorlds";
+	test.code = code;
+	test.expected = {0xa1b20020u, 0xa1b20010u, 0x12340008u};
+	test.opcodes = {O::VMovB32, O::SMovB32, O::VAddNcU32, O::BufferStoreDword, O::SEndpgm};
+	test.required_spirv = {"OpIAdd", "OpBitwiseOr"};
+	return test;
+}
+
+TestCase Vop2SdwaAddNcPreservesByteAndWordDestinations() {
+	using O = ShaderOpcode;
+	std::vector<u32> code;
+	AppendVMovU32(&code, 0, 3);
+	for (u32 sel = 0; sel <= 5; sel++) {
+		AppendVMovLiteral(&code, 10 + sel, 0xa1b2c3d4u);
+		code.push_back(EncodeVop2(0x25, 10 + sel, 249, 0));
+		code.push_back(EncodeVop2Sdwa(InlineU32(20), sel, 2, 6, 6, 0, 0, 0, 0, 0, 0, 1));
+		AppendStoreVgpr(&code, 10 + sel, sel);
+	}
+	AppendEnd(&code);
+	return {"Vop2SdwaAddNcPreservesByteAndWordDestinations", code, {},
+	        {0xa1b2c317u, 0xa1b217d4u, 0xa117c3d4u, 0x17b2c3d4u, 0xa1b20017u, 0x0017c3d4u},
+	        {O::VMovB32, O::VAddNcU32, O::BufferStoreDword, O::SEndpgm}};
+}
+
+TestCase VectorMed3I16CrossWorlds() {
+	using O = ShaderOpcode;
+	std::vector<u32> code;
+	AppendVMovLiteral(&code, 3, 0x0064fff9u); // low=-7, high=100
+	AppendSMovLiteral(&code, 24, 0xffff8000u);
+	AppendSMovLiteral(&code, 26, 0x00007fffu);
+	AppendSMovLiteral(&code, 25, 0xfffffffdu);
+	AppendSMovLiteral(&code, 27, 40);
+	AppendSMovLiteral(&code, 17, 0xffffff38u);
+	AppendSMovLiteral(&code, 19, 200);
+	const u32 words[][2] = {{0xd7580004u, 0x00683103u}, {0xd7584804u, 0x006c3303u},
+	                        {0xd7584008u, 0x006c3303u}, {0xd7584816u, 0x004c2303u}};
+	for (u32 i = 0; i < std::size(words); i++) {
+		const auto dst = words[i][0] & 0xffu;
+		AppendVMovLiteral(&code, dst, 0xa1b2c3d4u);
+		code.insert(code.end(), std::begin(words[i]), std::end(words[i]));
+		AppendStoreVgpr(&code, dst, i);
+	}
+	AppendEnd(&code);
+	TestCase test;
+	test.name = "VectorMed3I16CrossWorlds";
+	test.code = code;
+	test.expected = {0xa1b2fff9u, 0x0028c3d4u, 0xfffdc3d4u, 0x0064c3d4u};
+	test.opcodes = {O::VMovB32, O::SMovB32, O::VMed3I16, O::BufferStoreDword, O::SEndpgm};
+	test.required_spirv = {"OpSLessThan", "OpShiftRightArithmetic", "OpBitwiseOr"};
+	return test;
+}
+
+TestCase VectorMed3I16HalfSelectors() {
+	using O = ShaderOpcode;
+	std::vector<u32> code;
+	AppendVMovLiteral(&code, 0, 0x001e8000u);
+	AppendVMovLiteral(&code, 1, 0x7ffffffbu);
+	AppendVMovLiteral(&code, 2, 0xfff60007u);
+	std::vector<u32> expected;
+	const int32_t values[3][2] = {{-32768, 30}, {-5, 32767}, {7, -10}};
+	for (u32 sel = 0; sel < 16; sel++) {
+		AppendVMovLiteral(&code, 10, 0xa1b2c3d4u);
+		AppendVop3(&code, 0x358, 10, Vgpr(0), Vgpr(1), Vgpr(2), 0, sel);
+		AppendStoreVgpr(&code, 10, sel);
+		std::array<int32_t, 3> sorted = {values[0][sel & 1], values[1][(sel >> 1) & 1],
+		                                  values[2][(sel >> 2) & 1]};
+		std::sort(sorted.begin(), sorted.end());
+		const auto half = static_cast<u32>(sorted[1]) & 0xffffu;
+		expected.push_back((sel & 8) != 0 ? (half << 16) | 0xc3d4u : 0xa1b20000u | half);
+	}
+	// Destination/source alias and equal signed inputs.
+	AppendVop3(&code, 0x358, 0, Vgpr(0), Vgpr(0), Vgpr(1));
+	AppendStoreVgpr(&code, 0, 16);
+	expected.push_back(0x001e8000u);
+	AppendEnd(&code);
+	return {"VectorMed3I16HalfSelectors", code, {}, expected,
+	        {O::VMovB32, O::VMed3I16, O::BufferStoreDword, O::SEndpgm}};
 }
 
 TestCase Vop2SdwaSubNcExactByte2Destination() {
@@ -15593,6 +15713,10 @@ std::vector<TestCase> MakeCases() {
 	AddCase(VectorMoves);
 	AddCase(VectorVop3MoveAppliesFloatSourceModifiers);
 	AddCase(VectorIntegerOps);
+	AddCase(Vop2SdwaAddNcCrossWorlds);
+	AddCase(Vop2SdwaAddNcPreservesByteAndWordDestinations);
+	AddCase(VectorMed3I16CrossWorlds);
+	AddCase(VectorMed3I16HalfSelectors);
 	AddCase(Vop2SdwaSubNcExactByte2Destination);
 	AddCase(Vop2SdwaSubNcPreservesByteAndWordDestinations);
 	AddCase(Vop2SdwaMinU32PreservesWordDestination);
@@ -17868,6 +17992,29 @@ void CheckDepthAttachmentWrites() {
 	std::printf("[host]    %-32s ok\n", "DepthAttachmentWrites");
 }
 
+void CheckVolumeTargetViewRanges() {
+	constexpr const char* name = "VolumeTargetViewRanges";
+	const auto full = ResolveVolumeTargetViewInfo(0, 32, 32);
+	Require(name, "captured range", full.type == TargetViewType::Image2DArray &&
+	            full.base_layer == 0 && full.layer_count == 32 && full.image_layers == 32,
+	        "0..32 must intersect the 32-slice volume without expanding it");
+	const auto partial = ResolveVolumeTargetViewInfo(7, 100, 16);
+	Require(name, "mip range", partial.base_layer == 7 && partial.layer_count == 9,
+	        "a view limit beyond mip depth was not intersected");
+	const auto last = ResolveVolumeTargetViewInfo(31, 32, 32);
+	Require(name, "last slice", last.type == TargetViewType::Image2D && last.layer_count == 1,
+	        "the last existing slice must remain a single-slice view");
+	Require(name, "invalid ranges",
+	        ResolveVolumeTargetViewInfo(32, 32, 32).type == TargetViewType::Unsupported &&
+	            ResolveVolumeTargetViewInfo(8, 7, 32).type == TargetViewType::Unsupported &&
+	            ResolveVolumeTargetViewInfo(0, 32, 0).type == TargetViewType::Unsupported &&
+	            ResolveVolumeTargetViewInfo(0, 32, 32, 1).type == TargetViewType::Unsupported,
+	        "nonoverlapping, reversed, empty or offset volume views were accepted");
+	Require(name, "2D inclusive range", ResolveTargetViewInfo(0, 32).layer_count == 33,
+	        "volume limits changed generic 2D/depth array semantics");
+	std::printf("[host]    %-32s ok\n", name);
+}
+
 void CheckDynamicRenderingState() {
 	RenderState first {};
 	first.width                             = 64;
@@ -18593,6 +18740,18 @@ int main(int argc, char** argv) {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
 	EnsureConfigInitialized();
 	CheckLeastRecentlyUsedCacheOrdering();
+	CheckVolumeTargetViewRanges();
+	if (argc == 2 && std::strcmp(argv[1], "--crossworlds-only") == 0) {
+		VulkanHarness vulkan;
+		RunCase(&vulkan, Vop2SdwaAddNcCrossWorlds());
+		RunCase(&vulkan, Vop2SdwaAddNcPreservesByteAndWordDestinations());
+		RunCase(&vulkan, VectorMed3I16CrossWorlds());
+		RunCase(&vulkan, VectorMed3I16HalfSelectors());
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+		vulkan.CheckRenderExecutorColorVolumeDiscovery();
+#endif
+		return 0;
+	}
 	if (argc == 2 && std::strcmp(argv[1], "--clip-control-only") == 0) {
 		CheckClipControlDepthClipState();
 		return 0;
