@@ -1,3 +1,4 @@
+#include "common/emulatorConfig.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
@@ -197,6 +198,17 @@ static void TestPm4PolyOffsetPacketShape() {
 }
 
 int main() {
+	const Config::ConfigOptions defaults;
+	Require(defaults.guest_render_width == 1920 && defaults.guest_render_height == 1080,
+	        "1080p guest resolution request default");
+	Require(defaults.fsr_output_width == 3840 && defaults.fsr_output_height == 2160,
+	        "4K FSR result default");
+	Require(defaults.upscaler_method == Config::UpscalerMethod::Fsr1 &&
+	            defaults.upscaler_quality == Config::UpscalerQuality::Performance &&
+	            defaults.upscaler_sharpness == 0.3f,
+	        "FSR performance profile default");
+	Require(defaults.resolution_scale == Config::ResolutionScale::Native,
+	        "native guest attachments preserved");
 	TestPolyOffset();
 	TestColorFastClear();
 	TestStandard64KB();

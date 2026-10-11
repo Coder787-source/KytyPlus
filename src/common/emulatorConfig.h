@@ -123,8 +123,8 @@ struct ConfigOptions {
 	float                  render_scale                = 0.0f;
 	// Opt-in guest launch request, separate from the host window. Engines may
 	// ignore these arguments; never shrink attachments to pretend it worked.
-	uint32_t               guest_render_width          = 0;
-	uint32_t               guest_render_height         = 0;
+	uint32_t               guest_render_width          = 1920;
+	uint32_t               guest_render_height         = 1080;
 	// Texture LOD bias: positive values skip high-resolution mip levels,
 	// reducing memory bandwidth. 0 = no bias, 1 = skip one mip level, etc.
 	int32_t                texture_lod_bias            = 0;
@@ -134,15 +134,15 @@ struct ConfigOptions {
 	bool                   uma_staging_bypass          = false;
 	// --- Upscaler options ---
 	// Upscaling method for the guest->swapchain presentation blit.
-	UpscalerMethod         upscaler_method             = UpscalerMethod::Off;
-	// Quality preset controlling the internal render scale.
-	UpscalerQuality        upscaler_quality            = UpscalerQuality::Quality;
+	UpscalerMethod         upscaler_method             = UpscalerMethod::Fsr1;
+	// Explicit source/output sizes determine the actual upscale ratio.
+	UpscalerQuality        upscaler_quality            = UpscalerQuality::Performance;
 	// RCAS sharpening strength (0.0 = no sharpening, 1.0 = maximum).
-	float                  upscaler_sharpness          = 0.5f;
-	// Zero uses the window extent. Explicit values permit an FSR output such as
-	// 3840x2160 even on a smaller display (followed by a presentation downsample).
-	uint32_t               fsr_output_width            = 0;
-	uint32_t               fsr_output_height           = 0;
+	float                  upscaler_sharpness          = 0.3f;
+	// FSR result is independent of the window size; smaller displays downsample it.
+	// Zero selects the window extent instead. Ignored when the upscaler is Off.
+	uint32_t               fsr_output_width            = 3840;
+	uint32_t               fsr_output_height           = 2160;
 	// Opt-in native DualSense HID driver (adaptive triggers / lightbar / motion via
 	// libPad). DEFAULT OFF: SDL already handles every standard pad (including a
 	// DualSense), and this driver is unvalidated on hardware, so it is gated behind

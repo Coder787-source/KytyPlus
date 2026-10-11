@@ -1073,6 +1073,18 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		}
 	}
 
+	if (Config::GetGuestRenderWidth() != 0) {
+		static vk::Extent2D last_source {};
+		const vk::Extent2D actual {image.backing.extent.width, image.backing.extent.height};
+		if (last_source != actual) {
+			std::fprintf(stderr, "[render-source] actual presentation source=%ux%u, "
+			                     "requested engine resolution=%ux%u\n",
+			             actual.width, actual.height, Config::GetGuestRenderWidth(),
+			             Config::GetGuestRenderHeight());
+			last_source = actual;
+		}
+	}
+
 	auto frame_format = info.pixel_format;
 	switch (frame_format) {
 		case vk::Format::eR8G8B8A8Srgb: frame_format = vk::Format::eR8G8B8A8Unorm; break;

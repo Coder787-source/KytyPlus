@@ -176,3 +176,15 @@ list(APPEND inc_headers
 include_what_you_use_with_mappings(launcher "${inc_headers}" "${iwyu_maps}")
 
 clang_tidy_check(launcher "" "${tidy_dirs}" "${inc_headers}")
+
+# Exercise the same settings object used by the launcher, including fresh defaults.
+add_executable(launcher_configuration_tests EXCLUDE_FROM_ALL
+	../../tests/LauncherConfigurationTests.cpp
+	include/configuration.h
+)
+set_target_properties(launcher_configuration_tests PROPERTIES AUTOMOC ON)
+target_include_directories(launcher_configuration_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(launcher_configuration_tests Qt6::Core)
+if(BUILD_TESTING)
+	add_test(NAME launcher_configuration COMMAND $<TARGET_FILE:launcher_configuration_tests>)
+endif()

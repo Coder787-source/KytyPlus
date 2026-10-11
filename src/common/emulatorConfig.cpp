@@ -33,15 +33,8 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 		return;
 	}
 
-	// Performance-floor defaults for integrated-GPU machines (Steam Deck / 780M class).
-	// KytyPlus: the FSR 1.0 auto-enable is RETIRED. The FSR compute dispatch faults
-	// inside the current AMD Vulkan driver (amdvlk64 access violation reading 0xc0 from
-	// a null driver object, during vkCmdDispatch/bindPipeline recording at CB4's first
-	// menu present) - the same crash the 143fac3 guards were hiding by making dispatch
-	// impossible. The plain blit presentation path displays the same content without
-	// the compute pass, so the iGPU floor now keeps only the texture LOD bias (skip the
-	// highest mips, reduce bandwidth). Users can still enable FSR explicitly in the
-	// launcher; the auto-default just no longer forces it onto iGPU machines.
+	// Preserve the user-selected FSR setting. Per-frame upscaler resources are
+	// retired by the presentation fence; iGPU defaults only affect LOD/present mode.
 	bool changed = false;
 	if (g_config->texture_lod_bias == 0) {
 		g_config->texture_lod_bias = 1;
@@ -57,16 +50,7 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 	}
 	if (changed) {
 		LOGF("Config: integrated GPU detected — applied floor defaults: "
-		     "texture LOD bias 1, present mode FIFO, (FSR upscaler no longer auto-enabled)\n");
-	}
-	// Keep native attachments until a coordinated internal-resolution path exists.
-	// Earlier host-only scaling experiments broke rendering; menu/intro FPS did
-	// not establish a gameplay improvement. --guest-render-width/height requests
-	// a resolution from the engine instead, but acceptance must be verified.
-	if (g_config->render_scale == 0.0f) {
-		g_config->render_scale = 1.0f;
-		LOGF("Config: integrated GPU detected — rendering at the guest's native "
-		     "resolution.\n");
+		     "texture LOD bias 1, present mode FIFO (upscaler setting preserved)\n");
 	}
 }
 

@@ -20,8 +20,8 @@ uint32_t metadata_queries = 0;
 
 void Check(bool condition, const char* message) {
 	if (!condition) {
-	 std::fprintf(stderr, "PlayGo API failure: %s", message);
-	 std::abort();
+		std::fprintf(stderr, "PlayGo API failure: %s\n", message);
+		std::abort();
 	}
 }
 
