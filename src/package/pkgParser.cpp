@@ -965,7 +965,7 @@ uint32_t PkgParser::ExtractDataFirst(const std::string& pkg_path,
 
     const uint64_t seg_end = pfs_segment_offset + pfs_segment_size;
     std::error_code fsec;
-    const uint64_t carve_end = std::max(pfs_segment_offset + pfs_segment_size, std::filesystem::file_size(pkg_path, fsec));
+    const uint64_t carve_end = std::max(pfs_segment_offset + pfs_segment_size, static_cast<uint64_t>(std::filesystem::file_size(pkg_path, fsec)));
 
     // ---- outer walk: find pfs_image.dat blocks without writing intermediate copies ----
     ScanImage outer;
