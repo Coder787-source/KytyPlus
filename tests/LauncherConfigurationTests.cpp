@@ -1,4 +1,5 @@
 #include "configuration.h"
+#include "common.h"
 
 #include <QCoreApplication>
 #include <QSettings>
@@ -12,6 +13,13 @@ static void Check(bool condition, const char* message) {
 
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
+	Check(IsGameImagePath("C:/games/My Game.exfat") && IsGameImagePath("C:/games/My Game.EXFAT"),
+	      "exFAT image paths are case-insensitive");
+	Check(IsGameImagePath("game.ffpfsc") && IsGameImagePath("game.FFPFSC"),
+	      "compressed image paths remain supported");
+	Check(!IsGameImagePath("game.exfat.bak") && !IsGameImagePath("eboot.bin") &&
+	          !IsGameImagePath("game.pkg") && !IsGameImagePath("exfat"),
+	      "non-image paths are not treated as game images");
 	QTemporaryDir temp;
 	Check(temp.isValid(), "temporary settings directory");
 	QSettings settings(temp.filePath("settings.ini"), QSettings::IniFormat);

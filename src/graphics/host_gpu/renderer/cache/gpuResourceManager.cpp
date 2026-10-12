@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/cache/gpuResourceManager.h"
 
 #include "common/assert.h"
+#include "common/profiler.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 namespace Libs::Graphics {
@@ -58,6 +59,7 @@ void GpuResourceManager::UnmapMemory(uint64_t vaddr, uint64_t size) {
 		     vaddr, size);
 	}
 	const auto unmap = [this, vaddr, size] {
+		KYTY_PROFILER_BLOCK("GpuResourceManager::UnmapMemory callback");
 		if (m_scheduler.Active()) {
 			const auto tick = m_scheduler.CurrentTick();
 			m_scheduler.FinishCurrent();

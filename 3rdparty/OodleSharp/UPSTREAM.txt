@@ -1,0 +1,4 @@
+Upstream: https://github.com/NotOfficer/OodleSharp
+Commit: 716d8b9ce3bd74ece37097d2b5e5ef67ef0c48c5
+License: MIT (see LICENSE)
+Local adaptation: expose bounded headerless Kraken chunk entry point for PS5 NAPS.

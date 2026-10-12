@@ -81,6 +81,15 @@ internal static class GameImageTests
         Check(tree.Count == 1 && tree[0].Data.Bytes(0, payload.Length).SequenceEqual(payload), "PFSC compressed PFS exact payload");
         tree = ImageExtraction.Tree(Mem(Pfsc(Exfat(payload), false)));
         Check(tree[0].Data.Bytes(0, payload.Length).SequenceEqual(payload), "PFSC stored exFAT exact payload");
+        tree = ImageExtraction.Tree(Mem(Exfat(payload)));
+        Check(tree.Count == 1 && tree[0].Path == "eboot.bin" &&
+            tree[0].Data.Bytes(0, payload.Length).SequenceEqual(payload), "standalone exFAT exact payload");
+        byte[] crossCluster = Enumerable.Range(0, 1300).Select(i => (byte)i).ToArray();
+        tree = ImageExtraction.Tree(Mem(Exfat(crossCluster)));
+        Check(tree[0].Data.Bytes(500, 700).SequenceEqual(crossCluster.AsSpan(500, 700).ToArray()),
+            "standalone exFAT reads across cluster boundaries");
+        var truncatedExfat = Exfat(payload)[..1200];
+        Reject(() => ImageExtraction.Tree(Mem(truncatedExfat)), "truncated standalone exFAT");
         var bad = encoded.ToArray(); U64(bad, 0x408, 1); Reject(() => new PfscGameImage(Mem(bad)), "descending PFSC offsets");
         Reject(() => ImageExtraction.Tree(Mem(Pfs(payload, "../bad"))), "PFS traversal");
         bad = Exfat(payload); bad[1024 + 4] ^= 1; Reject(() => ImageExtraction.Tree(Mem(bad)), "exFAT checksum");

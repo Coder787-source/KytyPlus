@@ -635,9 +635,9 @@ bool ConfigurationListWidget::SelectGameImage(const QString& path) {
 	}
 	const QFileInfo image(path);
 	if (!image.isFile() || !image.isReadable() || image.isSymLink() ||
-	    image.suffix().compare(QStringLiteral("ffpfsc"), Qt::CaseInsensitive) != 0) {
+	    !IsGameImagePath(image.filePath())) {
 		QMessageBox::warning(this, tr("Open game image"),
-		                     tr("Select an existing, readable .ffpfsc file (not a shortcut):\n%1")
+		                     tr("Select an existing, readable .ffpfsc or .exfat file (not a shortcut):\n%1")
 		                         .arg(image.absoluteFilePath()));
 		return false;
 	}
@@ -757,11 +757,11 @@ void ConfigurationListWidget::ScanGameDirectory() {
 
 		while (!pending_dirs.isEmpty()) {
 			QDir game_dir = pending_dirs.takeFirst();
-			// A compressed image is a launchable game itself. Listing it does not
+			// A game image is a launchable game itself. Listing it does not
 			// extract or index its potentially large contents.
 			const auto files = game_dir.entryInfoList(QDir::Files | QDir::NoSymLinks);
 			for (const auto& file: files) {
-				if (file.suffix().compare(QStringLiteral("ffpfsc"), Qt::CaseInsensitive) != 0) {
+				if (!IsGameImagePath(file.filePath())) {
 					continue;
 				}
 				const QString image_path = QDir::cleanPath(file.absoluteFilePath());
@@ -962,7 +962,7 @@ bool ConfigurationListWidget::CanDeleteGame(const ConfigurationItem* item) const
 		return false;
 	}
 	if (source.isFile()) {
-		return source.suffix().compare(QStringLiteral("ffpfsc"), Qt::CaseInsensitive) == 0;
+		return IsGameImagePath(source.filePath());
 	}
 	if (!source.isDir() || QDir(source.absoluteFilePath()).isRoot() ||
 	    !QFileInfo(QDir(source.absoluteFilePath()).filePath(QStringLiteral("eboot.bin"))).isFile()) {
@@ -996,7 +996,7 @@ void ConfigurationListWidget::delete_game() {
 	    tr("Move \"%1\" to the Recycle Bin / Trash?\n\n%2\n%3\n\n"
 	       "Save data and the compressed-image cache are not deleted.\n"
 	       "You can restore the game from the Recycle Bin / Trash.")
-	        .arg(name, is_image ? tr("Only this .ffpfsc file will be moved:")
+	        .arg(name, is_image ? tr("Only this game image file will be moved:")
 	                            : tr("This game folder and all its contents will be moved:"), path),
 	    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
 	if (ret != QMessageBox::Yes || !CanDeleteGame(item)) {

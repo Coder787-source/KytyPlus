@@ -236,7 +236,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				options.app0_dir = value;
 				options.elf      = "/app0/eboot.bin";
 			} else if (Common::File::IsFileExisting(value)) {
-				if (Common::ToLower(std::filesystem::path(value).extension().string()) == ".ffpfsc") {
+				const auto extension = Common::ToLower(std::filesystem::path(value).extension().string());
+				if (extension == ".ffpfsc" || extension == ".exfat") {
 					options.game_image = std::filesystem::absolute(value);
 					// This root exists only in the virtual filesystem; no game files
 					// are extracted or staged on disk.
@@ -250,7 +251,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				}
 				options.elf = "/app0/" + Common::FilenameWithoutDirectory(value);
 			} else {
-				::printf("--game must point to an existing directory or ELF: %s\n", value.c_str());
+				::printf("--game must point to an existing directory, ELF or game image: %s\n", value.c_str());
 				return false;
 			}
 		} else if (arg == "--game-patch") {

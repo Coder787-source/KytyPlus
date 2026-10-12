@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "common/file.h"
 #include "common/readOnlyFileSystem.h"
+#include "common/threads.h"
 #include "package/gameImageVolume.h"
 #include "kernel/fileSystem.h"
 #include "libs/errno.h"
@@ -13,7 +14,8 @@
 #include <vector>
 
 int main(int argc, char** argv) {
-    if (argc != 4) { std::fprintf(stderr, "Usage: image mount test <ffpfsc> <helper> <expected-eboot>\n"); return 1; }
+    if (argc != 4) { std::fprintf(stderr, "Usage: image mount test <ffpfsc|exfat> <helper> <expected-eboot>\n"); return 1; }
+    Common::ThreadsSubsystem::Instance()->Init(nullptr);
     int failures = 0;
     auto check = [&failures](bool ok, const char* message) {
         std::fprintf(stderr, "%s: %s\n", ok ? "PASS" : "FAIL", message); if (!ok) ++failures;

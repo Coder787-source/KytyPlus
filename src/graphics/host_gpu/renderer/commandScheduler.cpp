@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
 #include "common/assert.h"
+#include "common/profiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/memoryTracker.h"
 
@@ -398,6 +399,7 @@ void CommandScheduler::BindCurrent() const {
 }
 
 CommandBuffer& CommandScheduler::SubmitCurrent(SubmitInfo& submit) {
+	KYTY_PROFILER_FUNCTION();
 	CheckActive();
 	EXIT_IF(!m_recording);
 	auto& submitted = Current();
@@ -436,6 +438,7 @@ size_t CommandScheduler::GrowCommandBuffers() {
 }
 
 void CommandScheduler::BeginNext() {
+	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(m_recording);
 
 	// Try to find a reusable buffer with progressive fallback

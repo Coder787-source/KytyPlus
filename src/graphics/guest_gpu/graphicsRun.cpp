@@ -221,6 +221,7 @@ void GpuState::ProcessCommands() {
 			m_commands.pop_front();
 			EXIT_IF(m_pending_commands.fetch_sub(1, std::memory_order_acq_rel) == 0);
 		}
+		KYTY_PROFILER_BLOCK("GpuState::ProcessCommand callback");
 		command();
 	}
 }
@@ -355,6 +356,7 @@ void CommandProcessor::BufferFlush() {
 }
 
 void CommandProcessor::BufferFlushAndWait() {
+	KYTY_PROFILER_FUNCTION();
 	auto& submitted = GetScheduler().FlushAndGetSubmitted();
 	submitted.WaitForFenceOnly();
 }

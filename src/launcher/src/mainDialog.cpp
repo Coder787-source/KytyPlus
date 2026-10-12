@@ -218,11 +218,11 @@ void MainDialogPrivate::FindInterpreter() {
 				startup_image = startup_args.at(++i);
 			} else {
 				QMessageBox::warning(m_main_dialog, tr("Open game image"),
-				                     tr("--open-image requires a .ffpfsc file path."));
+				                     tr("--open-image requires a .ffpfsc or .exfat file path."));
 			}
 			break;
 		}
-		if (startup_args.at(i).endsWith(QStringLiteral(".ffpfsc"), Qt::CaseInsensitive)) {
+		if (IsGameImagePath(startup_args.at(i))) {
 			startup_image = startup_args.at(i);
 			break;
 		}
@@ -452,8 +452,8 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 #endif
 	process->setWorkingDirectory(dir.path());
 
-	if (info.basedir.endsWith(QStringLiteral(".ffpfsc"), Qt::CaseInsensitive)) {
-		auto* progress = new QProgressDialog(tr("Reading compressed image index (no extraction)..."), QString(), 0, 0, this);
+	if (IsGameImagePath(info.basedir)) {
+		auto* progress = new QProgressDialog(tr("Reading game image index (no extraction)..."), QString(), 0, 0, this);
 		progress->setWindowTitle(tr("Opening game image"));
 		progress->setWindowModality(Qt::WindowModal);
 		progress->setMinimumDuration(0);
@@ -577,7 +577,7 @@ void MainDialogPrivate::Update() {
 		run_enabled = !info.basedir.isEmpty() &&
 		              (source.isDir() ||
 		               (source.isFile() && source.isReadable() &&
-		                source.suffix().compare(QStringLiteral("ffpfsc"), Qt::CaseInsensitive) == 0));
+		                IsGameImagePath(source.filePath())));
 	}
 
 	m_ui->widget->SetRunEnabled(run_enabled);
@@ -871,13 +871,14 @@ void MainDialogPrivate::LoadGame() {
 		                         tr("Close the running game before opening another game."));
 		return;
 	}
-	// Keep compressed game images separate from ELF and folder loading.
+	// Keep each game image format separate from ELF and folder loading.
 	QMessageBox msg(m_main_dialog);
 	msg.setWindowTitle(tr("Load Game"));
 	msg.setText(tr("What do you want to load?"));
 	auto* btn_file   = msg.addButton(tr("Single ELF / eboot..."), QMessageBox::ActionRole);
 	auto* btn_folder = msg.addButton(tr("Game folder (eboot.bin inside)..."), QMessageBox::ActionRole);
 	auto* btn_image  = msg.addButton(tr("Compressed game image (.ffpfsc)..."), QMessageBox::ActionRole);
+	auto* btn_exfat  = msg.addButton(tr("exFAT game image (.exfat)..."), QMessageBox::ActionRole);
 	msg.addButton(tr("Cancel"), QMessageBox::RejectRole);
 	msg.exec();
 
@@ -895,9 +896,12 @@ void MainDialogPrivate::LoadGame() {
 		if (dir.isEmpty()) return;
 		info.basedir = dir;
 		info.elf     = QStringLiteral("eboot.bin");
-	} else if (msg.clickedButton() == btn_image) {
-		const QString image = QFileDialog::getOpenFileName(m_main_dialog, tr("Load compressed game image"), QString(),
-		                                                 tr("Compressed game image (*.ffpfsc);;All Files (*.*)"));
+	} else if (msg.clickedButton() == btn_image || msg.clickedButton() == btn_exfat) {
+		const bool exfat = msg.clickedButton() == btn_exfat;
+		const QString image = QFileDialog::getOpenFileName(
+		    m_main_dialog, exfat ? tr("Load exFAT game image") : tr("Load compressed game image"), QString(),
+		    exfat ? tr("exFAT game image (*.exfat);;All Files (*.*)")
+		          : tr("Compressed game image (*.ffpfsc);;All Files (*.*)"));
 		if (image.isEmpty()) return;
 		if (m_ui->widget->SelectGameImage(image)) {
 			Update();
