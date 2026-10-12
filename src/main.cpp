@@ -179,6 +179,7 @@ static bool ParseRenderDimension(const std::string& value, uint32_t& out) {
 
 static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_help) {
 	show_help = false;
+	bool fsr_output_explicit = false;
 
 	for (int i = 1; i < argc; i++) {
 		std::string arg = std::string(argv[i]);
@@ -278,6 +279,9 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			if (!ParseRenderDimension(value, dimension)) {
 				::printf("invalid dimension for %s: %s (expected 0 or 240-7680)\n", arg.c_str(), value.c_str());
 				return false;
+			}
+			if (arg == "--fsr-output-width" || arg == "--fsr-output-height") {
+				fsr_output_explicit = true;
 			}
 		} else if (arg == "--vblank-frequency") {
 			const int32_t vblank_frequency = Common::ToInt32(value);
@@ -405,10 +409,18 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		::printf("guest-render and fsr-output dimensions must each be supplied as a pair\n");
 		return false;
 	}
-	if (!show_help && options.config.fsr_output_width != 0 &&
+	if (!show_help && fsr_output_explicit && options.config.fsr_output_width != 0 &&
 	    options.config.upscaler_method != Config::UpscalerMethod::Fsr1) {
 		::printf("--fsr-output dimensions require --upscaler-method Fsr1\n");
 		return false;
+	}
+
+	// FSR's inherited 4K defaults are not an explicit user request. Legacy
+	// launcher configurations can turn FSR off without passing output dimensions.
+	// Clear dormant defaults only after parsing, so argument order is irrelevant.
+	if (options.config.upscaler_method == Config::UpscalerMethod::Off) {
+		options.config.fsr_output_width = 0;
+		options.config.fsr_output_height = 0;
 	}
 
 	return show_help || 	       (!options.install_pkg.empty()) ||

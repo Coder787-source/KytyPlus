@@ -573,6 +573,11 @@ foreach(kyty_exception_test scalar_provenance_tests resource_tracking_tests
 endforeach()
 
 if(BUILD_TESTING)
+	add_test(NAME emulator_cli_regression
+		COMMAND ${CMAKE_COMMAND}
+			-DEMULATOR=$<TARGET_FILE:kyty_emulator>
+			-DTEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli-regression
+			-P ${CMAKE_SOURCE_DIR}/tests/EmulatorCliRegression.cmake)
 	add_test(NAME shader_failure_cache COMMAND $<TARGET_FILE:shader_failure_cache_tests>)
 	add_test(NAME playgo_api COMMAND $<TARGET_FILE:playgo_api_tests>)
 	add_test(NAME image_page_table COMMAND $<TARGET_FILE:image_page_table_tests>)

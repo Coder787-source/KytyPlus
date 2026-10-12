@@ -503,7 +503,7 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 			   << "workdir=" << dir.path() << "\n"
 			   << "args=" << args.join(QStringLiteral(" | ")) << "\n"
 			   << "started=" << (started_ok ? "true" : "false") << "\n"
-			   << "error=" << process->errorString() << "\n";
+			   << "error=" << (started_ok ? QStringLiteral("none") : process->errorString()) << "\n";
 		}
 	}
 	if (!started_ok) {
