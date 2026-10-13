@@ -34,7 +34,7 @@ enum : uint32_t {
 	AddressingModelLogical                   = 0,
 	MemoryModelGLSL450                       = 1,
 	CapabilityShader                         = 1,
-	CapabilityShaderViewportIndexLayerEXT     = 5254,
+	CapabilityShaderLayer                    = 69,
 	CapabilityImageGatherExtended            = 25,
 	CapabilitySampled1D                      = 43,
 	CapabilityImage1D                        = 44,
@@ -312,7 +312,12 @@ struct StorageImageDescriptors {
 
 struct EmitterState {
 	EmitterState(const IR::Program& program_, const IR::ResourceSnapshot& resources_)
-	    : program(program_), resources(resources_) {}
+	    : builder(std::any_of(program_.info.outputs.begin(), program_.info.outputs.end(),
+	                          [](const auto& output) {
+		                          return output.kind == IR::StageOutputKind::Layer;
+	                          })
+	                  ? 0x00010500u : 0x00010300u),
+	      program(program_), resources(resources_) {}
 
 	Builder                                          builder;
 	const IR::Program&                               program;

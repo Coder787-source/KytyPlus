@@ -412,6 +412,10 @@ list(APPEND check_headers
 add_kyty_full_emulator_test(shader_cfg_tests ../tests/shaderCfgTests.cpp)
 target_link_libraries(shader_cfg_tests gcn_decoder)
 
+add_kyty_full_emulator_test(vulkan_shader_compatibility_tests ../tests/VulkanShaderCompatibilityTests.cpp)
+target_sources(vulkan_shader_compatibility_tests PRIVATE shadps4Embedder.cpp)
+target_link_libraries(vulkan_shader_compatibility_tests gcn_decoder pkg_parser)
+
 add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 	../tests/ScalarProvenanceTests.cpp
 	graphics/host_gpu/hostMemory.cpp
@@ -573,6 +577,7 @@ foreach(kyty_exception_test scalar_provenance_tests resource_tracking_tests
 endforeach()
 
 if(BUILD_TESTING)
+	add_test(NAME vulkan_shader_compatibility COMMAND $<TARGET_FILE:vulkan_shader_compatibility_tests>)
 	add_test(NAME emulator_cli_regression
 		COMMAND ${CMAKE_COMMAND}
 			-DEMULATOR=$<TARGET_FILE:kyty_emulator>

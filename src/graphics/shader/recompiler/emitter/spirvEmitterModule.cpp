@@ -487,8 +487,9 @@ void EmitHeaderAndTypes(EmitterState& state) {
 
 	state.builder.AddCapability({CapabilityShader});
 	if (state.layer_variable != 0) {
-		state.builder.AddExtension("SPV_EXT_shader_viewport_index_layer");
-		state.builder.AddCapability({CapabilityShaderViewportIndexLayerEXT});
+		// Vulkan12Features enables shaderOutputLayer, not the legacy combined
+		// viewport/layer extension. Use the matching core SPIR-V 1.5 capability.
+		state.builder.AddCapability({CapabilityShaderLayer});
 	}
 	state.builder.AddCapability({CapabilitySampled1D});
 	state.builder.AddCapability({CapabilityImage1D});
@@ -848,6 +849,28 @@ void AllocateDescriptorVariables(EmitterState& state) {
 	}
 	if (DescriptorBinding(state, IR::DescriptorBindingKind::Gds) != nullptr) {
 		state.gds_variable = state.builder.AllocateId();
+	}
+	if (state.layer_variable != 0) {
+		// SPIR-V 1.4+ entry points must list all global variables used by the
+		// function, including descriptors and push constants (not just I/O).
+		for (const auto variable: {state.storage_buffer_variable, state.address_memory_variable,
+		                           state.push_constant_variable, state.vsharp_storage_variable,
+		                           state.flattened_srt_variable, state.sampler_variable,
+		                           state.gds_variable}) {
+			if (variable != 0) {
+				state.interface_variables.push_back(variable);
+			}
+		}
+		for (const auto& image: state.sampled_images) {
+			if (image.variable != 0) {
+				state.interface_variables.push_back(image.variable);
+			}
+		}
+		for (const auto& image: state.storage_images) {
+			if (image.variable != 0) {
+				state.interface_variables.push_back(image.variable);
+			}
+		}
 	}
 }
 
