@@ -298,7 +298,7 @@ bool File::IsDirectoryExisting(const std::filesystem::path& path) {
 	}
 	auto path_str = PathToGenericString(path);
 	return SysFileIsDirectoryExisting(
-	    Common::EndsWith(path_str, "/") ? Common::RemoveLast(path_str, 1) : path_str);
+	    PathFromUtf8(Common::EndsWith(path_str, "/") ? Common::RemoveLast(path_str, 1) : path_str));
 }
 
 bool File::IsFileExisting(const std::filesystem::path& name) {
@@ -314,14 +314,14 @@ bool File::CreateDirectory(
     const std::filesystem::path& path) // @suppress("Member declaration not found")
 {
 	auto path_str = PathToGenericString(path);
-	return SysFileCreateDirectory(Common::EndsWith(path_str, "/") ? Common::RemoveLast(path_str, 1)
-	                                                              : path_str);
+	return SysFileCreateDirectory(
+	    PathFromUtf8(Common::EndsWith(path_str, "/") ? Common::RemoveLast(path_str, 1) : path_str));
 }
 
 bool File::DeleteDirectory(const std::filesystem::path& path) {
 	auto path_str = PathToGenericString(path);
-	return SysFileDeleteDirectory(Common::EndsWith(path_str, "/") ? Common::RemoveLast(path_str, 1)
-	                                                              : path_str);
+	return SysFileDeleteDirectory(
+	    PathFromUtf8(Common::EndsWith(path_str, "/") ? Common::RemoveLast(path_str, 1) : path_str));
 }
 
 bool File::CreateDirectories(const std::filesystem::path& path) {
@@ -340,11 +340,13 @@ bool File::CreateDirectories(const std::filesystem::path& path) {
 
 		p += s;
 
-		if (IsDirectoryExisting(p)) {
+		const auto current_path = PathFromUtf8(p);
+
+		if (IsDirectoryExisting(current_path)) {
 			continue;
 		}
 
-		if (!CreateDirectory(p)) // @suppress("Invalid arguments")
+		if (!CreateDirectory(current_path)) // @suppress("Invalid arguments")
 		{
 			return false;
 		}
@@ -376,7 +378,7 @@ bool File::DeleteDirectories(const std::filesystem::path& path) {
 	uint32_t num = list2.size();
 
 	for (uint32_t si = num - 1; si < num; si--) {
-		if (!DeleteDirectory(list2[si])) {
+		if (!DeleteDirectory(PathFromUtf8(list2[si]))) {
 			return false;
 		}
 	}

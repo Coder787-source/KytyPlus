@@ -211,7 +211,8 @@ void MountPoints::Mount(const std::filesystem::path& folder, const std::string& 
 	Umount(point_str);
 
 	MountPair p;
-	p.dir   = folder_str;
+	// PathToGenericString returns UTF-8, not the Windows ANSI code page.
+	p.dir   = Common::PathFromUtf8(folder_str);
 	p.point = point_str;
 
 	m_mount_pairs.push_back(p);
@@ -304,13 +305,13 @@ std::filesystem::path MountPoints::GetRealFilename(const std::string& mounted_fi
 			::printf("FileSystem: Windows-incompatible guest filename: %s\n",
 			         mounted_file_name.c_str());
 		}
-		return p.dir / rel_path;
+		return p.dir / Common::PathFromUtf8(rel_path);
 #else
-		return ResolvePathIgnoringCase(p.dir / rel_path);
+		return ResolvePathIgnoringCase(p.dir / Common::PathFromUtf8(rel_path));
 #endif
 	}
 
-	return mounted_file_name;
+	return Common::PathFromUtf8(mounted_file_name);
 }
 
 std::filesystem::path MountPoints::GetRealDirectory(const std::string& mounted_directory) {
@@ -329,13 +330,13 @@ std::filesystem::path MountPoints::GetRealDirectory(const std::string& mounted_d
 			rel_path = Common::RemoveFirst(rel_path, 1);
 		}
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-		return p.dir / rel_path;
+		return p.dir / Common::PathFromUtf8(rel_path);
 #else
-		return ResolvePathIgnoringCase(p.dir / rel_path);
+		return ResolvePathIgnoringCase(p.dir / Common::PathFromUtf8(rel_path));
 #endif
 	}
 
-	return mounted_directory;
+	return Common::PathFromUtf8(mounted_directory);
 }
 
 KYTY_SUBSYSTEM_INIT(FileSystem) {

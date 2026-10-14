@@ -484,6 +484,10 @@ target_link_libraries(package_parser_tests pkg_parser gcn_decoder)
 # emulator.cpp uses shared-user-directory resolution even in parser tests.
 target_sources(package_parser_tests PRIVATE shadps4Embedder.cpp)
 
+add_kyty_full_emulator_test(unicode_mount_path_tests ../tests/UnicodeMountPathTests.cpp)
+target_sources(unicode_mount_path_tests PRIVATE shadps4Embedder.cpp)
+target_link_libraries(unicode_mount_path_tests pkg_parser gcn_decoder)
+
 add_kyty_full_emulator_test(game_image_mount_tests ../tests/GameImageMountTests.cpp)
 target_sources(game_image_mount_tests PRIVATE shadps4Embedder.cpp)
 target_link_libraries(game_image_mount_tests pkg_parser gcn_decoder)
@@ -578,6 +582,7 @@ endforeach()
 
 if(BUILD_TESTING)
 	add_test(NAME vulkan_shader_compatibility COMMAND $<TARGET_FILE:vulkan_shader_compatibility_tests>)
+	add_test(NAME unicode_mount_paths COMMAND $<TARGET_FILE:unicode_mount_path_tests>)
 	add_test(NAME emulator_cli_regression
 		COMMAND ${CMAKE_COMMAND}
 			-DEMULATOR=$<TARGET_FILE:kyty_emulator>

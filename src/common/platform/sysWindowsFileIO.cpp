@@ -490,8 +490,9 @@ void SysFileFindFiles(const std::filesystem::path& path, std::vector<sys_file_fi
 	HANDLE           h = nullptr;
 	WIN32_FIND_DATAW data;
 
-	auto wide_pattern = std::filesystem::path(pattern).wstring();
-	h                 = FindFirstFileW(wide_pattern.c_str(), &data);
+	const auto real_dir     = Common::PathFromUtf8(real_path);
+	auto       wide_pattern = Common::PathFromUtf8(pattern).wstring();
+	h                       = FindFirstFileW(wide_pattern.c_str(), &data);
 
 	if (h == INVALID_HANDLE_VALUE) {
 		return;
@@ -506,11 +507,11 @@ void SysFileFindFiles(const std::filesystem::path& path, std::vector<sys_file_fi
 		}
 
 		if ((data.dwFileAttributes & static_cast<DWORD>(FILE_ATTRIBUTE_DIRECTORY)) != 0u) {
-			SysFileFindFiles(std::filesystem::path(real_path) / file_name, out);
+			SysFileFindFiles(real_dir / file_name, out);
 		} else {
 			sys_file_find_t r {};
 
-			r.path_with_name              = std::filesystem::path(real_path) / file_name;
+			r.path_with_name              = real_dir / file_name;
 			r.size                        = (static_cast<uint64_t>(data.nFileSizeHigh) << 32u) +
 			                                static_cast<uint64_t>(data.nFileSizeLow);
 			r.last_access_time.is_invalid = false;
@@ -537,7 +538,7 @@ void SysFileGetDents(const std::filesystem::path& path, std::vector<sys_dir_entr
 	HANDLE           h = nullptr;
 	WIN32_FIND_DATAW data;
 
-	auto wide_pattern = std::filesystem::path(pattern).wstring();
+	auto wide_pattern = Common::PathFromUtf8(pattern).wstring();
 	h                 = FindFirstFileW(wide_pattern.c_str(), &data);
 
 	if (h == INVALID_HANDLE_VALUE) {
