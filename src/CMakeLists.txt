@@ -175,7 +175,6 @@ add_subdirectory("${KYTY_THIRD_PARTY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/3rdparty
 add_subdirectory(common)
 add_subdirectory(package)
 
-add_subdirectory(graphics/shader/recompiler/decompiler/gcn)
 
 file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	libs/*.cpp
@@ -410,11 +409,10 @@ list(APPEND check_headers
 # definition for the merged tree — previously duplicated here and at top-level).
 
 add_kyty_full_emulator_test(shader_cfg_tests ../tests/shaderCfgTests.cpp)
-target_link_libraries(shader_cfg_tests gcn_decoder)
 
 add_kyty_full_emulator_test(vulkan_shader_compatibility_tests ../tests/VulkanShaderCompatibilityTests.cpp)
 target_sources(vulkan_shader_compatibility_tests PRIVATE shadps4Embedder.cpp)
-target_link_libraries(vulkan_shader_compatibility_tests gcn_decoder pkg_parser)
+target_link_libraries(vulkan_shader_compatibility_tests pkg_parser)
 
 add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 	../tests/ScalarProvenanceTests.cpp
@@ -480,17 +478,17 @@ target_include_directories(playgo_api_tests PRIVATE ${inc_headers})
 
 add_kyty_full_emulator_test(pm4_ngs2_fuzz_tests ../tests/Pm4Ngs2FuzzTests.cpp)
 add_kyty_full_emulator_test(package_parser_tests ../tests/PackageParserTests.cpp)
-target_link_libraries(package_parser_tests pkg_parser gcn_decoder)
+target_link_libraries(package_parser_tests pkg_parser)
 # emulator.cpp uses shared-user-directory resolution even in parser tests.
 target_sources(package_parser_tests PRIVATE shadps4Embedder.cpp)
 
 add_kyty_full_emulator_test(unicode_mount_path_tests ../tests/UnicodeMountPathTests.cpp)
 target_sources(unicode_mount_path_tests PRIVATE shadps4Embedder.cpp)
-target_link_libraries(unicode_mount_path_tests pkg_parser gcn_decoder)
+target_link_libraries(unicode_mount_path_tests pkg_parser)
 
 add_kyty_full_emulator_test(game_image_mount_tests ../tests/GameImageMountTests.cpp)
 target_sources(game_image_mount_tests PRIVATE shadps4Embedder.cpp)
-target_link_libraries(game_image_mount_tests pkg_parser gcn_decoder)
+target_link_libraries(game_image_mount_tests pkg_parser)
 
 add_kyty_full_emulator_test(soft_ignore_evidence_tests ../tests/SoftIgnoreEvidenceTests.cpp)
 
@@ -543,7 +541,6 @@ target_link_libraries(image_page_table_tests common fmt::fmt)
 target_include_directories(image_page_table_tests PRIVATE ${inc_headers})
 
 add_kyty_full_emulator_test(shader_recompiler_compute_tests ../tests/ShaderRecompilerComputeTests.cpp)
-target_link_libraries(shader_recompiler_compute_tests gcn_decoder)
 
 set(gpu_test_generated_dir "${PROJECT_BINARY_DIR}/gpu_test_shaders")
 set(gpu_test_ms_depth_source
@@ -641,7 +638,7 @@ add_dependencies(kyty_emulator fsr_shaders)
 # Anchorx86_64 macOS-guest .zerofill segments; selected by configure_macos_guest_address_space.
 configure_macos_guest_address_space(kyty_emulator)
 
-target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries} gcn_decoder pkg_parser)
+target_link_libraries(kyty_emulator ${kyty_emulator_link_libraries} pkg_parser)
 target_compile_definitions(kyty_emulator PRIVATE ${kyty_emulator_compile_definitions})
 if (WIN32)
 	target_link_libraries(kyty_emulator opengl32)
@@ -670,12 +667,6 @@ endif()
 # dlopen/dlsym/dladdr for RenderDoc.
 target_link_libraries(kyty_emulator ${CMAKE_DL_LIBS})
 target_include_directories(kyty_emulator PRIVATE ${inc_headers})
-# GcnBridge.cpp bridges into the ported shadPS4 decoder; give it the gcn/
-# include root with precedence over src/ so the ported headers resolve to
-# the local compatibility shims (common/types.h, common/assert.h, ...) and
-# not to Kyty's own src/common headers, which define different macros.
-set_source_files_properties(graphics/shader/recompiler/decompiler/GcnBridge.cpp
-	PROPERTIES COMPILE_FLAGS "-I${CMAKE_CURRENT_SOURCE_DIR}/graphics/shader/recompiler/decompiler/gcn")
 
 clang_tidy_check(kyty_emulator "" "${check_headers}" "${inc_headers}")
 
