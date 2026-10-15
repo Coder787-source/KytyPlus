@@ -35,6 +35,17 @@ QVariantMap Configuration::GameSettings() const {
 #if defined(_WIN32)
 	KYTY_CFG_SET(red_zone_protection_enabled);
 #endif
+	KYTY_CFG_SET(upscaler_method);
+	KYTY_CFG_SET(upscaler_quality);
+	KYTY_CFG_SET(upscaler_sharpness);
+	KYTY_CFG_SET(guest_render_width);
+	KYTY_CFG_SET(guest_render_height);
+	KYTY_CFG_SET(fsr_output_width);
+	KYTY_CFG_SET(fsr_output_height);
+	KYTY_CFG_SET(igpu_optimization);
+	KYTY_CFG_SET(texture_lod_bias);
+	KYTY_CFG_SET(present_filter);
+	KYTY_CFG_SET(aspect_ratio);
 	KYTY_CFG_SET(elf);
 #undef KYTY_CFG_SET
 	return values;
@@ -86,6 +97,17 @@ void Configuration::ReadGameSettingsValues(const Settings& s) {
 	red_zone_protection_enabled =
 	    s.value("red_zone_protection_enabled", red_zone_protection_enabled).toBool();
 #endif
+	upscaler_method = s.value("upscaler_method", QVariant::fromValue(upscaler_method).toString()).template value<decltype(upscaler_method)>();
+	upscaler_quality = s.value("upscaler_quality", QVariant::fromValue(upscaler_quality).toString()).template value<decltype(upscaler_quality)>();
+	upscaler_sharpness = s.value("upscaler_sharpness", QVariant::fromValue(upscaler_sharpness).toString()).template value<decltype(upscaler_sharpness)>();
+	guest_render_width = s.value("guest_render_width", QVariant::fromValue(guest_render_width).toString()).template value<decltype(guest_render_width)>();
+	guest_render_height = s.value("guest_render_height", QVariant::fromValue(guest_render_height).toString()).template value<decltype(guest_render_height)>();
+	fsr_output_width = s.value("fsr_output_width", QVariant::fromValue(fsr_output_width).toString()).template value<decltype(fsr_output_width)>();
+	fsr_output_height = s.value("fsr_output_height", QVariant::fromValue(fsr_output_height).toString()).template value<decltype(fsr_output_height)>();
+	igpu_optimization = s.value("igpu_optimization", QVariant::fromValue(igpu_optimization).toString()).template value<decltype(igpu_optimization)>();
+	texture_lod_bias = s.value("texture_lod_bias", QVariant::fromValue(texture_lod_bias).toString()).template value<decltype(texture_lod_bias)>();
+	present_filter = s.value("present_filter", QVariant::fromValue(present_filter).toString()).template value<decltype(present_filter)>();
+	aspect_ratio = s.value("aspect_ratio", QVariant::fromValue(aspect_ratio).toString()).template value<decltype(aspect_ratio)>();
 	elf = s.value("elf", elf).toString();
 #undef KYTY_CFG_GET
 }
