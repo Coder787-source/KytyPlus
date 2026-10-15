@@ -15,66 +15,6 @@
 #include "common/assert.h"
 #include "common/platform/sysDbg.h"
 
-struct FrameS {
-	struct FrameS* next;
-	void*          ret_addr;
-};
-
-int WalkStack(int z_stack_depth, void** z_stack_trace) {
-	CONTEXT context;
-	//	KNONVOLATILE_CONTEXT_POINTERS NvContext;
-	PRUNTIME_FUNCTION runtime_function  = nullptr;
-	PVOID             handler_data      = nullptr;
-	ULONG64           establisher_frame = 0;
-	ULONG64           image_base        = 0;
-
-	RtlCaptureContext(&context);
-
-	int frame = 0;
-
-	while (true) {
-		if (frame >= z_stack_depth) {
-			break;
-		}
-
-		z_stack_trace[frame] = reinterpret_cast<void*>(context.Rip);
-
-		frame++;
-
-		runtime_function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
-
-		if (runtime_function == nullptr) {
-			break;
-		}
-
-		// RtlZeroMemory(&NvContext, sizeof(KNONVOLATILE_CONTEXT_POINTERS));
-		RtlVirtualUnwind(0, image_base, context.Rip, runtime_function, &context, &handler_data,
-		                 &establisher_frame, nullptr /*&NvContext*/);
-
-		if (context.Rip == 0u) {
-			break;
-		}
-	}
-
-	return frame;
-}
-
-void SysStackWalk(void** stack, int* depth) {
-	int n  = WalkStack(*depth, stack);
-	*depth = n;
-	//	unwind_info_t info = {stack, 0, *depth};
-	//	 _Unwind_Backtrace(&trace_fcn, &info);
-	//	 *depth = info.depth;
-}
-
-void SysStackUsagePrint(sys_dbg_stack_info_t& stack) {
-	printf("stack: (0x%" PRIx64 ", %" PRIu64 ") + (0x%" PRIx64 ", %" PRIu64 ") + (0x%" PRIx64
-	       ", %" PRIu64 ")\n",
-	       static_cast<uint64_t>(stack.reserved_addr), static_cast<uint64_t>(stack.reserved_size),
-	       static_cast<uint64_t>(stack.guard_addr), static_cast<uint64_t>(stack.guard_size),
-	       static_cast<uint64_t>(stack.commited_addr), static_cast<uint64_t>(stack.commited_size));
-}
-
 void SysStackUsage(sys_dbg_stack_info_t& s) {
 	MEMORY_BASIC_INFORMATION mbi {};
 	[[maybe_unused]] size_t  ss = VirtualQuery(&mbi, &mbi, sizeof(mbi));

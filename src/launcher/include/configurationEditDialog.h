@@ -1,8 +1,6 @@
 #ifndef CONFIGURATION_EDIT_DIALOG_H
 #define CONFIGURATION_EDIT_DIALOG_H
 
-#include "common.h"
-
 #include <QDialog>
 #include <QString>
 #include <QStringList>
@@ -11,6 +9,7 @@ class ControllerMappingPanel;
 class QGroupBox;
 class QListWidget;
 class QMoveEvent;
+class QResizeEvent;
 class QToolButton;
 class QSettings;
 class QWidget;
@@ -22,7 +21,6 @@ class ConfigurationEditDialog;
 
 class ConfigurationEditDialog: public QDialog {
 	Q_OBJECT
-	KYTY_QT_CLASS_NO_COPY(ConfigurationEditDialog);
 
 public:
 	explicit ConfigurationEditDialog(Configuration& info, QWidget* parent = nullptr);
@@ -31,9 +29,13 @@ public:
 	static void WriteSettings(QSettings& s);
 	static void ReadSettings(QSettings& s);
 
-	void                      SetTitle(const QString& str);
-	void                      SetGameDirectories(const QStringList& dirs);
+	void                      SetGlobalSettings(const QStringList& dirs);
 	[[nodiscard]] QStringList GetGameDirectories() const;
+
+signals:
+	void PreviewControllerColor(const QString& color);
+	void ImportGameSettings();
+	void ExportGameSettings();
 
 private:
 	Ui::ConfigurationEditDialog* m_ui = nullptr;
@@ -43,7 +45,7 @@ private:
 	ControllerMappingPanel*      m_controller_mapping     = nullptr;
 	QListWidget*                 m_game_dirs_list         = nullptr;
 	QToolButton*                 m_remove_game_dir_button = nullptr;
-	bool                         m_show_game_dirs         = false;
+	bool                         m_global_settings        = false;
 
 protected:
 	void Init(const Configuration& info);
@@ -52,13 +54,12 @@ protected:
 	void AddGameDirectoryItem(const QString& dir);
 
 	void moveEvent(QMoveEvent* event) override;
+	void resizeEvent(QResizeEvent* event) override;
 
 	static QByteArray g_last_geometry;
 
 	/*slots:*/
 
-	void update_info();
-	void adjust_size();
 	void save();
 	void clear();
 	void add_game_directory();

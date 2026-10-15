@@ -118,6 +118,9 @@ private:
 // Safe to call from inside the exception filter. Never throws, never allocates,
 // never locks. Degrades (prints "<unmapped>") instead of crashing on bad ranges.
 void DumpExceptionInfo(const ExceptionInfo& info) noexcept;
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+bool InitializeThreadSignalStack();
+#endif
 
 } // namespace Common::HostException
 

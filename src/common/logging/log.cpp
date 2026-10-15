@@ -3,7 +3,6 @@
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
-#include "common/stringUtils.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -80,7 +79,7 @@ std::shared_ptr<spdlog::logger> MakeFileLogger(std::string                  name
 	TrimLogFile(path);
 
 	auto sink =
-	    std::make_shared<spdlog::sinks::basic_file_sink_mt>(Common::PathToString(path), true);
+	    std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.native(), true);
 	return MakeLogger(std::move(name), std::move(sink));
 }
 
@@ -193,6 +192,14 @@ static void WriteImpl(std::string_view text, fmt::text_style style = {}) {
 	}
 }
 
+void WriteToConsoleAndLog(std::string_view text) {
+	WriteImpl(text);
+	if (g_initialized && g_direction != Direction::Console) {
+		WriteStdout(text);
+	}
+	Flush();
+}
+
 void WriteFatal(std::string_view text) {
 	if (g_direction == Direction::Silent || !g_initialized) {
 		WriteStdout(text);
@@ -213,26 +220,19 @@ void WriteFatal(fmt::text_style style, std::string_view text) {
 	Flush();
 }
 
-KYTY_SUBSYSTEM_INIT(Log) {
+void Initialize() {
 	g_initialized = true;
 	switch (Config::GetPrintfDirection()) {
-		case Config::OutputDirection::Silent: g_direction = Direction::Silent; break;
-		case Config::OutputDirection::Console: g_direction = Direction::Console; break;
-		case Config::OutputDirection::File: g_direction = Direction::File; break;
+		case Config::LogDirection::Silent: g_direction = Direction::Silent; break;
+		case Config::LogDirection::Console: g_direction = Direction::Console; break;
+		case Config::LogDirection::File: g_direction = Direction::File; break;
 	}
 	g_output_file =
 	    (g_direction == Direction::File ? Config::GetPrintfOutputFile() : std::filesystem::path {});
 	SetupLogger();
 }
 
-KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Log) {
-	Flush();
-	std::lock_guard lock(g_logger_mutex);
-	FlushPendingRepeat();
-	g_logger.reset();
-}
-
-KYTY_SUBSYSTEM_DESTROY(Log) {
+void Shutdown() {
 	Flush();
 	std::lock_guard lock(g_logger_mutex);
 	FlushPendingRepeat();

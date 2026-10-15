@@ -2,21 +2,28 @@
 #define KYTY_COMMON_EMULATOR_CONFIG_H_
 
 #include "common/common.h"
-#include "common/subsystems.h"
 
+#include <cstddef>
+#include <array>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace Config {
 
-KYTY_SUBSYSTEM_DEFINE(Config);
+void Initialize();
+void Shutdown();
+
+struct Lifecycle {
+	static constexpr const char* name       = "Config";
+	static constexpr auto        initialize = Config::Initialize;
+	static constexpr auto        shutdown   = Config::Shutdown;
+};
 
 enum class ShaderOptimizationType { None, Size, Performance };
 
-enum class ShaderLogDirection { Silent, Console, File };
-
-enum class ProfilerDirection { None, Network };
+enum class LogDirection { Silent, Console, File };
 
 // Filter used by the presenter to scale the guest frame to the swapchain/window extent.
 //   Nearest  -- sharp pixels, ideal for pixel-art titles (e.g. Dead Cells)
@@ -35,8 +42,8 @@ enum class AspectRatio { Stretch, Fit16x9, Fit4x3, Integer };
 
 // Internal resolution scale for iGPU optimization.
 //   Native  -- 100% (1280x720 or guest resolution)
-//   Half    -- 50% (640x360) — major bandwidth/fill-rate savings
-//   Quarter -- 25% (320x180) — extreme mode for very weak iGPUs
+//   Half    -- 50% (640x360) â€” major bandwidth/fill-rate savings
+//   Quarter -- 25% (320x180) â€” extreme mode for very weak iGPUs
 enum class ResolutionScale { Native, Half, Quarter };
 
 // Upscaling method applied during the final guest->swapchain presentation.
@@ -53,15 +60,38 @@ enum class UpscalerQuality { UltraQuality, Quality, Balanced, Performance };
 
 enum class OutputDirection { Silent, Console, File };
 
+
 using Keymap = std::vector<std::string>;
+using ControllerColor = std::array<uint8_t, 3>;
 
 constexpr uint32_t DEFAULT_CONSOLE_LANGUAGE = 1;
 constexpr uint32_t MAX_CONSOLE_LANGUAGE     = 29;
+constexpr std::size_t MAX_USER_NAME_LENGTH = 16;
+constexpr int32_t DEFAULT_USER_ID           = 1000;
+
+constexpr bool IsConfiguredUserIdValid(int32_t user_id) {
+	constexpr int32_t USER_ID_EVERYONE = 0xfe;
+	constexpr int32_t USER_ID_SYSTEM   = 0xff;
+	return user_id >= 0 && user_id != USER_ID_EVERYONE && user_id != USER_ID_SYSTEM;
+}
 
 struct ConfigOptions {
 	uint32_t               screen_width                = 1280;
 	uint32_t               screen_height               = 720;
+	std::string            user_name                   = "Kyty";
+	int32_t                user_id                     = DEFAULT_USER_ID;
+	std::string            audio_input_device;
+	std::optional<ControllerColor> controller_color;
+	uint32_t               controller_speaker_volume      = 50;
+	uint32_t               controller_vibration_intensity = 100;
+	int32_t                gpu_index                   = -1;
 	bool                   fullscreen_enabled          = false;
+	bool                   hdr_enabled                 = false;
+	bool                   hide_cursor_enabled         = false;
+	bool                   splash_enabled              = true;
+	bool                   vr_enabled                  = false;
+	bool                   amd_cpu_enabled             = false;
+	bool                   network_connected           = false;
 	uint32_t               vblank_frequency            = 60;
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = true;  // Enabled by default for debugging
@@ -69,16 +99,22 @@ struct ConfigOptions {
 	// Match the launcher's playable default so CLI launches without
 	// --shader-optimization-type still get SPIR-V performance passes.
 	ShaderOptimizationType shader_optimization_type    = ShaderOptimizationType::Performance;
-	ShaderLogDirection     shader_log_direction        = ShaderLogDirection::Silent;
+	LogDirection     shader_log_direction        = LogDirection::Silent;
 	std::filesystem::path  shader_log_folder           = "_Shaders";
 	bool                   command_buffer_dump_enabled = false;
 	std::filesystem::path  command_buffer_dump_folder  = "_Buffers";
 	bool                   graphics_debug_dump_enabled = false;
-	OutputDirection        printf_direction            = OutputDirection::Console;
+	LogDirection           printf_direction            = LogDirection::Silent;
 	std::filesystem::path  printf_output_file          = "_kyty.txt";
-	ProfilerDirection      profiler_direction          = ProfilerDirection::None;
+	bool                   profiler_enabled            = false;
 	bool                   spirv_debug_printf_enabled  = false;
+	bool                   gpu_assisted_validation_enabled = false;
 	bool                   renderdoc_enabled           = false;
+	bool                   sync_raw_image_buffers      = false;
+	bool                   tessellation_enabled        = false;
+	bool                   trophy_enabled              = true;
+	bool                   playgo_hack_enabled         = false;
+	bool                   skip_notice_screen          = false;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	bool                   red_zone_protection_enabled = false;
 #endif
@@ -163,6 +199,7 @@ struct ConfigOptions {
 	// specific crash. Applies to the SOFT_* guard macros only; genuine invariant
 	// failures (EXIT_IF/EXIT on invalid internal state) always abort.
 	bool                   strict_unimplemented_enabled = false;
+	std::vector<std::string> guest_arguments {""};
 };
 
 void Load(const ConfigOptions& cfg);
@@ -178,14 +215,26 @@ uint32_t GetGuestRenderWidth();
 uint32_t GetGuestRenderHeight();
 uint32_t GetFsrOutputWidth();
 uint32_t GetFsrOutputHeight();
+const std::string& GetUserName();
+int32_t  GetUserId();
+const std::string& GetAudioInputDevice();
+const std::optional<ControllerColor>& GetControllerColor();
+uint32_t GetControllerSpeakerVolume();
+uint32_t GetControllerVibrationIntensity();
+int32_t GetGpuIndex();
 bool     FullscreenEnabled();
+bool     HdrEnabled();
+bool     HideCursorEnabled();
+bool     VrEnabled();
+bool     AmdCpuEnabled();
+bool     IsNetworkConnected();
 uint32_t GetVblankFrequency();
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();
 
 bool                   ShaderValidationEnabled();
 ShaderOptimizationType GetShaderOptimizationType();
-ShaderLogDirection     GetShaderLogDirection();
+LogDirection           GetShaderLogDirection();
 std::filesystem::path  GetShaderLogFolder();
 
 bool                  CommandBufferDumpEnabled();
@@ -193,20 +242,28 @@ std::filesystem::path GetCommandBufferDumpFolder();
 
 bool GraphicsDebugDumpEnabled();
 
-OutputDirection       GetPrintfDirection();
+LogDirection          GetPrintfDirection();
 std::filesystem::path GetPrintfOutputFile();
 
-ProfilerDirection GetProfilerDirection();
+bool ProfilerEnabled();
 
 bool SpirvDebugPrintfEnabled();
+
+bool GpuAssistedValidationEnabled();
 
 bool RenderDocEnabled();
 bool NggRectlistDrawEnabled();
 bool ReadbackLinearImagesEnabled();
+bool SyncRawImageBuffersEnabled();
+bool TessellationEnabled();
+bool TrophyEnabled();
+bool PlayGoHackEnabled();
+bool SkipNoticeScreen();
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled();
 #endif
 const Keymap& GetKeymap();
+const std::vector<std::string>& GetGuestArguments();
 
 // Upscaling filter for the final guest->swapchain presentation blit.
 PresentFilter GetPresentFilter();

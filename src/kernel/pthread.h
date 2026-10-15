@@ -3,7 +3,6 @@
 
 #include "common/abi.h"
 #include "common/common.h"
-#include "common/subsystems.h"
 
 // IWYU pragma: no_include <pthread.h>
 
@@ -19,7 +18,12 @@ namespace Libs {
 
 namespace LibKernel {
 
-KYTY_SUBSYSTEM_DEFINE(Pthread);
+void Initialize();
+
+struct PthreadLifecycle {
+	static constexpr const char* name       = "Pthread";
+	static constexpr auto        initialize = Libs::LibKernel::Initialize;
+};
 
 struct PthreadAttrPrivate;
 struct PthreadPrivate;
@@ -106,7 +110,6 @@ int KYTY_SYSV_ABI     PthreadRename(Pthread thread, const char* name);
 void KYTY_SYSV_ABI    PthreadYield();
 int KYTY_SYSV_ABI     PthreadGetthreadid();
 int KYTY_SYSV_ABI     PthreadGetaffinity(Pthread thread, KernelCpumask* mask);
-int                   PthreadGetUniqueId(Pthread thread);
 uint64_t              PthreadGetHostThreadId(Pthread thread);
 void                  PthreadWakeForSignal(Pthread thread);
 void                  PthreadQueuePendingSignal(Pthread thread, int signum);
@@ -246,6 +249,7 @@ int KYTY_SYSV_ABI pthread_attr_setinheritsched(LibKernel::PthreadAttr* attr, int
 int KYTY_SYSV_ABI pthread_attr_setschedparam(LibKernel::PthreadAttr*            attr,
                                              const LibKernel::KernelSchedParam* param);
 int KYTY_SYSV_ABI pthread_attr_setschedpolicy(LibKernel::PthreadAttr* attr, int policy);
+int KYTY_SYSV_ABI pthread_attr_setstack(LibKernel::PthreadAttr* attr, void* addr, size_t size);
 int KYTY_SYSV_ABI pthread_attr_setstacksize(LibKernel::PthreadAttr* attr, size_t stack_size);
 int KYTY_SYSV_ABI pthread_cond_broadcast(LibKernel::PthreadCond* cond);
 int KYTY_SYSV_ABI pthread_cond_signal(LibKernel::PthreadCond* cond);

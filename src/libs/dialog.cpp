@@ -1,15 +1,93 @@
 #include "libs/dialog.h"
 
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 // NOLINTNEXTLINE(modernize-concat-nested-namespaces)
 namespace Libs::Dialog {
+
+namespace {
+
+constexpr int DIALOG_STATUS_RUNNING  = 2;
+constexpr int DIALOG_STATUS_FINISHED = 3;
+
+struct DialogState {
+	int      status     = 0;
+	uint64_t generation = 0;
+};
+
+std::mutex  g_dialog_mutex;
+DialogState g_error;
+DialogState g_signin;
+uint64_t    g_dialog_generation        = 0;
+uint64_t    g_dialog_revision          = 0;
+int32_t     g_error_code               = 0;
+void (*g_dialog_visibility_callback)() = nullptr;
+
+void SetDialogStatus(DialogState& dialog, int status, std::unique_lock<std::mutex>& lock) {
+	const bool visibility_changed =
+	    (dialog.status == DIALOG_STATUS_RUNNING) != (status == DIALOG_STATUS_RUNNING);
+	dialog.status = status;
+	if (visibility_changed) {
+		g_dialog_revision++;
+		if (status == DIALOG_STATUS_RUNNING) {
+			dialog.generation = ++g_dialog_generation;
+		}
+	}
+	const auto callback = visibility_changed ? g_dialog_visibility_callback : nullptr;
+	lock.unlock();
+	if (callback != nullptr) {
+		callback();
+	}
+}
+
+} // namespace
+
+namespace SystemDialog {
+
+bool GetHostSnapshot(HostSnapshot* snapshot) {
+	std::scoped_lock lock(g_dialog_mutex);
+	if (g_signin.status == DIALOG_STATUS_RUNNING) {
+		*snapshot = {Kind::Signin, g_signin.generation, 0};
+		return true;
+	}
+	if (g_error.status == DIALOG_STATUS_RUNNING) {
+		*snapshot = {Kind::Error, g_error.generation, g_error_code};
+		return true;
+	}
+	return false;
+}
+
+VisualState GetVisualState() noexcept {
+	std::scoped_lock lock(g_dialog_mutex);
+	const bool       signin = g_signin.status == DIALOG_STATUS_RUNNING;
+	return {g_error.status == DIALOG_STATUS_RUNNING || signin, signin, g_dialog_revision};
+}
+
+void SetVisibilityCallback(void (*callback)()) {
+	std::scoped_lock lock(g_dialog_mutex);
+	g_dialog_visibility_callback = callback;
+}
+
+bool HostClose(uint64_t generation) {
+	std::unique_lock lock(g_dialog_mutex);
+	auto&            dialog = g_signin.status == DIALOG_STATUS_RUNNING ? g_signin : g_error;
+	if (dialog.status != DIALOG_STATUS_RUNNING || generation != dialog.generation) {
+		return false;
+	}
+	SetDialogStatus(dialog, DIALOG_STATUS_FINISHED, lock);
+	return true;
+}
+
+} // namespace SystemDialog
 
 namespace CommonDialog {
 
@@ -19,6 +97,12 @@ int KYTY_SYSV_ABI CommonDialogInitialize() {
 	PRINT_NAME();
 
 	return OK;
+}
+
+bool KYTY_SYSV_ABI CommonDialogIsUsed() {
+	PRINT_NAME();
+
+	return false;
 }
 
 } // namespace CommonDialog
@@ -35,7 +119,6 @@ constexpr int LOGIN_RESULT_OK          = 0;
 constexpr int LOGIN_MODE_ALL_USERS     = 0;
 constexpr int LOGIN_MODE_NOT_LOGGED_IN = 1;
 constexpr int LOGIN_USER_INVALID       = -1;
-constexpr int LOGIN_USER_ID            = 1000;
 
 constexpr int LOGIN_ERROR_NOT_INITIALIZED     = static_cast<int>(0x81340001u);
 constexpr int LOGIN_ERROR_ALREADY_INITIALIZED = static_cast<int>(0x81340002u);
@@ -61,7 +144,7 @@ static_assert(sizeof(LoginDialogResult) == 16);
 static_assert(sizeof(LoginDialogParam) == 64);
 
 static int g_login_status        = LOGIN_STATUS_NONE;
-static int g_login_selected_user = LOGIN_USER_ID;
+static int g_login_selected_user = LOGIN_USER_INVALID;
 
 int KYTY_SYSV_ABI LoginDialogInitialize() {
 	PRINT_NAME();
@@ -71,7 +154,7 @@ int KYTY_SYSV_ABI LoginDialogInitialize() {
 	}
 
 	g_login_status        = LOGIN_STATUS_INITIALIZED;
-	g_login_selected_user = LOGIN_USER_ID;
+	g_login_selected_user = Config::GetUserId();
 
 	return OK;
 }
@@ -84,7 +167,7 @@ int KYTY_SYSV_ABI LoginDialogTerminate() {
 	}
 
 	g_login_status        = LOGIN_STATUS_NONE;
-	g_login_selected_user = LOGIN_USER_ID;
+	g_login_selected_user = LOGIN_USER_INVALID;
 
 	return OK;
 }
@@ -106,7 +189,7 @@ int KYTY_SYSV_ABI LoginDialogOpen(const void* param) {
 	}
 
 	g_login_selected_user =
-	    p->initial_focus != LOGIN_USER_INVALID ? p->initial_focus : LOGIN_USER_ID;
+	    p->initial_focus != LOGIN_USER_INVALID ? p->initial_focus : Config::GetUserId();
 
 	LOGF("\t size          = %d\n"
 	     "\t mode          = %d\n"
@@ -199,6 +282,7 @@ constexpr int SIGNIN_ERROR_NOT_INITIALIZED     = static_cast<int>(0x81350001u);
 constexpr int SIGNIN_ERROR_ALREADY_INITIALIZED = static_cast<int>(0x81350002u);
 constexpr int SIGNIN_ERROR_PARAM_INVALID       = static_cast<int>(0x81350003u);
 constexpr int SIGNIN_ERROR_INVALID_STATE       = static_cast<int>(0x81350005u);
+constexpr int SIGNIN_ERROR_INVALID_USER_ID     = static_cast<int>(0x81350007u);
 
 struct SigninDialogResult {
 	int32_t result;
@@ -214,70 +298,78 @@ struct SigninDialogParam {
 static_assert(sizeof(SigninDialogResult) == 16);
 static_assert(sizeof(SigninDialogParam) == 16);
 
-static int g_signin_status = SIGNIN_STATUS_NONE;
-
 int KYTY_SYSV_ABI SigninDialogInitialize() {
 	PRINT_NAME();
-	if (g_signin_status != SIGNIN_STATUS_NONE) {
+	std::scoped_lock lock(g_dialog_mutex);
+	if (g_signin.status != SIGNIN_STATUS_NONE) {
 		return SIGNIN_ERROR_ALREADY_INITIALIZED;
 	}
-	g_signin_status = SIGNIN_STATUS_INITIALIZED;
+	g_signin.status = SIGNIN_STATUS_INITIALIZED;
 	return OK;
 }
 
 int KYTY_SYSV_ABI SigninDialogTerminate() {
 	PRINT_NAME();
-	if (g_signin_status == SIGNIN_STATUS_NONE) {
+	std::unique_lock lock(g_dialog_mutex);
+	if (g_signin.status == SIGNIN_STATUS_NONE) {
 		return SIGNIN_ERROR_NOT_INITIALIZED;
 	}
-	g_signin_status = SIGNIN_STATUS_NONE;
+	SetDialogStatus(g_signin, SIGNIN_STATUS_NONE, lock);
 	return OK;
 }
 
 int KYTY_SYSV_ABI SigninDialogOpen(const void* param) {
 	PRINT_NAME();
-	if (g_signin_status != SIGNIN_STATUS_INITIALIZED && g_signin_status != SIGNIN_STATUS_FINISHED) {
+	std::unique_lock lock(g_dialog_mutex);
+	if (g_signin.status == SIGNIN_STATUS_NONE) {
+		return SIGNIN_ERROR_NOT_INITIALIZED;
+	}
+	if (g_signin.status != SIGNIN_STATUS_INITIALIZED && g_signin.status != SIGNIN_STATUS_FINISHED) {
 		return SIGNIN_ERROR_INVALID_STATE;
 	}
-	if (param == nullptr ||
-	    static_cast<const SigninDialogParam*>(param)->size != sizeof(SigninDialogParam)) {
+	if (param == nullptr) {
 		return SIGNIN_ERROR_PARAM_INVALID;
 	}
-	g_signin_status = SIGNIN_STATUS_RUNNING;
+	const auto* p = static_cast<const SigninDialogParam*>(param);
+	if (p->size != sizeof(SigninDialogParam) || p->reserved[0] != 0 || p->reserved[1] != 0) {
+		return SIGNIN_ERROR_PARAM_INVALID;
+	}
+	if (p->user_id != Config::GetUserId()) {
+		return SIGNIN_ERROR_INVALID_USER_ID;
+	}
+	SetDialogStatus(g_signin, SIGNIN_STATUS_RUNNING, lock);
 	return OK;
 }
 
 int KYTY_SYSV_ABI SigninDialogClose() {
 	PRINT_NAME();
-	if (g_signin_status == SIGNIN_STATUS_NONE) {
+	std::unique_lock lock(g_dialog_mutex);
+	if (g_signin.status == SIGNIN_STATUS_NONE) {
 		return SIGNIN_ERROR_NOT_INITIALIZED;
 	}
-	if (g_signin_status != SIGNIN_STATUS_RUNNING && g_signin_status != SIGNIN_STATUS_FINISHED) {
-		return SIGNIN_ERROR_INVALID_STATE;
-	}
-	g_signin_status = SIGNIN_STATUS_FINISHED;
+	SetDialogStatus(g_signin, SIGNIN_STATUS_FINISHED, lock);
 	return OK;
 }
 
 int KYTY_SYSV_ABI SigninDialogUpdateStatus() {
 	PRINT_NAME();
-	if (g_signin_status == SIGNIN_STATUS_RUNNING) {
-		g_signin_status = SIGNIN_STATUS_FINISHED;
-	}
-	return g_signin_status;
+	std::scoped_lock lock(g_dialog_mutex);
+	return g_signin.status;
 }
 
 int KYTY_SYSV_ABI SigninDialogGetStatus() {
 	PRINT_NAME();
-	return g_signin_status;
+	std::scoped_lock lock(g_dialog_mutex);
+	return g_signin.status;
 }
 
 int KYTY_SYSV_ABI SigninDialogGetResult(void* result) {
 	PRINT_NAME();
-	if (g_signin_status == SIGNIN_STATUS_NONE) {
+	std::scoped_lock lock(g_dialog_mutex);
+	if (g_signin.status == SIGNIN_STATUS_NONE) {
 		return SIGNIN_ERROR_NOT_INITIALIZED;
 	}
-	if (g_signin_status != SIGNIN_STATUS_FINISHED) {
+	if (g_signin.status != SIGNIN_STATUS_FINISHED) {
 		return SIGNIN_ERROR_INVALID_STATE;
 	}
 	if (result == nullptr) {
@@ -299,6 +391,7 @@ LIB_NAME("SaveDataDialog", "SaveDataDialog");
 
 constexpr int SAVE_STATUS_NONE        = 0;
 constexpr int SAVE_STATUS_INITIALIZED = 1;
+constexpr int SAVE_STATUS_RUNNING     = 2;
 constexpr int SAVE_STATUS_FINISHED    = 3;
 constexpr int SAVE_RESULT_OK          = 0;
 constexpr int SAVE_BUTTON_ID_OK       = 1;
@@ -344,18 +437,20 @@ struct SaveDataDialogResult {
 	uint8_t  reserved[32];
 };
 
-static int   g_save_status    = SAVE_STATUS_NONE;
-static int   g_save_mode      = 0;
-static void* g_save_user_data = nullptr;
-static char  g_save_dir_name[sizeof(SaveDataDirName::data)] {};
+static std::atomic<int> g_save_status         = SAVE_STATUS_NONE;
+static bool             g_save_running_polled = false;
+static int              g_save_mode           = 0;
+static void*            g_save_user_data      = nullptr;
+static char             g_save_dir_name[sizeof(SaveDataDirName::data)] {};
 
 int KYTY_SYSV_ABI SaveDataDialogInitialize() {
 	PRINT_NAME();
 
-	g_save_status      = SAVE_STATUS_INITIALIZED;
-	g_save_mode        = 0;
-	g_save_user_data   = nullptr;
-	g_save_dir_name[0] = '\0';
+	g_save_status         = SAVE_STATUS_INITIALIZED;
+	g_save_running_polled = false;
+	g_save_mode           = 0;
+	g_save_user_data      = nullptr;
+	g_save_dir_name[0]    = '\0';
 
 	return OK;
 }
@@ -368,6 +463,14 @@ int KYTY_SYSV_ABI SaveDataDialogGetStatus() {
 
 int KYTY_SYSV_ABI SaveDataDialogUpdateStatus() {
 	PRINT_NAME();
+
+	// Some games require a RUNNING update before FINISHED.
+	if (g_save_status == SAVE_STATUS_RUNNING) {
+		if (g_save_running_polled) {
+			g_save_status = SAVE_STATUS_FINISHED;
+		}
+		g_save_running_polled = true;
+	}
 
 	return g_save_status;
 }
@@ -424,7 +527,8 @@ int KYTY_SYSV_ABI SaveDataDialogOpen(const void* param) {
 		}
 	}
 
-	g_save_status = SAVE_STATUS_FINISHED;
+	g_save_status         = SAVE_STATUS_RUNNING;
+	g_save_running_polled = false;
 
 	return OK;
 }
@@ -434,7 +538,8 @@ int KYTY_SYSV_ABI SaveDataDialogClose(const void* close_param) {
 
 	LOGF("\t close_param = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(close_param));
 
-	g_save_status = SAVE_STATUS_FINISHED;
+	g_save_status         = SAVE_STATUS_FINISHED;
+	g_save_running_polled = false;
 
 	return OK;
 }
@@ -448,10 +553,11 @@ int KYTY_SYSV_ABI SaveDataDialogIsReadyToDisplay() {
 int KYTY_SYSV_ABI SaveDataDialogTerminate() {
 	PRINT_NAME();
 
-	g_save_status      = SAVE_STATUS_NONE;
-	g_save_mode        = 0;
-	g_save_user_data   = nullptr;
-	g_save_dir_name[0] = '\0';
+	g_save_status         = SAVE_STATUS_NONE;
+	g_save_running_polled = false;
+	g_save_mode           = 0;
+	g_save_user_data      = nullptr;
+	g_save_dir_name[0]    = '\0';
 
 	return 0;
 }
@@ -637,16 +743,17 @@ struct ErrorDialogParam {
 	int32_t reserved;
 };
 
-static int g_error_status = STATUS_NONE;
+static_assert(sizeof(ErrorDialogParam) == 16);
 
 int KYTY_SYSV_ABI ErrorDialogInitialize() {
 	PRINT_NAME();
 
-	if (g_error_status != STATUS_NONE) {
+	std::scoped_lock lock(g_dialog_mutex);
+	if (g_error.status != STATUS_NONE) {
 		return ERROR_ALREADY_INITIALIZED;
 	}
 
-	g_error_status = STATUS_INITIALIZED;
+	g_error.status = STATUS_INITIALIZED;
 
 	return OK;
 }
@@ -654,7 +761,8 @@ int KYTY_SYSV_ABI ErrorDialogInitialize() {
 int KYTY_SYSV_ABI ErrorDialogOpen(const void* param) {
 	PRINT_NAME();
 
-	if (g_error_status != STATUS_INITIALIZED && g_error_status != STATUS_FINISHED) {
+	std::unique_lock lock(g_dialog_mutex);
+	if (g_error.status != STATUS_INITIALIZED && g_error.status != STATUS_FINISHED) {
 		return ERROR_INVALID_STATE;
 	}
 	if (param == nullptr) {
@@ -671,7 +779,8 @@ int KYTY_SYSV_ABI ErrorDialogOpen(const void* param) {
 	     "\t user_id    = %d\n",
 	     p->size, static_cast<uint32_t>(p->error_code), p->user_id);
 
-	g_error_status = STATUS_RUNNING;
+	g_error_code = p->error_code;
+	SetDialogStatus(g_error, STATUS_RUNNING, lock);
 
 	return OK;
 }
@@ -679,11 +788,12 @@ int KYTY_SYSV_ABI ErrorDialogOpen(const void* param) {
 int KYTY_SYSV_ABI ErrorDialogClose() {
 	PRINT_NAME();
 
-	if (g_error_status != STATUS_RUNNING) {
+	std::unique_lock lock(g_dialog_mutex);
+	if (g_error.status != STATUS_RUNNING) {
 		return ERROR_INVALID_STATE;
 	}
 
-	g_error_status = STATUS_FINISHED;
+	SetDialogStatus(g_error, STATUS_FINISHED, lock);
 
 	return OK;
 }
@@ -691,11 +801,12 @@ int KYTY_SYSV_ABI ErrorDialogClose() {
 int KYTY_SYSV_ABI ErrorDialogTerminate() {
 	PRINT_NAME();
 
-	if (g_error_status == STATUS_NONE) {
+	std::unique_lock lock(g_dialog_mutex);
+	if (g_error.status == STATUS_NONE) {
 		return ERROR_NOT_INITIALIZED;
 	}
 
-	g_error_status = STATUS_NONE;
+	SetDialogStatus(g_error, STATUS_NONE, lock);
 
 	return OK;
 }
@@ -703,17 +814,15 @@ int KYTY_SYSV_ABI ErrorDialogTerminate() {
 int KYTY_SYSV_ABI ErrorDialogUpdateStatus() {
 	PRINT_NAME();
 
-	if (g_error_status == STATUS_RUNNING) {
-		g_error_status = STATUS_FINISHED;
-	}
-
-	return g_error_status;
+	std::scoped_lock lock(g_dialog_mutex);
+	return g_error.status;
 }
 
 int KYTY_SYSV_ABI ErrorDialogGetStatus() {
 	PRINT_NAME();
 
-	return g_error_status;
+	std::scoped_lock lock(g_dialog_mutex);
+	return g_error.status;
 }
 
 } // namespace ErrorDialog

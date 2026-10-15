@@ -199,12 +199,6 @@ KernelSemaPrivate::Result KernelSemaPrivate::Wait(int need_count, uint32_t* ptr_
 		infinitely = false;
 	}
 
-	uint32_t      elapsed = 0;
-	Common::Timer t;
-	t.Start();
-
-	int id = Common::Thread::GetThreadIdUnique();
-
 	if (m_count >= need_count) {
 		m_count -= need_count;
 		if (ptr_micros != nullptr) {
@@ -216,6 +210,12 @@ KernelSemaPrivate::Result KernelSemaPrivate::Wait(int need_count, uint32_t* ptr_
 	if (!infinitely && micros == 0) {
 		return Result::TimedOut;
 	}
+
+	uint32_t      elapsed = 0;
+	Common::Timer t;
+	t.Start();
+
+	int id = Common::Thread::GetThreadIdUnique();
 
 	WaitingThread waiter {};
 	waiter.id         = id;
@@ -272,9 +272,6 @@ int KYTY_SYSV_ABI KernelCreateSema(KernelSema* sem, const char* name, uint32_t a
 
 	*sem = new KernelSemaPrivate(std::string(name), fifo, init, max);
 
-	LOGF("\t Semaphore create: %s, ptr=0x%016" PRIx64 ", init=%d, max=%d\n", name,
-	     reinterpret_cast<uint64_t>(*sem), init, max);
-
 	return OK;
 }
 
@@ -321,8 +318,6 @@ int KYTY_SYSV_ABI KernelPollSema(KernelSema sem, int need) {
 	if (sem == nullptr) {
 		return KERNEL_ERROR_ESRCH;
 	}
-
-	LOGF("\t Semaphore poll: %s, %d\n", sem->GetName().c_str(), need);
 
 	auto result = sem->Poll(need);
 

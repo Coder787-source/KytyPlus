@@ -33,3 +33,4 @@ dualsense_trigger_test.*
 /src/package/naps/obj/
 /tests/naps/bin/
 /tests/naps/obj/
+_PipelineCache/

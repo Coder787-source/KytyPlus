@@ -15,10 +15,7 @@
 #include <fstream>
 #include <vector>
 
-#include "SDL_events.h"
-#include "SDL_syswm.h"
-#include "SDL_video.h"
-#include "SDL.h"
+#include <SDL3/SDL.h>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #include <windows.h>
@@ -250,16 +247,13 @@ DispatchResult DispatchToShadps4(const std::filesystem::path& eboot_host_path,
 
 	// Create the host window BEFORE launching so the child can be reparented.
 	SDL_Init(SDL_INIT_VIDEO);
-	SDL_Window* host = SDL_CreateWindow("KytyPlus - PS4 (shadPS4)",
-	                                     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-	                                     1280, 720, SDL_WINDOW_RESIZABLE);
+	SDL_Window* host = SDL_CreateWindow("KytyPlus - PS4 (shadPS4)", 1280, 720, SDL_WINDOW_RESIZABLE);
 	HWND host_hwnd = nullptr;
 	if (host) {
-		SDL_SysWMinfo wm{};
-		SDL_VERSION(&wm.version);
-		if (SDL_GetWindowWMInfo(host, &wm) && wm.subsystem == SDL_SYSWM_WINDOWS) {
-			host_hwnd = wm.info.win.window;
-		}
+		SDL_SetWindowPosition(host, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+		host_hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(host),
+		                                                    SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+		                                                    nullptr));
 	}
 
 	std::string cwd_w = shad_parent.string();
@@ -301,13 +295,12 @@ DispatchResult DispatchToShadps4(const std::filesystem::path& eboot_host_path,
 	for (;;) {
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
-			if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_RESIZED) {
-				int w = 0, h = 0;
-				SDL_GetWindowSize(host, &w, &h);
+			if (ev.type == SDL_EVENT_WINDOW_RESIZED) {
 				Emulator::Shadps4Integration::ResizeEmbeddedChild(
 				    reinterpret_cast<Emulator::Shadps4Integration::NativeWindowHandle*>(host_hwnd),
-				    static_cast<uint32_t>(w), static_cast<uint32_t>(h));
-			} else if (ev.type == SDL_QUIT || (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE)) {
+				    static_cast<uint32_t>(ev.window.data1),
+				    static_cast<uint32_t>(ev.window.data2));
+			} else if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
 				Emulator::Shadps4Integration::CloseEmbeddedChild();
 			}
 		}

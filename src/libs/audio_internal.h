@@ -15,11 +15,13 @@ enum class Format {
 	Float8Ch,
 	Signed16bit8ChStd,
 	Float8ChStd,
+	Float12Ch,
 };
 
 struct OutputParam {
-	int         handle = 0;
-	const void* data   = nullptr;
+	int          handle = 0;
+	const void*  data   = nullptr;
+	const float* gains  = nullptr;
 };
 
 static constexpr int OUT_PORTS_MAX = 32;

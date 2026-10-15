@@ -3,21 +3,29 @@
 
 #include "common/abi.h"
 #include "common/common.h"
-#include "common/subsystems.h"
 #include "common/virtualMemory.h"
 
 namespace Libs::Graphics {
-class GpuResourceManager;
+class RenderContext;
 enum class PageFaultAccess;
 } // namespace Libs::Graphics
 
 namespace Libs::LibKernel::Memory {
 
-KYTY_SUBSYSTEM_DEFINE(Memory);
+void Initialize();
+void Shutdown();
+
+struct Lifecycle {
+	static constexpr const char* name       = "Memory";
+	static constexpr auto        initialize = Libs::LibKernel::Memory::Initialize;
+	static constexpr auto        shutdown   = Libs::LibKernel::Memory::Shutdown;
+};
 
 using callback_func_t = void (*)(uintptr_t addr, size_t size);
 
 constexpr uint32_t KERNEL_MAXIMUM_NAME_LENGTH = 32;
+constexpr uint64_t kExtendedMemoryBase       = 0x080000000000ull;
+constexpr uint64_t kExtendedMemorySize       = 512ull * 1024 * 1024 * 1024;
 
 // Address range reserved for pthread guest-thread stacks (see CreateGuestStack() in
 // kernel/pthread.cpp). This is claimed as a placeholder during Memory subsystem init so that
@@ -49,13 +57,13 @@ struct VirtualQueryInfo {
 static_assert(sizeof(VirtualQueryInfo) == 72, "VirtualQueryInfo struct size is incorrect");
 
 struct KernelBatchMapEntry {
-	void*    start;
-	uint64_t offset;
-	uint64_t length;
-	char     protection;
-	char     type;
-	int16_t  reserved;
-	int32_t  operation;
+	void*         start;
+	uint64_t      offset;
+	uint64_t      length;
+	unsigned char protection;
+	unsigned char type;
+	int16_t       reserved;
+	int32_t       operation;
 };
 
 static_assert(sizeof(KernelBatchMapEntry) == 32, "KernelBatchMapEntry struct size is incorrect");
@@ -109,18 +117,26 @@ static_assert(sizeof(KernelMemoryPoolBlockStats) == 16,
 
 void                   RegisterCallbacks(callback_func_t alloc_func, callback_func_t free_func);
 void                   SetFlexibleMemorySize(uint64_t size);
+int AllocateDirectMemory(int64_t search_start, int64_t search_end, size_t size, size_t alignment,
+                         int memory_type, int64_t* phys_addr_out, bool automatic = false);
+int MapAutomaticMemory(uint64_t vaddr, size_t size, int type, int prot);
+int UnmapAmmMemory(uint64_t vaddr, size_t size);
 bool                   TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size);
 bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size);
+bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
+bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
+bool                   CopySparseMemory(uint64_t vaddr, void* data, uint64_t size);
 [[nodiscard]] uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size);
 void                   WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept;
 void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
-void                   InstallGpuResources(Graphics::GpuResourceManager* resources) noexcept;
+void                   InstallGpuResources(Graphics::RenderContext* renderer) noexcept;
 [[nodiscard]] bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept;
 
 int KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
                                                const char* name);
 int KYTY_SYSV_ABI KernelMapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags);
 int KYTY_SYSV_ABI KernelSetVirtualRangeName(const void* addr, uint64_t len, const char* name);
+int KYTY_SYSV_ABI KernelClearVirtualRangeName(const void* addr, uint64_t len);
 int KYTY_SYSV_ABI KernelMunmap(uint64_t vaddr, size_t len);
 size_t KYTY_SYSV_ABI KernelGetDirectMemorySize();
 int KYTY_SYSV_ABI    KernelAvailableDirectMemorySize(int64_t search_start, int64_t search_end,
@@ -187,10 +203,14 @@ bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size, Common::VirtualMemory
 bool FreeGuestMemory(uint64_t vaddr, uint64_t size);
 
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
+void     TestSetGpuRangeCallback(void (*callback)(bool mapped, uint64_t addr, size_t size));
+void     TestBeforeNextBackingMap(callback_func_t callback);
+void     TestSetBackingReadCallback(callback_func_t callback);
 void     TestFailNextPhysicalMemoryUnmap();
 void     TestFailPhysicalMemoryUnmapAfter(uint32_t successful_unmaps);
 void     TestFailGuestBackingStoreUnmapAfter(uint32_t successful_unmaps);
 void     TestFailNextFixedReserveRangeRegistration();
+void     TestFailNextVirtualRangeReplacement();
 bool     TestPlaceholderRangeIsFree(uint64_t vaddr, uint64_t size);
 bool     TestGuestAddressRangeIsOwned(uint64_t vaddr, uint64_t size);
 bool     TestGuestBackingOutsideAddressSpace();

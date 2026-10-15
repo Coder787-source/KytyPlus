@@ -1,79 +1,39 @@
-#include "SDL.h"
-#include "SDL_error.h"
-#include "SDL_events.h"
-#include "SDL_gamecontroller.h"
-#include "SDL_hints.h"
-#include "SDL_joystick.h"
-#include "SDL_keyboard.h"
-#include "SDL_keycode.h"
-#include "SDL_mouse.h"
-#include "SDL_pixels.h"
-#include "SDL_rwops.h"
-#include "SDL_stdinc.h"
-#include "SDL_surface.h"
-#include "SDL_thread.h"
-#include "SDL_touch.h"
-#include "SDL_video.h"
-#include "SDL_vulkan.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
-#include "common/bandwidthController.h"
-#include "common/file.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
-#include "common/stringUtils.h"
-#include "common/subsystems.h"
-#include "common/systemInfo.h"
 #include "common/threads.h"
-#include "common/timer.h"
+#include "gpu_blit_shaders/gpu_blit_fs_triangle_spv.h"
+#include "gpu_blit_shaders/gpu_video_out_overlay_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
-#include "graphics/presentation/fsrUpscaler.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
-#include "graphics/host_gpu/vma.h"
 #include "graphics/host_gpu/vulkanCommon.h"
-#include "graphics/presentation/imeOverlay.h"
 #include "graphics/presentation/presenter.h"
-#include "graphics/presentation/renderDoc.h"
+#include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/windowInternal.h"
-#include "libs/controller.h"
-#include "loader/systemContent.h"
 
 #include <algorithm>
-#include <atomic>
-#include <mutex>
-#include <cmath>
 #include <array>
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <deque>
-#include <fmt/format.h>
+#include <atomic>
 #include <limits>
 #include <memory>
-#include <string>
 #include <vector>
 #include <vulkan/vk_platform.h>
 
 // IWYU pragma: no_include <intrin.h>
 
-#define KYTY_ENABLE_DEBUG_PRINTF
-#define KYTY_DBG_INPUT
-
 namespace Libs::Graphics {
 
 struct Presenter::Frame {
-	VulkanImage                    image;
-	std::unique_ptr<CommandBuffer> present_commands;
-	// Each frame is reused only after its presentation fence. Keep mutable FSR
-	// descriptors, UBOs and intermediate images under that same ownership.
-	std::unique_ptr<FsrUpscaler>   fsr;
-	bool                          fsr_failed = false;
-	bool                           busy         = false;
-	bool                           reusing_last = false;
+	VulkanImage   image;
+	vk::ImageView view         = nullptr;
+	uint64_t      present_tick = 0;
+	bool          busy         = false;
+	bool          hdr          = false;
+	bool          blank        = false;
 
 	void Configure(GraphicContext& graphics, vk::Extent2D extent, vk::Format format);
 	void Transit(vk::CommandBuffer command, vk::ImageLayout layout, vk::AccessFlags2 access);
@@ -83,13 +43,12 @@ struct Presenter::Frame {
 
 class FramePool final {
 public:
-	explicit FramePool(WindowContext& window): m_window(window) {}
+	FramePool(WindowContext& window, CommandScheduler& scheduler)
+	    : m_window(window), m_scheduler(scheduler) {}
 	~FramePool() {
+		m_scheduler.Wait(m_scheduler.CurrentTick() - 1);
 		for (auto& frame: m_frames) {
-			if (frame->present_commands != nullptr) {
-				frame->present_commands->WaitForFenceOnly();
-			}
-			frame->fsr.reset();
+			m_window.graphic_ctx.device.destroyImageView(frame->view, nullptr);
 			if (frame->image.image != nullptr) {
 				m_window.graphic_ctx.DeleteImage(frame->image);
 			}
@@ -107,6 +66,7 @@ public:
 		}
 		m_format = format;
 		m_frames.reserve(count);
+		m_free.reserve(count);
 		for (uint32_t i = 0; i < count; i++) {
 			auto frame = std::make_unique<Presenter::Frame>();
 			m_free.push_back(frame.get());
@@ -130,60 +90,45 @@ public:
 		return m_format;
 	}
 
-	Presenter::Frame* Acquire() {
+	Presenter::Frame* Acquire(vk::Extent2D extent, vk::Format format) {
 		m_mutex.Lock();
 		if (m_frames.empty()) {
 			EXIT("prepared-frame pool was used before swapchain initialization\n");
 		}
-		while (m_free.empty()) {
-			m_available.Wait(&m_mutex);
+		// A synchronized flip may need more frames than the swapchain has images.
+		// Queue capacity bounds growth; waiting here can prevent its master from recording.
+		if (m_free.empty()) {
+			auto frame = std::make_unique<Presenter::Frame>();
+			m_free.push_back(frame.get());
+			m_frames.push_back(std::move(frame));
 		}
-		auto* frame = m_free.front();
-		m_free.pop_front();
+		const auto compatible = std::ranges::find_if(m_free, [&](const auto* frame) {
+			return frame->image.extent.width == extent.width &&
+			       frame->image.extent.height == extent.height && frame->image.format == format;
+		});
+		auto*      frame      = compatible == m_free.end() ? m_free.back() : *compatible;
+		if (compatible != m_free.end()) {
+			*compatible = m_free.back();
+		}
+		m_free.pop_back();
 		if (frame->busy) {
 			EXIT("prepared-frame pool returned an invalid frame\n");
 		}
-		if (m_last_frame == frame) {
-			m_last_frame = nullptr;
-		}
-		frame->busy         = true;
-		frame->reusing_last = false;
+		frame->busy = true;
 		m_mutex.Unlock();
 
-		WaitForFrame(*frame);
+		m_scheduler.Wait(frame->present_tick);
 		return frame;
 	}
 
-	Presenter::Frame* AcquireLast() {
-		m_mutex.Lock();
-		auto* frame = m_last_frame;
-		if (frame == nullptr) {
-			m_mutex.Unlock();
-			return nullptr;
-		}
-		auto free = std::find(m_free.begin(), m_free.end(), frame);
-		if (free == m_free.end() || frame->busy) {
-			m_mutex.Unlock();
-			EXIT("last submitted frame is not available for reuse\n");
-		}
-		m_free.erase(free);
-		m_last_frame        = nullptr;
-		frame->busy         = true;
-		frame->reusing_last = true;
-		m_mutex.Unlock();
-
-		WaitForFrame(*frame);
-		return frame;
-	}
-
-	void ValidateForPresent(Presenter::Frame* frame, bool reuse) {
+	void ValidateForPresent(Presenter::Frame* frame) {
 		Common::LockGuard lock(m_mutex);
-		if (frame == nullptr || !frame->busy || frame->reusing_last != reuse) {
+		if (frame == nullptr || !frame->busy) {
 			EXIT("prepared frame has invalid presentation ownership\n");
 		}
 	}
 
-	void Release(Presenter::Frame* frame, bool make_last = false) {
+	void Release(Presenter::Frame* frame) {
 		if (frame == nullptr) {
 			EXIT("cannot release a null prepared frame\n");
 		}
@@ -191,31 +136,17 @@ public:
 		if (!frame->busy) {
 			EXIT("prepared frame was released twice\n");
 		}
-		frame->busy         = false;
-		frame->reusing_last = false;
-		if (make_last) {
-			m_last_frame = frame;
-		}
+		frame->busy = false;
 		m_free.push_back(frame);
-		m_available.Signal();
 	}
 
 private:
-	static void WaitForFrame(Presenter::Frame& frame) {
-		// The producer only waits here. Reset stays on the presentation thread that owns the
-		// allocating Vulkan command pool.
-		if (frame.present_commands != nullptr) {
-			frame.present_commands->WaitForFenceOnly();
-		}
-	}
-
 	WindowContext&                                 m_window;
+	CommandScheduler&                              m_scheduler;
 	Common::Mutex                                  m_mutex;
-	Common::CondVar                                m_available;
 	std::vector<std::unique_ptr<Presenter::Frame>> m_frames;
-	std::deque<Presenter::Frame*>                  m_free;
-	Presenter::Frame*                              m_last_frame = nullptr;
-	vk::Format                                     m_format     = vk::Format::eUndefined;
+	std::vector<Presenter::Frame*>                 m_free;
+	vk::Format                                     m_format = vk::Format::eUndefined;
 };
 
 void Presenter::Frame::Configure(GraphicContext& graphics, vk::Extent2D extent, vk::Format format) {
@@ -223,57 +154,45 @@ void Presenter::Frame::Configure(GraphicContext& graphics, vk::Extent2D extent, 
 		EXIT("unsupported prepared frame, extent=%ux%u format=%d\n", extent.width, extent.height,
 		     static_cast<int>(format));
 	}
-	const auto features = graphics.GetFormatProperties(format).optimalTilingFeatures;
-	const auto required =
-	    vk::FormatFeatureFlagBits::eBlitSrc | vk::FormatFeatureFlagBits::eSampledImageFilterLinear |
-	    vk::FormatFeatureFlagBits::eTransferSrc | vk::FormatFeatureFlagBits::eTransferDst;
-	if ((features & required) != required) {
-		EXIT("prepared presentation format lacks optimal blit support: format=%d features=0x%x\n",
-		     static_cast<int>(format), static_cast<vk::FormatFeatureFlags::MaskType>(features));
-	}
-
 	auto&      dst        = image;
 	const bool compatible = dst.image != nullptr && dst.extent.width == extent.width &&
 	                        dst.extent.height == extent.height && dst.format == format;
 	if (compatible) {
 		return;
 	}
-	// Acquire() already waited for this frame's GPU work. Its source image views
-	// must be retired before reallocating the image they reference.
-	fsr.reset();
-	fsr_failed = false;
-	if (dst.image != nullptr) {
-		graphics.DeleteImage(dst);
-		dst.memory = {};
+
+	const auto features = graphics.GetFormatProperties(format).optimalTilingFeatures;
+	const auto required =
+	    vk::FormatFeatureFlagBits::eBlitSrc | vk::FormatFeatureFlagBits::eSampledImageFilterLinear |
+	    vk::FormatFeatureFlagBits::eSampledImage | vk::FormatFeatureFlagBits::eTransferSrc |
+	    vk::FormatFeatureFlagBits::eTransferDst;
+	if ((features & required) != required) {
+		EXIT("prepared presentation format lacks optimal blit support: format=%d features=0x%x\n",
+		     static_cast<int>(format), static_cast<vk::FormatFeatureFlags::MaskType>(features));
 	}
 
-	dst.extent     = {extent.width, extent.height, 1};
-	dst.format     = format;
-	dst.layers     = 1;
-	dst.mip_levels = 1;
-	dst.state      = {};
-	dst.subresource_states.clear();
-	dst.memory.property = vk::MemoryPropertyFlagBits::eDeviceLocal;
+	if (dst.image != nullptr) {
+		graphics.device.destroyImageView(view, nullptr);
+		view = nullptr;
+		graphics.DeleteImage(dst);
+	}
 
 	vk::ImageCreateInfo create {};
 	create.sType         = vk::StructureType::eImageCreateInfo;
 	create.imageType     = vk::ImageType::e2D;
-	create.extent        = {dst.extent.width, dst.extent.height, 1};
+	create.extent        = {extent.width, extent.height, 1};
 	create.mipLevels     = 1;
 	create.arrayLayers   = 1;
-	create.format        = dst.format;
+	create.format        = format;
 	create.tiling        = vk::ImageTiling::eOptimal;
 	create.initialLayout = vk::ImageLayout::eUndefined;
-	create.usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
-	// The FSR upscaler samples this frame image as EASU input, so eSampled is
-	// required even when transfer-only blitting would suffice. Without it,
-	// vkCreateImageView fails (VUID-VkImageViewCreateInfo-image-04441).
-	create.usage |= vk::ImageUsageFlagBits::eSampled;
+	create.usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst |
+	               vk::ImageUsageFlagBits::eSampled;
 	create.sharingMode = vk::SharingMode::eExclusive;
 	create.samples     = vk::SampleCountFlagBits::e1;
 	if (!graphics.CreateImage(create, dst)) {
 		EXIT("failed to allocate prepared presentation image, extent=%ux%u format=%d\n",
-		     dst.extent.width, dst.extent.height, static_cast<int>(dst.format));
+		     extent.width, extent.height, static_cast<int>(format));
 	}
 }
 
@@ -326,7 +245,6 @@ void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
 	EXIT_IF(copy.srcSubresource.layerCount != copy.dstSubresource.layerCount);
 	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, image.image,
 	                  vk::ImageLayout::eTransferDstOptimal, copy);
-	Transit(command, vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead);
 }
 
 void Presenter::Frame::Clear(CommandBuffer& command_buffer, const vk::ClearColorValue& color) {
@@ -335,7 +253,6 @@ void Presenter::Frame::Clear(CommandBuffer& command_buffer, const vk::ClearColor
 	Transit(command, vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite);
 	const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 	command.clearColorImage(image.image, vk::ImageLayout::eTransferDstOptimal, &color, 1, &range);
-	Transit(command, vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead);
 }
 
 class Swapchain final {
@@ -348,59 +265,57 @@ public:
 
 	void                 Create();
 	void                 Recreate(bool surface_lost = false);
-	[[nodiscard]] Status AcquireNextImage();
-	[[nodiscard]] bool   PrepareImeOverlay();
-	void RecordPresentCommands(CommandBuffer& command, Presenter::Frame& frame, bool draw_ime_overlay);
-	void Submit(CommandBuffer& command);
+	[[nodiscard]] bool   NeedsResize() const;
+	[[nodiscard]] Status AcquireNextImage(CommandScheduler& scheduler);
+	[[nodiscard]] bool   PrepareSystemOverlay();
+	void     RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
+	                               const Presenter::Layer& overlay, bool draw_system_overlay);
+	uint64_t Submit(CommandScheduler& scheduler);
 	[[nodiscard]] Status Present();
 
 	[[nodiscard]] uint32_t ImageCount() const noexcept {
 		return static_cast<uint32_t>(m_images.size());
 	}
 	[[nodiscard]] vk::Format Format() const noexcept { return m_format; }
-	[[nodiscard]] vk::Extent2D Extent() const noexcept { return m_extent; }
-	[[nodiscard]] uint32_t     FrameIndex() const noexcept { return m_frame_index; }
-
-	// KytyPlus frame-time breakdown accessors. The present thread sets the last
-	// fence-wait duration after its presentation command buffer's fence wait; the
-	// [fps] sampler reads it.
-	void SetLastPresentFenceWaitNs(double ns) noexcept {
-		last_present_fence_wait_ns.store(ns, std::memory_order_relaxed);
-	}
-	[[nodiscard]] double LastPresentFenceWaitNs() const noexcept {
-		return last_present_fence_wait_ns.load(std::memory_order_relaxed);
+	[[nodiscard]] bool IsHdrSupported() const noexcept { return m_hdr_supported.load(); }
+	bool SetHdr(bool hdr) {
+		const bool changed = m_hdr_active != (hdr && IsHdrSupported());
+		m_hdr_requested = hdr;
+		return changed;
 	}
 
 private:
+	vk::SurfaceFormatKHR SelectFormat();
 	void Destroy();
-	void RefreshSurfaceSize();
+	void DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer);
 
-	WindowContext&              m_window;
-	vk::SwapchainKHR            m_handle = nullptr;
-	vk::Format                  m_format = vk::Format::eUndefined;
-	vk::Extent2D                m_extent {};
-	std::vector<vk::Image>      m_images;
-	std::vector<vk::ImageView>  m_image_views;
-	std::vector<vk::Semaphore>  m_image_acquired;
-	std::vector<vk::Semaphore>  m_render_complete;
-	std::unique_ptr<ImeOverlay> m_ime_overlay;
-	uint32_t                    m_image_index = static_cast<uint32_t>(-1);
-	uint32_t                    m_frame_index = 0;
-	// KytyPlus: this iGPU keeps reporting SuboptimalKHR (which still composites per spec)
-	// but does not actually show content until it gets ONE clean, correct-sized recreate
-	// after the window settles. Recreate exactly once on the first suboptimal, then present
-	// through so we never re-enter the per-frame recreate storm.
-	bool                        m_suboptimal_recovered = false;
-	// KytyPlus frame-time breakdown written once per present; read by the [fps] sampler.
-	// Present-thread only, so relaxed ordering is enough.
-	std::atomic<double>        last_present_fence_wait_ns {0.0};
-	uint64_t                   presented_frame_count       = 0;
+	WindowContext&   m_window;
+	vk::SwapchainKHR m_handle = nullptr;
+	vk::Format       m_format = vk::Format::eUndefined;
+	std::atomic_bool m_hdr_supported {false};
+	bool             m_hdr_requested = false;
+	bool             m_hdr_active    = false;
+	vk::Extent2D     m_extent {};
+	// Drawable pixel size observed when this swapchain was created.
+	vk::Extent2D                   m_window_extent {};
+	std::vector<vk::Image>         m_images;
+	std::vector<vk::ImageView>     m_image_views;
+	std::vector<vk::Semaphore>     m_image_acquired;
+	std::vector<uint64_t>          m_image_acquired_ticks;
+	std::vector<vk::Semaphore>     m_render_complete;
+	std::unique_ptr<SystemOverlay> m_system_overlay;
+	vk::DescriptorSetLayout        m_overlay_descriptors = nullptr;
+	vk::PipelineLayout             m_overlay_layout      = nullptr;
+	vk::Pipeline                   m_overlay_pipeline    = nullptr;
+	vk::Sampler                    m_overlay_sampler     = nullptr;
+	uint32_t                       m_image_index         = static_cast<uint32_t>(-1);
+	uint32_t                       m_frame_index         = 0;
 };
 
 struct Presenter::Impl {
 	explicit Impl(WindowContext& owner)
 	    : renderer(*owner.render_context), window(owner), swapchain(owner),
-	      present_scheduler(renderer, owner.graphic_ctx), frames(owner) {
+	      present_scheduler(renderer, owner.graphic_ctx), frames(owner, present_scheduler) {
 		EXIT_IF(owner.render_context == nullptr);
 		swapchain.Create();
 		frames.Initialize(swapchain.ImageCount(), swapchain.Format());
@@ -433,63 +348,82 @@ struct Presenter::Impl {
 		cache.UpdateImage(image_id);
 		return image;
 	}
+	void Present();
 
 	RenderContext&        renderer;
 	WindowContext&        window;
 	Swapchain             swapchain;
 	CommandScheduler      present_scheduler;
 	FramePool             frames;
-	std::atomic<uint64_t> presented_ime_revision {0};
+	Common::Mutex         present_mutex;
+	std::array<Layer, 2>  layers {};
+	std::atomic<uint64_t> presented_overlay_revision {0};
 };
+
+vk::SurfaceFormatKHR Swapchain::SelectFormat() {
+	const auto& formats    = m_window.surface_capabilities.formats;
+	auto&       graphics   = m_window.graphic_ctx;
+	const auto  hdr_format = std::ranges::find_if(formats, [&](const auto& candidate) {
+		return candidate.colorSpace == vk::ColorSpaceKHR::eHdr10St2084EXT &&
+		       IsHdrSwapchainFormat(candidate.format) &&
+		       static_cast<bool>(
+		           graphics.GetFormatProperties(candidate.format).optimalTilingFeatures &
+		           vk::FormatFeatureFlagBits::eBlitDst);
+	});
+	m_hdr_supported        = Config::HdrEnabled() && hdr_format != formats.end();
+	m_hdr_active           = m_hdr_requested && IsHdrSupported();
+	if (m_hdr_active) {
+		return *hdr_format;
+	}
+	if (Config::HdrEnabled() && !IsHdrSupported()) {
+		LOGF("HDR10 surface unavailable; using SDR output\n");
+	}
+	if (formats.size() == 1 && formats.front().format == vk::Format::eUndefined) {
+		return {vk::Format::eR8G8B8A8Unorm, vk::ColorSpaceKHR::eSrgbNonlinear};
+	}
+	for (const auto& candidate: formats) {
+		if (candidate.colorSpace != vk::ColorSpaceKHR::eSrgbNonlinear) {
+			continue;
+		}
+		switch (candidate.format) {
+			case vk::Format::eB8G8R8A8Unorm:
+			case vk::Format::eR8G8B8A8Unorm: return candidate;
+			default: break;
+		}
+	}
+	EXIT("no supported UNORM swapchain format\n");
+}
 
 void Swapchain::Create() {
 	auto& graphics = m_window.graphic_ctx;
-	EXIT_IF(graphics.screen_width == 0);
-	EXIT_IF(graphics.screen_height == 0);
 	EXIT_IF(graphics.device == nullptr);
 	EXIT_IF(m_window.surface == nullptr);
 
-	Common::LockGuard lock(m_window.mutex);
-	const auto&       surface = m_window.surface_capabilities;
+	// Capture the size before querying surface capabilities. If the window changes
+	// during creation, the next presentation will detect the newer size.
+	{
+		Common::LockGuard lock(m_window.mutex);
+		m_window_extent = {graphics.screen_width, graphics.screen_height};
+	}
+	EXIT_IF(m_window_extent.width == 0);
+	EXIT_IF(m_window_extent.height == 0);
+	m_window.RefreshSurfaceCapabilities();
+	const auto& surface = m_window.surface_capabilities;
 	EXIT_NOT_IMPLEMENTED(surface.formats.empty());
 
-	// KytyPlus: do NOT blindly trust currentExtent. On the Ryzen iGPU the driver reports a
-	// transitional size mid-resize (observed 1280x729 instead of the requested window
-	// extent); recreating to that changing extent every frame caused a recreate/present
-	// thrash and a black screen. Latch the swapchain to the requested window extent,
-	// clamped to the surface limits - stable across recreates.
-	m_extent.width  = std::clamp(graphics.screen_width, surface.capabilities.minImageExtent.width,
-	                           surface.capabilities.maxImageExtent.width);
-	m_extent.height = std::clamp(graphics.screen_height, surface.capabilities.minImageExtent.height,
-	                           surface.capabilities.maxImageExtent.height);
-	{
-		const auto& ce = surface.capabilities.currentExtent;
-		if (ce.width != std::numeric_limits<uint32_t>::max() &&
-		    (ce.width != m_extent.width || ce.height != m_extent.height)) {
-			LOGF("Swapchain: driver currentExtent=%ux%u differs from requested %ux%u; using requested (stable) extent\n",
-			     ce.width, ce.height, m_extent.width, m_extent.height);
-		}
+	m_extent = surface.capabilities.currentExtent;
+	if (m_extent.width == std::numeric_limits<uint32_t>::max()) {
+		m_extent.width =
+		    std::clamp(m_window_extent.width, surface.capabilities.minImageExtent.width,
+		               surface.capabilities.maxImageExtent.width);
+		m_extent.height =
+		    std::clamp(m_window_extent.height, surface.capabilities.minImageExtent.height,
+		               surface.capabilities.maxImageExtent.height);
 	}
-	// KytyPlus: a minimized window reports currentExtent 0x0. vkCreateSwapchainKHR with a
-	// zero extent is invalid on most drivers and leaves presentation black until the next
-	// out-of-date event, which can be minutes later. Keep the last known-good size
-	// instead (clamped to the surface limits); the next Suboptimal/OutOfDate acquire
-	// re-runs Create() and picks up the real restored size.
-	if (m_extent.width == 0 || m_extent.height == 0) {
-		LOGF("Swapchain: surface reported zero extent (window minimized?), keeping last "
-		     "known size %ux%u\n",
-		     graphics.screen_width, graphics.screen_height);
-		m_extent.width  = std::max(graphics.screen_width, 1u);
-		m_extent.height = std::max(graphics.screen_height, 1u);
+	uint32_t image_count = surface.capabilities.minImageCount + 1;
+	if (surface.capabilities.maxImageCount != 0) {
+		image_count = std::min(image_count, surface.capabilities.maxImageCount);
 	}
-	// KytyPlus iGPU: prefer the smallest allowed image count. Every swapchain image is a
-	// full-resolution allocation in shared system memory on an APU; minImageCount+1 gives
-	// 3-4 buffers on this driver, which wastes VRAM the render targets need.
-	uint32_t image_count = surface.capabilities.minImageCount;
-	if (surface.capabilities.maxImageCount != 0 && image_count > surface.capabilities.maxImageCount) {
-		image_count = surface.capabilities.maxImageCount;
-	}
-	image_count = std::max(image_count, 2u);
 	const auto transform =
 	    surface.capabilities.supportedTransforms & vk::SurfaceTransformFlagBitsKHR::eIdentity
 	        ? vk::SurfaceTransformFlagBitsKHR::eIdentity
@@ -499,20 +433,9 @@ void Swapchain::Create() {
 	        ? vk::CompositeAlphaFlagBitsKHR::eOpaque
 	        : vk::CompositeAlphaFlagBitsKHR::eInherit;
 
-	vk::SurfaceFormatKHR format {vk::Format::eR8G8B8A8Unorm, vk::ColorSpaceKHR::eSrgbNonlinear};
-	if (surface.formats.size() != 1 || surface.formats.front().format != vk::Format::eUndefined) {
-		const auto it = std::find_if(surface.formats.begin(), surface.formats.end(),
-		                             [](const vk::SurfaceFormatKHR& candidate) {
-			                             return candidate.format == vk::Format::eB8G8R8A8Unorm ||
-			                                    candidate.format == vk::Format::eR8G8B8A8Unorm;
-		                             });
-		if (it == surface.formats.end()) {
-			EXIT("no supported UNORM swapchain format\n");
-		}
-		format = *it;
-	}
+	const auto format = SelectFormat();
 	m_format                      = format.format;
-	const auto swapchain_features = m_window.graphic_ctx.GetFormatProperties(m_format).optimalTilingFeatures;
+	const auto swapchain_features = graphics.GetFormatProperties(m_format).optimalTilingFeatures;
 	if (!static_cast<bool>(swapchain_features & vk::FormatFeatureFlagBits::eBlitDst)) {
 		EXIT("swapchain format cannot be a blit destination: format=%d\n",
 		     static_cast<int>(m_format));
@@ -528,84 +451,29 @@ void Swapchain::Create() {
 	create_info.imageArrayLayers = 1;
 	create_info.imageUsage =
 	    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
-	// RCAS writes to its own result image and blits to the swapchain. Storage
-	// usage on the swapchain is unnecessary and not supported by every surface.
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
 	create_info.preTransform     = transform;
 	create_info.compositeAlpha   = composite;
-	// Present mode is configurable (Config::PresentMode); fall back to eFifo if the
-	// requested mode isn't supported by the surface (standard Vulkan practice).
-	const auto requested_present_mode = [mode = Config::GetPresentMode()]() -> vk::PresentModeKHR {
-		switch (mode) {
-			case Config::PresentMode::Mailbox:   return vk::PresentModeKHR::eMailbox;
-			case Config::PresentMode::Immediate: return vk::PresentModeKHR::eImmediate;
-			case Config::PresentMode::Fifo:
-			default:                            return vk::PresentModeKHR::eFifo;
-		}
-	}();
-	// KytyPlus iGPU: IMMEDIATE/MAILBOX were observed producing a black client area on the
-	// Radeon 840M (amdvlk) windowed path — the game renders internally but nothing is
-	// composed. FIFO is the always-supported mode and the one every verified-good run
-	// used, so on integrated GPUs it is a hard floor. Discrete GPUs keep the user choice.
-	auto effective_present_mode = requested_present_mode;
-	if (graphics.physical_device.getProperties().deviceType ==
-	        vk::PhysicalDeviceType::eIntegratedGpu &&
-	    effective_present_mode != vk::PresentModeKHR::eFifo) {
-		LOGF("Swapchain: iGPU floor: Immediate/Mailbox -> FIFO (black-output workaround)\n");
-		effective_present_mode = vk::PresentModeKHR::eFifo;
+	switch (Config::GetPresentMode()) {
+		case Config::PresentMode::Mailbox:
+			create_info.presentMode = vk::PresentModeKHR::eMailbox;
+			break;
+		case Config::PresentMode::Immediate:
+			create_info.presentMode = vk::PresentModeKHR::eImmediate;
+			break;
+		case Config::PresentMode::Fifo:
+		default: create_info.presentMode = vk::PresentModeKHR::eFifo; break;
 	}
-	// KytyPlus iGPU: make the effective presentation configuration visible at startup.
-	LOGF("Swapchain config: minImageCount=%u extent=%ux%u format=%d presentMode=%s\n",
-	     image_count, m_extent.width, m_extent.height, static_cast<int>(format.format),
-	     vk::to_string(effective_present_mode).c_str());
-	// KytyPlus diagnostics: expose the real presentation decision on iGPUs that can
-	// accept a swapchain but still render a black window (cf. Radeon 840M amdvlk
-	// black client area with Immediate/Mailbox).
-	{
-		const auto device_type =
-		    graphics.physical_device.getProperties().deviceType;
-		const bool is_integrated =
-		    device_type == vk::PhysicalDeviceType::eIntegratedGpu ||
-		    device_type == vk::PhysicalDeviceType::eVirtualGpu;
-		LOGF("Swapchain diag: deviceType=%s integrated=%s requestedPresentMode=%s effectivePresentMode=%s "
-		     "format=%d optimalTilingCanBlit=%s imageCount=%u",
-		     vk::to_string(device_type).c_str(),
-		     is_integrated ? "yes" : "no",
-		     vk::to_string(requested_present_mode).c_str(),
-		     vk::to_string(effective_present_mode).c_str(),
-		     static_cast<int>(format.format),
-		     (swapchain_features & vk::FormatFeatureFlagBits::eBlitDst) ? "yes" : "no",
-		     image_count);
-		if (!surface.formats.empty()) {
-			LOGF("Swapchain diag: surface offers %u format(s)",
-			     static_cast<uint32_t>(surface.formats.size()));
-			// Dump the first few offered formats so we can see whether the chosen one is
-			// near the driver's preferred entry or something exotic.
-			for (uint32_t i = 0; i < surface.formats.size() && i < 6; ++i) {
-				LOGF("Swapchain diag: offered[%u] format=%d colorSpace=%s",
-				     i, static_cast<int>(surface.formats[i].format),
-				     vk::to_string(surface.formats[i].colorSpace).c_str());
-			}
-		}
-		LOGF("Swapchain diag: surfaceCapabilities currentTransform=%s compositeAlpha=%s",
-		     vk::to_string(transform).c_str(),
-		     vk::to_string(composite).c_str());
+	if (std::find(surface.present_modes.begin(), surface.present_modes.end(),
+	              create_info.presentMode) == surface.present_modes.end()) {
+		LOGF("warning: requested present mode is unavailable; falling back to Fifo\n");
+		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
-	const auto supported_modes = EnumerateVulkan<vk::PresentModeKHR>(
-	    "vkGetPhysicalDeviceSurfacePresentModesKHR", [&](uint32_t* count, vk::PresentModeKHR* modes) {
-		    return graphics.physical_device.getSurfacePresentModesKHR(m_window.surface, count, modes);
-	    });
-	create_info.presentMode = (std::find(supported_modes.begin(), supported_modes.end(),
-	                                     effective_present_mode) != supported_modes.end())
-	                              ? effective_present_mode
-	                              : vk::PresentModeKHR::eFifo;
-	if (create_info.presentMode != effective_present_mode) {
-		LOGF("Swapchain: requested present mode unsupported, falling back to FIFO\n");
-	}
-	create_info.clipped          = VK_TRUE;
+	create_info.clipped = VK_TRUE;
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
 	EXIT_IF(m_handle == nullptr);
+	LOGF("Vulkan presentation: %s\n", m_hdr_active ? "HDR10 (PQ)" : "SDR");
 
 	m_images = EnumerateVulkan<vk::Image>(
 	    "vkGetSwapchainImagesKHR", [&](uint32_t* count, vk::Image* images) {
@@ -634,6 +502,7 @@ void Swapchain::Create() {
 	vk::SemaphoreCreateInfo semaphore_info {};
 	semaphore_info.sType = vk::StructureType::eSemaphoreCreateInfo;
 	m_image_acquired.resize(m_images.size());
+	m_image_acquired_ticks.assign(m_images.size(), 0);
 	m_render_complete.resize(m_images.size());
 	for (size_t i = 0; i < m_images.size(); i++) {
 		RequireVulkanSuccess(
@@ -660,18 +529,19 @@ void Swapchain::Destroy() {
 
 	{
 		Common::LockGuard queue_lock(graphics.queue_mutex);
-		// Shutdown path: after a device loss or TDR reset waitIdle() returns
-		// VK_ERROR_DEVICE_LOST. There is nothing left to drain at this point, and
-		// aborting here turned an already-degraded frame into a hard process exit.
-		const auto wait_result = graphics.queue.waitIdle();
-		if (wait_result != vk::Result::eSuccess) {
-			LOGF("Swapchain: queue idle failed during destroy: %s (%d)\n",
-			     VulkanToString(wait_result).c_str(), static_cast<int>(wait_result));
-		}
+		RequireVulkanSuccess(graphics.queue.waitIdle(), "wait for swapchain queue");
 	}
-	if (m_ime_overlay != nullptr) {
-		m_ime_overlay->ReleaseVulkan();
+	if (m_system_overlay != nullptr) {
+		m_system_overlay->ReleaseVulkan();
 	}
+	graphics.device.destroyPipeline(m_overlay_pipeline, nullptr);
+	graphics.device.destroyPipelineLayout(m_overlay_layout, nullptr);
+	graphics.device.destroyDescriptorSetLayout(m_overlay_descriptors, nullptr);
+	graphics.device.destroySampler(m_overlay_sampler, nullptr);
+	m_overlay_pipeline    = nullptr;
+	m_overlay_layout      = nullptr;
+	m_overlay_descriptors = nullptr;
+	m_overlay_sampler     = nullptr;
 
 	for (const auto semaphore: m_image_acquired) {
 		if (semaphore != nullptr) {
@@ -692,27 +562,17 @@ void Swapchain::Destroy() {
 		graphics.device.destroySwapchainKHR(m_handle, nullptr);
 	}
 
-	m_handle      = nullptr;
-	m_format      = vk::Format::eUndefined;
-	m_extent      = {};
-	m_image_index = static_cast<uint32_t>(-1);
-	m_frame_index = 0;
+	m_handle        = nullptr;
+	m_format        = vk::Format::eUndefined;
+	m_extent        = {};
+	m_window_extent = {};
+	m_image_index   = static_cast<uint32_t>(-1);
+	m_frame_index   = 0;
 	m_images.clear();
 	m_image_views.clear();
 	m_image_acquired.clear();
+	m_image_acquired_ticks.clear();
 	m_render_complete.clear();
-}
-
-void Swapchain::RefreshSurfaceSize() {
-	int width  = 0;
-	int height = 0;
-	SDL_Vulkan_GetDrawableSize(m_window.window, &width, &height);
-	if (width > 0 && height > 0) {
-		m_window.graphic_ctx.screen_width  = static_cast<uint32_t>(width);
-		m_window.graphic_ctx.screen_height = static_cast<uint32_t>(height);
-	}
-
-	m_window.RefreshSurfaceCapabilities();
 }
 
 void Swapchain::Recreate(bool surface_lost) {
@@ -721,17 +581,27 @@ void Swapchain::Recreate(bool surface_lost) {
 #if defined(__APPLE__)
 		// Surface recreation goes through SDL_Vulkan_CreateSurface, which touches the
 		// window's view/layer and must run on the main thread on macOS.
-		m_window.RunOnMainThread([this] { m_window.RecreateSurface(); }, true);
+		EXIT_IF(!SDL_RunOnMainThread(
+		    [](void* window) { static_cast<WindowContext*>(window)->RecreateSurface(); }, &m_window,
+		    true));
 #else
 		m_window.RecreateSurface();
 #endif
 	}
-	RefreshSurfaceSize();
 	Create();
 }
 
-Swapchain::Status Swapchain::AcquireNextImage() {
+bool Swapchain::NeedsResize() const {
+	Common::LockGuard lock(m_window.mutex);
+	return m_window_extent.width != m_window.graphic_ctx.screen_width ||
+	       m_window_extent.height != m_window.graphic_ctx.screen_height;
+}
+
+Swapchain::Status Swapchain::AcquireNextImage(CommandScheduler& scheduler) {
 	EXIT_IF(m_handle == nullptr || m_frame_index >= m_image_acquired.size());
+	// Repeated frames can wrap the semaphore ring without acquiring a new source frame.
+	// Wait for the submission that consumed this slot before signaling it again.
+	scheduler.Wait(m_image_acquired_ticks[m_frame_index]);
 	m_image_index     = static_cast<uint32_t>(-1);
 	const auto result = m_window.graphic_ctx.device.acquireNextImageKHR(
 	    m_handle, std::numeric_limits<uint64_t>::max(), m_image_acquired[m_frame_index], nullptr,
@@ -739,12 +609,8 @@ Swapchain::Status Swapchain::AcquireNextImage() {
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
-			if (!m_suboptimal_recovered) {
-				m_suboptimal_recovered = true;
-				LOGF("Swapchain: first SuboptimalKHR on acquire - doing one clean recreate\n");
-				return Status::Recreate;
-			}
-			return Status::Success;
+			LOGF("vkAcquireNextImageKHR returned vk::Result::eSuboptimalKHR\n");
+			return Status::Recreate;
 		case vk::Result::eErrorOutOfDateKHR:
 			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorOutOfDateKHR\n");
 			return Status::Recreate;
@@ -754,29 +620,162 @@ Swapchain::Status Swapchain::AcquireNextImage() {
 		case vk::Result::eErrorSurfaceLostKHR:
 			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorSurfaceLostKHR\n");
 			return Status::SurfaceLost;
-		default: EXIT("vkAcquireNextImageKHR failed: %s\n", VulkanToString(result).c_str());
+		default: EXIT("vkAcquireNextImageKHR failed: %s\n", vk::to_string(result).c_str());
 	}
 	EXIT_IF(m_image_index >= m_images.size());
 	return Status::Success;
 }
 
-bool Swapchain::PrepareImeOverlay() {
-	if (m_ime_overlay == nullptr) {
-		m_ime_overlay = std::make_unique<ImeOverlay>(m_window.graphic_ctx);
+bool Swapchain::PrepareSystemOverlay() {
+	if (m_system_overlay == nullptr) {
+		m_system_overlay = std::make_unique<SystemOverlay>(m_window.graphic_ctx);
 	}
-	return m_ime_overlay->PrepareFrame(m_extent, m_format, ImageCount());
+	return m_system_overlay->PrepareFrame(m_extent, m_format, ImageCount());
 }
 
-void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame& frame,
-                                      bool draw_ime_overlay) {
-	auto& source = frame.image;
-	if (source.state.layout != vk::ImageLayout::eTransferSrcOptimal) {
-		EXIT("invalid prepared presentation image, vk_image=%p layout=%d\n",
-		     static_cast<void*>(source.image), static_cast<int>(source.state.layout));
+void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer) {
+	auto device = m_window.graphic_ctx.device;
+	if (m_overlay_pipeline == nullptr) {
+		vk::SamplerCreateInfo sampler {};
+		sampler.magFilter    = vk::Filter::eLinear;
+		sampler.minFilter    = vk::Filter::eLinear;
+		sampler.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+		sampler.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+		sampler.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+		RequireVulkanSuccess(device.createSampler(&sampler, nullptr, &m_overlay_sampler),
+		                     "create video-out overlay sampler");
+		const vk::DescriptorSetLayoutBinding binding {0, vk::DescriptorType::eCombinedImageSampler,
+		                                              1, vk::ShaderStageFlagBits::eFragment};
+		vk::DescriptorSetLayoutCreateInfo    descriptors {};
+		descriptors.flags        = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR;
+		descriptors.bindingCount = 1;
+		descriptors.pBindings    = &binding;
+		RequireVulkanSuccess(
+		    device.createDescriptorSetLayout(&descriptors, nullptr, &m_overlay_descriptors),
+		    "create video-out overlay descriptor layout");
+		const vk::PushConstantRange alpha {vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)};
+		vk::PipelineLayoutCreateInfo layout {};
+		layout.setLayoutCount         = 1;
+		layout.pSetLayouts            = &m_overlay_descriptors;
+		layout.pushConstantRangeCount = 1;
+		layout.pPushConstantRanges    = &alpha;
+		RequireVulkanSuccess(device.createPipelineLayout(&layout, nullptr, &m_overlay_layout),
+		                     "create video-out overlay pipeline layout");
+		const auto vertex   = CompileSPV(GPU_BLIT_FS_TRIANGLE_SPV, device);
+		const auto fragment = CompileSPV(GPU_VIDEO_OUT_OVERLAY_SPV, device);
+		std::array<vk::PipelineShaderStageCreateInfo, 2> stages {};
+		stages[0].stage  = vk::ShaderStageFlagBits::eVertex;
+		stages[0].module = vertex;
+		stages[0].pName  = "main";
+		stages[1].stage  = vk::ShaderStageFlagBits::eFragment;
+		stages[1].module = fragment;
+		stages[1].pName  = "main";
+		vk::PipelineVertexInputStateCreateInfo   vertex_input {};
+		vk::PipelineInputAssemblyStateCreateInfo assembly {};
+		assembly.topology = vk::PrimitiveTopology::eTriangleList;
+		vk::PipelineViewportStateCreateInfo viewport {};
+		viewport.viewportCount = 1;
+		viewport.scissorCount  = 1;
+		vk::PipelineRasterizationStateCreateInfo rasterization {};
+		rasterization.lineWidth = 1.0f;
+		vk::PipelineMultisampleStateCreateInfo multisample {};
+		multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
+		vk::PipelineColorBlendAttachmentState attachment {};
+		attachment.blendEnable         = VK_TRUE;
+		attachment.srcColorBlendFactor = vk::BlendFactor::eOne;
+		attachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+		attachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+		attachment.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+		attachment.colorWriteMask = vk::ColorComponentFlagBits::eR |
+		                            vk::ColorComponentFlagBits::eG |
+		                            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+		vk::PipelineColorBlendStateCreateInfo blend {};
+		blend.attachmentCount = 1;
+		blend.pAttachments    = &attachment;
+		const std::array dynamic_states {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+		vk::PipelineDynamicStateCreateInfo dynamic {};
+		dynamic.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size());
+		dynamic.pDynamicStates    = dynamic_states.data();
+		vk::PipelineRenderingCreateInfo rendering {};
+		rendering.colorAttachmentCount    = 1;
+		rendering.pColorAttachmentFormats = &m_format;
+		vk::GraphicsPipelineCreateInfo create {};
+		create.pNext               = &rendering;
+		create.stageCount          = static_cast<uint32_t>(stages.size());
+		create.pStages             = stages.data();
+		create.pVertexInputState   = &vertex_input;
+		create.pInputAssemblyState = &assembly;
+		create.pViewportState      = &viewport;
+		create.pRasterizationState = &rasterization;
+		create.pMultisampleState   = &multisample;
+		create.pColorBlendState    = &blend;
+		create.pDynamicState       = &dynamic;
+		create.layout              = m_overlay_layout;
+		RequireVulkanSuccess(
+		    device.createGraphicsPipelines(nullptr, 1, &create, nullptr, &m_overlay_pipeline),
+		    "create video-out overlay pipeline");
+		device.destroyShaderModule(fragment, nullptr);
+		device.destroyShaderModule(vertex, nullptr);
 	}
+	auto& frame = *layer.frame;
+	if (frame.view == nullptr) {
+		vk::ImageViewCreateInfo view {};
+		view.image            = frame.image.image;
+		view.viewType         = vk::ImageViewType::e2D;
+		view.format           = frame.image.format;
+		view.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		RequireVulkanSuccess(device.createImageView(&view, nullptr, &frame.view),
+		                     "create video-out overlay image view");
+	}
+	const vk::DescriptorImageInfo image {m_overlay_sampler, frame.view,
+	                                     vk::ImageLayout::eShaderReadOnlyOptimal};
+	vk::WriteDescriptorSet        write {};
+	write.dstBinding      = 0;
+	write.descriptorCount = 1;
+	write.descriptorType  = vk::DescriptorType::eCombinedImageSampler;
+	write.pImageInfo      = &image;
+	command.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, m_overlay_layout, 0, 1, &write);
+	const uint32_t flags = (layer.premultiplied_alpha ? 1u : 0u) |
+	                       (m_hdr_active ? 2u : 0u) | (frame.hdr ? 4u : 0u) |
+	                       (frame.image.format == vk::Format::eR16G16B16A16Sfloat ? 8u : 0u);
+	command.pushConstants(m_overlay_layout, vk::ShaderStageFlagBits::eFragment, 0,
+	                      sizeof(flags), &flags);
+	command.bindPipeline(vk::PipelineBindPoint::eGraphics, m_overlay_pipeline);
+	vk::RenderingAttachmentInfo attachment {};
+	attachment.imageView   = m_image_views[m_image_index];
+	attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+	attachment.loadOp      = vk::AttachmentLoadOp::eLoad;
+	attachment.storeOp     = vk::AttachmentStoreOp::eStore;
+	vk::RenderingInfo rendering {};
+	rendering.renderArea.extent    = m_extent;
+	rendering.layerCount           = 1;
+	rendering.colorAttachmentCount = 1;
+	rendering.pColorAttachments    = &attachment;
+	command.beginRendering(&rendering);
+	const vk::Viewport viewport {
+	    0.0f, 0.0f, static_cast<float>(m_extent.width), static_cast<float>(m_extent.height),
+	    0.0f, 1.0f};
+	const vk::Rect2D scissor {{0, 0}, m_extent};
+	command.setViewport(0, 1, &viewport);
+	command.setScissor(0, 1, &scissor);
+	command.draw(3, 1, 0, 0);
+	command.endRendering();
+}
+
+void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
+                                      const Presenter::Layer& overlay, bool draw_system_overlay) {
 	EXIT_IF(m_image_index >= m_images.size());
-	auto vk_command = command.Handle();
-	command.Begin();
+	auto       vk_command      = command.Handle();
+	const bool draw_overlay    = overlay.frame != nullptr;
+	const bool draw_attachment = draw_overlay || draw_system_overlay;
+	if (source != nullptr) {
+		source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal,
+		                vk::AccessFlagBits2::eTransferRead);
+	}
+	if (draw_overlay) {
+		overlay.frame->Transit(vk_command, vk::ImageLayout::eShaderReadOnlyOptimal,
+		                       vk::AccessFlagBits2::eShaderRead);
+	}
 
 	vk::ImageMemoryBarrier to_transfer {};
 	to_transfer.sType                           = vk::StructureType::eImageMemoryBarrier;
@@ -791,167 +790,92 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame& 
 	to_transfer.subresourceRange.levelCount     = 1;
 	to_transfer.subresourceRange.baseArrayLayer = 0;
 	to_transfer.subresourceRange.layerCount     = 1;
-	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+	// Match the acquire wait stage so the layout transition cannot precede acquisition.
+	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
 	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
 	                           nullptr, 0, nullptr, 1, &to_transfer);
 
-	const bool fsr_requested = Config::GetUpscalerMethod() == Config::UpscalerMethod::Fsr1;
-	if (fsr_requested && !draw_ime_overlay && !frame.fsr_failed && frame.fsr == nullptr) {
-		frame.fsr = std::make_unique<FsrUpscaler>();
-		if (!frame.fsr->Create(m_window.graphic_ctx)) {
-			frame.fsr.reset();
-			frame.fsr_failed = true;
-			std::fprintf(stderr, "[fsr] creation failed; using plain blit\n");
-		}
-	}
-	const bool fsr_active = frame.fsr != nullptr && frame.fsr->IsReady() && !draw_ime_overlay;
-	bool fsr_used = false;
-	if (fsr_active) {
-		// FSR two-pass upscaler: EASU (edge-adaptive upscale) + RCAS (sharpen).
-		// Dispatch handles all image transitions and leaves the swapchain image in
-		// ePresentSrcKHR, so the to_present barrier below is skipped.
-		const uint32_t fsr_width = Config::GetFsrOutputWidth() != 0
-		                               ? Config::GetFsrOutputWidth() : m_extent.width;
-		const uint32_t fsr_height = Config::GetFsrOutputHeight() != 0
-		                                ? Config::GetFsrOutputHeight() : m_extent.height;
-		fsr_used = frame.fsr->Dispatch(vk_command, source, m_images[m_image_index], m_format,
-		                              source.extent.width, source.extent.height, fsr_width,
-		                              fsr_height, m_extent.width, m_extent.height,
-		                              Config::GetUpscalerSharpness());
-		if (!fsr_used) {
-			std::fprintf(stderr, "[fsr] dispatch unavailable; using plain blit\n");
-			frame.fsr.reset();
-			frame.fsr_failed = true;
-		}
-	}
-	if (!fsr_used) {
-		// Aspect ratio is configurable (Config::AspectRatio). Compute the destination
-		// region to letterbox/pillarbox the source instead of stretching it to fill.
-		// Stretch (the default) keeps the original full-surface behavior.
-		int dst_x0 = 0;
-		int dst_y0 = 0;
-		int dst_w  = static_cast<int>(m_extent.width);
-		int dst_h  = static_cast<int>(m_extent.height);
-		const auto aspect = Config::GetAspectRatio();
-		if (aspect != Config::AspectRatio::Stretch && source.extent.width > 0 &&
-		    source.extent.height > 0) {
-			// Target aspect ratio (width / height) for the fitted region.
-			double target = 0.0;
-			switch (aspect) {
-				case Config::AspectRatio::Fit16x9: target = 16.0 / 9.0; break;
-				case Config::AspectRatio::Fit4x3:  target =  4.0 / 3.0; break;
-				case Config::AspectRatio::Integer: {
-					// Integer scaling: largest integer factor that fits the swapchain.
-					const int sx = static_cast<int>(source.extent.width);
-					const int sy = static_cast<int>(source.extent.height);
-					const int fx = sx > 0 ? dst_w / sx : 0;
-					const int fy = sy > 0 ? dst_h / sy : 0;
-					const int f  = std::max(1, std::min(fx, fy));
-					dst_w = sx * f;
-					dst_h = sy * f;
-					break;
-				}
-				default: break;
-			}
-			if (target > 0.0) {
-				const double swap_aspect =
-				    static_cast<double>(m_extent.width) / static_cast<double>(m_extent.height);
-				if (swap_aspect > target) {
-					// Window is wider than target -> pillarbox (black bars left/right).
-					dst_w = static_cast<int>(std::round(static_cast<double>(m_extent.height) * target));
-					dst_h = static_cast<int>(m_extent.height);
-				} else {
-					// Window is taller than target -> letterbox (black bars top/bottom).
-					dst_w = static_cast<int>(m_extent.width);
-					dst_h = static_cast<int>(std::round(static_cast<double>(m_extent.width) / target));
-				}
-			}
-			// Center the fitted region within the swapchain extent.
-			dst_x0 = (static_cast<int>(m_extent.width)  - dst_w) / 2;
-			dst_y0 = (static_cast<int>(m_extent.height) - dst_h) / 2;
-		}
+	if (source != nullptr) {
 		vk::ImageBlit region {};
 		region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.srcSubresource.mipLevel       = 0;
 		region.srcSubresource.baseArrayLayer = 0;
 		region.srcSubresource.layerCount     = 1;
-		region.srcOffsets[1].x               = static_cast<int>(source.extent.width);
-		region.srcOffsets[1].y               = static_cast<int>(source.extent.height);
+		region.srcOffsets[1].x               = static_cast<int>(source->image.extent.width);
+		region.srcOffsets[1].y               = static_cast<int>(source->image.extent.height);
 		region.srcOffsets[1].z               = 1;
 		region.dstSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.dstSubresource.mipLevel       = 0;
 		region.dstSubresource.baseArrayLayer = 0;
 		region.dstSubresource.layerCount     = 1;
-		region.dstOffsets[0].x               = dst_x0;
-		region.dstOffsets[0].y               = dst_y0;
-		region.dstOffsets[1].x               = dst_x0 + dst_w;
-		region.dstOffsets[1].y               = dst_y0 + dst_h;
+		region.dstOffsets[1].x               = static_cast<int>(m_extent.width);
+		region.dstOffsets[1].y               = static_cast<int>(m_extent.height);
 		region.dstOffsets[1].z               = 1;
-		// Present filter is configurable (Config::PresentFilter); Cubic requires
-		// the sampledImageFilterCubic format feature, so fall back to Linear if unsupported.
-		auto present_filter = vk::Filter::eLinear;
-		switch (Config::GetPresentFilter()) {
-			case Config::PresentFilter::Nearest: present_filter = vk::Filter::eNearest; break;
-			case Config::PresentFilter::Cubic: {
-				const bool cubic_ok = (m_window.graphic_ctx.GetFormatProperties(m_format).optimalTilingFeatures
-				                       & vk::FormatFeatureFlagBits::eSampledImageFilterCubicEXT).operator bool();
-				present_filter = cubic_ok ? vk::Filter::eCubicEXT : vk::Filter::eLinear;
-				break;
-			}
-			case Config::PresentFilter::Linear:
-			default: present_filter = vk::Filter::eLinear; break;
-		}
-		vk_command.blitImage(source.image, vk::ImageLayout::eTransferSrcOptimal,
-		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1, &region,
-		                     present_filter);
+		vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
+		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
+		                     &region, vk::Filter::eLinear);
+	} else {
+		const vk::ClearColorValue black {};
+		vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
+		                           &black, 1, &to_transfer.subresourceRange);
 	}
 
-	if (!fsr_used) {
-		vk::ImageMemoryBarrier to_present {};
-		to_present.sType         = vk::StructureType::eImageMemoryBarrier;
-		to_present.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-		to_present.dstAccessMask = draw_ime_overlay ? vk::AccessFlagBits::eColorAttachmentRead |
-		                                                  vk::AccessFlagBits::eColorAttachmentWrite
-		                                            : vk::AccessFlagBits::eMemoryRead;
-		to_present.oldLayout     = vk::ImageLayout::eTransferDstOptimal;
-		to_present.newLayout     = draw_ime_overlay ? vk::ImageLayout::eColorAttachmentOptimal
-		                                            : vk::ImageLayout::ePresentSrcKHR;
-		to_present.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
-		to_present.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
-		to_present.image                           = m_images[m_image_index];
-		to_present.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
-		to_present.subresourceRange.baseMipLevel   = 0;
-		to_present.subresourceRange.levelCount     = 1;
-		to_present.subresourceRange.baseArrayLayer = 0;
-		to_present.subresourceRange.layerCount     = 1;
-		vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-		                           draw_ime_overlay ? vk::PipelineStageFlagBits::eColorAttachmentOutput
-		                                            : vk::PipelineStageFlagBits::eAllCommands,
+	vk::ImageMemoryBarrier to_present {};
+	to_present.sType               = vk::StructureType::eImageMemoryBarrier;
+	to_present.srcAccessMask       = vk::AccessFlagBits::eTransferWrite;
+	to_present.dstAccessMask       = draw_attachment ? vk::AccessFlagBits::eColorAttachmentRead |
+	                                                       vk::AccessFlagBits::eColorAttachmentWrite
+	                                                 : vk::AccessFlagBits::eMemoryRead;
+	to_present.oldLayout           = vk::ImageLayout::eTransferDstOptimal;
+	to_present.newLayout           = draw_attachment ? vk::ImageLayout::eColorAttachmentOptimal
+	                                                 : vk::ImageLayout::ePresentSrcKHR;
+	to_present.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	to_present.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	to_present.image               = m_images[m_image_index];
+	to_present.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
+	to_present.subresourceRange.baseMipLevel   = 0;
+	to_present.subresourceRange.levelCount     = 1;
+	to_present.subresourceRange.baseArrayLayer = 0;
+	to_present.subresourceRange.layerCount     = 1;
+	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+	                           draw_attachment ? vk::PipelineStageFlagBits::eColorAttachmentOutput
+	                                           : vk::PipelineStageFlagBits::eAllCommands,
+	                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
+	                           &to_present);
+	if (draw_attachment) {
+		if (draw_overlay) {
+			DrawOverlay(vk_command, overlay);
+			if (draw_system_overlay) {
+				to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+				to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
+				vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+				                           vk::PipelineStageFlagBits::eColorAttachmentOutput,
+				                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0,
+				                           nullptr, 1, &to_present);
+			}
+		}
+		if (draw_system_overlay) {
+			m_system_overlay->Record(vk_command, m_image_views[m_image_index]);
+		}
+		to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+		to_present.dstAccessMask = vk::AccessFlagBits::eMemoryRead;
+		to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
+		to_present.newLayout     = vk::ImageLayout::ePresentSrcKHR;
+		vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+		                           vk::PipelineStageFlagBits::eAllCommands,
 		                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
 		                           &to_present);
-		if (draw_ime_overlay) {
-			m_ime_overlay->Record(vk_command, m_image_views[m_image_index]);
-			to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-			to_present.dstAccessMask = vk::AccessFlagBits::eMemoryRead;
-			to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
-			to_present.newLayout     = vk::ImageLayout::ePresentSrcKHR;
-			vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
-			                           vk::PipelineStageFlagBits::eAllCommands,
-			                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
-			                           &to_present);
-		}
-
 	}
-
-	command.End();
 }
 
-void Swapchain::Submit(CommandBuffer& command) {
+uint64_t Swapchain::Submit(CommandScheduler& scheduler) {
 	EXIT_IF(m_frame_index >= m_image_acquired.size() || m_image_index >= m_render_complete.size());
 	SubmitInfo submit;
 	submit.AddWait(m_image_acquired[m_frame_index], 1, vk::PipelineStageFlagBits::eTransfer);
 	submit.AddSignal(m_render_complete[m_image_index]);
-	command.Execute(submit);
+	const auto tick                       = scheduler.Submit(submit);
+	m_image_acquired_ticks[m_frame_index] = tick;
+	return tick;
 }
 
 Swapchain::Status Swapchain::Present() {
@@ -970,58 +894,18 @@ Swapchain::Status Swapchain::Present() {
 		Common::LockGuard lock(m_window.graphic_ctx.queue_mutex);
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
 	}
-	// KytyPlus diagnostics: log the first few presents so we can see whether the
-	// swapchain is actually being presented on a Ryzen iGPU that otherwise reports
-	// black. We only log the first 3 and any non-success so the log stays readable.
-	{
-		// KytyPlus diag: log first 12 presents, then every 120th, plus any non-success,
-		// always with swapchain extent, so a black-screen run shows exact result/geometry.
-		static uint64_t shown = 0;
-		++shown;
-		if (shown <= 12 || (shown % 120) == 0 || result != vk::Result::eSuccess) {
-			LOGF("Swapchain diag: present #%llu imageIndex=%u extent=%ux%u result=%s\n",
-			     static_cast<unsigned long long>(shown), m_image_index, m_extent.width,
-			     m_extent.height, VulkanToString(result).c_str());
-		}
-	}
-	// Presented-frame-rate meter. Written straight to stderr rather than through
-	// LOGF so it survives `--printf-direction Silent`: tuning render scale needs an
-	// fps number, and silencing the (very chatty) guest log is the first thing
-	// anyone does when chasing performance. One line per second, always.
-	{
-		static auto                 start    = std::chrono::steady_clock::now();
-		static uint64_t             frames   = 0;
-		const auto                  now      = std::chrono::steady_clock::now();
-		// Count this present before sampling. Otherwise a frame taking over a
-		// second resets the counter without ever being counted (false 0 FPS).
-		++frames;
-		const double                elapsed  =
-		    std::chrono::duration<double>(now - start).count();
-		if (elapsed >= 1.0) {
-			::fprintf(stderr, "[fps] %.1f (%llu frames / %.2fs)\n",
-			          static_cast<double>(frames) / elapsed,
-			          static_cast<unsigned long long>(frames), elapsed);
-			::fflush(stderr);
-			frames = 0;
-			start  = now;
-		}
-	}
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
-			if (!m_suboptimal_recovered) {
-				m_suboptimal_recovered = true;
-				LOGF("Swapchain: first SuboptimalKHR on present - doing one clean recreate\n");
-				return Status::Recreate;
-			}
-			break;
+			LOGF("vkQueuePresentKHR returned vk::Result::eSuboptimalKHR\n");
+			return Status::Recreate;
 		case vk::Result::eErrorOutOfDateKHR:
 			LOGF("vkQueuePresentKHR returned vk::Result::eErrorOutOfDateKHR\n");
 			return Status::Recreate;
 		case vk::Result::eErrorSurfaceLostKHR:
 			LOGF("vkQueuePresentKHR returned vk::Result::eErrorSurfaceLostKHR\n");
 			return Status::SurfaceLost;
-		default: EXIT("vkQueuePresentKHR failed: %s\n", VulkanToString(result).c_str());
+		default: EXIT("vkQueuePresentKHR failed: %s\n", vk::to_string(result).c_str());
 	}
 	m_frame_index = (m_frame_index + 1u) % static_cast<uint32_t>(m_images.size());
 	return Status::Success;
@@ -1031,65 +915,22 @@ Presenter::Presenter(WindowContext& window): m_impl(std::make_unique<Impl>(windo
 
 Presenter::~Presenter() = default;
 
-Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo& info) {
+Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo& info, bool hdr) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(buffer.IsInvalid());
-	auto*             frame = m_impl->frames.Acquire();
-	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
-	auto&             image = m_impl->ResolveSurface(info);
-	if (image.backing.format == vk::Format::eUndefined) {
-		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
-	}
-	{
-		// KytyPlus diag: log the video-out (present source) the guest hands us so a black
-		// screen can be traced to a blank/black buffer vs a real render target. Log the
-		// first 8, then every 120th, and every time the source address/format changes.
-		static uint64_t n = 0;
-		static uint64_t last_addr = ~0ull;
-		static int      last_fmt  = -1;
-		const uint64_t  addr = info.data.address;
-		const int       fmt  = static_cast<int>(info.pixel_format);
-		++n;
-		if (n <= 8 || (n % 120) == 0 || addr != last_addr || fmt != last_fmt) {
-			LOGF("Present-source #%llu addr=0x%llx size=0x%llx extent=%ux%u fmt=%d type=%d pitch=%u\n",
-			     static_cast<unsigned long long>(n),
-			     static_cast<unsigned long long>(addr),
-			     static_cast<unsigned long long>(info.data.size),
-			     info.extent.width, info.extent.height, fmt, static_cast<int>(info.type),
-			     info.pitch);
-			last_addr = addr; last_fmt = fmt;
-		}
-	}
-
-	if (Config::GetGuestRenderWidth() != 0) {
-		static vk::Extent2D last_source {};
-		const vk::Extent2D actual {image.backing.extent.width, image.backing.extent.height};
-		if (last_source != actual) {
-			std::fprintf(stderr, "[render-source] actual presentation source=%ux%u, "
-			                     "requested engine resolution=%ux%u\n",
-			             actual.width, actual.height, Config::GetGuestRenderWidth(),
-			             Config::GetGuestRenderHeight());
-			last_source = actual;
-		}
-	}
-
-	if (Config::GetGuestRenderWidth() != 0) {
-		static vk::Extent2D last_source {};
-		const vk::Extent2D actual {image.backing.extent.width, image.backing.extent.height};
-		if (last_source != actual) {
-			std::fprintf(stderr, "[render-source] actual presentation source=%ux%u, "
-			                     "requested engine resolution=%ux%u\n",
-			             actual.width, actual.height, Config::GetGuestRenderWidth(),
-			             Config::GetGuestRenderHeight());
-			last_source = actual;
-		}
-	}
-
 	auto frame_format = info.pixel_format;
 	switch (frame_format) {
 		case vk::Format::eR8G8B8A8Srgb: frame_format = vk::Format::eR8G8B8A8Unorm; break;
 		case vk::Format::eB8G8R8A8Srgb: frame_format = vk::Format::eB8G8R8A8Unorm; break;
 		default: break;
+	}
+	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
+	frame->hdr   = hdr;
+	frame->blank = false;
+	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
+	auto&             image = m_impl->ResolveSurface(info);
+	if (image.backing.format == vk::Format::eUndefined) {
+		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}
 	frame->Configure(m_impl->window.graphic_ctx,
 	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
@@ -1101,7 +942,9 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
                                                CommandBuffer* producer) {
 	KYTY_PROFILER_FUNCTION();
 	auto              format = m_impl->frames.GetFormat();
-	auto*             frame  = m_impl->frames.Acquire();
+	auto*             frame  = m_impl->frames.Acquire({width, height}, format);
+	frame->hdr   = false;
+	frame->blank = true;
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
 	frame->Configure(m_impl->window.graphic_ctx, {width, height}, format);
 	vk::ClearColorValue clear {};
@@ -1110,133 +953,114 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
 		EXIT_IF(producer->IsInvalid());
 		frame->Clear(*producer, clear);
 	} else {
-		if (frame->present_commands == nullptr) {
-			frame->present_commands = std::make_unique<CommandBuffer>(m_impl->present_scheduler);
-		}
-		auto& command = *frame->present_commands;
-		command.WaitForFenceAndReset();
-		command.Begin();
+		auto& command = m_impl->present_scheduler.BeginCommand();
 		frame->Clear(command, clear);
-		command.End();
-		command.Execute();
+		frame->present_tick = m_impl->present_scheduler.Submit();
 	}
 	return *frame;
 }
 
-Presenter::Frame* Presenter::PrepareLastFrame() {
-	return m_impl->frames.AcquireLast();
+bool Presenter::PresentLastFrame() {
+	Common::LockGuard lock(m_impl->present_mutex);
+	if (m_impl->layers[0].frame == nullptr && m_impl->layers[1].frame == nullptr) {
+		return false;
+	}
+	m_impl->Present();
+	return true;
 }
 
 bool Presenter::IsGuestPaused() const noexcept {
 	return m_impl->window.loop.paused.load(std::memory_order_acquire);
 }
 
-bool Presenter::NeedsImeRefresh() const noexcept {
-	const auto visual = GetImeVisualState();
+bool Presenter::IsHdrSupported() const noexcept {
+	return m_impl->swapchain.IsHdrSupported();
+}
+
+bool Presenter::NeedsSystemOverlayRefresh() const noexcept {
+	const auto visual = GetSystemOverlayVisualState();
 	return visual.active ||
-	       visual.revision != m_impl->presented_ime_revision.load(std::memory_order_acquire);
+	       visual.revision != m_impl->presented_overlay_revision.load(std::memory_order_acquire);
 }
 
 RenderContext& Presenter::Renderer() const noexcept {
 	return m_impl->renderer;
 }
 
-void Presenter::Present(Frame& frame, bool reuse) {
-	KYTY_PROFILER_FUNCTION();
-	const auto present_start = std::chrono::steady_clock::now();
-	static const bool timing_enabled = std::getenv("KYTY_PRESENT_TIMING") != nullptr;
-	static auto previous_present_end = present_start;
-	static uint64_t timing_frame = 0;
-	const double producer_gap_ms =
-	    std::chrono::duration<double, std::milli>(present_start - previous_present_end).count();
-	double acquire_ms = 0.0;
-	double record_submit_ms = 0.0;
-	m_impl->frames.ValidateForPresent(&frame, reuse);
+void Presenter::Present(Frame& frame) {
+	const Layer layer {&frame, 0, false};
+	Present(std::span(&layer, 1));
+}
 
-	auto& window = m_impl->window;
-	if (window.window_hidden) {
-#if defined(__APPLE__)
-		// AppKit traps if a window is shown off the main thread; marshal and wait so the
-		// swapchain below is recreated against a visible window.
-		window.RunOnMainThread(
-		    [&window] {
-			    window.UpdateIcon();
-			    SDL_ShowWindow(window.window);
-			    SDL_RaiseWindow(window.window);
-		    },
-		    true);
-#else
-		window.UpdateIcon();
-
-		SDL_ShowWindow(window.window);
-		SDL_RaiseWindow(window.window);
-		// KytyPlus: when launched from the Qt launcher the console/console-host takes
-		// foreground at boot and several "black screen" reports turned out to be the
-		// game window simply buried behind other windows. Raise it again once the first
-		// frames are actually being presented (this runs after ShowWindow above).
-		SDL_SetWindowInputFocus(window.window);
-#endif
-
-		window.window_hidden = false;
-		m_impl->RecoverSwapchain(Swapchain::Status::Recreate);
+void Presenter::Present(std::span<const Layer> layers) {
+	Common::LockGuard lock(m_impl->present_mutex);
+	for (const auto& layer: layers) {
+		EXIT_IF(layer.bus < 0 || layer.bus >= static_cast<int>(m_impl->layers.size()));
+		m_impl->frames.ValidateForPresent(layer.frame);
+		auto& previous = m_impl->layers[layer.bus];
+		if (previous.frame != nullptr) {
+			m_impl->frames.Release(previous.frame);
+		}
+		previous = layer;
 	}
+	m_impl->Present();
+}
 
-	const auto ime_visual = GetImeVisualState();
-	auto&      swapchain  = m_impl->swapchain;
-	for (uint32_t attempt = 0; attempt < 2; attempt++) {
-		const auto acquire_start = std::chrono::steady_clock::now();
-		auto status = swapchain.AcquireNextImage();
-		acquire_ms += std::chrono::duration<double, std::milli>(
-		    std::chrono::steady_clock::now() - acquire_start).count();
-		if (status != Swapchain::Status::Success) {
-			m_impl->RecoverSwapchain(status);
-			continue;
-		}
-		if (frame.present_commands == nullptr) {
-			frame.present_commands = std::make_unique<CommandBuffer>(m_impl->present_scheduler);
-		}
-		const auto record_start = std::chrono::steady_clock::now();
-		{
-			Common::LockGuard render_lock(m_impl->renderer.GetMutex());
-			frame.present_commands->WaitForFenceAndReset();
-			auto&      command          = *frame.present_commands;
-			const bool draw_ime_overlay = ime_visual.active && swapchain.PrepareImeOverlay();
-			swapchain.RecordPresentCommands(command, frame, draw_ime_overlay);
-			swapchain.Submit(command);
-		}
-		record_submit_ms += std::chrono::duration<double, std::milli>(
-		    std::chrono::steady_clock::now() - record_start).count();
-		status = swapchain.Present();
-		if (status != Swapchain::Status::Success) {
-			m_impl->RecoverSwapchain(status);
-			continue;
-		}
-
-		RenderDocOnPresent();
-		m_impl->presented_ime_revision.store(ime_visual.revision, std::memory_order_release);
-		window.UpdateTitle();
-		{
-			const auto present_end = std::chrono::steady_clock::now();
-			previous_present_end = present_end;
-			++timing_frame;
-			const double host_ms = std::chrono::duration<double, std::milli>(
-			    present_end - present_start).count();
-			if (timing_enabled && (timing_frame <= 8 || timing_frame % 60 == 0 ||
-			                       producer_gap_ms > 100.0 || host_ms > 100.0)) {
-				std::fprintf(stderr, "[present-timing] frame=%llu reuse=%d producer_gap_ms=%.2f "
-				                     "host_ms=%.2f acquire_ms=%.2f record_submit_ms=%.2f\n",
-				             static_cast<unsigned long long>(timing_frame), reuse ? 1 : 0,
-				             producer_gap_ms, host_ms, acquire_ms, record_submit_ms);
-			}
-			const float frame_ms = std::chrono::duration<float, std::milli>(present_end - present_start).count();
-			Config::BandwidthControllerInstance().OnFrame(frame_ms);
-		}
-		m_impl->frames.Release(&frame, true);
+void Presenter::ClearLayer(int bus) {
+	if (static_cast<size_t>(bus) >= m_impl->layers.size()) {
 		return;
 	}
-	LOGF("Swapchain diag: presentation retry EXHAUSTED; dropping frame extent=%ux%u frame_index=%u (host discarding, not presenting)\n",
-	     swapchain.Extent().width, swapchain.Extent().height, swapchain.FrameIndex());
-	m_impl->frames.Release(&frame, reuse);
+	Common::LockGuard lock(m_impl->present_mutex);
+	auto& layer = m_impl->layers[bus];
+	if (layer.frame != nullptr) {
+		m_impl->frames.Release(layer.frame);
+		layer = {};
+	}
+}
+
+void Presenter::Impl::Present() {
+	KYTY_PROFILER_FUNCTION();
+
+	const auto overlay_visual = GetSystemOverlayVisualState();
+	// Keep black/blank flips in the current color space; only real main-bus frames switch it.
+	const auto* main_frame = layers[0].frame;
+	const bool hdr_changed = main_frame != nullptr && !main_frame->blank &&
+	                         swapchain.SetHdr(main_frame->hdr);
+	// Some window systems keep presenting an old swapchain after a resize.
+	if (hdr_changed || swapchain.NeedsResize()) {
+		RecoverSwapchain(Swapchain::Status::Recreate);
+	}
+	for (uint32_t attempt = 0; attempt < 2; attempt++) {
+		auto status = swapchain.AcquireNextImage(present_scheduler);
+		if (status != Swapchain::Status::Success) {
+			RecoverSwapchain(status);
+			continue;
+		}
+		{
+			Common::LockGuard render_lock(renderer.GetMutex());
+			auto&             command = present_scheduler.BeginCommand();
+			const bool        draw_system_overlay =
+			    overlay_visual.active && swapchain.PrepareSystemOverlay();
+			swapchain.RecordPresentCommands(command, layers[0].frame, layers[1],
+			                                draw_system_overlay);
+			const auto tick = swapchain.Submit(present_scheduler);
+			for (const auto& layer: layers) {
+				if (layer.frame != nullptr) {
+					layer.frame->present_tick = tick;
+				}
+			}
+		}
+		status = swapchain.Present();
+		if (status != Swapchain::Status::Success) {
+			RecoverSwapchain(status);
+			continue;
+		}
+
+		presented_overlay_revision.store(overlay_visual.revision, std::memory_order_release);
+		window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+	LOGF("Vulkan presentation retry exhausted; dropping frame\n");
 }
 
 void Presenter::Discard(Frame& frame) {

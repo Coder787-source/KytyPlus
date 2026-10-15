@@ -8,7 +8,8 @@ namespace Libs::Dialog {
 
 namespace CommonDialog {
 
-int KYTY_SYSV_ABI CommonDialogInitialize();
+int KYTY_SYSV_ABI  CommonDialogInitialize();
+bool KYTY_SYSV_ABI CommonDialogIsUsed();
 
 } // namespace CommonDialog
 
@@ -66,6 +67,29 @@ int KYTY_SYSV_ABI MsgDialogProgressBarSetValue(int target, uint32_t rate);
 int KYTY_SYSV_ABI MsgDialogProgressBarSetMsg(int target, const char* msg);
 
 } // namespace MsgDialog
+
+namespace SystemDialog {
+
+enum class Kind { Error, Signin };
+
+struct HostSnapshot {
+	Kind     kind;
+	uint64_t generation;
+	int32_t  error_code;
+};
+
+struct VisualState {
+	bool     active;
+	bool     background;
+	uint64_t revision;
+};
+
+bool        GetHostSnapshot(HostSnapshot* snapshot);
+VisualState GetVisualState() noexcept;
+void        SetVisibilityCallback(void (*callback)());
+bool        HostClose(uint64_t generation);
+
+} // namespace SystemDialog
 
 namespace ErrorDialog {
 

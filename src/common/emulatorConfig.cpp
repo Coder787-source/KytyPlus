@@ -10,18 +10,21 @@ namespace Config {
 
 static std::unique_ptr<ConfigOptions> g_config;
 
-KYTY_SUBSYSTEM_INIT(Config) {
+void Initialize() {
 	EXIT_IF(g_config != nullptr);
 
 	g_config = std::make_unique<ConfigOptions>();
 }
 
-KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Config) {}
-
-KYTY_SUBSYSTEM_DESTROY(Config) {}
+void Shutdown() {
+	g_config.reset();
+}
 
 void Load(const ConfigOptions& cfg) {
 	EXIT_IF(g_config == nullptr);
+	EXIT_IF(cfg.user_name.empty() || cfg.user_name.size() > MAX_USER_NAME_LENGTH);
+	EXIT_IF(!IsConfiguredUserIdValid(cfg.user_id));
+	EXIT_IF(cfg.controller_speaker_volume > 100 || cfg.controller_vibration_intensity > 100);
 
 	*g_config = cfg;
 }
@@ -49,7 +52,7 @@ void ApplyIgpuDefaults(bool integrated_gpu) {
 		changed                = true;
 	}
 	if (changed) {
-		LOGF("Config: integrated GPU detected — applied floor defaults: "
+		LOGF("Config: integrated GPU detected â€” applied floor defaults: "
 		     "texture LOD bias 1, present mode FIFO (upscaler setting preserved)\n");
 	}
 }
@@ -78,8 +81,52 @@ uint32_t GetFsrOutputHeight() {
 	return g_config->fsr_output_height;
 }
 
+const std::string& GetUserName() {
+	return g_config->user_name;
+}
+
+int32_t GetUserId() {
+	return g_config->user_id;
+}
+
+const std::string& GetAudioInputDevice() {
+	return g_config->audio_input_device;
+}
+
+const std::optional<ControllerColor>& GetControllerColor() {
+	return g_config->controller_color;
+}
+
+uint32_t GetControllerSpeakerVolume() {
+	return g_config->controller_speaker_volume;
+}
+
+uint32_t GetControllerVibrationIntensity() {
+	return g_config->controller_vibration_intensity;
+}
+
+int32_t GetGpuIndex() {
+	return g_config->gpu_index;
+}
+
 bool FullscreenEnabled() {
 	return g_config->fullscreen_enabled;
+}
+
+bool HdrEnabled() {
+	return g_config->hdr_enabled;
+}
+
+bool HideCursorEnabled() {
+	return g_config->hide_cursor_enabled;
+}
+
+bool VrEnabled() {
+	return g_config->vr_enabled;
+}
+
+bool AmdCpuEnabled() {
+	return g_config->amd_cpu_enabled;
 }
 
 uint32_t GetVblankFrequency() {
@@ -94,6 +141,10 @@ bool VulkanValidationEnabled() {
 	return g_config->vulkan_validation_enabled;
 }
 
+bool IsNetworkConnected() {
+	return g_config->network_connected;
+}
+
 bool ShaderValidationEnabled() {
 	return g_config->shader_validation_enabled;
 }
@@ -102,7 +153,7 @@ ShaderOptimizationType GetShaderOptimizationType() {
 	return g_config->shader_optimization_type;
 }
 
-ShaderLogDirection GetShaderLogDirection() {
+LogDirection GetShaderLogDirection() {
 	return g_config->shader_log_direction;
 }
 
@@ -122,7 +173,7 @@ bool GraphicsDebugDumpEnabled() {
 	return g_config->graphics_debug_dump_enabled;
 }
 
-OutputDirection GetPrintfDirection() {
+LogDirection GetPrintfDirection() {
 	return g_config->printf_direction;
 }
 
@@ -130,12 +181,16 @@ std::filesystem::path GetPrintfOutputFile() {
 	return g_config->printf_output_file;
 }
 
-ProfilerDirection GetProfilerDirection() {
-	return g_config->profiler_direction;
+bool ProfilerEnabled() {
+	return g_config->profiler_enabled;
 }
 
 bool SpirvDebugPrintfEnabled() {
 	return g_config->spirv_debug_printf_enabled;
+}
+
+bool GpuAssistedValidationEnabled() {
+	return g_config->gpu_assisted_validation_enabled && g_config->vulkan_validation_enabled;
 }
 
 bool RenderDocEnabled() {
@@ -148,6 +203,26 @@ bool NggRectlistDrawEnabled() {
 
 bool ReadbackLinearImagesEnabled() {
 	return g_config->readback_linear_images;
+}
+
+bool SyncRawImageBuffersEnabled() {
+	return g_config->sync_raw_image_buffers;
+}
+
+bool TessellationEnabled() {
+	return g_config->tessellation_enabled;
+}
+
+bool TrophyEnabled() {
+	return g_config->trophy_enabled;
+}
+
+bool PlayGoHackEnabled() {
+	return g_config->playgo_hack_enabled;
+}
+
+bool SkipNoticeScreen() {
+	return g_config->skip_notice_screen;
 }
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -260,6 +335,10 @@ bool UnimplementedStrictMode() {
 	// Called from guard macros that may run before/without config init; default to the
 	// non-fatal (soft) path so an early call cannot itself fault.
 	return g_config != nullptr && g_config->strict_unimplemented_enabled;
+}
+
+const std::vector<std::string>& GetGuestArguments() {
+	return g_config->guest_arguments;
 }
 
 } // namespace Config

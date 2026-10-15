@@ -1,7 +1,8 @@
 #ifndef GAME_LIST_TREE_WIDGET_H
 #define GAME_LIST_TREE_WIDGET_H
 
-#include <QColor>
+#include "gameContent.h"
+
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPalette>
@@ -18,14 +19,15 @@ public:
 		viewport()->setAutoFillBackground(false);
 	}
 
-	void SetBackgroundImage(const QString& path) {
-		if (m_path == path) {
+	void SetBackgroundImage(const QString& key) {
+		if (m_path == key) {
 			return;
 		}
-		m_path   = path;
+		m_path   = key;
 		m_source = QPixmap();
-		if (!path.isEmpty()) {
-			m_source.load(path);
+		if (!key.isEmpty()) {
+			m_source.loadFromData(GameContent::ReadFile(key, QStringLiteral("sce_sys/pic0.png"),
+			                                            GameContent::MaxImageSize));
 		}
 		UpdateScaledBackground();
 		viewport()->update();
@@ -44,7 +46,9 @@ protected:
 				painter.fillRect(event->rect(), palette().brush(QPalette::Base));
 			} else {
 				painter.drawPixmap(m_scaled_pos, m_scaled);
-				painter.fillRect(event->rect(), QColor(0, 0, 0, 115));
+				auto overlay = palette().color(QPalette::Base);
+				overlay.setAlpha(185);
+				painter.fillRect(event->rect(), overlay);
 			}
 		}
 

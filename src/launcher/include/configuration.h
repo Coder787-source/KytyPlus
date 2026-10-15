@@ -1,19 +1,19 @@
 #ifndef LAUNCHER_INCLUDE_CONFIGURATION_H_
 #define LAUNCHER_INCLUDE_CONFIGURATION_H_
 
-#include "common.h"
+#include "common/emulatorConfig.h"
 
 #include <QByteArray>
 #include <QChar>
+#include <QColor>
+#include <QJsonObject>
 #include <QMetaEnum>
 #include <QMetaType>
+#include <QObject>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
-
-#define KYTY_CFG_SET(n) s->setValue(#n, QVariant::fromValue(n).toString());
-#define KYTY_CFG_GET(n) n = s->value(#n).value<decltype(n)>();
 
 template <class T>
 inline QStringList EnumToList() {
@@ -44,6 +44,30 @@ QString EnumToText(T value) {
 	                                                                     : key);
 }
 
+struct ControllerSettings {
+	QString color;
+	int     speaker_volume      = 50;
+	int     vibration_intensity = 100;
+
+	void WriteSettings(QSettings* s) const {
+		s->setValue("controller_color", color);
+		s->setValue("controller_speaker_volume", speaker_volume);
+		s->setValue("controller_vibration_intensity", vibration_intensity);
+	}
+
+	void ReadSettings(QSettings* s) {
+		const QColor saved_color(s->value("controller_color").toString());
+		color = saved_color.isValid() ? saved_color.name(QColor::HexRgb) : QString {};
+		const auto read_percent = [s](const char* key, int fallback) {
+			bool      ok    = false;
+			const int value = s->value(key, fallback).toInt(&ok);
+			return ok ? qBound(0, value, 100) : fallback;
+		};
+		speaker_volume      = read_percent("controller_speaker_volume", 50);
+		vibration_intensity = read_percent("controller_vibration_intensity", 100);
+	}
+};
+
 class Configuration: public QObject {
 	Q_OBJECT
 
@@ -54,17 +78,16 @@ public:
 	enum class Resolution {
 		R1280X720,
 		R1920X1080,
+		R2560X1440,
+		R3840X2160,
 	};
 	Q_ENUM(Resolution)
 
 	enum class ShaderOptimizationType { None, Size, Performance };
 	Q_ENUM(ShaderOptimizationType)
 
-	enum class ShaderLogDirection { Silent, Console, File };
-	Q_ENUM(ShaderLogDirection)
-
-	enum class ProfilerDirection { None, Network };
-	Q_ENUM(ProfilerDirection)
+	enum class PresentMode { Fifo, Mailbox, Immediate };
+	Q_ENUM(PresentMode)
 
 	enum class UpscalerMethod { Off, Fsr1 };
 	Q_ENUM(UpscalerMethod)
@@ -76,8 +99,6 @@ public:
 	enum class IgpuOptimization { Off, Auto, Force };
 	Q_ENUM(IgpuOptimization)
 
-	enum class PresentMode { Fifo, Mailbox, Immediate };
-	Q_ENUM(PresentMode)
 
 	enum class PresentFilter { Nearest, Linear, Cubic };
 	Q_ENUM(PresentFilter)
@@ -105,21 +126,37 @@ public:
 	GameStatus game_status     = GameStatus::Unknown;
 	QString    game_comment;
 
+	// Controller preferences always come from the global configuration.
+	ControllerSettings controller;
+
 	Resolution             screen_resolution           = Resolution::R1280X720;
+	QString                user_name                   = "Kyty";
+	int                    user_id                     = Config::DEFAULT_USER_ID;
+	QString                audio_input_device;
+	int                    gpu_index                   = -1;
 	bool                   fullscreen_enabled          = false;
+	bool                   hdr_enabled                 = false;
+	bool                   hide_cursor_enabled         = false;
+	bool                   readback_linear_images      = false;
+	bool                   sync_raw_image_buffers      = false;
+	bool                   tessellation_enabled        = false;
+	bool                   trophy_enabled              = true;
+	bool                   skip_notice_screen          = false;
+	bool                   network_connected           = false;
 	int                    vblank_frequency            = 60;
 	int                    console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
-	bool                   shader_validation_enabled   = true;
+	bool                   shader_validation_enabled   = false;
 	ShaderOptimizationType shader_optimization_type    = ShaderOptimizationType::Performance;
-	ShaderLogDirection     shader_log_direction        = ShaderLogDirection::Silent;
+	LogDirection           shader_log_direction        = LogDirection::Silent;
 	QString                shader_log_folder           = "_Shaders";
 	bool                   command_buffer_dump_enabled = false;
 	QString                command_buffer_dump_folder  = "_Buffers";
 	LogDirection           printf_direction            = LogDirection::Silent;
 	QString                printf_output_file          = "_kyty.txt";
-	ProfilerDirection      profiler_direction          = ProfilerDirection::None;
+	bool                   profiler_enabled            = false;
 	bool                   renderdoc_enabled           = false;
+	bool                   amd_cpu_enabled             = false;
 #if defined(_WIN32)
 	bool red_zone_protection_enabled = false;
 #endif
@@ -141,7 +178,20 @@ public:
 
 	void CopyEmulatorSettingsFrom(const Configuration& other) {
 		screen_resolution           = other.screen_resolution;
+		user_name                   = other.user_name;
+		user_id                     = other.user_id;
+		audio_input_device          = other.audio_input_device;
+		present_mode                = other.present_mode;
+		gpu_index                   = other.gpu_index;
 		fullscreen_enabled          = other.fullscreen_enabled;
+		hdr_enabled                 = other.hdr_enabled;
+		hide_cursor_enabled         = other.hide_cursor_enabled;
+		readback_linear_images      = other.readback_linear_images;
+		sync_raw_image_buffers      = other.sync_raw_image_buffers;
+		tessellation_enabled        = other.tessellation_enabled;
+		trophy_enabled              = other.trophy_enabled;
+		skip_notice_screen          = other.skip_notice_screen;
+		network_connected           = other.network_connected;
 		vblank_frequency            = other.vblank_frequency;
 		console_language            = other.console_language;
 		vulkan_validation_enabled   = other.vulkan_validation_enabled;
@@ -153,8 +203,9 @@ public:
 		command_buffer_dump_folder  = other.command_buffer_dump_folder;
 		printf_direction            = other.printf_direction;
 		printf_output_file          = other.printf_output_file;
-		profiler_direction          = other.profiler_direction;
+		profiler_enabled            = other.profiler_enabled;
 		renderdoc_enabled           = other.renderdoc_enabled;
+		amd_cpu_enabled             = other.amd_cpu_enabled;
 #if defined(_WIN32)
 		red_zone_protection_enabled = other.red_zone_protection_enabled;
 #endif
@@ -173,7 +224,7 @@ public:
 		host_input_mapping = other.host_input_mapping;
 	}
 
-	void CopyFrom(const Configuration& other) {
+	void CopyGameInfoFrom(const Configuration& other) {
 		name            = other.name;
 		title_id        = other.title_id;
 		gameVersion     = other.gameVersion;
@@ -185,91 +236,18 @@ public:
 		custom_settings = other.custom_settings;
 		game_status     = other.game_status;
 		game_comment    = other.game_comment;
-		CopyEmulatorSettingsFrom(other);
-		elf = other.elf;
 	}
 
-	void WriteSettings(QSettings* s) const {
-		KYTY_CFG_SET(name);
-		KYTY_CFG_SET(basedir);
-		KYTY_CFG_SET(game_path);
-		KYTY_CFG_SET(custom_settings);
-		KYTY_CFG_SET(screen_resolution);
-		KYTY_CFG_SET(fullscreen_enabled);
-		KYTY_CFG_SET(vblank_frequency);
-		KYTY_CFG_SET(console_language);
-		KYTY_CFG_SET(vulkan_validation_enabled);
-		KYTY_CFG_SET(shader_validation_enabled);
-		KYTY_CFG_SET(shader_optimization_type);
-		KYTY_CFG_SET(shader_log_direction);
-		KYTY_CFG_SET(shader_log_folder);
-		KYTY_CFG_SET(command_buffer_dump_enabled);
-		KYTY_CFG_SET(command_buffer_dump_folder);
-		KYTY_CFG_SET(printf_direction);
-		KYTY_CFG_SET(printf_output_file);
-		KYTY_CFG_SET(profiler_direction);
-		KYTY_CFG_SET(renderdoc_enabled);
-#if defined(_WIN32)
-		KYTY_CFG_SET(red_zone_protection_enabled);
-#endif
-		KYTY_CFG_SET(upscaler_method);
-		KYTY_CFG_SET(upscaler_quality);
-		s->setValue("upscaler_sharpness", upscaler_sharpness);
-		s->setValue("guest_render_width", guest_render_width);
-		s->setValue("guest_render_height", guest_render_height);
-		s->setValue("fsr_output_width", fsr_output_width);
-		s->setValue("fsr_output_height", fsr_output_height);
-		KYTY_CFG_SET(igpu_optimization);
-		s->setValue("texture_lod_bias", texture_lod_bias);
-		KYTY_CFG_SET(present_mode);
-		KYTY_CFG_SET(present_filter);
-		KYTY_CFG_SET(aspect_ratio);
-		s->setValue("host_input_mapping", host_input_mapping);
-		KYTY_CFG_SET(elf);
-	}
+	void WriteSettings(QSettings* s) const;
+	void ReadSettings(QSettings* s);
 
-	void ReadSettings(QSettings* s) {
-		KYTY_CFG_GET(name);
-		KYTY_CFG_GET(basedir);
-		KYTY_CFG_GET(game_path);
-		KYTY_CFG_GET(custom_settings);
-		KYTY_CFG_GET(screen_resolution);
-		KYTY_CFG_GET(fullscreen_enabled);
-		vblank_frequency = s->value("vblank_frequency", vblank_frequency).toInt();
-		console_language = s->value("console_language", console_language).toInt();
-		if (console_language < 0 || console_language > MAX_CONSOLE_LANGUAGE) {
-			console_language = DEFAULT_CONSOLE_LANGUAGE;
-		}
-		KYTY_CFG_GET(vulkan_validation_enabled);
-		KYTY_CFG_GET(shader_validation_enabled);
-		KYTY_CFG_GET(shader_optimization_type);
-		KYTY_CFG_GET(shader_log_direction);
-		KYTY_CFG_GET(shader_log_folder);
-		KYTY_CFG_GET(command_buffer_dump_enabled);
-		KYTY_CFG_GET(command_buffer_dump_folder);
-		KYTY_CFG_GET(printf_direction);
-		KYTY_CFG_GET(printf_output_file);
-		KYTY_CFG_GET(profiler_direction);
-		KYTY_CFG_GET(renderdoc_enabled);
-#if defined(_WIN32)
-		red_zone_protection_enabled =
-		    s->value("red_zone_protection_enabled", red_zone_protection_enabled).toBool();
-#endif
-		upscaler_method = s->value("upscaler_method", QVariant::fromValue(upscaler_method).toString()).value<decltype(upscaler_method)>();
-		upscaler_quality = s->value("upscaler_quality", QVariant::fromValue(upscaler_quality).toString()).value<decltype(upscaler_quality)>();
-		upscaler_sharpness = s->value("upscaler_sharpness", upscaler_sharpness).toFloat();
-		guest_render_width  = s->value("guest_render_width", guest_render_width).toInt();
-		guest_render_height = s->value("guest_render_height", guest_render_height).toInt();
-		fsr_output_width    = s->value("fsr_output_width", fsr_output_width).toInt();
-		fsr_output_height   = s->value("fsr_output_height", fsr_output_height).toInt();
-		KYTY_CFG_GET(igpu_optimization);
-		texture_lod_bias  = s->value("texture_lod_bias", texture_lod_bias).toInt();
-		KYTY_CFG_GET(present_mode);
-		KYTY_CFG_GET(present_filter);
-		KYTY_CFG_GET(aspect_ratio);
-		host_input_mapping = s->value("host_input_mapping", host_input_mapping).toStringList();
-		elf                = s->value("elf", elf).toString();
-	}
+	[[nodiscard]] QVariantMap GameSettings() const;
+	// Call on a temporary configuration: validation can fail after loading values.
+	bool SetGameSettings(const QJsonObject& settings, QString& error);
+
+private:
+	template <class Settings>
+	void ReadGameSettingsValues(const Settings& s);
 };
 
 Q_DECLARE_METATYPE(Configuration*)

@@ -1,589 +1,986 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>ConfigurationEditDialog</class>
- <widget class="QDialog" name="ConfigurationEditDialog">
-  <property name="geometry">
-   <rect>
-    <x>0</x>
-    <y>0</y>
-    <width>640</width>
-    <height>600</height>
-   </rect>
-  </property>
-  <property name="windowTitle">
-   <string>Settings</string>
-  </property>
-  <property name="locale">
-   <locale language="English" country="UnitedStates"/>
-  </property>
-  <layout class="QGridLayout" name="gridLayout">
-   <item row="0" column="0">
-    <widget class="QScrollArea" name="scrollArea">
-     <property name="widgetResizable">
-      <bool>true</bool>
-     </property>
-     <widget class="QFrame" name="scrollAreaWidgetContents">
-      <property name="geometry">
-       <rect>
+  <class>ConfigurationEditDialog</class>
+  <widget class="QDialog" name="ConfigurationEditDialog">
+    <property name="geometry">
+      <rect>
         <x>0</x>
         <y>0</y>
-        <width>500</width>
-        <height>550</height>
-       </rect>
+        <width>900</width>
+        <height>620</height>
+      </rect>
+    </property>
+    <property name="windowTitle">
+      <string>Settings</string>
+    </property>
+    <property name="locale">
+      <locale language="English" country="UnitedStates" />
+    </property>
+    <layout class="QVBoxLayout" name="dialogLayout">
+      <property name="spacing">
+        <number>8</number>
       </property>
-      <layout class="QVBoxLayout" name="scrollLayout">
-       <item>
-        <widget class="QFrame" name="configuaration_groupbox">
-     <property name="frameShape">
-      <enum>QFrame::StyledPanel</enum>
-     </property>
-     <layout class="QFormLayout" name="formLayout_6">
-      <property name="fieldGrowthPolicy">
-       <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
-      </property>
-      <item row="0" column="0" colspan="2">
-       <widget class="QFrame" name="frame_4">
-        <property name="frameShape">
-         <enum>QFrame::StyledPanel</enum>
-        </property>
-        <layout class="QGridLayout" name="gridLayout_5">
-         <item row="0" column="0">
-          <widget class="QCheckBox" name="checkBox_vulkan_validation">
-           <property name="toolTip">
-            <string>Enable Vulkan validation layers</string>
-           </property>
-           <property name="text">
-            <string>Vulkan validation</string>
-           </property>
-           <property name="checked">
-            <bool>true</bool>
-           </property>
+      <item>
+        <widget class="QTabWidget" name="settings_tabs">
+          <property name="currentIndex">
+            <number>0</number>
+          </property>
+          <widget class="QWidget" name="settings_tab">
+            <attribute name="title">
+              <string>General</string>
+            </attribute>
+            <layout class="QGridLayout" name="gridLayout">
+              <property name="horizontalSpacing">
+                <number>8</number>
+              </property>
+              <property name="verticalSpacing">
+                <number>8</number>
+              </property>
+              <item row="0" column="0" colspan="2">
+                <layout class="QGridLayout" name="sectionsLayout" columnstretch="1,1">
+                  <property name="horizontalSpacing">
+                    <number>8</number>
+                  </property>
+                  <property name="verticalSpacing">
+                    <number>8</number>
+                  </property>
+                  <item row="0" column="0">
+                    <widget class="QGroupBox" name="user_profile_group">
+                      <property name="title">
+                        <string>User profile</string>
+                      </property>
+                      <layout class="QFormLayout" name="userProfileLayout">
+                        <property name="fieldGrowthPolicy">
+                          <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                        </property>
+                        <item row="0" column="0">
+                          <widget class="QLabel" name="label_user_name">
+                            <property name="text">
+                              <string>User name:</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="0" column="1">
+                          <widget class="MandatoryLineEdit" name="lineEdit_user_name">
+                            <property name="toolTip">
+                              <string>Local user name exposed to games</string>
+                            </property>
+                            <property name="clearButtonEnabled">
+                              <bool>true</bool>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="1" column="0">
+                          <widget class="QLabel" name="label_user_id">
+                            <property name="text">
+                              <string>User ID:</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="1" column="1">
+                          <widget class="QSpinBox" name="spinBox_user_id">
+                            <property name="toolTip">
+                              <string>Local user ID exposed to games</string>
+                            </property>
+                            <property name="maximum">
+                              <number>2147483647</number>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="2" column="0">
+                          <widget class="QLabel" name="label_console_language">
+                            <property name="text">
+                              <string>Console language:</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="2" column="1">
+                          <widget class="QComboBox" name="comboBox_console_language">
+                            <property name="toolTip">
+                              <string>Language</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </widget>
+                  </item>
+                  <item row="2" column="0">
+                    <widget class="QGroupBox" name="audio_group">
+                      <property name="title">
+                        <string>Audio</string>
+                      </property>
+                      <layout class="QFormLayout" name="audioLayout">
+                        <property name="fieldGrowthPolicy">
+                          <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                        </property>
+                        <item row="0" column="0">
+                          <widget class="QLabel" name="label_audio_input_device">
+                            <property name="text">
+                              <string>Microphone:</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="0" column="1">
+                          <widget class="QComboBox" name="comboBox_audio_input_device" />
+                        </item>
+                      </layout>
+                    </widget>
+                  </item>
+                  <item row="0" column="1" rowspan="3">
+                    <widget class="QGroupBox" name="graphics_group">
+                      <property name="title">
+                        <string>Graphics &amp;&amp; display</string>
+                      </property>
+                      <layout class="QFormLayout" name="graphicsLayout">
+                        <property name="fieldGrowthPolicy">
+                          <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                        </property>
+                        <item row="0" column="0">
+                          <widget class="QLabel" name="label_screen_resolution">
+                            <property name="text">
+                              <string>Screen resolution:</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="0" column="1">
+                          <widget class="QComboBox" name="comboBox_screen_resolution">
+                            <property name="toolTip">
+                              <string>Window resolution</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="1" column="0">
+                          <widget class="QLabel" name="label_present_mode">
+                            <property name="text">
+                              <string>Present mode:</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="1" column="1">
+                          <widget class="QComboBox" name="comboBox_present_mode">
+                            <property name="toolTip">
+                              <string>Vulkan swapchain presentation mode</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="2" column="0">
+                          <widget class="QLabel" name="label_vblank_frequency">
+                            <property name="text">
+                              <string>Vblank frequency:</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="2" column="1">
+                          <widget class="QSpinBox" name="spinBox_vblank_frequency">
+                            <property name="toolTip">
+                              <string>Virtual display refresh rate used for frame pacing</string>
+                            </property>
+                            <property name="minimum">
+                              <number>30</number>
+                            </property>
+                            <property name="maximum">
+                              <number>360</number>
+                            </property>
+                            <property name="value">
+                              <number>60</number>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="3" column="0">
+                          <widget class="QLabel" name="label_shader_optimization">
+                            <property name="text">
+                              <string>Shader optimization:</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="3" column="1">
+                          <widget class="QComboBox" name="comboBox_shader_optimization_type">
+                            <property name="toolTip">
+                              <string>Optimize shaders for code size or performance</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="4" column="0">
+                          <widget class="QLabel" name="label_gpu">
+                            <property name="text">
+                              <string>GPU:</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="4" column="1">
+                          <widget class="QComboBox" name="comboBox_gpu">
+                            <property name="toolTip">
+                              <string>Graphics device used by the emulator</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="5" column="1">
+                          <widget class="QCheckBox" name="checkBox_readback">
+                            <property name="toolTip">
+                              <string>Read back writable linear images</string>
+                            </property>
+                            <property name="text">
+                              <string>Enable readback</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="6" column="1">
+                          <widget class="QCheckBox" name="checkBox_tessellation">
+                            <property name="toolTip">
+                              <string>Draw tessellated geometry. Disabled by default; unsupported tessellation may cause crashes.</string>
+                            </property>
+                            <property name="text">
+                              <string>Enable tessellation support (experimental)</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="7" column="1">
+                          <widget class="QCheckBox" name="checkBox_sync_raw_image_buffers">
+                            <property name="toolTip">
+                              <string>Can fix missing textures and incorrect transparency in some games. May reduce performance.</string>
+                            </property>
+                            <property name="text">
+                              <string>Accurate texture synchronization</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item row="8" column="1">
+                          <widget class="QCheckBox" name="checkBox_hdr">
+                            <property name="toolTip">
+                              <string>Enable HDR10 output for supported games. Requires HDR enabled on the host display.</string>
+                            </property>
+                            <property name="text">
+                              <string>Enable HDR display support</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </widget>
+                  </item>
+                  <item row="3" column="0">
+                    <widget class="QGroupBox" name="notifications_group">
+                      <property name="title">
+                        <string>Notifications</string>
+                      </property>
+                      <layout class="QVBoxLayout" name="notificationsLayout">
+                        <item>
+                          <widget class="QCheckBox" name="checkBox_trophy_notifications">
+                            <property name="toolTip">
+                              <string>Show trophy unlock notifications and play their sound.
+    To use your own sound, replace the emulator's assets/sounds/trophy-unlock.wav with a WAV file and restart the game.</string>
+                            </property>
+                            <property name="text">
+                              <string>Enable trophy notifications</string>
+                            </property>
+                            <property name="checked">
+                              <bool>true</bool>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </widget>
+                  </item>
+                  <item row="3" column="1">
+                    <widget class="QGroupBox" name="general_group">
+                      <property name="title">
+                        <string>General</string>
+                      </property>
+                      <layout class="QVBoxLayout" name="generalLayout">
+                        <item>
+                          <widget class="QCheckBox" name="checkBox_fullscreen">
+                            <property name="toolTip">
+                              <string>Run in borderless desktop fullscreen</string>
+                            </property>
+                            <property name="text">
+                              <string>Run in fullscreen</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QCheckBox" name="checkBox_hide_cursor">
+                            <property name="toolTip">
+                              <string>Hide the host cursor after 2 seconds without mouse activity</string>
+                            </property>
+                            <property name="text">
+                              <string>Auto-hide cursor</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QCheckBox" name="checkBox_skip_notice_screen">
+                            <property name="toolTip">
+                              <string>Skip startup logos and notices in supported games.</string>
+                            </property>
+                            <property name="text">
+                              <string>Skip boot logos</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </widget>
+                  </item>
+                  <item row="1" column="0">
+                    <widget class="QGroupBox" name="compatibility_group">
+                      <property name="title">
+                        <string>Compatibility</string>
+                      </property>
+                      <layout class="QVBoxLayout" name="compatibilityLayout">
+                        <item>
+                          <widget class="QCheckBox" name="checkBox_amd_cpu">
+                            <property name="toolTip">
+                              <string>Patch CPU instructions that differ between AMD and the host CPU.</string>
+                            </property>
+                            <property name="text">
+                              <string>AMD CPU patch (experimental)</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QCheckBox" name="checkBox_red_zone_protection">
+                            <property name="toolTip">
+                              <string>Helps prevent crashes in some games on Windows</string>
+                            </property>
+                            <property name="text">
+                              <string>Windows SysV red zone crash protection (experimental)</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </widget>
+                  </item>
+                </layout>
+              </item>
+              <item row="1" column="1">
+                <widget class="QGroupBox" name="controller_group">
+                  <property name="title">
+                    <string>Controller</string>
+                  </property>
+                  <layout class="QFormLayout" name="controllerLayout">
+                    <property name="fieldGrowthPolicy">
+                      <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                    </property>
+                    <item row="0" column="0">
+                      <widget class="QLabel" name="label_controller_color">
+                        <property name="text">
+                          <string>DualSense lightbar:</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="0" column="1">
+                      <layout class="QHBoxLayout" name="controllerColorLayout">
+                        <item>
+                          <widget class="QPushButton" name="button_controller_color">
+                            <property name="toolTip">
+                              <string>Choose and preview a fixed LED color. Bluetooth DualSense may take several seconds to update.</string>
+                            </property>
+                            <property name="text">
+                              <string>Custom</string>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QPushButton" name="button_controller_color_reset">
+                            <property name="toolTip">
+                              <string>Let the game control the lightbar</string>
+                            </property>
+                            <property name="text">
+                              <string>Default</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </item>
+                    <item row="1" column="0">
+                      <widget class="QLabel" name="label_controller_vibration">
+                        <property name="text">
+                          <string>Vibration intensity:</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="1" column="1">
+                      <layout class="QHBoxLayout" name="controllerVibrationLayout">
+                        <item>
+                          <widget class="QSlider" name="slider_controller_vibration">
+                            <property name="toolTip">
+                              <string>Scale DualSense vibration over USB and Bluetooth</string>
+                            </property>
+                            <property name="maximum">
+                              <number>100</number>
+                            </property>
+                            <property name="value">
+                              <number>100</number>
+                            </property>
+                            <property name="orientation">
+                              <enum>Qt::Horizontal</enum>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QLabel" name="label_controller_vibration_value">
+                            <property name="minimumSize">
+                              <size>
+                                <width>40</width>
+                                <height>0</height>
+                              </size>
+                            </property>
+                            <property name="text">
+                              <string>100%</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </item>
+                    <item row="2" column="0">
+                      <widget class="QLabel" name="label_controller_volume">
+                        <property name="text">
+                          <string>Speaker volume:</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="1">
+                      <layout class="QHBoxLayout" name="controllerVolumeLayout">
+                        <item>
+                          <widget class="QSlider" name="slider_controller_volume">
+                            <property name="toolTip">
+                              <string>Scale the DualSense speaker over USB and Bluetooth. 50% is the previous default; 100% adds 6 dB of gain.</string>
+                            </property>
+                            <property name="maximum">
+                              <number>100</number>
+                            </property>
+                            <property name="value">
+                              <number>50</number>
+                            </property>
+                            <property name="orientation">
+                              <enum>Qt::Horizontal</enum>
+                            </property>
+                          </widget>
+                        </item>
+                        <item>
+                          <widget class="QLabel" name="label_controller_volume_value">
+                            <property name="minimumSize">
+                              <size>
+                                <width>40</width>
+                                <height>0</height>
+                              </size>
+                            </property>
+                            <property name="text">
+                              <string>50%</string>
+                            </property>
+                          </widget>
+                        </item>
+                      </layout>
+                    </item>
+                  </layout>
+                </widget>
+              </item>
+            </layout>
           </widget>
-         </item>
-         <item row="0" column="1">
-          <widget class="QCheckBox" name="checkBox_shader_validation">
-           <property name="toolTip">
-            <string>Validate SPIR-V binary</string>
-           </property>
-           <property name="text">
-            <string>Shader validation</string>
-           </property>
-           <property name="checked">
-            <bool>true</bool>
-           </property>
+          <widget class="QWidget" name="network_tab">
+            <attribute name="title">
+              <string>Network</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="networkTabLayout">
+              <item>
+                <widget class="QCheckBox" name="checkBox_network_connected">
+                  <property name="toolTip">
+                    <string>Let games use your computer's local network connection.</string>
+                  </property>
+                  <property name="text">
+                    <string>Enable network connection</string>
+                  </property>
+                </widget>
+              </item>
+              <item>
+                <spacer name="networkSpacer">
+                  <property name="orientation">
+                    <enum>Qt::Vertical</enum>
+                  </property>
+                  <property name="sizeHint" stdset="0">
+                    <size>
+                      <width>20</width>
+                      <height>40</height>
+                    </size>
+                  </property>
+                </spacer>
+              </item>
+            </layout>
           </widget>
-         </item>
-         <item row="1" column="1">
-          <widget class="QCheckBox" name="checkBox_cmd_dump">
-           <property name="toolTip">
-            <string>Dump command buffers</string>
-           </property>
-           <property name="text">
-            <string>Command buffer dump</string>
-           </property>
+          <widget class="QWidget" name="debug_tab">
+            <attribute name="title">
+              <string>Debug</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="debugTabLayout">
+              <item>
+                <widget class="QGroupBox" name="debug_group">
+                  <property name="title">
+                    <string>Debugging &amp;&amp; logs</string>
+                  </property>
+                  <layout class="QGridLayout" name="debugLayout" columnstretch="0,1,0,1">
+                    <property name="horizontalSpacing">
+                      <number>8</number>
+                    </property>
+                    <property name="verticalSpacing">
+                      <number>6</number>
+                    </property>
+                    <item row="0" column="0" colspan="2">
+                      <widget class="QCheckBox" name="checkBox_vulkan_validation">
+                        <property name="toolTip">
+                          <string>Enable Vulkan validation layers</string>
+                        </property>
+                        <property name="text">
+                          <string>Vulkan validation</string>
+                        </property>
+                        <property name="checked">
+                          <bool>true</bool>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="0" column="2" colspan="2">
+                      <widget class="QCheckBox" name="checkBox_shader_validation">
+                        <property name="toolTip">
+                          <string>Validate SPIR-V binary</string>
+                        </property>
+                        <property name="text">
+                          <string>Shader validation</string>
+                        </property>
+                        <property name="checked">
+                          <bool>true</bool>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="1" column="0" colspan="2">
+                      <widget class="QCheckBox" name="checkBox_renderdoc_capture">
+                        <property name="toolTip">
+                          <string>Enable RenderDoc capture</string>
+                        </property>
+                        <property name="text">
+                          <string>RenderDoc capture</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="1" column="2" colspan="2">
+                      <widget class="QCheckBox" name="checkBox_cmd_dump">
+                        <property name="toolTip">
+                          <string>Dump command buffers</string>
+                        </property>
+                        <property name="text">
+                          <string>Command buffer dump</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="0">
+                      <widget class="QLabel" name="label_shader_log_direction">
+                        <property name="text">
+                          <string>Shader logging:</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="1">
+                      <widget class="QComboBox" name="comboBox_shader_log_direction">
+                        <property name="toolTip">
+                          <string>Dump shaders to file or console window. If enabled may decrease emulator performance</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="2">
+                      <widget class="QLabel" name="label_shader_log_folder">
+                        <property name="text">
+                          <string>Shader log folder:</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="2" column="3">
+                      <widget class="MandatoryLineEdit" name="lineEdit_shader_log_folder">
+                        <property name="toolTip">
+                          <string>Specify directory to dump shaders</string>
+                        </property>
+                        <property name="clearButtonEnabled">
+                          <bool>true</bool>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="3" column="0">
+                      <widget class="QLabel" name="label_printf_direction">
+                        <property name="text">
+                          <string>Printf output:</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="3" column="1">
+                      <widget class="QComboBox" name="comboBox_printf_direction">
+                        <property name="toolTip">
+                          <string>Print logs to file or console window. If enabled may decrease emulator performance</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="3" column="2">
+                      <widget class="QLabel" name="label_printf_file">
+                        <property name="text">
+                          <string>Printf output file:</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="3" column="3">
+                      <widget class="MandatoryLineEdit" name="lineEdit_printf_file">
+                        <property name="toolTip">
+                          <string>Specify file to dump logs</string>
+                        </property>
+                        <property name="clearButtonEnabled">
+                          <bool>true</bool>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="4" column="0">
+                      <widget class="QCheckBox" name="checkBox_profiler">
+                        <property name="toolTip">
+                          <string>Enable the Tracy profiler. Profiling may decrease emulator performance</string>
+                        </property>
+                        <property name="text">
+                          <string>Tracy profiler</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="4" column="2">
+                      <widget class="QLabel" name="label_cmd_dump_folder">
+                        <property name="text">
+                          <string>Command buffer folder:</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item row="4" column="3">
+                      <widget class="MandatoryLineEdit" name="lineEdit_cmd_dump_folder">
+                        <property name="toolTip">
+                          <string>Specify directory to dump command buffers</string>
+                        </property>
+                        <property name="clearButtonEnabled">
+                          <bool>true</bool>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </widget>
+              </item>
+              <item>
+                <spacer name="debugSpacer">
+                  <property name="orientation">
+                    <enum>Qt::Vertical</enum>
+                  </property>
+                  <property name="sizeHint" stdset="0">
+                    <size>
+                      <width>20</width>
+                      <height>40</height>
+                    </size>
+                  </property>
+                </spacer>
+              </item>
+            </layout>
           </widget>
-         </item>
-         <item row="1" column="0">
-          <widget class="QCheckBox" name="checkBox_renderdoc_capture">
-           <property name="toolTip">
-            <string>Enable RenderDoc capture</string>
-           </property>
-           <property name="text">
-            <string>RenderDoc capture</string>
-           </property>
+          <widget class="QWidget" name="kytyplus_tab">
+            <attribute name="title">
+              <string>KytyPlus</string>
+            </attribute>
+            <layout class="QFormLayout" name="kytyplus_form">
+              <item row="0" column="0">
+                <widget class="QLabel" name="label_upscaler_method">
+                  <property name="text">
+                    <string>Upscaler:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="0" column="1">
+                <widget class="QComboBox" name="comboBox_upscaler_method">
+                  <property name="toolTip">
+                    <string>Spatial upscaler for the final guest-to-swapchain stretch. Off = plain blit. FSR 1.0 works on all Vulkan GPUs and falls back to blit if unsupported.</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="1" column="0">
+                <widget class="QLabel" name="label_upscaler_quality">
+                  <property name="text">
+                    <string>Upscaler quality:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="1" column="1">
+                <widget class="QComboBox" name="comboBox_upscaler_quality">
+                  <property name="toolTip">
+                    <string>Internal render scale preset: Ultra Quality 77%, Quality 67%, Balanced 59%, Performance 50%</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="2" column="0">
+                <widget class="QLabel" name="label_upscaler_sharpness">
+                  <property name="text">
+                    <string>Upscaler sharpness:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="2" column="1">
+                <widget class="QSlider" name="horizontalSlider_upscaler_sharpness">
+                  <property name="toolTip">
+                    <string>RCAS sharpening strength (0.0 = none, 1.0 = maximum)</string>
+                  </property>
+                  <property name="minimum">
+                    <number>0</number>
+                  </property>
+                  <property name="maximum">
+                    <number>100</number>
+                  </property>
+                  <property name="orientation">
+                    <enum>Qt::Horizontal</enum>
+                  </property>
+                </widget>
+              </item>
+              <item row="3" column="0">
+                <widget class="QLabel" name="label_guest_render">
+                  <property name="text">
+                    <string>Guest render (W×H):</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="3" column="1">
+                <widget class="QWidget" name="widget_guest_render" native="true">
+                  <property name="toolTip">
+                    <string>Request engine internal resolution via guest argv. 0×0 = leave at game/engine default. Both fields must be non-zero to take effect.</string>
+                  </property>
+                  <layout class="QHBoxLayout" name="horizontalLayout_guest_render">
+                    <item>
+                      <widget class="QSpinBox" name="spinBox_guest_render_width">
+                        <property name="minimum">
+                          <number>0</number>
+                        </property>
+                        <property name="maximum">
+                          <number>7680</number>
+                        </property>
+                        <property name="specialValueText">
+                          <string>default</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QSpinBox" name="spinBox_guest_render_height">
+                        <property name="minimum">
+                          <number>0</number>
+                        </property>
+                        <property name="maximum">
+                          <number>4320</number>
+                        </property>
+                        <property name="specialValueText">
+                          <string>default</string>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </widget>
+              </item>
+              <item row="4" column="0">
+                <widget class="QLabel" name="label_fsr_output">
+                  <property name="text">
+                    <string>FSR output (W×H):</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="4" column="1">
+                <widget class="QWidget" name="widget_fsr_output" native="true">
+                  <property name="toolTip">
+                    <string>Resolution FSR upscales to before present. 0×0 = match window size. Requires Upscaler = Fsr1.</string>
+                  </property>
+                  <layout class="QHBoxLayout" name="horizontalLayout_fsr_output">
+                    <item>
+                      <widget class="QSpinBox" name="spinBox_fsr_output_width">
+                        <property name="minimum">
+                          <number>0</number>
+                        </property>
+                        <property name="maximum">
+                          <number>7680</number>
+                        </property>
+                        <property name="specialValueText">
+                          <string>window</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QSpinBox" name="spinBox_fsr_output_height">
+                        <property name="minimum">
+                          <number>0</number>
+                        </property>
+                        <property name="maximum">
+                          <number>4320</number>
+                        </property>
+                        <property name="specialValueText">
+                          <string>window</string>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </widget>
+              </item>
+              <item row="5" column="0">
+                <widget class="QLabel" name="label_igpu_optimization">
+                  <property name="text">
+                    <string>iGPU optimization:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="3" column="1">
+                <widget class="QComboBox" name="comboBox_igpu_optimization">
+                  <property name="toolTip">
+                    <string>Auto: detect integrated GPUs and apply FSR + texture LOD bias. Force: treat this GPU as integrated (useful for testing on discrete GPUs). Off: disable iGPU optimizations.</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="6" column="0">
+                <widget class="QLabel" name="label_texture_lod_bias">
+                  <property name="text">
+                    <string>Texture LOD bias:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="6" column="1">
+                <widget class="QSpinBox" name="spinBox_texture_lod_bias">
+                  <property name="toolTip">
+                    <string>Shifts texture sampling toward coarser mip levels to save bandwidth on iGPUs. 0 = no bias, 1 = skip one mip level. Applied per-sampler.</string>
+                  </property>
+                  <property name="minimum">
+                    <number>0</number>
+                  </property>
+                  <property name="maximum">
+                    <number>4</number>
+                  </property>
+                </widget>
+              </item>
+              <item row="5" column="0">
+                <widget class="QLabel" name="label_present_mode">
+                  <property name="text">
+                    <string>Present mode:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="5" column="1">
+                <widget class="QComboBox" name="comboBox_present_mode">
+                  <property name="toolTip">
+                    <string>Vulkan swapchain present mode. FIFO = VSync (default, always available). Mailbox = tear-free low latency (if supported). Immediate = no VSync, lowest latency (may tear).</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="6" column="0">
+                <widget class="QLabel" name="label_present_filter">
+                  <property name="text">
+                    <string>Present filter:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="6" column="1">
+                <widget class="QComboBox" name="comboBox_present_filter">
+                  <property name="toolTip">
+                    <string>Filter used when stretching the guest frame to the window. Linear = smooth (default). Nearest = sharp pixels. Cubic = highest quality (if the GPU supports it, otherwise falls back to Linear).</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="7" column="0">
+                <widget class="QLabel" name="label_aspect_ratio">
+                  <property name="text">
+                    <string>Aspect ratio:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="7" column="1">
+                <widget class="QComboBox" name="comboBox_aspect_ratio">
+                  <property name="toolTip">
+                    <string>How the guest frame fits the window. Stretch = fill (default). Fit 16:9 / Fit 4:3 = letterbox/pillarbox bars. Integer = nearest-multiple scaling (sharpest pixels, largest that fits).</string>
+                  </property>
+                </widget>
+              </item>
+            </layout>
           </widget>
-         </item>
-         <item row="2" column="0">
-          <widget class="QCheckBox" name="checkBox_fullscreen">
-           <property name="toolTip">
-            <string>Run in borderless desktop fullscreen</string>
-           </property>
-           <property name="text">
-            <string>Fullscreen</string>
-           </property>
-          </widget>
-         </item>
-         <item row="2" column="1">
-          <widget class="QCheckBox" name="checkBox_red_zone_protection">
-           <property name="toolTip">
-            <string>Helps prevent crashes in some games on Windows</string>
-           </property>
-           <property name="text">
-            <string>Windows SysV red zone crash protection (Experimental)</string>
-           </property>
-          </widget>
-         </item>
+        </widget>
+      </item>
+      <item>
+        <layout class="QHBoxLayout" name="buttonLayout">
+          <item>
+            <widget class="QPushButton" name="clear_button">
+              <property name="minimumSize">
+                <size>
+                  <width>80</width>
+                  <height>25</height>
+                </size>
+              </property>
+              <property name="text">
+                <string>Reset</string>
+              </property>
+              <property name="toolTip">
+                <string>Restore default settings</string>
+              </property>
+            </widget>
+          </item>
+          <item>
+            <widget class="QPushButton" name="settings_button">
+              <property name="minimumSize">
+                <size>
+                  <width>80</width>
+                  <height>25</height>
+                </size>
+              </property>
+              <property name="text">
+                <string>Game Configs</string>
+              </property>
+              <property name="toolTip">
+                <string>Import or export game configs</string>
+              </property>
+            </widget>
+          </item>
+          <item>
+            <spacer name="buttonSpacer">
+              <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+                <size>
+                  <width>40</width>
+                  <height>20</height>
+                </size>
+              </property>
+            </spacer>
+          </item>
+          <item>
+            <widget class="QPushButton" name="cancel_button">
+              <property name="minimumSize">
+                <size>
+                  <width>80</width>
+                  <height>25</height>
+                </size>
+              </property>
+              <property name="text">
+                <string>Cancel</string>
+              </property>
+            </widget>
+          </item>
+          <item>
+            <widget class="QPushButton" name="ok_button">
+              <property name="minimumSize">
+                <size>
+                  <width>80</width>
+                  <height>25</height>
+                </size>
+              </property>
+              <property name="text">
+                <string>Save</string>
+              </property>
+              <property name="default">
+                <bool>true</bool>
+              </property>
+            </widget>
+          </item>
         </layout>
-       </widget>
       </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_16">
-        <property name="text">
-         <string>Screen resolution:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="QComboBox" name="comboBox_screen_resolution">
-        <property name="toolTip">
-         <string>Window resolution</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QLabel" name="label_vblank_frequency">
-        <property name="text">
-         <string>Vblank frequency:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="QSpinBox" name="spinBox_vblank_frequency">
-        <property name="toolTip">
-         <string>Virtual display refresh rate used for frame pacing</string>
-        </property>
-        <property name="minimum">
-         <number>30</number>
-        </property>
-        <property name="maximum">
-         <number>360</number>
-        </property>
-        <property name="value">
-         <number>60</number>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="label_console_language">
-        <property name="text">
-         <string>Console language:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="1">
-       <widget class="QComboBox" name="comboBox_console_language">
-        <property name="toolTip">
-         <string>Language</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="0">
-       <widget class="QLabel" name="label_20">
-        <property name="text">
-         <string>Shader optimization type:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="1">
-       <widget class="QComboBox" name="comboBox_shader_optimization_type">
-        <property name="toolTip">
-         <string>Optimize shaders for code size or performance</string>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="0">
-       <widget class="QLabel" name="label_21">
-        <property name="text">
-         <string>Shader log direction:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="1">
-       <widget class="QComboBox" name="comboBox_shader_log_direction">
-        <property name="toolTip">
-         <string>Dump shaders to file or console window. If enabled may decrease emulator performance</string>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="0">
-       <widget class="QLabel" name="label_22">
-        <property name="text">
-         <string>Shader log folder:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="1">
-       <widget class="MandatoryLineEdit" name="lineEdit_shader_log_folder">
-        <property name="toolTip">
-         <string>Specify directory to dump shaders</string>
-        </property>
-        <property name="clearButtonEnabled">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item row="7" column="0">
-       <widget class="QLabel" name="label_24">
-        <property name="text">
-         <string>Command buffer dump folder:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="7" column="1">
-       <widget class="MandatoryLineEdit" name="lineEdit_cmd_dump_folder">
-        <property name="toolTip">
-         <string>Specify directory to dump command buffers</string>
-        </property>
-        <property name="clearButtonEnabled">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item row="8" column="0">
-       <widget class="QLabel" name="label_25">
-        <property name="text">
-         <string>Printf direction:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="8" column="1">
-       <widget class="QComboBox" name="comboBox_printf_direction">
-        <property name="toolTip">
-         <string>Print logs to file or console window. If enabled may decrease emulator performance</string>
-        </property>
-       </widget>
-      </item>
-      <item row="9" column="0">
-       <widget class="QLabel" name="label_26">
-        <property name="text">
-         <string>Printf output file:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="9" column="1">
-       <widget class="MandatoryLineEdit" name="lineEdit_printf_file">
-        <property name="toolTip">
-         <string>Specify file to dump logs</string>
-        </property>
-        <property name="clearButtonEnabled">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item row="10" column="0">
-       <widget class="QLabel" name="label_27">
-        <property name="text">
-         <string>Profiler direction:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="10" column="1">
-       <widget class="QComboBox" name="comboBox_profiler_direction">
-        <property name="toolTip">
-         <string>Enable or disable profiler. If enabled may decrease emulator performance</string>
-        </property>
-       </widget>
-      </item>
-      <item row="11" column="0">
-       <widget class="QLabel" name="label_upscaler_method">
-        <property name="text">
-         <string>Upscaler:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="11" column="1">
-       <widget class="QComboBox" name="comboBox_upscaler_method">
-        <property name="toolTip">
-         <string>Spatial upscaler for the final guest-to-swapchain stretch. Off = plain blit. FSR 1.0 works on all Vulkan GPUs and falls back to blit if unsupported.</string>
-        </property>
-       </widget>
-      </item>
-      <item row="12" column="0">
-       <widget class="QLabel" name="label_upscaler_quality">
-        <property name="text">
-         <string>Upscaler quality:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="12" column="1">
-       <widget class="QComboBox" name="comboBox_upscaler_quality">
-        <property name="toolTip">
-         <string>Internal render scale preset: Ultra Quality 77%, Quality 67%, Balanced 59%, Performance 50%</string>
-        </property>
-       </widget>
-      </item>
-      <item row="13" column="0">
-       <widget class="QLabel" name="label_upscaler_sharpness">
-        <property name="text">
-         <string>Upscaler sharpness:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="13" column="1">
-       <widget class="QSlider" name="horizontalSlider_upscaler_sharpness">
-        <property name="toolTip">
-         <string>RCAS sharpening strength (0.0 = none, 1.0 = maximum)</string>
-        </property>
-        <property name="minimum">
-         <number>0</number>
-        </property>
-        <property name="maximum">
-         <number>100</number>
-        </property>
-        <property name="orientation">
-         <enum>Qt::Horizontal</enum>
-        </property>
-       </widget>
-      </item>
-      <item row="14" column="0">
-       <widget class="QLabel" name="label_guest_render">
-        <property name="text">
-         <string>Guest render (W×H):</string>
-        </property>
-       </widget>
-      </item>
-      <item row="14" column="1">
-       <widget class="QWidget" name="widget_guest_render" native="true">
-        <property name="toolTip">
-         <string>Request engine internal resolution via guest argv. 0×0 = leave at game/engine default. Both fields must be non-zero to take effect.</string>
-        </property>
-        <layout class="QHBoxLayout" name="horizontalLayout_guest_render">
-         <item>
-          <widget class="QSpinBox" name="spinBox_guest_render_width">
-           <property name="minimum">
-            <number>0</number>
-           </property>
-           <property name="maximum">
-            <number>7680</number>
-           </property>
-           <property name="specialValueText">
-            <string>default</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QSpinBox" name="spinBox_guest_render_height">
-           <property name="minimum">
-            <number>0</number>
-           </property>
-           <property name="maximum">
-            <number>4320</number>
-           </property>
-           <property name="specialValueText">
-            <string>default</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </widget>
-      </item>
-      <item row="15" column="0">
-       <widget class="QLabel" name="label_fsr_output">
-        <property name="text">
-         <string>FSR output (W×H):</string>
-        </property>
-       </widget>
-      </item>
-      <item row="15" column="1">
-       <widget class="QWidget" name="widget_fsr_output" native="true">
-        <property name="toolTip">
-         <string>Resolution FSR upscales to before present. 0×0 = match window size. Requires Upscaler = Fsr1.</string>
-        </property>
-        <layout class="QHBoxLayout" name="horizontalLayout_fsr_output">
-         <item>
-          <widget class="QSpinBox" name="spinBox_fsr_output_width">
-           <property name="minimum">
-            <number>0</number>
-           </property>
-           <property name="maximum">
-            <number>7680</number>
-           </property>
-           <property name="specialValueText">
-            <string>window</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QSpinBox" name="spinBox_fsr_output_height">
-           <property name="minimum">
-            <number>0</number>
-           </property>
-           <property name="maximum">
-            <number>4320</number>
-           </property>
-           <property name="specialValueText">
-            <string>window</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </widget>
-      </item>
-      <item row="16" column="0">
-       <widget class="QLabel" name="label_igpu_optimization">
-        <property name="text">
-         <string>iGPU optimization:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="14" column="1">
-       <widget class="QComboBox" name="comboBox_igpu_optimization">
-        <property name="toolTip">
-         <string>Auto: detect integrated GPUs and apply FSR + texture LOD bias. Force: treat this GPU as integrated (useful for testing on discrete GPUs). Off: disable iGPU optimizations.</string>
-        </property>
-       </widget>
-      </item>
-      <item row="17" column="0">
-       <widget class="QLabel" name="label_texture_lod_bias">
-        <property name="text">
-         <string>Texture LOD bias:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="17" column="1">
-       <widget class="QSpinBox" name="spinBox_texture_lod_bias">
-        <property name="toolTip">
-         <string>Shifts texture sampling toward coarser mip levels to save bandwidth on iGPUs. 0 = no bias, 1 = skip one mip level. Applied per-sampler.</string>
-        </property>
-        <property name="minimum">
-         <number>0</number>
-        </property>
-        <property name="maximum">
-         <number>4</number>
-        </property>
-       </widget>
-      </item>
-      <item row="16" column="0">
-       <widget class="QLabel" name="label_present_mode">
-        <property name="text">
-         <string>Present mode:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="16" column="1">
-       <widget class="QComboBox" name="comboBox_present_mode">
-        <property name="toolTip">
-         <string>Vulkan swapchain present mode. FIFO = VSync (default, always available). Mailbox = tear-free low latency (if supported). Immediate = no VSync, lowest latency (may tear).</string>
-        </property>
-       </widget>
-      </item>
-      <item row="17" column="0">
-       <widget class="QLabel" name="label_present_filter">
-        <property name="text">
-         <string>Present filter:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="17" column="1">
-       <widget class="QComboBox" name="comboBox_present_filter">
-        <property name="toolTip">
-         <string>Filter used when stretching the guest frame to the window. Linear = smooth (default). Nearest = sharp pixels. Cubic = highest quality (if the GPU supports it, otherwise falls back to Linear).</string>
-        </property>
-       </widget>
-      </item>
-      <item row="18" column="0">
-       <widget class="QLabel" name="label_aspect_ratio">
-        <property name="text">
-         <string>Aspect ratio:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="18" column="1">
-       <widget class="QComboBox" name="comboBox_aspect_ratio">
-        <property name="toolTip">
-         <string>How the guest frame fits the window. Stretch = fill (default). Fit 16:9 / Fit 4:3 = letterbox/pillarbox bars. Integer = nearest-multiple scaling (sharpest pixels, largest that fits).</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-       </item>
-      </layout>
-     </widget>
-    </widget>
-   </item>
-   <item row="0" column="1">
-    <layout class="QVBoxLayout" name="verticalLayout">
-     <item>
-      <widget class="QPushButton" name="ok_button">
-       <property name="minimumSize">
-        <size>
-         <width>80</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="text">
-        <string>Save</string>
-       </property>
-       <property name="default">
-        <bool>true</bool>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="cancel_button">
-       <property name="minimumSize">
-        <size>
-         <width>80</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="text">
-        <string>Cancel</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="Line" name="line">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="clear_button">
-       <property name="minimumSize">
-        <size>
-         <width>80</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="text">
-        <string>Clear</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="verticalSpacer">
-       <property name="orientation">
-        <enum>Qt::Vertical</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>20</width>
-         <height>40</height>
-        </size>
-       </property>
-      </spacer>
-     </item>
     </layout>
-   </item>
-  </layout>
- </widget>
- <customwidgets>
-  <customwidget>
-   <class>MandatoryLineEdit</class>
-   <extends>QLineEdit</extends>
-   <header>mandatoryLineEdit.h</header>
-  </customwidget>
- </customwidgets>
- <resources/>
- <connections>
-  <connection>
-   <sender>cancel_button</sender>
-   <signal>clicked()</signal>
-   <receiver>ConfigurationEditDialog</receiver>
-   <slot>reject()</slot>
-   <hints>
-    <hint type="sourcelabel">
-     <x>496</x>
-     <y>65</y>
-    </hint>
-    <hint type="destinationlabel">
-     <x>280</x>
-     <y>180</y>
-    </hint>
-   </hints>
-  </connection>
- </connections>
+  </widget>
+  <customwidgets>
+    <customwidget>
+      <class>MandatoryLineEdit</class>
+      <extends>QLineEdit</extends>
+      <header>mandatoryLineEdit.h</header>
+    </customwidget>
+  </customwidgets>
+  <resources />
 </ui>

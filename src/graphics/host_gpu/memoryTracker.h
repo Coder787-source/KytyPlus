@@ -40,7 +40,6 @@ public:
 	void InvalidateRegion(uint64_t vaddr, uint64_t size, Flush&& on_flush) noexcept {
 		static_assert(std::is_invocable_v<Flush&>);
 		CheckNotInUploadCallback();
-		ValidateRange(vaddr, size);
 
 		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 			const bool should_flush = [&] {
@@ -69,43 +68,18 @@ public:
 	void ValidateGpuDirtyOwnership(const RangeSet&, uint64_t, uint64_t, const char*) {}
 #endif
 
-	template <bool clear, typename Preflight, typename Func>
-	void ForEachDownloadRange(uint64_t vaddr, uint64_t size, Preflight&& preflight, Func&& func) {
-		static_assert(std::is_nothrow_invocable_v<Preflight&, uint64_t, uint64_t>);
-		static_assert(std::is_nothrow_invocable_v<Func&, uint64_t, uint64_t>);
-		CheckNotInUploadCallback();
-		std::vector<RegionManager*> managers;
-		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t, uint64_t) {
-			managers.push_back(manager);
-		});
-		std::vector<std::unique_lock<TrackingSpinLock>> locks;
-		locks.reserve(managers.size());
-		for (auto* manager: managers) {
-			locks.emplace_back(manager->lock);
-		}
-		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-			const auto address = manager->GetCpuAddr() + offset;
-			manager->template ForEachModifiedRange<DirtySource::Gpu, false>(address, bytes,
-			                                                                preflight);
-		});
-		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-			manager->template ForEachModifiedRange<DirtySource::Gpu, false>(
-			    manager->GetCpuAddr() + offset, bytes, func);
-		});
-		if constexpr (clear) {
-			Iterate<false>(vaddr, size,
-			               [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-				               const auto address = manager->GetCpuAddr() + offset;
-				               manager->template ForEachModifiedRange<DirtySource::Gpu, true>(
-				                   address, bytes, [](uint64_t, uint64_t) noexcept {});
-			               });
-		}
-	}
-
 	template <bool clear, typename Func>
 	void ForEachDownloadRange(uint64_t vaddr, uint64_t size, Func&& func) {
-		ForEachDownloadRange<clear>(
-		    vaddr, size, [](uint64_t, uint64_t) noexcept {}, std::forward<Func>(func));
+		static_assert(std::is_nothrow_invocable_v<Func&, uint64_t, uint64_t>);
+		CheckNotInUploadCallback();
+		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+			std::scoped_lock lock(manager->lock);
+			const auto       address = manager->GetCpuAddr() + offset;
+			manager->template ForEachModifiedRange<DirtySource::Gpu, false>(address, bytes, func);
+			if constexpr (clear) {
+				manager->template ChangeState<DirtySource::Gpu, false>(address, bytes);
+			}
+		});
 	}
 
 	template <typename RangeFunc, typename UploadFunc>
@@ -114,9 +88,8 @@ public:
 		static_assert(std::is_nothrow_invocable_v<RangeFunc&, uint64_t, uint64_t>);
 		static_assert(std::is_nothrow_invocable_v<UploadFunc&>);
 		CheckNotInUploadCallback();
-		Iterate<true>(vaddr, size, [](RegionManager*, uint64_t, uint64_t) {});
 		const auto* previous_upload_owner = std::exchange(s_upload_owner, this);
-		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+		Iterate<true>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 			manager->lock.lock();
 			manager->ForEachModifiedRange<DirtySource::Cpu, true>(manager->GetCpuAddr() + offset,
 			                                                      bytes, range_func);
@@ -177,7 +150,6 @@ private:
 	}
 
 	static void    ValidateRange(uint64_t vaddr, uint64_t size);
-	void           UntrackMemoryImpl(uint64_t vaddr, uint64_t size);
 	RegionManager* GetOrCreateRegion(uint64_t index);
 
 	std::unique_ptr<std::atomic<RegionManager*>[]> m_regions;

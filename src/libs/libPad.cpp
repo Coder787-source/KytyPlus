@@ -1,7 +1,6 @@
 #include "common/abi.h"
 #include "common/logging/log.h"
 #include "libs/controller.h"
-#include "libs/dualsense.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/padData.h"
@@ -20,67 +19,7 @@ static int KYTY_SYSV_ABI PadSetVibrationMode(int handle, int mode) {
 	     "\t mode        = %d\n",
 	     handle, mode);
 
-	return 0;
-}
-
-struct PadTriggerEffectStateInformation {
-	int32_t state[2];
-};
-
-static int KYTY_SYSV_ABI PadGetTriggerEffectState(int                               handle,
-                                                  PadTriggerEffectStateInformation* info) {
-	PRINT_NAME();
-
-	LOGF("\t handle = %d\n", handle);
-
-	if (info == nullptr) {
-		return -2137653243; /* 0x80960005 */
-	}
-
-	info->state[0] = 0;
-	info->state[1] = 0;
-
-	return 0;
-}
-
-static int KYTY_SYSV_ABI PadSetTriggerEffect(int handle, const void* param) {
-	PRINT_NAME();
-
-	LOGF("\t handle = %d\n"
-	     "\t param  = 0x%016" PRIx64 "\n",
-	     handle, reinterpret_cast<uint64_t>(param));
-
-	if (handle != 1) {
-		return -2137915389; /* 0x80920003 */
-	}
-	if (param == nullptr) {
-		return -2137915391; /* 0x80920001 */
-	}
-
-	// KytyPlus: forward adaptive-trigger effect to the DualSense HID driver.
-	// HONEST: spec-accurate interpretation of the PS5 ScePadTriggerEffect param
-	// forwarded to the driver. UNVALIDATED on hardware — the exact param layout
-	// mapping has not been tested against a real DualSense + PS5 game combination.
-	// Cast the opaque handle back to the concrete DualSense driver type.
-	auto* ds = static_cast<Libs::DualSense::DualSenseDriver*>(Controller::DualSenseDriverInstance());
-	if (ds != nullptr) {
-		// The PS5 param encodes two trigger effect blocks (L2/R2). We forward a
-		// best-effort simplified form: mode + strength derived from the first byte
-		// of each block. Full per-stage param decoding is future work.
-		const auto* bytes = static_cast<const uint8_t*>(param);
-		Libs::DualSense::TriggerEffectParam left {};
-		Libs::DualSense::TriggerEffectParam right {};
-		left.strength  = (bytes[0] >> 4) & 0x07;
-		right.strength = (bytes[1] >> 4) & 0x07;
-		left.mode  = (bytes[0] != 0) ? Libs::DualSense::TriggerEffect::Feedback
-	                                : Libs::DualSense::TriggerEffect::Off;
-		right.mode = (bytes[1] != 0) ? Libs::DualSense::TriggerEffect::Feedback
-	                                 : Libs::DualSense::TriggerEffect::Off;
-		ds->SetTriggerEffect(true, left);
-		ds->SetTriggerEffect(false, right);
-	}
-
-	return OK;
+	return Controller::PadCheckHandle(handle);
 }
 
 static int KYTY_SYSV_ABI PadSetVibrationTriggerEffectWeakWhileEmbeddedMicInUse(bool enabled) {
@@ -127,11 +66,10 @@ static int KYTY_SYSV_ABI
 PadDeviceClassGetExtendedInformation(int handle, PadDeviceClassExtendedInformation* info) {
 	PRINT_NAME();
 
-	constexpr int pad_error_invalid_handle = -2137915389; /* 0x80920003 */
-	constexpr int pad_error_invalid_arg    = -2137915391; /* 0x80920001 */
+	constexpr int pad_error_invalid_arg = -2137915391; /* 0x80920001 */
 
-	if (handle != 1) {
-		return pad_error_invalid_handle;
+	if (const auto error = Controller::PadCheckHandle(handle); error != OK) {
+		return error;
 	}
 	if (info == nullptr) {
 		return pad_error_invalid_arg;
@@ -146,16 +84,15 @@ static int KYTY_SYSV_ABI PadDeviceClassParseData(int handle, const Controller::P
                                                  PadDeviceClassData* class_data) {
 	PRINT_NAME();
 
-	constexpr int pad_error_invalid_handle = -2137915389; /* 0x80920003 */
-	constexpr int pad_error_invalid_arg    = -2137915391; /* 0x80920001 */
+	constexpr int pad_error_invalid_arg = -2137915391; /* 0x80920001 */
 
 	LOGF("\t handle     = %d\n"
 	     "\t data       = 0x%016" PRIx64 "\n"
 	     "\t class_data = 0x%016" PRIx64 "\n",
 	     handle, reinterpret_cast<uint64_t>(data), reinterpret_cast<uint64_t>(class_data));
 
-	if (handle != 1) {
-		return pad_error_invalid_handle;
+	if (const auto error = Controller::PadCheckHandle(handle); error != OK) {
+		return error;
 	}
 	if (data == nullptr || class_data == nullptr) {
 		return pad_error_invalid_arg;
@@ -183,15 +120,31 @@ static int KYTY_SYSV_ABI PadSetTiltCorrectionState(int handle, bool enabled) {
 	     "\t enabled = %d\n",
 	     handle, enabled ? 1 : 0);
 
-	return 0;
+	return Controller::PadCheckHandle(handle);
 }
 
-static int KYTY_SYSV_ABI PadClose(int handle) {
+// PPSA02385
+static int KYTY_SYSV_ABI PadOpenExtStub(int user_id, int type, int index, const void* param) {
 	PRINT_NAME();
 
-	LOGF("\t handle = %d\n", handle);
+	LOGF("\t user_id = %d\n"
+	     "\t type    = %d\n"
+	     "\t index   = %d\n"
+	     "\t param   = 0x%016" PRIx64 "\n",
+	     user_id, type, index, reinterpret_cast<uint64_t>(param));
 
 	return OK;
+}
+
+// PPSA02385
+static int KYTY_SYSV_ABI PadGetExtControllerInformationStub(int handle, void* info) {
+	PRINT_NAME();
+
+	LOGF("\t handle = %d\n"
+	     "\t info   = 0x%016" PRIx64 "\n",
+	     handle, reinterpret_cast<uint64_t>(info));
+
+	return Controller::PadCheckHandle(handle);
 }
 
 static int KYTY_SYSV_ABI PadUnknownN3kSX62fgNo(uint64_t arg0, uint64_t arg1, uint64_t arg2,
@@ -214,6 +167,7 @@ LIB_DEFINE(InitPad_1) {
 
 	LIB_FUNC("hv1luiJrqQM", Controller::PadInit);
 	LIB_FUNC("xk0AcarP3V4", Controller::PadOpen);
+	LIB_FUNC("WFIiSfXGUq8", PadOpenExtStub);
 	LIB_FUNC("u1GRHp+oWoY", Controller::PadGetHandle);
 	LIB_FUNC("AcslpN1jHR8", PadDeviceClassGetExtendedInformation);
 	LIB_FUNC("IHPqcbc0zCA", PadDeviceClassParseData);
@@ -222,16 +176,18 @@ LIB_DEFINE(InitPad_1) {
 	LIB_FUNC("rIZnR6eSpvk", Controller::PadResetOrientation);
 	LIB_FUNC("vDLMoJLde8I", PadSetTiltCorrectionState);
 	LIB_FUNC("gjP9-KQzoUk", Controller::PadGetControllerInformation);
-	LIB_FUNC("2JgFB2n9oUM", PadSetTriggerEffect);
+	LIB_FUNC("fCWdlnmB1Ks", Controller::PadIsRemoteController);
+	LIB_FUNC("hGbf2QTBmqc", PadGetExtControllerInformationStub);
+	LIB_FUNC("2JgFB2n9oUM", Controller::PadSetTriggerEffect);
 	LIB_FUNC("YndgXqQVV7c", Controller::PadReadState);
 	LIB_FUNC("q1cHNfGycLI", Controller::PadRead);
 	LIB_FUNC("yFVnOdGxvZY", Controller::PadSetVibration);
 	LIB_FUNC("W2G-yoyMF5U", PadSetVibrationMode);
 	LIB_FUNC("Yq0zOH7YNOM", PadSetVibrationTriggerEffectWeakWhileEmbeddedMicInUse);
-	LIB_FUNC("znaWI0gpuo8", PadGetTriggerEffectState);
+	LIB_FUNC("znaWI0gpuo8", Controller::PadGetTriggerEffectState);
 	LIB_FUNC("DscD1i9HX1w", Controller::PadResetLightBar);
 	LIB_FUNC("RR4novUEENY", Controller::PadSetLightBar);
-	LIB_FUNC("6ncge5+l5Qs", PadClose);
+	LIB_FUNC("6ncge5+l5Qs", Controller::PadClose);
 	LIB_FUNC("n3kSX62fgNo", PadUnknownN3kSX62fgNo);
 }
 

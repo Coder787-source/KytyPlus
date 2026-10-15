@@ -1,19 +1,19 @@
 #include "graphics/presentation/window/hostInput.h"
 
-#include "SDL_gamecontroller.h"
-#include "SDL_keyboard.h"
-#include "SDL_keycode.h"
-#include "SDL_mouse.h"
+#include <SDL3/SDL.h>
+
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
+#include "common/logging/log.h"
 #include "libs/controller.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <string_view>
-#include <utility>
 
 namespace Libs::Graphics {
 
@@ -24,6 +24,9 @@ struct ControlInfo {
 	uint32_t         button   = 0;
 	Controller::Axis axis     = Controller::Axis::AxisMax;
 	bool             positive = false;
+	float            touch_x  = 0.0f;
+
+	Controller::Setting setting {};
 };
 
 static constexpr std::array CONTROL_INFO = {
@@ -42,7 +45,10 @@ static constexpr std::array CONTROL_INFO = {
     ControlInfo {"Circle", Controller::PAD_BUTTON_CIRCLE},
     ControlInfo {"Cross", Controller::PAD_BUTTON_CROSS},
     ControlInfo {"Square", Controller::PAD_BUTTON_SQUARE},
-    ControlInfo {"TouchPad", Controller::PAD_BUTTON_TOUCH_PAD},
+    ControlInfo {"TouchPad", Controller::PAD_BUTTON_TOUCH_PAD, Controller::Axis::AxisMax, false,
+                 0.25f},
+    ControlInfo {"TouchPadRight", Controller::PAD_BUTTON_TOUCH_PAD, Controller::Axis::AxisMax,
+                 false, 0.75f},
     ControlInfo {"LeftStickLeft", 0, Controller::Axis::LeftX, false},
     ControlInfo {"LeftStickRight", 0, Controller::Axis::LeftX, true},
     ControlInfo {"LeftStickUp", 0, Controller::Axis::LeftY, false},
@@ -51,26 +57,38 @@ static constexpr std::array CONTROL_INFO = {
     ControlInfo {"RightStickRight", 0, Controller::Axis::RightX, true},
     ControlInfo {"RightStickUp", 0, Controller::Axis::RightY, false},
     ControlInfo {"RightStickDown", 0, Controller::Axis::RightY, true},
+    ControlInfo {.name = "SpeakerVolume", .setting = Controller::Setting::SpeakerVolume},
+    ControlInfo {.name = "VibrationIntensity", .setting = Controller::Setting::VibrationIntensity},
+    ControlInfo {.name    = "TriggerEffectIntensity",
+                 .setting = Controller::Setting::TriggerEffectIntensity},
 };
 
 constexpr std::size_t INVALID_CONTROL = CONTROL_INFO.size();
 
 struct Binding {
-	SDL_Keycode key            = SDLK_UNKNOWN;
-	uint8_t     mouse_button   = 0;
-	int         gamepad_button = -1;  // SDL_GameControllerButton or -1
-	std::size_t control        = INVALID_CONTROL;
+	SDL_Keycode key          = SDLK_UNKNOWN;
+	uint8_t     mouse_button = 0;
+	std::size_t control      = INVALID_CONTROL;
 };
+
+constexpr int              MOUSE_POLL_INTERVAL_MS = 33;
+constexpr uint64_t         CURSOR_IDLE_HIDE_MS    = 2000;
+constexpr std::string_view MOUSE_SENSITIVITY      = "MouseSensitivity=";
+
+struct MouseJoystickState {
+	bool     enabled   = false;
+	bool     output    = false;
+	uint64_t next_poll = 0;
+};
+
+MouseJoystickState g_mouse;
+SDL_Window*        g_mouse_window   = nullptr;
+uint64_t           g_cursor_hide_at = 0;
 
 std::size_t ControlFromName(std::string_view name) {
 	const auto info = std::find_if(CONTROL_INFO.begin(), CONTROL_INFO.end(),
 	                               [name](const auto& item) { return item.name == name; });
 	return static_cast<std::size_t>(std::distance(CONTROL_INFO.begin(), info));
-}
-
-const ControlInfo& Info(std::size_t control) {
-	EXIT_IF(control >= CONTROL_INFO.size());
-	return CONTROL_INFO[control];
 }
 
 SDL_Keycode NormalizeKey(SDL_Keycode key) {
@@ -97,50 +115,47 @@ uint8_t MouseButtonFromName(std::string_view name) {
 	return button != buttons.end() ? button->second : 0;
 }
 
-int GamepadButtonFromName(std::string_view name) {
-	if (!name.starts_with("Pad:")) return -1;
-	return static_cast<int>(
-	    SDL_GameControllerGetButtonFromString(std::string(name.substr(4)).c_str()));
-}
-
 bool Conflicts(const Binding& first, const Binding& second) {
 	return first.control == second.control ||
 	       (first.key != SDLK_UNKNOWN && first.key == second.key) ||
-	       (first.mouse_button != 0 && first.mouse_button == second.mouse_button) ||
-	       (first.gamepad_button >= 0 && first.gamepad_button == second.gamepad_button);
+	       (first.mouse_button != 0 && first.mouse_button == second.mouse_button);
 }
 
 class InputMap {
 public:
-	InputMap(): m_custom(!Config::GetKeymap().empty()) {
+	InputMap() {
 		for (const auto& value: Config::GetKeymap()) {
 			const std::string_view entry = value;
-			const auto             split = entry.find('=');
-
-		Binding binding;
-		if (split != std::string_view::npos) {
-			binding.control       = ControlFromName(entry.substr(0, split));
-			const auto host_input = entry.substr(split + 1);
-			binding.mouse_button  = MouseButtonFromName(host_input);
-			if (binding.mouse_button == 0) {
-				binding.gamepad_button = GamepadButtonFromName(host_input);
+			if (entry.starts_with(MOUSE_SENSITIVITY)) {
+				const float sensitivity =
+				    std::strtof(value.c_str() + MOUSE_SENSITIVITY.size(), nullptr);
+				m_mouse_sensitivity =
+				    std::clamp(std::isfinite(sensitivity) ? sensitivity : 1.0f, 0.1f, 5.0f);
+				continue;
 			}
-			if (binding.mouse_button == 0 && binding.gamepad_button < 0) {
-				binding.key = NormalizeKey(SDL_GetKeyFromName(std::string(host_input).c_str()));
-			}
-		}
+			const auto split = entry.find('=');
 
-		const bool reserved =
-		    binding.key == SDLK_ESCAPE || binding.key == SDLK_SPACE || binding.key == SDLK_F1;
-		const bool has_binding = binding.key != SDLK_UNKNOWN || binding.mouse_button != 0 ||
-		                         binding.gamepad_button >= 0;
-		if (binding.control == INVALID_CONTROL || reserved || !has_binding) {
-			EXIT("Invalid input mapping: %s\n", value.c_str());
-		}
-		Add(binding);
+			Binding binding;
+			if (split != std::string_view::npos) {
+				binding.control       = ControlFromName(entry.substr(0, split));
+				const auto host_input = entry.substr(split + 1);
+				binding.mouse_button  = MouseButtonFromName(host_input);
+				if (binding.mouse_button == 0) {
+					binding.key = NormalizeKey(SDL_GetKeyFromName(std::string(host_input).c_str()));
+				}
+			}
+
+			const bool reserved = binding.key == SDLK_ESCAPE || binding.key == SDLK_F1 ||
+			                      binding.key == SDLK_F7 || binding.key == SDLK_F11;
+			if (binding.control == INVALID_CONTROL || reserved ||
+			    (binding.key == SDLK_UNKNOWN && binding.mouse_button == 0)) {
+				EXIT("Invalid input mapping: %s\n", value.c_str());
+			}
+			Add(binding);
 		}
 	}
-	[[nodiscard]] bool Custom() const { return m_custom; }
+	[[nodiscard]] bool  Custom() const { return m_size != 0; }
+	[[nodiscard]] float MouseSensitivity() const { return m_mouse_sensitivity; }
 
 	[[nodiscard]] std::size_t FindKey(int key_code) const {
 		key_code = NormalizeKey(static_cast<SDL_Keycode>(key_code));
@@ -154,13 +169,6 @@ public:
 		const auto binding = std::find_if(
 		    m_bindings.begin(), m_bindings.begin() + m_size,
 		    [mouse_button](const auto& item) { return item.mouse_button == mouse_button; });
-		return binding != m_bindings.begin() + m_size ? binding->control : INVALID_CONTROL;
-	}
-
-	[[nodiscard]] std::size_t FindGamepadButton(int button) const {
-		const auto binding = std::find_if(
-		    m_bindings.begin(), m_bindings.begin() + m_size,
-		    [button](const auto& item) { return item.gamepad_button == button; });
 		return binding != m_bindings.begin() + m_size ? binding->control : INVALID_CONTROL;
 	}
 
@@ -178,8 +186,8 @@ private:
 	}
 
 	std::array<Binding, CONTROL_INFO.size()> m_bindings {};
-	std::size_t                              m_size = 0;
-	bool                                     m_custom;
+	std::size_t                              m_size              = 0;
+	float                                    m_mouse_sensitivity = 1.0f;
 };
 
 const InputMap& GetInputMap() {
@@ -189,14 +197,18 @@ const InputMap& GetInputMap() {
 
 void SetButton(uint32_t button, bool down) {
 	if (button == Controller::PAD_BUTTON_L2) {
-		Controller::ControllerAxis(Controller::HOST_INPUT_CONTROLLER_ID,
-		                           Controller::Axis::TriggerLeft, down ? 255 : 0);
+		Controller::SetAxis(Controller::HOST_INPUT_CONTROLLER_ID, Controller::Axis::TriggerLeft,
+		                    down ? 255 : 0);
 	} else if (button == Controller::PAD_BUTTON_R2) {
-		Controller::ControllerAxis(Controller::HOST_INPUT_CONTROLLER_ID,
-		                           Controller::Axis::TriggerRight, down ? 255 : 0);
+		Controller::SetAxis(Controller::HOST_INPUT_CONTROLLER_ID, Controller::Axis::TriggerRight,
+		                    down ? 255 : 0);
 	} else if (button != 0) {
-		Controller::ControllerButton(Controller::HOST_INPUT_CONTROLLER_ID, button, down);
+		Controller::SetButton(Controller::HOST_INPUT_CONTROLLER_ID, button, down);
 	}
+}
+
+void SetTouchPad(float x, bool down) {
+	Controller::SetTouchPad(Controller::HOST_INPUT_CONTROLLER_ID, 0, down, x, 0.5f);
 }
 
 uint32_t DefaultKeyboardButton(int key_code) {
@@ -205,18 +217,18 @@ uint32_t DefaultKeyboardButton(int key_code) {
 		case SDLK_LEFT: return Controller::PAD_BUTTON_LEFT;
 		case SDLK_DOWN: return Controller::PAD_BUTTON_DOWN;
 		case SDLK_RIGHT: return Controller::PAD_BUTTON_RIGHT;
-		case SDLK_j: return Controller::PAD_BUTTON_CROSS;
-		case SDLK_i: return Controller::PAD_BUTTON_TRIANGLE;
-		case SDLK_k: return Controller::PAD_BUTTON_SQUARE;
-		case SDLK_l: return Controller::PAD_BUTTON_CIRCLE;
-		case SDLK_q: return Controller::PAD_BUTTON_L1;
-		case SDLK_e: return Controller::PAD_BUTTON_R1;
+		case SDLK_J: return Controller::PAD_BUTTON_CROSS;
+		case SDLK_I: return Controller::PAD_BUTTON_TRIANGLE;
+		case SDLK_K: return Controller::PAD_BUTTON_SQUARE;
+		case SDLK_L: return Controller::PAD_BUTTON_CIRCLE;
+		case SDLK_Q: return Controller::PAD_BUTTON_L1;
+		case SDLK_E: return Controller::PAD_BUTTON_R1;
+		case SDLK_Z: return Controller::PAD_BUTTON_L2;
+		case SDLK_C: return Controller::PAD_BUTTON_R2;
 		case SDLK_LSHIFT: return Controller::PAD_BUTTON_L3;
 		case SDLK_LCTRL: return Controller::PAD_BUTTON_R3;
 		case SDLK_RETURN:
 		case SDLK_RETURN2: return Controller::PAD_BUTTON_OPTIONS;
-		case SDLK_BACKSPACE:
-		case SDLK_TAB: return Controller::PAD_BUTTON_TOUCH_PAD;
 		default: return 0;
 	}
 }
@@ -229,8 +241,19 @@ struct StickKeys {
 };
 
 void SetStickAxis(Controller::Axis axis, bool negative, bool positive) {
-	const int value = negative == positive ? 128 : negative ? 0 : 255;
-	Controller::ControllerAxis(Controller::HOST_INPUT_CONTROLLER_ID, axis, value);
+	int value = 128;
+	if (negative && !positive) {
+		value = 0;
+	} else if (positive && !negative) {
+		value = 255;
+	}
+	Controller::SetAxis(Controller::HOST_INPUT_CONTROLLER_ID, axis, value);
+}
+
+void CycleSettingOnPress(Controller::Setting setting, bool down) {
+	if (down) {
+		Controller::CycleSetting(setting);
+	}
 }
 
 void SetControl(std::size_t control, bool down) {
@@ -238,9 +261,17 @@ void SetControl(std::size_t control, bool down) {
 		return;
 	}
 
-	const auto& info = Info(control);
+	const auto& info = CONTROL_INFO[control];
+	if (info.button == Controller::PAD_BUTTON_TOUCH_PAD) {
+		SetTouchPad(info.touch_x, down);
+		return;
+	}
 	if (info.button != 0) {
 		SetButton(info.button, down);
+		return;
+	}
+	if (info.axis == Controller::Axis::AxisMax) {
+		CycleSettingOnPress(info.setting, down);
 		return;
 	}
 
@@ -265,45 +296,130 @@ void DefaultKeyboardInput(int key_code, bool down) {
 	static StickKeys right;
 
 	switch (NormalizeKey(static_cast<SDL_Keycode>(key_code))) {
-		case SDLK_a:
+		case SDLK_BACKSPACE: SetTouchPad(0.25f, down); return;
+		case SDLK_TAB: SetTouchPad(0.75f, down); return;
+		case SDLK_1: CycleSettingOnPress(Controller::Setting::SpeakerVolume, down); return;
+		case SDLK_2: CycleSettingOnPress(Controller::Setting::VibrationIntensity, down); return;
+		case SDLK_3: CycleSettingOnPress(Controller::Setting::TriggerEffectIntensity, down); return;
+		case SDLK_A:
 			left.left = down;
 			SetStickAxis(Controller::Axis::LeftX, left.left, left.right);
 			return;
-		case SDLK_d:
+		case SDLK_D:
 			left.right = down;
 			SetStickAxis(Controller::Axis::LeftX, left.left, left.right);
 			return;
-		case SDLK_w:
+		case SDLK_W:
 			left.up = down;
 			SetStickAxis(Controller::Axis::LeftY, left.up, left.down);
 			return;
-		case SDLK_s:
+		case SDLK_S:
 			left.down = down;
 			SetStickAxis(Controller::Axis::LeftY, left.up, left.down);
 			return;
-		case SDLK_f:
+		case SDLK_F:
 			right.left = down;
 			SetStickAxis(Controller::Axis::RightX, right.left, right.right);
 			return;
-		case SDLK_h:
+		case SDLK_H:
 			right.right = down;
 			SetStickAxis(Controller::Axis::RightX, right.left, right.right);
 			return;
-		case SDLK_t:
+		case SDLK_T:
 			right.up = down;
 			SetStickAxis(Controller::Axis::RightY, right.up, right.down);
 			return;
-		case SDLK_g:
+		case SDLK_G:
 			right.down = down;
 			SetStickAxis(Controller::Axis::RightY, right.up, right.down);
 			return;
 		default: SetButton(DefaultKeyboardButton(key_code), down); return;
 	}
 }
+
+void MouseToJoystick(float delta_x, float delta_y) {
+	const double distance = std::hypot(delta_x, delta_y);
+	const double scale =
+	    std::clamp(distance * GetInputMap().MouseSensitivity() + 16.0, 64.0, 128.0) / distance;
+	const auto map_axis = [scale](float delta) {
+		return std::clamp(128 + static_cast<int>(std::lround(delta * scale)), 0, 255);
+	};
+	Controller::SetRightStick(Controller::HOST_INPUT_CONTROLLER_ID, map_axis(delta_x),
+	                          map_axis(delta_y));
+}
+
+void CenterMouseStick() {
+	if (!g_mouse.output) {
+		return;
+	}
+	Controller::SetRightStick(Controller::HOST_INPUT_CONTROLLER_ID, 128, 128);
+	g_mouse.output = false;
+}
+
+bool SetRelativeMouseMode(bool enabled) {
+	if (SDL_SetWindowRelativeMouseMode(g_mouse_window, enabled)) {
+		return true;
+	}
+	LOGF("Mouse-to-joystick relative mode failed: %s\n", SDL_GetError());
+	return false;
+}
+
+int PollMouse(uint64_t now_ms) {
+	if (now_ms < g_mouse.next_poll) {
+		return static_cast<int>(g_mouse.next_poll - now_ms);
+	}
+	g_mouse.next_poll = now_ms + MOUSE_POLL_INTERVAL_MS;
+
+	float delta_x = 0;
+	float delta_y = 0;
+	SDL_GetRelativeMouseState(&delta_x, &delta_y);
+	if (delta_x == 0 && delta_y == 0) {
+		CenterMouseStick();
+	} else {
+		MouseToJoystick(delta_x, delta_y);
+		g_mouse.output = true;
+	}
+	return MOUSE_POLL_INTERVAL_MS;
+}
+
+bool IsCursorActivity(const SDL_Event& event) {
+	SDL_MouseID which;
+	switch (event.type) {
+		case SDL_EVENT_MOUSE_MOTION:
+			if (event.motion.xrel == 0.0f && event.motion.yrel == 0.0f) {
+				return false;
+			}
+			which = event.motion.which;
+			break;
+		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+		case SDL_EVENT_MOUSE_BUTTON_UP: which = event.button.which; break;
+		case SDL_EVENT_MOUSE_WHEEL: which = event.wheel.which; break;
+		default: return false;
+	}
+	return which != SDL_TOUCH_MOUSEID && which != SDL_PEN_MOUSEID;
+}
+
 } // namespace
 
-void HostInputInit() {
+void HostInputInit(SDL_Window* window) {
 	GetInputMap();
+	g_mouse_window = window;
+	if (Config::HideCursorEnabled()) {
+		g_cursor_hide_at = SDL_GetTicks() + CURSOR_IDLE_HIDE_MS;
+	}
+}
+
+void HostInputShutdown() {
+	if (g_mouse.enabled) {
+		SetRelativeMouseMode(false);
+		CenterMouseStick();
+		g_mouse = {};
+	}
+	g_mouse_window   = nullptr;
+	g_cursor_hide_at = 0;
+	if (Config::HideCursorEnabled()) {
+		SDL_ShowCursor();
+	}
 }
 
 void HostInputKey(int key_code, bool down) {
@@ -322,11 +438,62 @@ void HostInputMouseButton(uint8_t mouse_button, bool down) {
 	}
 }
 
-void HostInputGamepadButton(int gamepad_button, bool down) {
-	const auto& map = GetInputMap();
-	if (map.Custom() && gamepad_button >= 0) {
-		SetControl(map.FindGamepadButton(gamepad_button), down);
+void HostInputToggleMouseToJoystick() {
+	if (g_mouse.enabled) {
+		SetRelativeMouseMode(false);
+		CenterMouseStick();
+		g_mouse = {};
+		LOGF("Mouse to right stick: disabled\n");
+		return;
 	}
+
+	if (!SetRelativeMouseMode(true)) {
+		return;
+	}
+	g_mouse.enabled = true;
+	LOGF("Mouse to right stick: enabled (F7 to release)\n");
+}
+
+bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms) {
+	int timeout = -1;
+	if (!g_mouse.enabled || SDL_GetKeyboardFocus() != g_mouse_window) {
+		g_mouse.next_poll = 0;
+		CenterMouseStick();
+	} else {
+		if (g_mouse.next_poll == 0) {
+			SDL_GetRelativeMouseState(nullptr, nullptr);
+			g_mouse.next_poll = SDL_GetTicks() + MOUSE_POLL_INTERVAL_MS;
+		}
+		timeout = PollMouse(SDL_GetTicks());
+	}
+
+	if (g_cursor_hide_at != 0) {
+		const auto now_ms = SDL_GetTicks();
+		const int  cursor_timeout =
+		    now_ms < g_cursor_hide_at ? static_cast<int>(g_cursor_hide_at - now_ms) : 0;
+		timeout = timeout < 0 ? cursor_timeout : std::min(timeout, cursor_timeout);
+	}
+	timeout              = timeout < 0 ? max_wait_ms : std::min(timeout, max_wait_ms);
+	const bool has_event = SDL_WaitEventTimeout(event, timeout);
+
+	if (Config::HideCursorEnabled()) {
+		const auto now_ms = SDL_GetTicks();
+		if (has_event && !g_mouse.enabled && IsCursorActivity(*event) &&
+		    SDL_GetWindowFromEvent(event) == g_mouse_window) {
+			SDL_ShowCursor();
+			g_cursor_hide_at = now_ms + CURSOR_IDLE_HIDE_MS;
+		} else if (g_cursor_hide_at != 0 && now_ms >= g_cursor_hide_at) {
+			SDL_HideCursor();
+			g_cursor_hide_at = 0;
+		}
+	}
+
+	if (has_event && event->type == SDL_EVENT_WINDOW_FOCUS_LOST &&
+	    event->window.windowID == SDL_GetWindowID(g_mouse_window)) {
+		g_mouse.next_poll = 0;
+		CenterMouseStick();
+	}
+	return has_event;
 }
 
 } // namespace Libs::Graphics

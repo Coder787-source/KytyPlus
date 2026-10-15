@@ -3,6 +3,7 @@
 
 #include "common/abi.h"
 #include "common/common.h"
+#include "graphics/guest_gpu/gpu_defs.h"
 
 namespace Libs::Graphics {
 
@@ -43,6 +44,10 @@ struct ShaderBufferResource {
 	[[nodiscard]] uint16_t Stride() const { return (fields[1] >> 16u) & 0x3FFFu; }
 	[[nodiscard]] bool     SwizzleEnabled() const { return ((fields[1] >> 31u) & 0x1u) == 1; }
 	[[nodiscard]] uint32_t NumRecords() const { return fields[2]; }
+	[[nodiscard]] uint64_t GetSize() const {
+		// The 14-bit stride and 32-bit record count require a 64-bit product.
+		return Stride() == 0 ? NumRecords() : static_cast<uint64_t>(Stride()) * NumRecords();
+	}
 	[[nodiscard]] uint8_t  DstSelX() const { return (fields[3] >> 0u) & 0x7u; }
 	[[nodiscard]] uint8_t  DstSelY() const { return (fields[3] >> 3u) & 0x7u; }
 	[[nodiscard]] uint8_t  DstSelZ() const { return (fields[3] >> 6u) & 0x7u; }
@@ -61,7 +66,10 @@ struct ShaderBufferResource {
 	[[nodiscard]] uint64_t Base48() const {
 		return (fields[0] | (static_cast<uint64_t>(fields[1]) << 32u)) & 0xFFFFFFFFFFFFu;
 	}
-	[[nodiscard]] uint8_t Format() const { return (fields[3] >> 12u) & 0x7Fu; }
+	[[nodiscard]] uint8_t                RawFormat() const { return (fields[3] >> 12u) & 0x7Fu; }
+	[[nodiscard]] Prospero::BufferFormat Format() const {
+		return static_cast<Prospero::BufferFormat>(RawFormat());
+	}
 	[[nodiscard]] uint8_t OutOfBounds() const { return (fields[3] >> 28u) & 0x3u; }
 	[[nodiscard]] uint8_t Type() const { return (fields[3] >> 30u) & 0x3u; }
 };
@@ -69,25 +77,31 @@ struct ShaderBufferResource {
 struct ShaderTextureResource {
 	uint32_t fields[8] = {0};
 
-	[[nodiscard]] uint16_t MinLod() const { return (fields[1] >> 8u) & 0xFFFu; }
-	[[nodiscard]] uint8_t  DstSelX() const { return (fields[3] >> 0u) & 0x7u; }
-	[[nodiscard]] uint8_t  DstSelY() const { return (fields[3] >> 3u) & 0x7u; }
-	[[nodiscard]] uint8_t  DstSelZ() const { return (fields[3] >> 6u) & 0x7u; }
-	[[nodiscard]] uint8_t  DstSelW() const { return (fields[3] >> 9u) & 0x7u; }
-	[[nodiscard]] uint32_t DstSelXY() const { return (fields[3] >> 0u) & 0x3Fu; }
-	[[nodiscard]] uint32_t DstSelXYZ() const { return (fields[3] >> 0u) & 0x1FFu; }
-	[[nodiscard]] uint32_t DstSelXYZW() const { return (fields[3] >> 0u) & 0xFFFu; }
-	[[nodiscard]] uint8_t  BaseLevel() const { return (fields[3] >> 12u) & 0xFu; }
-	[[nodiscard]] uint8_t  LastLevel() const { return (fields[3] >> 16u) & 0xFu; }
-	[[nodiscard]] uint8_t  TileMode() const { return (fields[3] >> 20u) & 0x1Fu; }
-	[[nodiscard]] uint8_t  Type() const { return (fields[3] >> 28u) & 0xFu; }
+	[[nodiscard]] uint16_t           MinLod() const { return (fields[1] >> 8u) & 0xFFFu; }
+	[[nodiscard]] uint8_t            DstSelX() const { return (fields[3] >> 0u) & 0x7u; }
+	[[nodiscard]] uint8_t            DstSelY() const { return (fields[3] >> 3u) & 0x7u; }
+	[[nodiscard]] uint8_t            DstSelZ() const { return (fields[3] >> 6u) & 0x7u; }
+	[[nodiscard]] uint8_t            DstSelW() const { return (fields[3] >> 9u) & 0x7u; }
+	[[nodiscard]] uint32_t           DstSelXY() const { return (fields[3] >> 0u) & 0x3Fu; }
+	[[nodiscard]] uint32_t           DstSelXYZ() const { return (fields[3] >> 0u) & 0x1FFu; }
+	[[nodiscard]] uint32_t           DstSelXYZW() const { return (fields[3] >> 0u) & 0xFFFu; }
+	[[nodiscard]] uint8_t            BaseLevel() const { return (fields[3] >> 12u) & 0xFu; }
+	[[nodiscard]] uint8_t            LastLevel() const { return (fields[3] >> 16u) & 0xFu; }
+	[[nodiscard]] Prospero::TileMode TileMode() const {
+		return static_cast<Prospero::TileMode>((fields[3] >> 20u) & 0x1Fu);
+	}
+	[[nodiscard]] Prospero::ImageType Type() const {
+		return static_cast<Prospero::ImageType>((fields[3] >> 28u) & 0xFu);
+	}
 	[[nodiscard]] uint16_t Depth() const { return (fields[4] >> 0u) & 0x1FFFu; }
 
 	[[nodiscard]] uint64_t Base40() const {
 		return ((fields[0] | (static_cast<uint64_t>(fields[1]) << 32u)) & 0xFFFFFFFFFFu) << 8u;
 	}
-	[[nodiscard]] bool     IsNull() const { return Base40() == 0; }
-	[[nodiscard]] uint16_t Format() const { return (fields[1] >> 20u) & 0x1FFu; }
+	[[nodiscard]] bool                   IsNull() const { return Base40() == 0; }
+	[[nodiscard]] Prospero::BufferFormat Format() const {
+		return static_cast<Prospero::BufferFormat>((fields[1] >> 20u) & 0x1FFu);
+	}
 	[[nodiscard]] uint16_t Width5() const {
 		return ((fields[1] >> 30u) & 0x3u) | (((fields[2] >> 0u) & 0xFFFu) << 2u);
 	}
@@ -147,18 +161,23 @@ struct ShaderSamplerResource {
 	[[nodiscard]] bool PointPreclamp() const { return ((fields[2] >> 28u) & 0x1u) == 1; }
 	[[nodiscard]] bool AnisoOverride() const { return ((fields[2] >> 29u) & 0x1u) == 1; }
 	[[nodiscard]] bool BlendZeroPrt() const { return ((fields[2] >> 30u) & 0x1u) == 1; }
+
+	void SetPointFiltering() {
+		const bool mipmapped = static_cast<Prospero::SamplerMipFilter>(MipFilter()) !=
+		                       Prospero::SamplerMipFilter::kNone;
+		fields[2] &= ~(0xffu << 20u);
+		fields[2] |= 1u << 24u;
+		if (mipmapped) {
+			fields[2] |= static_cast<uint32_t>(Prospero::SamplerMipFilter::kPoint) << 26u;
+		}
+	}
 };
 
 struct ShaderVertexInputBuffer {
-	static constexpr int ATTR_MAX = 32;
-
-	uint64_t addr                   = 0;
-	uint32_t stride                 = 0;
-	uint32_t num_records            = 0;
-	uint32_t fetch_index            = 0;
-	int      attr_num               = 0;
-	int      attr_indices[ATTR_MAX] = {0};
-	uint32_t attr_offsets[ATTR_MAX] = {0};
+	uint64_t addr        = 0;
+	uint32_t stride      = 0;
+	uint32_t num_records = 0;
+	uint32_t fetch_index = 0;
 };
 
 struct ShaderVertexDestination {
@@ -166,6 +185,7 @@ struct ShaderVertexDestination {
 	int      registers_num  = 0;
 	int      attr_id        = -1;
 	uint32_t fetch_index    = 0;
+	int      buffer_index   = 0;
 };
 
 enum class ShaderStorageUsage {

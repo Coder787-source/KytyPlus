@@ -36,14 +36,16 @@ struct Fixture {
 
 void CheckRejected(const ShaderMappedData& data, const char* text) {
 	ShaderVertexMetadata output;
-	output.vertex_buffer_reg     = 37;
-	output.vertex_attrib_reg     = 41;
-	output.input_semantics_count = 7;
+	std::array<ShaderSemantic, 7> prior_semantics {};
+	output.vertex_buffer_reg = 37;
+	output.vertex_attrib_reg = 41;
+	output.input_semantics   = prior_semantics;
 	std::string error;
 	Check(!ShaderReadVertexMetadata(data, 64, output, &error), text);
 	Check(!error.empty(), "metadata rejection omitted its diagnostic");
 	Check(output.vertex_buffer_reg == 37 && output.vertex_attrib_reg == 41 &&
-	          output.input_semantics_count == 7,
+	          output.input_semantics.data() == prior_semantics.data() &&
+	          output.input_semantics.size() == prior_semantics.size(),
 	      "metadata rejection changed the prior output");
 }
 
@@ -54,8 +56,24 @@ void TestValidAndInvalidMetadata() {
 	Check(ShaderReadVertexMetadata(fixture.mapped, 64, output, &error),
 	      "valid AGC vertex metadata was rejected");
 	Check(output.vertex_buffer_reg == 2 && output.vertex_attrib_reg == 4 &&
-	          output.input_semantics_count == 1,
+	          output.input_semantics.size() == 1,
 	      "valid AGC vertex metadata was decoded incorrectly");
+
+	Fixture buffer_only;
+	buffer_only.offsets[static_cast<size_t>(AgcDirectResourceType::PtrVertexAttribDescTable)] =
+	    AGC_ILLEGAL_DIRECT_OFFSET;
+	buffer_only.mapped.input_semantics     = nullptr;
+	buffer_only.mapped.num_input_semantics = 0;
+	Check(ShaderReadVertexMetadata(buffer_only.mapped, 64, output, &error),
+	      "vertex-buffer-only AGC metadata was rejected");
+	Check(output.vertex_buffer_reg == 2 && output.vertex_attrib_reg == -1 &&
+	          output.input_semantics.empty(),
+	      "vertex-buffer-only AGC metadata was decoded incorrectly");
+
+	Fixture attrib_only;
+	attrib_only.offsets[static_cast<size_t>(AgcDirectResourceType::PtrVertexBufferTable)] =
+	    AGC_ILLEGAL_DIRECT_OFFSET;
+	CheckRejected(attrib_only.mapped, "vertex-attribute-only AGC metadata was accepted");
 
 	auto missing_header      = fixture.mapped;
 	missing_header.user_data = nullptr;
@@ -78,6 +96,12 @@ void TestValidAndInvalidMetadata() {
 	excessive_register.offsets[static_cast<size_t>(AgcDirectResourceType::PtrVertexBufferTable)] =
 	    63;
 	CheckRejected(excessive_register.mapped, "out-of-domain vertex table SGPR was accepted");
+
+	Fixture excessive_attrib_register;
+	excessive_attrib_register
+	    .offsets[static_cast<size_t>(AgcDirectResourceType::PtrVertexAttribDescTable)] = 63;
+	CheckRejected(excessive_attrib_register.mapped,
+	              "out-of-domain vertex attribute table SGPR was accepted");
 
 	Fixture missing_semantics;
 	missing_semantics.mapped.input_semantics = nullptr;

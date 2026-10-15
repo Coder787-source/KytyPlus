@@ -9,6 +9,12 @@
 #include <mutex>
 #include <utility>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#elif defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -16,6 +22,7 @@
 #include <windows.h>
 #undef min
 #undef max
+#undef MemoryBarrier
 #elif defined(__APPLE__)
 #include <pthread.h>
 #elif defined(__linux__)
@@ -29,21 +36,20 @@ class TrackingSpinLock final {
 public:
 	void lock() noexcept {
 		const auto thread = CurrentThread();
-		if (m_owner.load(std::memory_order_relaxed) == thread) {
-			EXIT("recursive region tracking lock\n");
-		}
 		while (m_lock.test_and_set(std::memory_order_acquire)) {
-			if (m_owner.load(std::memory_order_relaxed) == thread) {
-				EXIT("recursive region tracking lock while contended\n");
-			}
-			std::atomic_signal_fence(std::memory_order_seq_cst);
+			EXIT_NOT_IMPLEMENTED(m_owner.load(std::memory_order_relaxed) == thread);
+#if defined(__x86_64__) || defined(_M_X64)
+			_mm_pause();
+#elif defined(_M_ARM64)
+			__yield();
+#elif defined(__aarch64__)
+			asm volatile("yield");
+#endif
 		}
 		m_owner.store(thread, std::memory_order_relaxed);
 	}
 	void unlock() noexcept {
-		if (m_owner.load(std::memory_order_relaxed) != CurrentThread()) {
-			EXIT("region tracking lock released by non-owner\n");
-		}
+		EXIT_NOT_IMPLEMENTED(m_owner.load(std::memory_order_relaxed) != CurrentThread());
 		m_owner.store(0, std::memory_order_relaxed);
 		m_lock.clear(std::memory_order_release);
 	}
@@ -54,7 +60,9 @@ private:
 		return GetCurrentThreadId();
 #elif defined(__APPLE__)
 		// mach thread port is a nonzero per-thread id (0 is the "no owner" sentinel).
-		return static_cast<uint32_t>(pthread_mach_thread_np(pthread_self()));
+		static thread_local const uint32_t tid =
+		    static_cast<uint32_t>(pthread_mach_thread_np(pthread_self()));
+		return tid;
 #elif defined(__linux__)
 		static thread_local const uint32_t tid = static_cast<uint32_t>(::syscall(SYS_gettid));
 		return tid;
@@ -87,8 +95,7 @@ public:
 	template <DirtySource source>
 	[[nodiscard]] bool IsModified(uint64_t offset, uint64_t size) const {
 		const auto [start, end] = GetPageRange(m_cpu_addr + offset, size);
-		const auto& bits        = GetBits<source>();
-		return RegionBits(bits, start, end).Any();
+		return GetBits<source>().FirstRangeFrom(start).first < end;
 	}
 
 	template <DirtySource source, bool enable>
@@ -111,56 +118,46 @@ public:
 			bits.UnsetRange(start, end);
 		}
 		if constexpr (source == DirtySource::Cpu) {
-			UpdateCpuProtection<!enable>();
+			UpdateProtection<!enable, false>();
 		} else {
-			UpdateGpuProtection<enable>();
+			UpdateProtection<enable, true>();
 		}
 	}
 
 	template <DirtySource source, bool clear, typename Func>
 	void ForEachModifiedRange(uint64_t vaddr, uint64_t size, Func&& func) {
 		const auto [start, end] = GetPageRange(vaddr, size);
-		RegionBits mask(GetBits<source>(), start, end);
-		if constexpr (clear) {
-			GetBits<source>().UnsetRange(start, end);
-		}
-		if constexpr (source == DirtySource::Cpu && clear) {
-			UpdateCpuProtection<true>();
-			ForEachRange(mask, std::forward<Func>(func));
+		auto&      bits         = GetBits<source>();
+		if (bits.FirstRangeFrom(start).first >= end) {
 			return;
 		}
-		if constexpr (source == DirtySource::Gpu && clear) {
-			UpdateGpuProtection<false>();
+		RegionBits mask(bits, start, end);
+		if constexpr (clear) {
+			bits.UnsetRange(start, end);
+			if constexpr (source == DirtySource::Cpu) {
+				UpdateProtection<true, false>();
+			} else {
+				UpdateProtection<false, true>();
+			}
 		}
-		ForEachRange(mask, std::forward<Func>(func));
+		for (const auto [first, last]: mask) {
+			func(m_cpu_addr + first * TRACKER_PAGE_SIZE, (last - first) * TRACKER_PAGE_SIZE);
+		}
 	}
 
 	TrackingSpinLock lock;
 
 private:
-	template <bool track>
-	void UpdateCpuProtection() {
-		auto mask  = m_cpu_dirty ^ m_writable;
-		m_writable = m_cpu_dirty;
+	template <bool track, bool is_read>
+	void UpdateProtection() {
+		const auto protection = is_read ? ~m_gpu_dirty : m_cpu_dirty;
+		auto&      previous   = is_read ? m_readable : m_writable;
+		auto       mask       = protection ^ previous;
 		if (mask.None()) {
 			return;
 		}
-		m_page_manager.UpdatePageWatchersForRegion<track>(m_cpu_addr, mask);
-	}
-
-	template <bool track>
-	void UpdateGpuProtection() {
-		auto readable = ~m_gpu_dirty;
-		auto mask     = readable ^ m_readable;
-		m_readable    = readable;
-		if (mask.None()) {
-			return;
-		}
-		if constexpr (track) {
-			m_page_manager.UpdatePageWatchersForRegion<true, true>(m_cpu_addr, mask);
-		} else {
-			m_page_manager.UpdatePageWatchersForRegion<false, true>(m_cpu_addr, mask);
-		}
+		previous = protection;
+		m_page_manager.UpdatePageWatchersForRegion<track, is_read>(m_cpu_addr, mask);
 	}
 
 	template <DirtySource source>
@@ -189,13 +186,6 @@ private:
 		const auto offset = vaddr - m_cpu_addr;
 		return {static_cast<size_t>(offset / TRACKER_PAGE_SIZE),
 		        static_cast<size_t>((offset + size + TRACKER_PAGE_SIZE - 1) / TRACKER_PAGE_SIZE)};
-	}
-
-	template <typename Func>
-	void ForEachRange(const RegionBits& bits, Func&& func) const {
-		for (const auto [start, end]: bits) {
-			func(m_cpu_addr + start * TRACKER_PAGE_SIZE, (end - start) * TRACKER_PAGE_SIZE);
-		}
 	}
 
 	PageManager& m_page_manager;

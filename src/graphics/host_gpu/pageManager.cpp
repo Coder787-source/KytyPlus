@@ -1,5 +1,7 @@
 #include "graphics/host_gpu/pageManager.h"
 
+#include "common/alignment.h"
+#include "common/virtualMemory.h"
 #include "graphics/host_gpu/regionDefinitions.h"
 #include "kernel/memory.h"
 
@@ -13,6 +15,12 @@
 #include <mutex>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#elif defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -20,10 +28,7 @@
 #include <windows.h>
 #undef min
 #undef max
-#elif defined(__APPLE__)
-#include <unistd.h>
 #else
-#include <execinfo.h>
 #include <unistd.h>
 #endif
 
@@ -35,38 +40,12 @@ constexpr uint64_t REGION_SIZE  = TRACKER_REGION_SIZE;
 constexpr uint64_t ADDRESS_SIZE = TRACKER_ADDRESS_SIZE;
 constexpr uint64_t REGION_COUNT = ADDRESS_SIZE / REGION_SIZE;
 
-#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
-// The tracker reuses Win32 memory-protection tags as internal page-state values.
-// Mirror their canonical numeric values so the shared state-machine logic is identical.
-constexpr uint32_t PAGE_NOACCESS  = 0x01;
-constexpr uint32_t PAGE_READONLY  = 0x02;
-constexpr uint32_t PAGE_READWRITE = 0x04;
-#endif
 constexpr uint64_t REGION_PAGES = REGION_SIZE / PAGE_SIZE;
-
-constexpr uint32_t NO_ACCESS_PROTECTION  = PAGE_NOACCESS;
-constexpr uint32_t READ_ONLY_PROTECTION  = PAGE_READONLY;
-constexpr uint32_t READ_WRITE_PROTECTION = PAGE_READWRITE;
 
 [[noreturn]] void FailFast(const char* reason = nullptr) noexcept {
 	std::fputs("PageManager fail-fast: ", stderr);
 	std::fputs(reason != nullptr ? reason : "invalid page state", stderr);
 	std::fputc('\n', stderr);
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	void*      frames[16] {};
-	const auto frame_count =
-	    CaptureStackBackTrace(0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
-	const auto image_base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-	for (uint16_t i = 0; i < frame_count; i++) {
-		const auto address = reinterpret_cast<uintptr_t>(frames[i]);
-		std::fprintf(stderr, "  frame[%u]=0x%016" PRIxPTR " image_rva=0x%016" PRIxPTR "\n", i,
-		             address, address >= image_base ? address - image_base : 0);
-	}
-#elif !defined(__APPLE__)
-	void*     frames[16] {};
-	const int frame_count = ::backtrace(frames, static_cast<int>(std::size(frames)));
-	::backtrace_symbols_fd(frames, frame_count, STDERR_FILENO);
-#endif
 	std::fflush(stderr);
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	TerminateProcess(GetCurrentProcess(), static_cast<UINT>(EXCEPTION_NONCONTINUABLE_EXCEPTION));
@@ -85,20 +64,17 @@ constexpr uint32_t READ_WRITE_PROTECTION = PAGE_READWRITE;
 	std::_Exit(322);
 }
 
-Common::VirtualMemory::Mode ToMemoryMode(uint32_t protection) {
-	switch (protection) {
-		case NO_ACCESS_PROTECTION: return Common::VirtualMemory::Mode::NoAccess;
-		case READ_ONLY_PROTECTION: return Common::VirtualMemory::Mode::Read;
-		case READ_WRITE_PROTECTION: return Common::VirtualMemory::Mode::ReadWrite;
-		default: Fatal("unmappable protection 0x%08" PRIx32, protection);
-	}
-}
-
 class SpinGuard final {
 public:
 	explicit SpinGuard(std::atomic_flag& lock): m_lock(lock) {
 		while (m_lock.test_and_set(std::memory_order_acquire)) {
-			std::atomic_signal_fence(std::memory_order_seq_cst);
+#if defined(__x86_64__) || defined(_M_X64)
+			_mm_pause();
+#elif defined(_M_ARM64)
+			__yield();
+#elif defined(__aarch64__)
+			asm volatile("yield");
+#endif
 		}
 	}
 	~SpinGuard() { m_lock.clear(std::memory_order_release); }
@@ -109,18 +85,9 @@ private:
 };
 
 void ValidateRange(uint64_t vaddr, uint64_t size) {
-	if (vaddr == 0 || size == 0 || vaddr >= ADDRESS_SIZE || size > ADDRESS_SIZE - vaddr) {
+	if (!GuestRange {vaddr, size}.Valid()) {
 		Fatal("invalid range vaddr=0x%016" PRIx64 ", size=0x%016" PRIx64, vaddr, size);
 	}
-}
-
-uint64_t PageStart(uint64_t vaddr) {
-	return vaddr & ~(PAGE_SIZE - 1);
-}
-
-uint64_t PageEnd(uint64_t vaddr, uint64_t size) {
-	ValidateRange(vaddr, size);
-	return PageStart(vaddr + size - 1) + PAGE_SIZE;
 }
 
 } // namespace
@@ -130,14 +97,14 @@ struct PageManager::Impl {
 		uint8_t write_watchers  : 7 = 0;
 		uint8_t access_watchers : 1 = 0;
 
-		[[nodiscard]] uint32_t Perms() const noexcept {
+		[[nodiscard]] Common::VirtualMemory::Mode Perms() const noexcept {
 			if (access_watchers != 0) {
-				return NO_ACCESS_PROTECTION;
+				return Common::VirtualMemory::Mode::NoAccess;
 			}
 			if (write_watchers != 0) {
-				return READ_ONLY_PROTECTION;
+				return Common::VirtualMemory::Mode::Read;
 			}
-			return READ_WRITE_PROTECTION;
+			return Common::VirtualMemory::Mode::ReadWrite;
 		}
 
 		template <int delta, bool is_read>
@@ -201,9 +168,6 @@ struct PageManager::Impl {
 		}
 #endif
 		regions = std::make_unique<std::atomic<Region*>[]>(REGION_COUNT);
-		for (uint64_t i = 0; i < REGION_COUNT; i++) {
-			regions[i].store(nullptr, std::memory_order_relaxed);
-		}
 	}
 
 	~Impl() {
@@ -238,11 +202,10 @@ struct PageManager::Impl {
 		return ptr;
 	}
 
-	void Protect(uint64_t vaddr, uint64_t size, uint32_t protection) noexcept {
-		if (!Libs::LibKernel::Memory::ProtectGuestHostMemory(vaddr, size,
-		                                                     ToMemoryMode(protection))) {
-			Fatal("address-space protection failed at 0x%016" PRIx64 ", new=0x%08" PRIx32, vaddr,
-			      protection);
+	void Protect(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode) noexcept {
+		if (!Libs::LibKernel::Memory::ProtectGuestHostMemory(vaddr, size, mode)) {
+			Fatal("address-space protection failed at 0x%016" PRIx64 ", mode=0x%08" PRIx32, vaddr,
+			      static_cast<uint32_t>(mode));
 		}
 	}
 
@@ -299,11 +262,12 @@ struct PageManager::Impl {
 
 	template <bool track, bool is_read>
 	void UpdatePageWatchers(uint64_t vaddr, uint64_t size) {
-		const auto begin = PageStart(vaddr);
-		const auto end   = PageEnd(vaddr, size);
+		ValidateRange(vaddr, size);
+		const auto begin = Common::AlignDown(vaddr, PAGE_SIZE);
+		const auto end   = Common::AlignUp(vaddr + size, PAGE_SIZE);
 		for (auto chunk_begin = begin; chunk_begin < end;) {
-			const auto chunk_end   = std::min(end, (chunk_begin / REGION_SIZE + 1) * REGION_SIZE);
-			const auto region_base = chunk_begin / REGION_SIZE * REGION_SIZE;
+			const auto chunk_end = std::min(end, Common::AlignUp(chunk_begin + 1, REGION_SIZE));
+			const auto region_base = Common::AlignDown(chunk_begin, REGION_SIZE);
 			auto*      region = track ? GetOrCreateRegion(chunk_begin) : FindRegion(chunk_begin);
 			if (region == nullptr) {
 				Fatal("untracking unknown page 0x%016" PRIx64, chunk_begin);
@@ -369,9 +333,5 @@ template void PageManager::UpdatePageWatchersForRegion<true, true>(uint64_t, Reg
 template void PageManager::UpdatePageWatchersForRegion<true, false>(uint64_t, RegionBits&);
 template void PageManager::UpdatePageWatchersForRegion<false, true>(uint64_t, RegionBits&);
 template void PageManager::UpdatePageWatchersForRegion<false, false>(uint64_t, RegionBits&);
-
-void PageManager::OnGpuMap(uint64_t, uint64_t) {}
-
-void PageManager::OnGpuUnmap(uint64_t, uint64_t) {}
 
 } // namespace Libs::Graphics

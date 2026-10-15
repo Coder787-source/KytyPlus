@@ -3,21 +3,20 @@
 
 #include "common/abi.h"
 #include "common/common.h"
-#include "common/subsystems.h"
-
 namespace Libs::Controller {
 
-KYTY_SUBSYSTEM_DEFINE(Controller);
+void Initialize();
+void Shutdown();
+void EmergencyShutdown();
+
+struct Lifecycle {
+	static constexpr const char* name               = "Controller";
+	static constexpr auto        initialize         = Libs::Controller::Initialize;
+	static constexpr auto        shutdown           = Libs::Controller::Shutdown;
+	static constexpr auto        emergency_shutdown = Libs::Controller::EmergencyShutdown;
+};
 
 constexpr int HOST_INPUT_CONTROLLER_ID = -1000;
-
-// Local-multiplayer support: up to 4 pads, each a distinct player slot with its
-// own input state and its own pad handle (1..4). Player slot N corresponds to
-// user id (PAD_USER_ID_BASE + N) and pad handle (N + 1), matching the PS5 pad
-// service model (scePadOpen(user_id, ...) -> handle, scePadRead(handle, ...)).
-constexpr int PAD_MAX_CONTROLLERS = 4;
-constexpr int PAD_USER_ID_BASE    = 1000;
-constexpr int PAD_HANDLE_BASE     = 1;
 
 constexpr uint32_t PAD_BUTTON_L3        = 0x00000002;
 constexpr uint32_t PAD_BUTTON_R3        = 0x00000004;
@@ -47,56 +46,59 @@ enum class Axis {
 	AxisMax
 };
 
+enum class Sensor { Accel, Gyro };
+
 struct PadControllerInformation;
 struct PadData;
 struct PadVibrationParam;
 struct PadLightBarParam;
-
-// Lightbar RGB. Defined here because upstream only forward-declares this type.
-struct PadLightBarParam {
-	uint8_t r;
-	uint8_t g;
-	uint8_t b;
-};
+struct PadTriggerEffectParam;
+struct PadTriggerEffectStateInformation;
 
 inline int controller_get_axis(int min, int max, int value) {
 	int v = (255 * (value - min)) / (max - min);
-	return (v < 0 ? 0 : (v > 255 ? 255 : v));
+	if (v < 0) {
+		return 0;
+	}
+	if (v > 255) {
+		return 255;
+	}
+	return v;
 }
 
-// Maps a UserService user id to a 0-based player slot, or -1 if the id is not
-// one of the local pad users.
-int ControllerIndexFromUserId(int user_id);
+void Connect(int id);
+void Disconnect(int id);
+void SetButton(int id, uint32_t button, bool down);
+void SetAxis(int id, Axis axis, int value);
+void SetRightStick(int id, int x, int y);
+void SetTouchPad(int id, int finger, bool down, float x, float y);
+void SetSensor(int id, Sensor sensor, const float* data, uint64_t time_us);
+void ResetInputState();
+int  GetActiveControllerId();
 
-// Number of physically connected pads (player slots with a real device).
-int ControllerConnectedCount();
+enum class Setting { SpeakerVolume, VibrationIntensity, TriggerEffectIntensity };
 
-// Maps a pad handle (1..PAD_MAX_CONTROLLERS) to a 0-based player slot, or -1.
-int ControllerIndexFromHandle(int handle);
+void  CycleSetting(Setting setting);
+float GetSettingScale(Setting setting);
 
-void ControllerConnect(int id);
-void ControllerDisconnect(int id);
-void ControllerButton(int id, uint32_t button, bool down);
-void ControllerAxis(int id, Axis axis, int value);
-void ControllerResetInputState();
+int PadCheckHandle(int handle);
 
 int KYTY_SYSV_ABI PadInit();
 int KYTY_SYSV_ABI PadOpen(int user_id, int type, int index, const void* param);
 int KYTY_SYSV_ABI PadGetHandle(int user_id, int type, int index);
+int KYTY_SYSV_ABI PadClose(int handle);
 int KYTY_SYSV_ABI PadSetMotionSensorState(int handle, bool enable);
 int KYTY_SYSV_ABI PadSetAngularVelocityDeadbandState(int handle, bool enable);
 int KYTY_SYSV_ABI PadResetOrientation(int handle);
 int KYTY_SYSV_ABI PadGetControllerInformation(int handle, PadControllerInformation* info);
+int KYTY_SYSV_ABI PadIsRemoteController(int handle, bool* is_remote);
 int KYTY_SYSV_ABI PadReadState(int handle, PadData* data);
 int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num);
 int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param);
+int KYTY_SYSV_ABI PadSetTriggerEffect(int handle, const PadTriggerEffectParam* param);
+int KYTY_SYSV_ABI PadGetTriggerEffectState(int handle, PadTriggerEffectStateInformation* info);
 int KYTY_SYSV_ABI PadResetLightBar(int handle);
 int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param);
-
-// Opaque handle to the native DualSense driver (defined in dualsense.h).
-// Returned as void* here to avoid a forward-declaration namespace nesting issue;
-// the .cpp casts it back to Libs::DualSense::DualSenseDriver*.
-void* DualSenseDriverInstance();
 
 } // namespace Libs::Controller
 

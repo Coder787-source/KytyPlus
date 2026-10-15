@@ -4,11 +4,17 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
+#include "emulator.h"
+#include "graphics/presentation/systemOverlay.h"
+#include "libs/dialog.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "libs/systemService.h"
 #include "loader/symbolDatabase.h"
 
 #include <cstring>
+#include <deque>
+#include <mutex>
 
 namespace Libs {
 
@@ -25,6 +31,7 @@ namespace SystemService {
 [[maybe_unused]] constexpr int PARAM_ID_GAME_PARENTAL_LEVEL = 7;
 [[maybe_unused]] constexpr int PARAM_ID_CC_ENABLE           = 100;
 [[maybe_unused]] constexpr int PARAM_ID_SCREEN_READER       = 208;
+constexpr int                  PARAM_ID_LANG_PS5            = 400; // PPSA01325
 [[maybe_unused]] constexpr int PARAM_ID_ENTER_BUTTON_ASSIGN = 1000;
 
 [[maybe_unused]] constexpr int PARAM_DATE_FORMAT_YYYYMMDD = 0;
@@ -68,6 +75,14 @@ struct SystemServiceEvent {
 	uint8_t data[8192];
 };
 
+static std::mutex          g_event_mutex;
+static std::deque<int32_t> g_events;
+
+void NotifyEntitlementUpdate() {
+	std::scoped_lock lock(g_event_mutex);
+	g_events.push_back(0x10000003); // SCE_SYSTEM_SERVICE_EVENT_ENTITLEMENT_UPDATE
+}
+
 struct SystemServiceDisplaySafeAreaInfo {
 	float   ratio;
 	uint8_t reserved[128];
@@ -81,8 +96,13 @@ struct SystemServiceHdrToneMapLuminance {
 
 static int KYTY_SYSV_ABI SystemServiceHideSplashScreen() {
 	PRINT_NAME();
-
+	Graphics::HideSplashScreen();
 	return OK;
+}
+
+int KYTY_SYSV_ABI SystemServiceLoadExec(const char* path, const char* const argv[]) {
+	PRINT_NAME();
+	return Emulator::LoadExec(path, argv);
 }
 
 static int KYTY_SYSV_ABI SystemServiceParamGetInt(int param_id, int* value) {
@@ -95,7 +115,8 @@ static int KYTY_SYSV_ABI SystemServiceParamGetInt(int param_id, int* value) {
 	int v = 0;
 
 	switch (param_id) {
-		case PARAM_ID_LANG: v = static_cast<int>(Config::GetConsoleLanguage()); break;
+		case PARAM_ID_LANG:
+		case PARAM_ID_LANG_PS5: v = static_cast<int>(Config::GetConsoleLanguage()); break;
 		case PARAM_ID_DATE_FORMAT: v = PARAM_DATE_FORMAT_DDMMYYYY; break;
 		case PARAM_ID_TIME_FORMAT: v = PARAM_TIME_FORMAT_24HOUR; break;
 		case PARAM_ID_TIME_ZONE: v = +180; break;
@@ -150,7 +171,14 @@ static int KYTY_SYSV_ABI SystemServiceReceiveEvent(SystemServiceEvent* event) {
 	event->event_type = -1;
 	std::memset(event->data, 0, sizeof(event->data));
 
-	return SYSTEM_SERVICE_ERROR_NO_EVENT;
+	std::scoped_lock lock(g_event_mutex);
+	if (g_events.empty()) {
+		return SYSTEM_SERVICE_ERROR_NO_EVENT;
+	}
+	event->event_type = g_events.front();
+	g_events.pop_front();
+	LOGF("\t SystemService event = 0x%08x\n", static_cast<uint32_t>(event->event_type));
+	return OK;
 }
 
 static int KYTY_SYSV_ABI SystemServiceGetStatus(SystemServiceStatus* status) {
@@ -160,7 +188,14 @@ static int KYTY_SYSV_ABI SystemServiceGetStatus(SystemServiceStatus* status) {
 		return SYSTEM_SERVICE_ERROR_PARAMETER;
 	}
 
-	*status = SystemServiceStatus();
+	const auto dialog                  = Dialog::SystemDialog::GetVisualState();
+	*status                            = SystemServiceStatus();
+	status->is_system_ui_overlaid      = dialog.active;
+	status->is_in_background_execution = dialog.background;
+	{
+		std::scoped_lock lock(g_event_mutex);
+		status->event_num = static_cast<int32_t>(g_events.size());
+	}
 
 	return OK;
 }
@@ -200,7 +235,7 @@ static int KYTY_SYSV_ABI SystemServiceGetNoticeScreenSkipFlag(bool* value) {
 		return SYSTEM_SERVICE_ERROR_PARAMETER;
 	}
 
-	*value = false;
+	*value = Config::SkipNoticeScreen();
 
 	return OK;
 }
@@ -530,6 +565,7 @@ LIB_DEFINE(InitSystemGesture_1) {
 } // namespace SystemGesture
 
 LIB_DEFINE(InitSystemService_1) {
+	LIB_FUNC("JoBqSQt1yyA", SystemService::SystemServiceLoadExec);
 	LIB_FUNC("Vo5V8KAwCmk", SystemService::SystemServiceHideSplashScreen);
 	LIB_FUNC("fZo48un7LK4", SystemService::SystemServiceParamGetInt);
 	LIB_FUNC("SsC-m-S9JTA", SystemService::SystemServiceParamGetString);
