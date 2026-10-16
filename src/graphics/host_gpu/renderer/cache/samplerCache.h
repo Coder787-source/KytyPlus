@@ -24,12 +24,9 @@ public:
 	~SamplerCache();
 	KYTY_CLASS_NO_COPY(SamplerCache);
 
-	vk::Sampler GetSampler(const ShaderSamplerResource& r);
+	vk::Sampler GetSampler(const ShaderSamplerResource& r, bool integer_border);
 
 private:
-	// Key = 4 guest register dwords + the bandwidth-controller LOD-bias generation.
-	// Embedding the generation means a change to the adaptive LOD bias invalidates
-	// all stale samplers, so the next GetSampler() rebuilds them with the new bias.
 	using SamplerKey = std::array<uint32_t, 5>;
 
 	struct SamplerKeyHash {

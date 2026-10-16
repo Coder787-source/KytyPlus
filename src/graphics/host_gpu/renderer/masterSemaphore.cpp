@@ -49,16 +49,8 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	wait_info.pSemaphores    = &m_semaphore;
 	wait_info.pValues        = &tick;
 
-	// Use a reasonable timeout to avoid hanging forever on driver issues
-	const uint64_t timeout = 30'000'000'000ULL; // 30 seconds
-	const auto result = m_graphics.device.waitSemaphores(&wait_info, timeout);
-	if (result != vk::Result::eSuccess) {
-		LOGF("WARNING: vkWaitSemaphores timed out: %s (%d) for tick=%" PRIu64 "\n",
-		     VulkanToString(result).c_str(), static_cast<int>(result), tick);
-		// Update our known tick to at least try to continue
-		Refresh();
-		return;
-	}
+	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
+	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 	Refresh();
 }
 

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <fmt/format.h>
@@ -78,8 +79,8 @@ std::shared_ptr<spdlog::logger> MakeFileLogger(std::string                  name
 	}
 	TrimLogFile(path);
 
-	auto sink =
-	    std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.native(), true);
+	const bool truncate = std::getenv(Log::RelaunchedVariable) == nullptr;
+	auto       sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.native(), truncate);
 	return MakeLogger(std::move(name), std::move(sink));
 }
 

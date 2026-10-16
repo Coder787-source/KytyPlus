@@ -2,8 +2,6 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
-#include "common/emulatorConfig.h"
-#include "common/bandwidthController.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
@@ -16,12 +14,10 @@ SamplerCache::~SamplerCache() {
 	}
 }
 
-vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r) {
+vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool integer_border) {
 	Common::LockGuard lock(m_mutex);
 
-	const uint64_t bias_gen = Config::BandwidthControllerInstance().CurrentLodBiasGeneration();
-	const SamplerKey key {r.fields[0], r.fields[1], r.fields[2], r.fields[3],
-	                     static_cast<uint32_t>(bias_gen)};
+	const SamplerKey key {r.fields[0], r.fields[1], r.fields[2], r.fields[3], integer_border};
 	if (auto iter = m_samplers.find(key); iter != m_samplers.end()) {
 		return iter->second;
 	}
@@ -59,11 +55,9 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r) {
 			case Prospero::SamplerAnisoRatio::kTwo: aniso_ratio = 2.0f; break;
 			case Prospero::SamplerAnisoRatio::kFour: aniso_ratio = 4.0f; break;
 			case Prospero::SamplerAnisoRatio::kEight: aniso_ratio = 8.0f; break;
-			case Prospero::SamplerAnisoRatio::kSixteen: aniso_ratio = 16.0f; break;
-			default:
-				EXIT("unknown ratio: %d dwords=%08x,%08x,%08x,%08x\n",
-				     static_cast<int>(r.MaxAnisoRatio()), r.fields[0], r.fields[1], r.fields[2],
-				     r.fields[3]);
+			case Prospero::SamplerAnisoRatio::kSixteen:
+			// Reserved encodings 5-7 fall back to the maximum ratio.
+			default: aniso_ratio = 16.0f; break;
 		}
 	}
 
@@ -99,30 +93,27 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r) {
 		return vk::SamplerAddressMode::eClampToBorder;
 	};
 
-	vk::BorderColor border = vk::BorderColor::eIntTransparentBlack;
+	vk::BorderColor border = integer_border ? vk::BorderColor::eIntTransparentBlack
+	                                       : vk::BorderColor::eFloatTransparentBlack;
 	switch (static_cast<Prospero::SamplerBorderColor>(r.BorderColorType())) {
-		case Prospero::SamplerBorderColor::kTransBlack:
-			border = vk::BorderColor::eIntTransparentBlack;
-			break;
+		case Prospero::SamplerBorderColor::kTransBlack: break;
 		case Prospero::SamplerBorderColor::kOpaqueBlack:
-			border = vk::BorderColor::eIntOpaqueBlack;
+			border = integer_border ? vk::BorderColor::eIntOpaqueBlack
+			                        : vk::BorderColor::eFloatOpaqueBlack;
 			break;
 		case Prospero::SamplerBorderColor::kOpaqueWhite:
-			border = vk::BorderColor::eIntOpaqueWhite;
+			border = integer_border ? vk::BorderColor::eIntOpaqueWhite
+			                        : vk::BorderColor::eFloatOpaqueWhite;
 			break;
 		case Prospero::SamplerBorderColor::kFromTable:
 			LOGF(
 			    "temporary: approximating table border color as transparent black, index = %" PRIu16
 			    "\n",
 			    r.BorderColorPtr());
-			border = vk::BorderColor::eIntTransparentBlack;
 			break;
 		default: EXIT("unknown border color: %d", static_cast<int>(r.BorderColorType()));
 	}
 
-	sampler_info.sType     = vk::StructureType::eSamplerCreateInfo;
-	sampler_info.pNext     = nullptr;
-	sampler_info.flags     = {};
 	sampler_info.magFilter = to_vk_filter(mag_filter);
 	sampler_info.minFilter = to_vk_filter(min_filter);
 	sampler_info.mipmapMode =
@@ -132,16 +123,11 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r) {
 	sampler_info.addressModeU = to_vk_address_mode(r.ClampX());
 	sampler_info.addressModeV = to_vk_address_mode(r.ClampY());
 	sampler_info.addressModeW = to_vk_address_mode(r.ClampZ());
-	float guest_lod_bias =
-	    static_cast<float>(static_cast<int16_t>((r.LodBias() ^ 0x2000u) - 0x2000u)) / 256.0f;
-	// iGPU bandwidth optimization: shift effective LOD toward coarser mip levels so
-	// high-resolution mips are skipped on bandwidth-limited integrated GPUs.
-	const int32_t igpu_lod_bias = Config::BandwidthControllerInstance().CurrentLodBias();
-	if (igpu_lod_bias > 0 &&
-	    static_cast<Prospero::SamplerMipFilter>(mip_filter) != Prospero::SamplerMipFilter::kNone) {
-		guest_lod_bias += static_cast<float>(igpu_lod_bias);
-	}
-	sampler_info.mipLodBias = guest_lod_bias;
+    const auto max_lod_bias = m_graphics.GetPhysicalDeviceProperties().limits.maxSamplerLodBias;
+    sampler_info.mipLodBias = std::clamp(
+        static_cast<float>(static_cast<int16_t>((r.LodBias() ^ 0x2000u) - 0x2000u)) / 256.0f,
+        -max_lod_bias, max_lod_bias
+    );
 	sampler_info.anisotropyEnable        = (aniso ? VK_TRUE : VK_FALSE);
 	sampler_info.maxAnisotropy           = aniso_ratio;
 	sampler_info.compareEnable           = (r.DepthCompareFunc() != 0 ? VK_TRUE : VK_FALSE);

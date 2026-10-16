@@ -492,31 +492,17 @@ target_link_libraries(game_image_mount_tests pkg_parser)
 
 add_kyty_full_emulator_test(soft_ignore_evidence_tests ../tests/SoftIgnoreEvidenceTests.cpp)
 
-add_executable(shader_stage_runtime_tests EXCLUDE_FROM_ALL
-	../tests/ShaderStageRuntimeTests.cpp
-	graphics/guest_gpu/gpu_format.cpp
-	graphics/host_gpu/hostMemory.cpp
-	graphics/shader/shaderStageRuntime.cpp
-	graphics/shader/recompiler/ir/ResourceMaterialization.cpp
-	graphics/shader/recompiler/ir/ScalarProvenance.cpp
-	graphics/shader/recompiler/ir/SrtWalker.cpp
-)
-target_link_libraries(shader_stage_runtime_tests fmt::fmt)
-target_include_directories(shader_stage_runtime_tests PRIVATE ${inc_headers})
-
 add_executable(resource_tracking_tests EXCLUDE_FROM_ALL
 	../tests/ResourceTrackingTests.cpp
 	graphics/guest_gpu/gpu_format.cpp
 	graphics/host_gpu/hostMemory.cpp
-	graphics/shader/recompiler/ir/ScalarProvenance.cpp
-	graphics/shader/recompiler/ir/SrtWalker.cpp
-	graphics/shader/recompiler/ir/SrtPatcher.cpp
-	graphics/shader/recompiler/ir/ResourceTracking.cpp
-	graphics/shader/recompiler/ir/ResourceMaterialization.cpp
-	graphics/shader/recompiler/ir/ShaderInfoCollection.cpp
-	graphics/shader/recompiler/ir/BindingLayout.cpp
+	graphics/shader/shaderPixelParameter.cpp
+	graphics/shader/recompiler/ir/passes/SrtWalker.cpp
+	graphics/shader/recompiler/ir/passes/ResourceTracking.cpp
+	graphics/shader/recompiler/ir/passes/ResourceMaterialization.cpp
+	graphics/shader/recompiler/ir/passes/ShaderInfoCollection.cpp
 )
-target_link_libraries(resource_tracking_tests fmt::fmt)
+target_link_libraries(resource_tracking_tests fmt::fmt xbyak::xbyak)
 target_include_directories(resource_tracking_tests PRIVATE ${inc_headers})
 
 add_executable(resource_mutex_tests EXCLUDE_FROM_ALL

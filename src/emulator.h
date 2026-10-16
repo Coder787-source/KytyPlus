@@ -15,6 +15,7 @@ struct RunOptions {
 	std::filesystem::path game_patch;
 	std::filesystem::path game_image;      // Direct, read-only .ffpfsc mount
 	std::filesystem::path install_pkg;     // KytyPlus: --install-pkg <pkg>
+	std::filesystem::path addcont_dir;
 };
 
 void Run(const RunOptions& options);

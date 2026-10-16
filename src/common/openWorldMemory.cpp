@@ -1,5 +1,5 @@
 ﻿#include "common/openWorldMemory.h"
-#include "common/platform/sysVirtual.h"
+#include "common/virtualMemory.h"
 #include "common/logging/log.h"
 #include "common/assert.h"
 #include <algorithm>
@@ -62,7 +62,7 @@ bool OpenWorldMemoryManager::Initialize(const MemoryPoolConfig& config) {
          config_.enable_defrag ? "enabled" : "disabled", config_.defrag_threshold);
     
     // Allocate the main memory pool from the virtual memory system
-    pool_base_address_ = SysVirtualAlloc(0, config_.pool_size, VirtualMemory::Mode::ReadWrite);
+    pool_base_address_ = VirtualMemory::Alloc(0, config_.pool_size, VirtualMemory::Mode::ReadWrite);
     
     if (pool_base_address_ == 0) {
         LOGF_COLOR(Log::Color::Red, "OpenWorldMemory: Failed to allocate main pool (%llu MB)\n",
@@ -168,7 +168,7 @@ void OpenWorldMemoryManager::Shutdown() {
     
     // Free the main pool
     if (pool_base_address_ != 0) {
-        SysVirtualFree(pool_base_address_);
+        VirtualMemory::Free(pool_base_address_);
         pool_base_address_ = 0;
     }
     

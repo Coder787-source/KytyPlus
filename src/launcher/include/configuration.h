@@ -122,6 +122,7 @@ public:
 	QString    game_path;   /* Launcher-unique game path */
 	QString    artwork_icon_path;       /* Cached image artwork; not saved in settings */
 	QString    artwork_background_path; /* Cached image artwork; not saved in settings */
+	QString    addons_dir;  /* Global setting; not saved per game. */
 	bool       custom_settings = false;
 	GameStatus game_status     = GameStatus::Unknown;
 	QString    game_comment;
@@ -141,6 +142,7 @@ public:
 	bool                   sync_raw_image_buffers      = false;
 	bool                   tessellation_enabled        = false;
 	bool                   trophy_enabled              = true;
+	int                    trophy_duration_seconds     = 6;
 	bool                   skip_notice_screen          = false;
 	bool                   network_connected           = false;
 	int                    vblank_frequency            = 60;
@@ -190,6 +192,7 @@ public:
 		sync_raw_image_buffers      = other.sync_raw_image_buffers;
 		tessellation_enabled        = other.tessellation_enabled;
 		trophy_enabled              = other.trophy_enabled;
+		trophy_duration_seconds     = other.trophy_duration_seconds;
 		skip_notice_screen          = other.skip_notice_screen;
 		network_connected           = other.network_connected;
 		vblank_frequency            = other.vblank_frequency;

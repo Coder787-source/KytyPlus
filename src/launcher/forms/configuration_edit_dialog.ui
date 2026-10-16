@@ -264,6 +264,15 @@
                       </property>
                       <layout class="QVBoxLayout" name="notificationsLayout">
                         <item>
+                          <widget class="QSpinBox" name="spinBox_trophy_duration">
+                            <property name="toolTip"><string>Trophy notification duration</string></property>
+                            <property name="suffix"><string> s</string></property>
+                            <property name="minimum"><number>5</number></property>
+                            <property name="maximum"><number>10</number></property>
+                            <property name="value"><number>6</number></property>
+                          </widget>
+                        </item>
+                        <item>
                           <widget class="QCheckBox" name="checkBox_trophy_notifications">
                             <property name="toolTip">
                               <string>Show trophy unlock notifications and play their sound.
@@ -734,14 +743,14 @@
               <item row="3" column="0">
                 <widget class="QLabel" name="label_guest_render">
                   <property name="text">
-                    <string>Guest render (W×H):</string>
+                    <string>Guest render (WÃ—H):</string>
                   </property>
                 </widget>
               </item>
               <item row="3" column="1">
                 <widget class="QWidget" name="widget_guest_render" native="true">
                   <property name="toolTip">
-                    <string>Request engine internal resolution via guest argv. 0×0 = leave at game/engine default. Both fields must be non-zero to take effect.</string>
+                    <string>Request engine internal resolution via guest argv. 0Ã—0 = leave at game/engine default. Both fields must be non-zero to take effect.</string>
                   </property>
                   <layout class="QHBoxLayout" name="horizontalLayout_guest_render">
                     <item>
@@ -776,14 +785,14 @@
               <item row="4" column="0">
                 <widget class="QLabel" name="label_fsr_output">
                   <property name="text">
-                    <string>FSR output (W×H):</string>
+                    <string>FSR output (WÃ—H):</string>
                   </property>
                 </widget>
               </item>
               <item row="4" column="1">
                 <widget class="QWidget" name="widget_fsr_output" native="true">
                   <property name="toolTip">
-                    <string>Resolution FSR upscales to before present. 0×0 = match window size. Requires Upscaler = Fsr1.</string>
+                    <string>Resolution FSR upscales to before present. 0Ã—0 = match window size. Requires Upscaler = Fsr1.</string>
                   </property>
                   <layout class="QHBoxLayout" name="horizontalLayout_fsr_output">
                     <item>

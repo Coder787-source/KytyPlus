@@ -464,7 +464,8 @@ void DecodeBlock(const uint8_t* block, uint32_t block_width, uint32_t block_heig
 } // namespace
 
 bool IsASTCFormat(Prospero::BufferFormat format) {
-	return Prospero::IsASTCTextureFormat(Prospero::GpuEnumValue(format));
+	return format >= Prospero::BufferFormat::kAstc4x4UNorm &&
+	       format <= Prospero::BufferFormat::kAstc12x12Srgb;
 }
 
 AstcBlockFootprint AstcBlockSize(Prospero::BufferFormat format) {

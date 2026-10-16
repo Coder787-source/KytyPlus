@@ -91,6 +91,7 @@ private:
 	MainDialog*                   m_main_dialog   = nullptr;
 	QString                       m_settings_file;
 	QStringList                   m_game_dirs;
+	QString                       m_addons_dir;
 	Configuration                 m_global_info;
 	QMap<QString, Configuration*> m_custom_infos;
 	CompatibilityDatabase*        m_compatibility = nullptr;

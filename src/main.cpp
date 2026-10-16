@@ -1,11 +1,12 @@
 #include "common/common.h"
 #include "common/mmioBus.h"
 #include "common/ps5_nvme_lle.h"
-#include "common/commonSubsystem.h"
+#include "common/virtualMemory.h"
+#include "common/logging/log.h"
 #include "common/dateTime.h"
 #include "common/debug.h"
 #include "common/file.h"
-#include "common/magicEnum.h"
+#include <magic_enum.hpp>
 #include "common/platform/sysDbg.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -40,7 +41,7 @@ static std::string GetBuildString() {
 #endif
 
 	std::string compiler =
-	    Debug::GetCompiler() + "-" + Debug::GetLinker() + "-" + Debug::GetBitness();
+	    Debug::GetCompiler() + "-" + Debug::GetLinker();
 
 	std::string str =
 	    fmt::format("{}, {}, ver = {}, git = {}, date = {}", type.c_str(), compiler.c_str(),
@@ -57,6 +58,7 @@ static void PrintUsage() {
 	::printf(
 	    "  --game-patch <json>                  Validated patch plan to apply before entry.\n");
 	::printf("  --install-pkg <pkg>                 Parse/extract a PS4/PS5 .pkg, then exit.\n");
+	::printf("  --addcont-dir <dir>                  Add-ons (DLC) folder (default: none).\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
 	::printf("  --guest-render-width <num>           Engine resolution request. Default: 1920.\n");
@@ -83,6 +85,16 @@ static void PrintUsage() {
 	::printf("  --spirv-debug-printf <true|false>    Enable SPIR-V debug printf.\n");
 	::printf(
 	    "  --readback-linear-images <true|false> Read back writable linear images on submit.\n");
+	::printf(
+	    "  --sync-raw-image-buffers <true|false> Synchronize raw reads of GPU images. Default: false.\n");
+	::printf(
+	    "  --trophy-notifications <true|false>   Show trophy unlock toasts and play their sound.\n");
+	::printf(
+	    "  --trophy-duration <seconds>          Trophy toast duration, 5-10. Default: 6.\n");
+	::printf("  --playgo-hack                       Use the supplied PlayGo stub fallback.\n");
+	::printf(
+	    "  --skip-notice-screen <true|false>    Skip startup logos and notices in supported games.\n"
+	    "                                      Default: false.\n");
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	::printf("  --redzone                            Protect the guest SysV red zone.\n");
 		::printf("  --network-online                     Report the console as online to libNetCtl.\n");
@@ -101,6 +113,16 @@ static bool NextArg(int argc, char* argv[], int& index, std::string& out) {
 	index++;
 	out = argv[index];
 	return true;
+}
+
+static bool ParseUint32(const std::string& value, uint32_t& out) {
+	const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), out);
+	return error == std::errc{} && end == value.data() + value.size();
+}
+
+static bool ParseFloat(const std::string& value, float& out) {
+	const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), out);
+	return error == std::errc{} && end == value.data() + value.size();
 }
 
 static bool ParseBool(const std::string& value, bool& out) {
@@ -216,7 +238,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			continue;
 		}
 
-		if (!Common::StartsWith(arg, "--")) {
+		if (!arg.starts_with("--")) {
 			::printf("game input must be provided with --game\n");
 			return false;
 		}
@@ -266,6 +288,12 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.game_patch = value;
+		} else if (arg == "--addcont-dir") {
+			if (!options.addcont_dir.empty()) {
+				::printf("--addcont-dir can only be specified once\n");
+				return false;
+			}
+			options.addcont_dir = Common::PathFromUtf8(Common::FixFilenameSlash(value));
 		} else if (arg == "--screen-width") {
 			options.config.screen_width = static_cast<uint32_t>(Common::ToInt32(value));
 		} else if (arg == "--screen-height") {
@@ -284,9 +312,15 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				fsr_output_explicit = true;
 			}
 		} else if (arg == "--vblank-frequency") {
-			const int32_t vblank_frequency = Common::ToInt32(value);
-			options.config.vblank_frequency =
-			    static_cast<uint32_t>(vblank_frequency < 0 ? 0 : vblank_frequency);
+			if (!ParseUint32(value, options.config.vblank_frequency)) {
+				::printf("invalid vblank frequency: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--trophy-duration") {
+			if (!ParseUint32(value, options.config.trophy_duration_seconds)) {
+				::printf("invalid trophy duration: %s\n", value.c_str());
+				return false;
+			}
 		} else if (arg == "--console-language") {
 			if (!ParseConsoleLanguage(value, options.config.console_language)) {
 				::printf("invalid console language: %s\n", value.c_str());
@@ -334,7 +368,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--printf-output-file") {
 			options.config.printf_output_file = value;
 		} else if (arg == "--profiler-direction") {
-			if (!ParseEnum(value, options.config.profiler_direction)) {
+			options.config.profiler_enabled = Common::EqualNoCase(value, "Network");
+			if (!options.config.profiler_enabled && !Common::EqualNoCase(value, "None")) {
 				::printf("invalid profiler direction: %s\n", value.c_str());
 				return false;
 			}
@@ -349,9 +384,9 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 		} else if (arg == "--upscaler-sharpness") {
-			options.config.upscaler_sharpness = Common::ToFloat(value);
+			if (!ParseFloat(value, options.config.upscaler_sharpness)) return false;
 		} else if (arg == "--render-scale") {
-			options.config.render_scale = Common::ToFloat(value);
+			if (!ParseFloat(value, options.config.render_scale)) return false;
 		} else if (arg == "--igpu-optimization") {
 			if (value == "Force") {
 				options.config.force_igpu_mode = true;
@@ -427,18 +462,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 	       (!options.app0_dir.empty() && !options.elf.empty());
 }
 
-int main(int argc, char* argv[]) {
-	auto& slist = *SubsystemsList::Instance();
+static int Main(int argc, char* argv[]) {
+	VirtualMemory::Init();
+	InitializeThreads();
 
-	slist.SetArgs(argc, argv);
-
-	auto* core    = CommonSubsystem::Instance();
-	auto* threads = ThreadsSubsystem::Instance();
-
-	slist.Add(core, {});
-	slist.Add(threads, {core});
-
-	// KytyPlus: MMIO bus subsystem — foundational LLE infrastructure.
+	// KytyPlus: MMIO bus subsystem â€” foundational LLE infrastructure.
 	// Registers the MMIO bus and (optionally, if a disk image path is supplied
 	// via --nvme-disk) attaches the NVMe LLE device. The bus is real and
 	// initialized; the NVMe LLE path is the foundation for future LLE storage
@@ -448,30 +476,22 @@ int main(int argc, char* argv[]) {
 		(void)bus; // bus is a singleton; subsystem registration keeps it alive
 	}
 
-	if (!slist.InitAll(false)) {
-		::printf("Failed to initialize '%s' subsystem: %s\n", slist.GetFailName(),
-		         slist.GetFailMsg());
-		return 1;
-	}
 
 	RunOptions options;
 	bool       show_help = false;
 
 	if (argc < 2) {
 		PrintUsage();
-		slist.DestroyAll(false);
 		return 0;
 	}
 
 	if (!ParseArgs(argc, argv, options, show_help)) {
 		PrintUsage();
-		slist.DestroyAll(false);
 		return 1;
 	}
 
 	if (show_help) {
 		PrintUsage();
-		slist.DestroyAll(false);
 		return 0;
 	}
 
@@ -482,7 +502,6 @@ int main(int argc, char* argv[]) {
 		if (!pr.ok) {
 			::printf("PKG_ERROR_REASON=%s\n", pr.error.c_str());
 			::printf("PKG parse failed: %s\n", pr.error.c_str());
-			slist.DestroyAll(false);
 			return 1;
 		}
 		// KytyPlus: fixed exit code 2 = encrypted/unsupported package. The launcher
@@ -493,12 +512,10 @@ int main(int argc, char* argv[]) {
 			         pr.content_id.c_str());
 			::printf("(Decrypt it externally first, then import the plaintext .pkg or the "
 			         "extracted game folder.)\n");
-			slist.DestroyAll(false);
 			return 2;
 		}
 		if (!pr.extraction_error.empty()) {
 			::printf("PKG_ERROR_REASON=%s\n", pr.extraction_error.c_str());
-			slist.DestroyAll(false);
 			return 4;
 		}
 		// Extract into a deterministic folder that the caller can find.
@@ -523,7 +540,6 @@ int main(int argc, char* argv[]) {
 		if (n == 0) {
 			::printf("PKG_ERROR_EMPTY\n");
 			::printf("PKG '%s' produced no files (extraction failed).\n", pr.content_id.c_str());
-			slist.DestroyAll(false);
 			return 3;
 		}
 		// KytyPlus: print the real content id so the launcher can name the destination
@@ -538,7 +554,6 @@ int main(int argc, char* argv[]) {
 				::printf("  - %s\n", fe.name.c_str());
 			}
 		}
-		slist.DestroyAll(false);
 		return 0;
 	}
 
@@ -560,7 +575,6 @@ int main(int argc, char* argv[]) {
 			    [](uint32_t done, uint32_t total) { ::printf("KYTY_PROGRESS=%u/%u\n", done, total); ::fflush(stdout); });
 			if (!image) {
 				::printf("IMAGE_MOUNT_ERROR=%s\n", error.c_str()); ::fflush(stdout);
-				slist.DestroyAll(false);
 				return 1;
 			}
 			Common::MountReadOnlyFileSystem(options.app0_dir, std::move(image));
@@ -580,7 +594,6 @@ int main(int argc, char* argv[]) {
 
 		if (platform == GuestPlatform::Ps4 && !options.game_image.empty()) {
 			::printf("IMAGE_MOUNT_ERROR=Direct PS4 image loading is unavailable in the external shadPS4 backend; no files were extracted.\n"); ::fflush(stdout);
-			slist.DestroyAll(false);
 			return 1;
 		}
 		if (platform == GuestPlatform::Ps4) {
@@ -588,11 +601,9 @@ int main(int argc, char* argv[]) {
 			const auto result = DispatchToShadps4(eboot, BackendMode::Subprocess, {});
 			if (result.delegated) {
 				::printf("PS4 title delegated to shadPS4 (exit=%d)\n", result.exit_code);
-				slist.DestroyAll(false);
 				return result.exit_code;
 			}
 			::printf("PS4 dispatch failed: %s\n", result.message.c_str());
-			slist.DestroyAll(false);
 			return 1;
 		}
 
@@ -604,7 +615,36 @@ int main(int argc, char* argv[]) {
 
 	Run(options);
 
-	slist.DestroyAll(false);
-
 	return 0;
 }
+
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+
+int wmain(int argc, wchar_t* argv[]) {
+    std::vector<std::string> utf8_args;
+    utf8_args.reserve(static_cast<size_t>(argc));
+
+    for (int index = 0; index < argc; index++) {
+        const std::wstring_view wide(argv[index]);
+        const std::u16string utf16(wide.begin(), wide.end());
+
+        utf8_args.push_back(Common::Utf16ToUtf8(utf16));
+    }
+
+    std::vector<char*> utf8_argv;
+    utf8_argv.reserve(utf8_args.size());
+
+    for (auto& argument: utf8_args) {
+        utf8_argv.push_back(argument.data());
+    }
+
+    return Main(argc, utf8_argv.data());
+}
+
+#else
+
+int main(int argc, char* argv[]) {
+    return Main(argc, argv);
+}
+
+#endif
