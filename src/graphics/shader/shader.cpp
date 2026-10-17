@@ -344,6 +344,8 @@ static void ShaderGetStaticInputInfoPS(
 	ps_info.ps_pos_z                     = (active_inputs & 0x00000400u) != 0;
 	ps_info.ps_pos_w                     = (active_inputs & 0x00000800u) != 0;
 	ps_info.ps_front_face                = (active_inputs & 0x00001000u) != 0;
+	// SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS selects integer masks instead of float +/-1.
+	ps_info.ps_front_face_all_bits       = (sh.baryc_cntl & 0x01000000u) != 0;
 	ps_info.ps_ancillary                 = (active_inputs & 0x00002000u) != 0;
 	ps_info.ps_sample_shading            = (active_inputs & 0x00000011u) != 0;
 	ps_info.ps_no_perspective            = (sh.ps_input_ena & sh.ps_input_addr & 0x00000020u) != 0;
@@ -464,6 +466,7 @@ void BuildStageStaticKey(const ShaderPixelInputInfo& info, std::vector<uint32_t>
 	key.push_back(static_cast<uint32_t>(info.ps_pos_z));
 	key.push_back(static_cast<uint32_t>(info.ps_pos_w));
 	key.push_back(static_cast<uint32_t>(info.ps_front_face));
+	key.push_back(static_cast<uint32_t>(info.ps_front_face_all_bits));
 	key.push_back(static_cast<uint32_t>(info.ps_ancillary));
 	key.push_back(static_cast<uint32_t>(info.ps_no_perspective));
 	key.push_back(static_cast<uint32_t>(info.parameter_mode));
@@ -737,6 +740,7 @@ void ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info) {
 	     "\t ps_pos_z             = %s\n"
 	     "\t ps_pos_w             = %s\n"
 	     "\t ps_front_face        = %s\n"
+	     "\t ps_front_face_all_bits = %s\n"
 	     "\t ps_ancillary         = %s\n"
 	     "\t ps_sample_shading    = %s\n"
 	     "\t ps_no_perspective    = %s\n"
@@ -745,11 +749,10 @@ void ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info) {
 	     "\t ps_execute_on_noop   = %s\n",
 	     info.input_num, info.ps_system_input_base, info.custom_interpolation_mask,
 	     info.ps_perspective_center_vgpr, info.ps_perspective_sample_vgpr,
-	     info.ps_perspective_centroid_vgpr,
-	     info.ps_pos_x ? "true" : "false",
+	     info.ps_perspective_centroid_vgpr, info.ps_pos_x ? "true" : "false",
 	     info.ps_pos_y ? "true" : "false", info.ps_pos_z ? "true" : "false",
 	     info.ps_pos_w ? "true" : "false", info.ps_front_face ? "true" : "false",
-	     info.ps_ancillary ? "true" : "false",
+	     info.ps_front_face_all_bits ? "true" : "false", info.ps_ancillary ? "true" : "false",
 	     info.ps_sample_shading ? "true" : "false", info.ps_no_perspective ? "true" : "false",
 	     info.ps_pixel_kill_enable ? "true" : "false", info.ps_early_z ? "true" : "false",
 	     info.ps_execute_on_noop ? "true" : "false");

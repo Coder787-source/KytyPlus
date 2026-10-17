@@ -45,6 +45,8 @@ namespace Libs::Graphics {
 
 static RenderContext* g_renderer = nullptr;
 
+RenderContext* GetActiveRenderer() noexcept { return g_renderer; }
+
 namespace Gen5Driver {
 
 static constexpr uint64_t DriverDmemBase = 0x0fe0000000ull;

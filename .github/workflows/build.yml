@@ -294,10 +294,10 @@ jobs:
       - name: Verify artifacts
         shell: bash
         run: |
-          file _Build/macos/install/launcher
+          file _Build/macos/install/KytyPS5.app/Contents/MacOS/KytyPS5
           file _Build/macos/install/kyty_emulator
           file _Build/macos/install/libMoltenVK.dylib
-          lipo _Build/macos/install/launcher -verify_arch x86_64
+          lipo _Build/macos/install/KytyPS5.app/Contents/MacOS/KytyPS5 -verify_arch x86_64
           lipo _Build/macos/install/kyty_emulator -verify_arch x86_64
           lipo _Build/macos/install/libMoltenVK.dylib -verify_arch x86_64
           codesign --verify --strict _Build/macos/install/kyty_emulator
@@ -432,11 +432,11 @@ jobs:
       - name: Verify artifacts
         shell: bash
         run: |
-          file _Build/linux/install/launcher
+          file _Build/linux/install/kyty_launcher
           file _Build/linux/install/kyty_emulator
           file _Build/linux/install/kyty_emulator | grep -q "ELF 64-bit LSB .*x86-64"
           ldd _Build/linux/install/kyty_emulator > /dev/null
-          readelf -d _Build/linux/install/launcher | grep -q 'RPATH.*\$ORIGIN/lib'
+          readelf -d _Build/linux/install/kyty_launcher | grep -q 'RPATH.*\$ORIGIN/lib'
           while IFS= read -r -d '' binary; do
             while read -r dependency; do
               test -e "_Build/linux/install/lib/$dependency"
@@ -445,8 +445,8 @@ jobs:
                 sed -n 's/.*Shared library: \[\(libQt6[^]]*\|libicu[^]]*\)\].*/\1/p'
             )
           done < <(
-            find _Build/linux/install/launcher _Build/linux/install/plugins \
-              -type f \( -name launcher -o -name '*.so' \) -print0
+            find _Build/linux/install/kyty_launcher _Build/linux/install/plugins \
+              -type f \( -name kyty_launcher -o -name '*.so' \) -print0
           )
           _Build/linux/install/kyty_emulator --help > /dev/null
 
@@ -540,7 +540,7 @@ jobs:
           macos_dir="artifacts/KytyPlus-macOS-x86_64"
           test -d "$macos_dir"
           chmod a+x \
-            "$macos_dir/launcher" \
+            "$macos_dir/KytyPS5.app/Contents/MacOS/KytyPS5" \
             "$macos_dir/kyty_emulator" \
             "$macos_dir/libMoltenVK.dylib"
           (
@@ -555,8 +555,9 @@ jobs:
           linux_dir="artifacts/KytyPlus-Linux-x86_64"
           test -d "$linux_dir"
           chmod a+x \
-            "$linux_dir/launcher" \
-            "$linux_dir/kyty_emulator"
+            "$linux_dir/kyty_launcher" \
+            "$linux_dir/kyty_emulator" \
+            "$linux_dir/kyty_updater"
           tar -C "$linux_dir" -czf \
             "$GITHUB_WORKSPACE/$RELEASE_NAME-Linux-x86_64.tar.gz" .
 

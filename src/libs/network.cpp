@@ -32,7 +32,6 @@ inline int closesocket(SOCKET s) {
 #endif
 
 #include "common/assert.h"
-#include "common/byteBuffer.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
@@ -379,15 +378,16 @@ private:
 
 static Network* g_net = nullptr;
 
-KYTY_SUBSYSTEM_INIT(Network) {
+void Initialize() {
 	EXIT_IF(g_net != nullptr);
 
 	g_net = new Network;
 }
 
-KYTY_SUBSYSTEM_UNEXPECTED_SHUTDOWN(Network) {}
-
-KYTY_SUBSYSTEM_DESTROY(Network) {}
+void Shutdown() {
+	delete g_net;
+	g_net = nullptr;
+}
 
 int Network::PoolCreate(const char* name, int size) {
 	Common::LockGuard lock(m_mutex);
@@ -1015,10 +1015,6 @@ bool Network::HttpSetAuthEnabled(Id id, int enable) {
 namespace Net {
 
 LIB_NAME("Net", "Net");
-
-struct NetEtherAddr {
-	uint8_t data[6] = {0};
-};
 
 #if defined(_WIN32)
 using NativeSocket                                  = SOCKET;
@@ -4265,9 +4261,7 @@ int KYTY_SYSV_ABI NpSetNpTitleId(const NpTitleId* title_id, const NpTitleSecret*
 	EXIT_NOT_IMPLEMENTED(title_id == nullptr);
 	EXIT_NOT_IMPLEMENTED(title_secret == nullptr);
 
-	LOGF("\t title_id = %.12s\n"
-	     "\t title_secret = %s\n",
-	     title_id->id, Common::HexFromBin(Common::ByteBuffer(title_secret->data, 128)).c_str());
+	LOGF("\t title_id = %.12s\n", title_id->id);
 
 	return OK;
 }

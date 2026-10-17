@@ -1,4 +1,4 @@
-﻿# KytyPlus
+# KytyPlus
 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4.svg)](#system-requirements)
 [![Status](https://img.shields.io/badge/status-Early%20Development-blue.svg)](#current-status)
@@ -299,7 +299,7 @@ documentation only.
 | Dependency | Notes |
 |------------|--------|
 | Git | Submodules required |
-| CMake 3.12+ | On PATH |
+| CMake 3.19+ | On PATH |
 | Ninja | On PATH |
 | Visual Studio 2022 or Build Tools | **Desktop C++** + **C++ Clang tools for Windows** (`clang-cl`) |
 | Qt 6 (MSVC 2022 64-bit) | Widgets, Network, Concurrent (e.g. `C:\Qt\6.10.3\msvc2022_64`) |
@@ -316,7 +316,7 @@ cd C:\path\to\KytyPlus
 
 git submodule update --init --recursive
 
-cmake -S src -B _Build/windows -G Ninja `
+cmake -S . -B _Build/windows -G Ninja `
   -DCMAKE_BUILD_TYPE=Release `
   -DCMAKE_C_COMPILER=clang-cl `
   -DCMAKE_CXX_COMPILER=clang-cl `
@@ -354,7 +354,7 @@ Built and tested on **macOS 15** with **Xcode 26** and **Qt 6.10.3** (clang_64).
 | Dependency | Notes |
 |------------|--------|
 | Git | Submodules required |
-| CMake 3.12+ | On PATH |
+| CMake 3.19+ | On PATH |
 | Ninja | `brew install ninja` |
 | Xcode 26 (clang++) | Command Line Tools or full Xcode |
 | Qt 6 (clang_64) | Widgets, Network, Concurrent (e.g. `~/Qt/6.10.3/macos`) |
@@ -368,7 +368,7 @@ cd /path/to/KytyPlus
 
 git submodule update --init --recursive
 
-cmake -S src -B _Build/macos -G Ninja \
+cmake -S . -B _Build/macos -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES=x86_64 \
   -DCMAKE_C_COMPILER=clang \
@@ -418,7 +418,7 @@ cd /path/to/KytyPlus
 
 git submodule update --init --recursive
 
-cmake -S src -B _Build/linux -G Ninja \
+cmake -S . -B _Build/linux -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \

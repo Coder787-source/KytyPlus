@@ -273,14 +273,14 @@ void DualSenseDriver::PollLoop() {
 	InputState st {};
 	while (!m_stop) {
 		if (!PollOnce(&st)) {
-			Common::Thread::Sleep(2); // device error/backoff
+			Common::Thread::SleepMicro(2000); // device error/backoff
 			continue;
 		}
 		if (m_input_cb != nullptr) {
 			m_input_cb(st, m_input_user);
 		}
 		// ~1 kHz poll rate is typical for USB HID.
-		Common::Thread::Sleep(1);
+		Common::Thread::SleepMicro(1000);
 	}
 }
 

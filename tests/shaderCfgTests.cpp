@@ -12874,6 +12874,51 @@ void TestLateConstantPropagation() {
         "an ungrounded Phi cycle acquired a constant");
 }
 
+void TestMaskedShiftConstantPropagation() {
+  using namespace ShaderRecompiler::IR;
+  for (const uint32_t count : {0u, 1u, 8u, 31u, 32u, 33u, 40u, 63u, 64u, UINT32_MAX}) {
+    for (const uint32_t mask : {0u, 1u, 0xffu, 0x7fffffffu, 0x80000000u, UINT32_MAX}) {
+      for (const bool swapped : {false, true}) {
+        for (const bool shared : {false, true}) {
+          Block block;
+          IREmitter ir(&block);
+          const auto input = ir.GetUserData(static_cast<ScalarReg>(0));
+          const auto shifted = ir.Emit(ValueOpcode::ShiftLeftLogical32, {input, Value(count)});
+          const auto result = ir.Emit(ValueOpcode::BitwiseAnd32,
+              swapped ? std::initializer_list<Value>{Value(mask), shifted}
+                      : std::initializer_list<Value>{shifted, Value(mask)});
+          const auto other = shared ? ir.Emit(ValueOpcode::IAdd32, {shifted, Value(1u)}) : Value{};
+          ConstantPropagationPass({&block});
+          const bool zero = ((UINT32_MAX << (count & 31u)) & mask) == 0u;
+          Check(zero ? result.Resolve() == Value(0u) : !result.Resolve().IsImmediate(),
+                "masked shift retained impossible bits or discarded possible bits");
+          if (shared) {
+            Check(other.Resolve().Instruction()->Arg(0).Resolve() == shifted.Resolve(),
+                  "folding a masked shift changed its other consumer");
+          }
+          constexpr uint32_t source = 0xa5f03c69u;
+          input.Instruction()->ReplaceUsesWith(Value(source));
+          ConstantPropagationPass({&block});
+          const uint32_t expected = source << (count & 31u);
+          Check(result.Resolve() == Value(expected & mask) &&
+                    (!shared || other.Resolve() == Value(expected + 1u)),
+                "masked shift folding changed a runtime result");
+        }
+      }
+    }
+  }
+
+  Block block;
+  IREmitter ir(&block);
+  const auto input = ir.GetUserData(static_cast<ScalarReg>(0));
+  const auto count = ir.GetUserData(static_cast<ScalarReg>(1));
+  const auto shifted = ir.Emit(ValueOpcode::ShiftLeftLogical32, {input, count});
+  const auto result = ir.Emit(ValueOpcode::BitwiseAnd32, {shifted, Value(0xffu)});
+  ConstantPropagationPass({&block});
+  Check(result.Resolve().Instruction()->GetOpcode() == ValueOpcode::BitwiseAnd32,
+        "a variable shift count was treated as a constant");
+}
+
 void TestU64ShiftConstantPropagation() {
   using namespace ShaderRecompiler::IR;
 
@@ -16364,6 +16409,7 @@ int main() {
   TestValuePhiValidation();
   TestLaneMaskProjection();
   TestLateConstantPropagation();
+  TestMaskedShiftConstantPropagation();
   TestU64ShiftConstantPropagation();
   TestU64RegisterPairRoundTrip();
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS

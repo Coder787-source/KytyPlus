@@ -13,8 +13,6 @@
 
 namespace Libs::Graphics {
 
-inline constexpr uint32_t VULKAN_TARGET_API_VERSION = VK_API_VERSION_1_3;
-
 struct VulkanInstance {
 	vk::Instance                       instance                          = nullptr;
 	vk::DebugUtilsMessengerEXT         debug_messenger                   = nullptr;

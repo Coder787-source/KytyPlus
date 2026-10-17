@@ -536,7 +536,10 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			}
 		}
 		if (feedback_aspects && !m_context.GetGraphics().attachment_feedback_loop_enabled) {
-			EXIT("depth attachment feedback loop is not supported by the host\n");
+			static std::atomic_bool logged = false;
+			if (!logged.exchange(true, std::memory_order_relaxed)) {
+				std::printf("depth attachment feedback loop is not supported by the host\n");
+			}
 		}
 		auto layout = depth_attachment_layout(depth);
 		if (sampled_aspects & ~DepthReadableAspects(layout)) {

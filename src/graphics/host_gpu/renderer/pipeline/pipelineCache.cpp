@@ -18,7 +18,6 @@
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "kernel/memory.h"
-#include "kytyGitVersion.h"
 #include "loader/systemContent.h"
 
 #include <algorithm>
@@ -81,7 +80,8 @@ std::string DriverCacheSignature(const vk::PhysicalDeviceProperties& properties)
 		uuid[i * 2]     = hex[properties.pipelineCacheUUID[i] >> 4u];
 		uuid[i * 2 + 1] = hex[properties.pipelineCacheUUID[i] & 0xfu];
 	}
-	return fmt::format("KytyPC1:{}:{:08x}:{:08x}:{:08x}:{}\n", KYTY_GIT_REVISION,
+	// Driver cache entries already distinguish shader code and pipeline state across builds.
+	return fmt::format("KytyPC2:{:08x}:{:08x}:{:08x}:{}\n",
 	                   properties.vendorID, properties.deviceID, properties.driverVersion, uuid);
 }
 
@@ -516,17 +516,6 @@ void PipelineCache::InitializeDriverCache() {
 		PipelineCacheLog("Vulkan pipeline cache: disabled (non-Release build)");
 		return;
 	}
-	const std::string_view git_hash     = KYTY_GIT_HASH;
-	const std::string_view git_revision = KYTY_GIT_REVISION;
-	if (git_hash == "unknown" || git_revision == "unknown") {
-		PipelineCacheLog("Vulkan pipeline cache: disabled (unknown git revision)");
-		return;
-	}
-	if (git_hash.ends_with("-dirty")) {
-		PipelineCacheLog("Vulkan pipeline cache: disabled (dirty build)");
-		return;
-	}
-
 	m_driver_cache_path     = std::filesystem::path("_PipelineCache") / (title_id + ".bin");
 	const auto path         = Common::PathToString(m_driver_cache_path);
 	const bool cache_exists = Common::File::IsFileExisting(m_driver_cache_path);
@@ -559,7 +548,7 @@ void PipelineCache::InitializeDriverCache() {
 			    XXH3_64bits(initial_data.data(), initial_data.size()) != payload_hash) {
 				initial_data.clear();
 				PipelineCacheLog(
-				    "Vulkan pipeline cache: invalidating {} (driver, emulator, or data mismatch)",
+				    "Vulkan pipeline cache: invalidating {} (driver or data mismatch)",
 				    path);
 			}
 		} else {

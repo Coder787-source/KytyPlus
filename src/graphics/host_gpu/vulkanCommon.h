@@ -24,6 +24,8 @@
 
 namespace Libs::Graphics {
 
+inline constexpr uint32_t VULKAN_TARGET_API_VERSION = VK_API_VERSION_1_3;
+
 vk::Format  VulkanFormat(Prospero::BufferFormat guest_format);
 void        RequireVulkanSuccess(vk::Result result, const char* operation);
 vk::ShaderModule CompileSPV(std::span<const uint32_t> code, vk::Device device);

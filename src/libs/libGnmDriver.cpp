@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -83,9 +83,7 @@ void submit_dcb_bytes(const uint32_t* dcb, uint32_t size_in_bytes) {
 
 	const uint32_t size_in_dwords = size_in_bytes / sizeof(uint32_t);
 
-	GetActiveRenderer()->GetGpu().Submit(const_cast<uint32_t*>(dcb), size_in_dwords,
-
-	                                     nullptr, 0, false);
+	GetActiveRenderer()->GetGpu().Submit(std::span {dcb, size_in_dwords}, {});
 
 }
 
@@ -103,9 +101,7 @@ void submit_acb_bytes(uint32_t queue, const uint32_t* acb, uint32_t size_in_byte
 
 	const uint32_t size_in_dwords = size_in_bytes / sizeof(uint32_t);
 
-	GetActiveRenderer()->GetGpu().SubmitCompute(queue, const_cast<uint32_t*>(acb),
-
-	                                            size_in_dwords, false);
+	GetActiveRenderer()->GetGpu().SubmitCompute(queue, std::span {acb, size_in_dwords});
 
 }
 
@@ -2003,7 +1999,7 @@ static int KYTY_SYSV_ABI sceGnmSetVsShader(uint32_t* cmdbuf, uint32_t size, cons
 
 	cmdbuf[i++] = KYTY_PM4(3, Pm4::IT_SET_SH_REG, 0u);
 
-	cmdbuf[i++] = Pm4::SPI_SHADER_PGM_RSRC1_ES & 0xffffu;
+	cmdbuf[i++] = (Pm4::SPI_SHADER_PGM_LO_ES + 2u) & 0xffffu;
 
 	cmdbuf[i++] = var;
 
@@ -2567,7 +2563,7 @@ static int KYTY_SYSV_ABI sceGnmSubmitDone() {
 
 	if (GetActiveRenderer() != nullptr) {
 
-		GetActiveRenderer()->GetGpu().Done();
+		GetActiveRenderer()->GetGpu().SuspendPoint();
 
 	}
 

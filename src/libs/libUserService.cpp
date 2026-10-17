@@ -1,12 +1,10 @@
 #include "common/abi.h"
 #include "common/assert.h"
-#include "common/stringUtils.h"
+#include "common/emulatorConfig.h"
 #include "libs/errno.h"
-#include "libs/controller.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
 
-#include <cinttypes>
 #include <cstdio>
 #include <cstring>
 
@@ -15,16 +13,6 @@ namespace Libs {
 LIB_VERSION("UserService", 1, "UserService", 1, 1);
 
 namespace UserService {
-
-// Local multiplayer: users 1000..1003 map 1:1 to pad handles 1..4 (player 1..4).
-// Any user id in that range is treated as a valid, logged-in local account so
-// games can discover and drive up to four players.
-static bool IsLocalUser(int user_id) {
-	return Libs::Controller::ControllerIndexFromUserId(user_id) >= 0;
-}
-
-static constexpr int LOCAL_USERS[Libs::Controller::PAD_MAX_CONTROLLERS] = {
-    1000, 1001, 1002, 1003};
 
 struct UserServiceLoginUserIdList {
 	int user_id[4];
@@ -68,7 +56,7 @@ static KYTY_SYSV_ABI int UserServiceGetInitialUser(int* user_id) {
 
 	EXIT_NOT_IMPLEMENTED(user_id == nullptr);
 
-	*user_id = 1000;
+	*user_id = Config::GetUserId();
 
 	return OK;
 }
@@ -78,11 +66,12 @@ static KYTY_SYSV_ABI int UserServiceGetEvent(SceUserServiceEvent* event) {
 
 	EXIT_NOT_IMPLEMENTED(event == nullptr);
 
-	static int next_user = 0;
+	static bool logged_in = false;
 
-	if (next_user < Libs::Controller::PAD_MAX_CONTROLLERS) {
+	if (!logged_in) {
+		logged_in         = true;
 		event->event_type = UserServiceEventTypeLogin;
-		event->user_id    = LOCAL_USERS[next_user++];
+		event->user_id    = Config::GetUserId();
 		return OK;
 	}
 
@@ -94,23 +83,22 @@ static KYTY_SYSV_ABI int UserServiceGetLoginUserIdList(UserServiceLoginUserIdLis
 
 	EXIT_NOT_IMPLEMENTED(user_id_list == nullptr);
 
-	// Report every local player as logged in so a local-multiplayer title can
-	// discover (and bind) players 2-4. Previously only 1000 was returned, which
-	// made the guest believe a single account existed.
-	for (int i = 0; i < Libs::Controller::PAD_MAX_CONTROLLERS; i++) {
-		user_id_list->user_id[i] = LOCAL_USERS[i];
-	}
+	user_id_list->user_id[0] = Config::GetUserId();
+	user_id_list->user_id[1] = -1;
+	user_id_list->user_id[2] = -1;
+	user_id_list->user_id[3] = -1;
 
 	return OK;
 }
 
 static KYTY_SYSV_ABI int UserServiceGetUserName(int user_id, char* name, size_t size) {
-	EXIT_NOT_IMPLEMENTED(!IsLocalUser(user_id));
+	if (user_id != Config::GetUserId()) {
+		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
+	}
 	EXIT_NOT_IMPLEMENTED(size < 5);
 
-	const int player = Libs::Controller::ControllerIndexFromUserId(user_id) + 1;
-
-	int s = snprintf(name, size, "Kyty-%d", player);
+	const auto& user_name = Config::GetUserName();
+	int         s         = snprintf(name, size, "%s", user_name.c_str());
 
 	EXIT_NOT_IMPLEMENTED(static_cast<size_t>(s) >= size);
 
@@ -123,7 +111,7 @@ static KYTY_SYSV_ABI int UserServiceGetUserNumber(int user_id, int32_t* number) 
 	if (number == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (!IsLocalUser(user_id)) {
+	if (user_id != Config::GetUserId()) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -138,7 +126,7 @@ static KYTY_SYSV_ABI int UserServiceGetGamePresets(int user_id, UserServiceGameP
 	if (presets == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (!IsLocalUser(user_id)) {
+	if (user_id != Config::GetUserId()) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -159,7 +147,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityVibration(int user_id, int32
 	if (vibration == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (!IsLocalUser(user_id)) {
+	if (user_id != Config::GetUserId()) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -175,7 +163,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityTriggerEffect(int      user_
 	if (trigger_effect == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (!IsLocalUser(user_id)) {
+	if (user_id != Config::GetUserId()) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -190,7 +178,7 @@ static KYTY_SYSV_ABI int UserServiceGetAgeLevel(int user_id, uint32_t* age_level
 	if (age_level == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (!IsLocalUser(user_id)) {
+	if (user_id != Config::GetUserId()) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -206,7 +194,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityChatTranscription(int      u
 	if (chat_transcription == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (!IsLocalUser(user_id)) {
+	if (user_id != Config::GetUserId()) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -222,7 +210,7 @@ UserServiceGetAccessibilityPressAndHoldDelay(int user_id, int32_t* press_and_hol
 	if (press_and_hold_delay == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (!IsLocalUser(user_id)) {
+	if (user_id != Config::GetUserId()) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -238,7 +226,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityZoomEnabled(int      user_id
 	if (zoom_enabled == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (!IsLocalUser(user_id)) {
+	if (user_id != Config::GetUserId()) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 
@@ -254,7 +242,7 @@ static KYTY_SYSV_ABI int UserServiceGetAccessibilityZoomFollowFocus(int      use
 	if (zoom_follow_focus == nullptr) {
 		return USER_SERVICE_ERROR_INVALID_ARGUMENT;
 	}
-	if (!IsLocalUser(user_id)) {
+	if (user_id != Config::GetUserId()) {
 		return USER_SERVICE_ERROR_NOT_LOGGED_IN;
 	}
 

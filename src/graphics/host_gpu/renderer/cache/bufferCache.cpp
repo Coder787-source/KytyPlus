@@ -126,6 +126,7 @@ void BufferCache::ChangeRegister(BufferId id) {
 		}
 		WriteDataBuffer(m_bda_pagetable_buffer, table_offset,
 		                addresses.data(), addresses.size() * sizeof(vk::DeviceAddress));
+		m_memory_tracker.QueueBdaSync(buffer.CpuAddress(), buffer.Size());
 	} else {
 		const auto found = m_buffers.find(buffer.CpuAddress());
 		EXIT_IF(found == m_buffers.end() || found->second != id);
@@ -683,6 +684,16 @@ void BufferCache::RunGarbageCollector() {
 
 void BufferCache::ProcessFaultBuffer() {
 	m_fault_manager.ProcessFaultBuffer();
+}
+
+void BufferCache::SynchronizeBda(const RangeSet& mapped) {
+	// Take before walking: writes queued during synchronization remain pending.
+	const auto pending = m_memory_tracker.TakeBdaSync();
+	pending.ForEach([&](uint64_t begin, uint64_t end) {
+		mapped.ForEachInRange(begin, end - begin, [this](uint64_t start, uint64_t finish) {
+			SynchronizeBuffersInRange(start, finish - start);
+		});
+	});
 }
 
 void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size) {

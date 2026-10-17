@@ -7,6 +7,10 @@
 #include "configurationItem.h"
 #include "configurationListWidget.h"
 #include "patchesDialog.h"
+#include "controllerPreview.h"
+#include "gameContent.h"
+#include "titleSound.h"
+#include "updateChecker.h"
 
 #include <QApplication>
 #include <QByteArray>
@@ -97,8 +101,11 @@ public:
 private:
 	static QByteArray g_last_geometry;
 
-	Ui::MainDialog* m_ui          = {nullptr};
-	MainDialog*     m_main_dialog = nullptr;
+	Ui::MainDialog* m_ui             = {nullptr};
+	MainDialog*     m_main_dialog    = nullptr;
+	UpdateChecker*  m_update_checker = nullptr;
+	ControllerPreview m_controller_preview;
+	TitleSound      m_title_sound;
 	QString         m_interpreter;
 
 	/*DetachableProcess*/ QProcess m_process;
@@ -127,7 +134,19 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 
 	connect(main_dialog, &MainDialog::Start, this, &MainDialogPrivate::FindInterpreter,
 	        Qt::QueuedConnection);
-	connect(m_ui->widget, &ConfigurationListWidget::Select, this, &MainDialogPrivate::Update);
+	connect(m_ui->widget, &ConfigurationListWidget::Select, this, [this]() {
+		Update();
+		const auto* item = m_ui->widget->GetSelectedItem();
+		m_title_sound.SetTitle(m_process.state() == QProcess::NotRunning && item != nullptr
+		                           ? item->GetInfo().basedir
+		                           : QString());
+	});
+	connect(m_ui->widget, &ConfigurationListWidget::PreviewControllerColor, this,
+	        [this](const QString& color) {
+		        if (m_process.state() == QProcess::NotRunning) {
+			        m_controller_preview.SetColor(color);
+		        }
+	        });
 	connect(m_ui->widget, &ConfigurationListWidget::Run, this, &MainDialogPrivate::Run);
 	connect(m_ui->pushButton_InstallPkg, &QPushButton::clicked, this, &MainDialogPrivate::InstallPkg);
 	connect(m_ui->pushButton_LoadGame, &QPushButton::clicked, this, &MainDialogPrivate::LoadGame);
@@ -574,6 +593,8 @@ void MainDialogPrivate::Run() {
 	}
 
 	m_running_item->SetRunning(true);
+	m_controller_preview.SetSuspended(true);
+	m_title_sound.SetTitle({});
 
 	Configuration info;
 	info.CopyFrom(m_running_item->GetInfo());

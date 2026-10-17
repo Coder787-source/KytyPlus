@@ -235,6 +235,9 @@ void TestSysmoduleReferences() {
   const auto unload = resolve("eR2bZFAAU0Q");
   const auto is_loaded = resolve("fMP5NHUOaMk");
   constexpr int unloaded = static_cast<int>(0x805a1001u);
+  Check(load(0x115) == Libs::LibKernel::KERNEL_ERROR_ENOENT && is_loaded(0x115) == unloaded &&
+            unload(0x115) == unloaded,
+        "missing packaged NpCppWebApi fails without recording a loaded module");
   Check(load(0x113) == OK && is_loaded(0xb4) == unloaded,
         "loading entitlement access does not mark AppContent loaded");
   Check(unload(0x113) == OK, "release independent module reference");
@@ -255,6 +258,9 @@ void TestSysmoduleReferences() {
       reinterpret_cast<int (KYTY_SYSV_ABI *)(uint16_t, int, int, int, int*)>(
           internal_symbol->vaddr);
   int result = -1;
+  Check(internal_load(0x115, 0, 0, 0, &result) == Libs::LibKernel::KERNEL_ERROR_ENOENT &&
+            result == Libs::LibKernel::KERNEL_ERROR_ENOENT && is_loaded(0x115) == unloaded,
+        "internal module loading propagates missing native module failure");
   Check(internal_load(0xb4, 0, 0, 0, &result) == OK && result == OK &&
             is_loaded(0xb4) == OK && unload(0xb4) == OK && is_loaded(0xb4) == unloaded,
         "internal and public module operations share load state");

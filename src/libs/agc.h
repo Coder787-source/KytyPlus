@@ -29,6 +29,9 @@ struct Lifecycle {
 	static constexpr auto        shutdown   = Libs::Graphics::Shutdown;
 };
 
+class RenderContext;
+[[nodiscard]] RenderContext* GetActiveRenderer() noexcept;
+
 void GraphicsDbgDumpDcb(const char* type, uint32_t num_dw, const uint32_t* cmd_buffer);
 
 namespace Gen5 {

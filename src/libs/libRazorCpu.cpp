@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 
 
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -48,7 +48,7 @@ namespace Libs {
 namespace LibRazorCpu {
 
 
-LIB_VERSION("libSceRazorCpu", 1, "libSceRazorCpu", 1, 1);
+LIB_VERSION("RazorCpu", 1, "RazorCpu", 1, 1);
 
 
 
@@ -567,7 +567,25 @@ static int KYTY_SYSV_ABI sceRazorCpuWriteBookmark() {
 
 
 
+static KYTY_SYSV_ABI uint32_t RazorCpuIsCapturing() {
+	PRINT_NAME();
+
+	return 0;
+}
+
+static int KYTY_SYSV_ABI RazorCpuPopMarker() {
+	return 0;
+}
+
+static int KYTY_SYSV_ABI RazorCpuPushMarker(const char*, uint32_t, uint32_t) {
+	return 0;
+}
+
 LIB_DEFINE(InitRazorCpu_1) {
+
+	LIB_FUNC("EboejOQvLL4", LibRazorCpu::RazorCpuIsCapturing);
+	LIB_FUNC("YpkGsMXP3ew", LibRazorCpu::RazorCpuPopMarker);
+	LIB_FUNC("zw+celG7zSI", LibRazorCpu::RazorCpuPushMarker);
 
 
 	LIB_FUNC("JFzLJBlYIJE", LibRazorCpu::sceRazorCpuBeginLogicalFileAccess);
@@ -618,10 +636,10 @@ LIB_DEFINE(InitRazorCpu_1) {
 	LIB_FUNC("njGikRrxkC0", LibRazorCpu::sceRazorCpuPlotValue);
 
 
-	LIB_FUNC("YpkGsMXP3ew", LibRazorCpu::sceRazorCpuPopMarker);
 
 
-	LIB_FUNC("zw+celG7zSI", LibRazorCpu::sceRazorCpuPushMarker);
+
+
 
 
 	LIB_FUNC("uZrOwuNJX-M", LibRazorCpu::sceRazorCpuPushMarkerStatic);

@@ -608,13 +608,23 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 			    ReplaceBinaryIdentity(inst, Type::U32, UINT32_MAX)) return;
 			for (uint32_t arm = 0; arm < 2u; ++arm) {
 				const auto mask = Arg(inst, arm);
+				if (!IsImmediate(mask, Type::U32)) continue;
+				if (mask.U32() == 0u) {
+					Replace(inst, Value(0u));
+					return;
+				}
 				const auto* shifted = Arg(inst, arm ^ 1u).TryInstruction();
-				if (!IsImmediate(mask, Type::U32) || shifted == nullptr ||
-				    shifted->GetOpcode() != ValueOpcode::ShiftLeftLogical32 || !HasOneUse(*shifted)) continue;
+				if (shifted == nullptr || shifted->GetOpcode() != ValueOpcode::ShiftLeftLogical32) continue;
 				const auto shift = Arg(*shifted, 1);
-				if (!IsImmediate(shift, Type::U32) || shift.U32() >= 32u) continue;
+				if (!IsImmediate(shift, Type::U32)) continue;
+				const auto shifted_mask = mask.U32() >> (shift.U32() & 31u);
+				if (shifted_mask == 0u) {
+					Replace(inst, Value(0u));
+					return;
+				}
+				if (!HasOneUse(*shifted) || shift.U32() >= 32u) continue;
 				const auto masked = worklist.Prepend(block, instruction, ValueOpcode::BitwiseAnd32,
-				    {Arg(*shifted, 0), Value(mask.U32() >> shift.U32())});
+				    {Arg(*shifted, 0), Value(shifted_mask)});
 				Replace(inst, Value(&*worklist.Prepend(block, instruction, ValueOpcode::ShiftLeftLogical32,
 				    {Value(&*masked), shift})));
 				return;

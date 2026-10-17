@@ -11,6 +11,7 @@
 #include "kernel/eventQueue.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
+#include "kernel/module.h"
 #include "kernel/pthread.h"
 #include "kernel/semaphore.h"
 #include "kernel/syncOnAddress.h"
@@ -65,7 +66,6 @@ LIB_DEFINE(InitLibKernel_1_Apr);
 
 namespace LibKernel {
 
-using KernelModule                   = int32_t;
 using get_thread_atexit_count_func_t = KYTY_SYSV_ABI int (*)(KernelModule);
 using thread_atexit_report_func_t    = KYTY_SYSV_ABI void (*)(KernelModule);
 
@@ -1201,9 +1201,9 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 	return OK;
 }
 
-static KYTY_SYSV_ABI KernelModule KernelLoadStartModule(const char* module_file_name, size_t args,
-                                                        const void* argp, uint32_t flags,
-                                                        const KernelLoadModuleOpt* opt, int* res) {
+KernelModule KYTY_SYSV_ABI KernelLoadStartModule(const char* module_file_name, size_t args,
+                                                 const void* argp, uint32_t flags,
+                                                 const KernelLoadModuleOpt* opt, int* res) {
 	PRINT_NAME();
 
 	// EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
@@ -1255,9 +1255,9 @@ static KYTY_SYSV_ABI KernelModule KernelLoadStartModule(const char* module_file_
 	return static_cast<KernelModule>(handle);
 }
 
-static int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args, const void* argp,
-                                                uint32_t flags, const KernelUnloadModuleOpt* opt,
-                                                int* res) {
+int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args, const void* argp,
+                                        uint32_t flags, const KernelUnloadModuleOpt* opt,
+                                        int* res) {
 	PRINT_NAME();
 
 	// EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
