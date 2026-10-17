@@ -8119,6 +8119,24 @@ void TestDsReturningAtomic64Decoder() {
         "captured DS_CMPST_RTN_B64 lost its comparison/replacement pairs or aliases");
 }
 
+void TestDsCompareStore32Decoder() {
+  using namespace ShaderRecompiler::Decoder;
+  // CS04b812daaacd532f pc 0x3e8 (AC Valhalla, #281).
+  const uint32_t words[] = {0xd8c00000u, 0x04130504u};
+  Instruction decoded;
+  DecodeInstruction(words, 0u, decoded);
+  Check(decoded.opcode == Opcode::DS_CMPST_RTN_B32 && decoded.word_count == 2u &&
+            decoded.data_dwords == 1u && decoded.src_count == 3u && decoded.src0.reg == 4u &&
+            decoded.src1.reg == 5u && decoded.src2.reg == 19u && decoded.dst.reg == 4u &&
+            decoded.offset == 0u && !decoded.gds,
+        "captured DS_CMPST_RTN_B32 lost its comparison/replacement order or aliases");
+
+  const uint32_t gds_words[] = {words[0] | (1u << 17u), words[1]};
+  DecodeInstruction(gds_words, 0u, decoded);
+  Check(decoded.opcode == Opcode::UNSUPPORTED && decoded.word_count == 2u && decoded.gds,
+        "DS_CMPST_RTN_B32 must reject the unimplemented GDS variant");
+}
+
 void TestDsFloatMinMaxDecoder() {
   using namespace ShaderRecompiler::Decoder;
   for (bool max_value : {false, true}) {
@@ -10539,6 +10557,8 @@ void TestCapturedBufferAtomicsX2() {
     ValueOpcode ir_opcode;
   };
   const Case cases[] = {
+      {{0xe1480018u, 0x80000000u}, 0u, 234u, "BUFFER_ATOMIC_ADD_X2",
+       "BufferAtomicIAdd64", "OpAtomicIAdd", ValueOpcode::BufferAtomicIAdd64},
       {{0xe1680018u, 0x80000000u}, 0u, 241u, "BUFFER_ATOMIC_OR_X2",
        "BufferAtomicOr64", "OpAtomicOr", ValueOpcode::BufferAtomicOr64},
       {{0xe1402000u, 0x80000913u}, 9u, 229u, "BUFFER_ATOMIC_SWAP_X2",
@@ -14412,6 +14432,172 @@ void TestComputeImageFill() {
     Run(mutation);
 }
 
+void TestPatternFill() {
+  using namespace ShaderRecompiler::IR;
+  // Bounded DWORD pattern fill, including every instruction through S_ENDPGM.
+  const uint32_t bounded_shader[] = {
+      0xbfa00003u, 0xd7460002u, 0x04010c0au, 0x7da80408u,
+      0xbf88003fu, 0x7e000c09u, 0xbf070980u, 0x858a807eu,
+      0x7e005700u, 0x100000ffu, 0x4f800000u, 0x7e060f00u,
+      0xd5766a00u, 0x02020609u, 0x7d8a0280u, 0x4c020080u,
+      0x02000101u, 0xd56a0001u, 0x00020700u, 0x4c000303u,
+      0x4a020303u, 0x02000101u, 0xd56a0000u, 0x00020500u,
+      0xd5690001u, 0x00020009u, 0x4c060302u, 0x7d8c02f9u,
+      0x06068c02u, 0x7d860609u, 0x87ea6a0cu, 0x50000080u,
+      0xd5286a00u, 0x003200c1u, 0xd5010000u, 0x002a00c1u,
+      0xd5690000u, 0x00020009u, 0x4c000102u, 0x7d0a0080u,
+      0xbe88246au, 0xbf880015u, 0x7d0a0081u, 0xbe8a246au,
+      0xbf88000cu, 0x7d0a0082u, 0xbeea246au, 0xbf880003u,
+      0x7e000207u, 0xe0102000u, 0x80000002u, 0x8afe7e6au,
+      0xbf880003u, 0x7e000206u, 0xe0102000u, 0x80000002u,
+      0xbefe046au, 0x8afe7e0au, 0xbf880003u, 0x7e000205u,
+      0xe0102000u, 0x80000002u, 0xbefe040au, 0x8afe7e08u,
+      0xbf880003u, 0x7e000204u, 0xe0102000u, 0x80000002u,
+      0xbf810000u,
+  };
+  // Pattern fill whose bounds come from dispatch thread dimensions.
+  const uint32_t thread_dimension_shader[] = {
+      0xbfa00002u, 0x7e040c09u, 0x81ea0980u, 0xd7460000u,
+      0x04010c0au, 0x7e020205u, 0x7e045702u, 0x100404ffu,
+      0x4f7ffffeu, 0x7e040f02u, 0x7ed60502u, 0x936a6b6au,
+      0x9aea6b6au, 0x4a04046au, 0xd56a0002u, 0x00020102u,
+      0xd5690002u, 0x00020409u, 0x4c040500u, 0x7d860409u,
+      0x4e060409u, 0x02040702u, 0x7d860409u, 0x4e060409u,
+      0x02040702u, 0x7d840481u, 0x7d8404f9u, 0x06868882u,
+      0x7d8404f9u, 0x06868a83u, 0x02020204u, 0xd5010001u,
+      0x00200d01u, 0xd5010001u, 0x00280f01u, 0xe0102000u,
+      0x80000100u, 0xbf810000u,
+  };
+  // The 64-lane variant uses vector multiply-high for the remainder calculation.
+  const uint32_t thread_dimension_wave64_shader[] = {
+      0xbfa00002u, 0x7e060c09u, 0x4c0412f9u, 0x86860680u,
+      0xd7460000u, 0x04010c0au, 0x7e020205u, 0x7e065703u,
+      0x100606ffu, 0x4f7ffffeu, 0x7e060f03u, 0xd5690002u,
+      0x00020702u, 0xd56a0002u, 0x00020702u, 0x4a040503u,
+      0xd56a0002u, 0x00020102u, 0xd5690002u, 0x00020409u,
+      0x4c040500u, 0x7d860409u, 0x4c0612f9u, 0x86060602u,
+      0x02040702u, 0x7d860409u, 0x4c0612f9u, 0x86060602u,
+      0x02040702u, 0x7d040481u, 0x7d0404f9u, 0x06868882u,
+      0x7d0404f9u, 0x06868a83u, 0x02020204u, 0xd5010001u,
+      0x00200d01u, 0xd5010001u, 0x00280f01u, 0xe0102000u,
+      0x80000100u, 0xbf810000u,
+  };
+  // The 64-lane variant with scalar quotient setup.
+  const uint32_t thread_dimension_wave64_scalar_shader[] = {
+      0xbfa00002u, 0x7e040c09u, 0x81ea0980u, 0xd7460000u,
+      0x04010c0au, 0x7e020205u, 0x7e045702u, 0x100404ffu,
+      0x4f7ffffeu, 0x7e040f02u, 0x7ed60502u, 0x936a6b6au,
+      0x9aea6b6au, 0x816a6a6bu, 0xd56a0002u, 0x0002006au,
+      0xd5690002u, 0x00020409u, 0x4c040500u, 0x7d860409u,
+      0x4c0612f9u, 0x86060602u, 0x02040702u, 0x7d860409u,
+      0x4c0612f9u, 0x86060602u, 0x02040702u, 0x7d040481u,
+      0x7d0404f9u, 0x06868882u, 0x7d0404f9u, 0x06868a83u,
+      0x02020204u, 0xd5010001u, 0x00200d01u, 0xd5010001u,
+      0x00280f01u, 0xe0102000u, 0x80000100u, 0xbf810000u,
+  };
+  // Same layout, with vector arithmetic for the reciprocal correction.
+  auto thread_dimension_wave64_vector_shader = std::to_array(thread_dimension_wave64_scalar_shader);
+  thread_dimension_wave64_vector_shader[13] = 0x4a04046au;
+  thread_dimension_wave64_vector_shader[15] = 0x00020102u;
+  struct PatternCase {
+    std::span<const uint32_t> shader;
+    uint32_t wave_size;
+    bool bounded;
+    size_t literal_word;
+  };
+  const PatternCase cases[] = {
+      {bounded_shader, 64, true, 10},
+      {thread_dimension_shader, 32, false, 8},
+      {thread_dimension_wave64_shader, 64, false, 9},
+      {thread_dimension_wave64_scalar_shader, 64, false, 8},
+      {thread_dimension_wave64_vector_shader, 64, false, 8},
+  };
+  for (const auto &[shader, wave_size, bounded, literal_word] : cases) {
+    std::array<uint32_t, 10> userdata = {
+        0x00200000u, 4u << 16, 64u, 0x14204u,
+        0xff000000u, 0u, 0u, 0x08000000u, 64u, 1u,
+    };
+    ShaderComputeInputInfo compute{};
+    compute.threads_num[0] = 64;
+    compute.threads_num[1] = compute.threads_num[2] = 1;
+    compute.workgroup_register = 10;
+    compute.thread_ids_num = 1;
+    compute.group_id[0] = true;
+    compute.dispatch_thread_dimensions = !bounded;
+    compute.wave_size = wave_size;
+    auto options = MakeCompileOptions(ShaderType::Compute);
+    options.wave_size = compute.wave_size;
+    options.input_info.compute = &compute;
+    options.user_data = userdata;
+    // Recognition derives identity from code, independently of the caller's hash.
+    options.shader_hash = 0x12345678u;
+    const auto Build = [&](std::span<const uint32_t> code) {
+      auto translated = ShaderRecompiler::TranslateProgram(code, options);
+      return ExtractResourcePlan(translated.program);
+    };
+    auto plan = Build(shader);
+    ResourceSnapshot snapshot;
+    ResourceSpecialization specialization;
+    const auto Materialize = [&](bool expected) {
+      Check(MaterializeResources(plan, {.user_data = userdata}, snapshot, specialization),
+            "pattern fill did not materialize");
+      const auto &fill = snapshot.uniform_fill;
+      Check((fill.kind == UniformFillKind::Buffer) == expected,
+            "pattern fill used inactive words or retained a stale result");
+      if (expected)
+        Check(fill.value == userdata[4] && fill.words == 1 &&
+                  fill.bounded_elements == (bounded ? userdata[8] : 0u) &&
+                  fill.group_stride == std::array<uint32_t, 3>{64, 0, 0},
+              "pattern fill lost its value or coverage contract");
+    };
+    Materialize(true);
+    userdata[4] ^= 0x123456u;
+    Materialize(true);
+    userdata[4] ^= 0x123456u;
+    for (const uint32_t period : {0u, 2u, 3u, 4u, 5u}) {
+      userdata[9] = period;
+      Materialize(false);
+    }
+    for (uint32_t period = 2; period <= 4; ++period) {
+      userdata[9] = period;
+      userdata[3 + period] = userdata[4];
+      Materialize(true);
+      userdata[5] ^= 1u;
+      Materialize(false);
+      userdata[5] ^= 1u;
+    }
+    userdata[5] = userdata[6] = 0;
+    userdata[7] = 0x08000000u;
+    userdata[9] = 1;
+    Materialize(true);
+    userdata[8] = 0;
+    Materialize(!bounded);
+    userdata[8] = 63;
+    Materialize(true); // The renderer owns the descriptor-size equality check.
+    userdata[8] = 64;
+    Materialize(true);
+    std::vector<uint32_t> changed(shader.begin(), shader.end());
+    changed.push_back(0xdeadcafeu); // Non-executable metadata does not change identity.
+    Check(Build(changed).uniform_fill.fill.kind == UniformFillKind::Buffer,
+          "pattern recognition included bytes after S_ENDPGM");
+    changed[literal_word] ^= 0x00800000u;
+    Check(Build(changed).uniform_fill.fill.kind == UniformFillKind::None,
+          "pattern recognition accepted modified executable instructions");
+    for (const uint32_t invalid_input : {0u, 1u, 2u, 3u}) {
+      const auto saved_compute = compute;
+      const auto saved_wave = options.wave_size;
+      if (invalid_input == 0) compute.workgroup_register = 11;
+      if (invalid_input == 1) options.wave_size = wave_size == 64 ? 32 : 64;
+      if (invalid_input == 2) compute.dispatch_thread_dimensions = bounded;
+      if (invalid_input == 3) compute.float_mode ^= 1u;
+      Check(Build(shader).uniform_fill.fill.kind == UniformFillKind::None,
+            "pattern recognition accepted different shader launch inputs");
+      compute = saved_compute;
+      options.wave_size = saved_wave;
+    }
+  }
+}
+
 void TestGpuProducedWritableDescriptor() {
   using namespace ShaderRecompiler::IR;
   // Reduced from 994af59d50bedca8: the GPU-built BVH header supplies a relative
@@ -16312,6 +16498,7 @@ int main() {
   TestScalarAshrI64Decoder();
   TestImageAtomicWidthDecoder();
   TestDsReturningAtomic64Decoder();
+  TestDsCompareStore32Decoder();
   TestDsFloatMinMaxDecoder();
   TestNewShaderDecoderArchitecture();
   TestImageAddressOperands();
@@ -16428,6 +16615,7 @@ int main() {
   TestNewShaderRecompilerEarlyZDisabledWhenPixelKillEnabled();
   TestTypedDescriptorRealWideMoveTranslation();
   TestComputeImageFill();
+  TestPatternFill();
   TestGpuProducedWritableDescriptor();
   TestUniformSelectedWritableDescriptor();
   TestUniformSelectedDescriptorLoadAddress();

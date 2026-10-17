@@ -1046,6 +1046,8 @@ void Translator::EmitMemory(const Decoder::Instruction& inst) {
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicFMin32);
 		case Decoder::Opcode::BUFFER_ATOMIC_FMAX:
 			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicFMax32);
+		case Decoder::Opcode::BUFFER_ATOMIC_ADD_X2:
+			return BUFFER_ATOMIC(inst, IR::ValueOpcode::BufferAtomicIAdd64);
 
 		case Decoder::Opcode::DS_ADD_U32:
 			return DS_ATOMIC(inst, IR::ValueOpcode::SharedAtomicIAdd32, false);
@@ -1083,6 +1085,8 @@ void Translator::EmitMemory(const Decoder::Instruction& inst) {
 			return DS_ATOMIC(inst, IR::ValueOpcode::SharedAtomicUMax32, true);
 		case Decoder::Opcode::DS_MAX_RTN_U64:
 			return DS_ATOMIC(inst, IR::ValueOpcode::SharedAtomicUMax64, true);
+		case Decoder::Opcode::DS_CMPST_RTN_B32:
+			return DS_ATOMIC(inst, IR::ValueOpcode::SharedAtomicCmpSwap32, true);
 		case Decoder::Opcode::DS_CMPST_RTN_B64:
 			return DS_ATOMIC(inst, IR::ValueOpcode::SharedAtomicCmpSwap64, true);
 		case Decoder::Opcode::DS_AND_B32:

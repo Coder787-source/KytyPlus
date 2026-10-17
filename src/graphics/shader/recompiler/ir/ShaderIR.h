@@ -622,6 +622,8 @@ struct CompiledShaderInfo {
 struct UniformFillPlan {
 	UniformFill          fill;
 	std::array<Value, 4> values;
+	Value                pattern_size;
+	Value                element_count;
 };
 
 // Resource analysis retained by the shader cache. It owns immutable descriptor/SRT,

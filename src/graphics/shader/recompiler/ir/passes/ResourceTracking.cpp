@@ -15,6 +15,8 @@
 #include <tuple>
 #include <unordered_map>
 #include <utility>
+#define XXH_INLINE_ALL
+#include <xxhash.h>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 namespace {
@@ -4040,11 +4042,71 @@ private:
 	bool                                       m_shader_writes = false;
 };
 
+UniformFillPlan RecognizePatternFill(Program& program, const Decoder::Program& decoded,
+                                   ShaderStageInputInfo input) {
+	struct Pattern {
+		size_t code_words;
+		uint64_t hash;
+		uint32_t wave_size;
+		bool bounded;
+	};
+	constexpr std::array patterns {
+		// Bounded 64-lane variant.
+		Pattern {.code_words = 69, .hash = 0x0704b9818e3cba06ull, .wave_size = 64, .bounded = true},
+		// Dispatch thread dimensions, 64-lane variants.
+		Pattern {.code_words = 42, .hash = 0x92ce57f21310ef02ull, .wave_size = 64, .bounded = false},
+		Pattern {.code_words = 40, .hash = 0x374161027f58bee7ull, .wave_size = 64, .bounded = false},
+		Pattern {.code_words = 40, .hash = 0x7d7172c56c2e296dull, .wave_size = 64, .bounded = false},
+		// Dispatch thread dimensions, 32-lane variant.
+		Pattern {.code_words = 38, .hash = 0xacbda1a1ccdd4198ull, .wave_size = 32, .bounded = false},
+	};
+	if (program.stage != ShaderType::Compute || input.compute == nullptr ||
+	    decoded.instructions.empty() || program.user_data_base != 0 || program.user_data_count < 10 ||
+	    program.info.buffers.size() != 1 || !program.info.images.empty()) return {};
+	const auto& cs = *input.compute;
+	const bool matching_inputs = cs.workgroup_register == 10 && cs.thread_ids_num == 1 &&
+	    cs.group_id[0] && !cs.group_id[1] && !cs.group_id[2] && cs.threads_num[0] == 64 &&
+	    cs.threads_num[1] == 1 && cs.threads_num[2] == 1 && cs.float_mode == 0xc0;
+	if (!matching_inputs) return {};
+	const auto& last = decoded.instructions.back();
+	const size_t words = last.pc / sizeof(uint32_t) + last.word_count;
+	if (words > decoded.code.size() ||
+	    std::ranges::find(patterns, words, &Pattern::code_words) == patterns.end()) return {};
+	// Hash executable instructions through S_ENDPGM, excluding binary metadata.
+	// Verified variants implement Destination[id] = value[id % pattern_size].
+	const auto hash = XXH3_64bits(decoded.code.data(), words * sizeof(uint32_t));
+	const auto pattern = std::ranges::find_if(patterns, [&](const Pattern& candidate) {
+		return candidate.code_words == words && candidate.hash == hash;
+	});
+	if (pattern == patterns.end() || program.wave_size != pattern->wave_size ||
+	    cs.dispatch_thread_dimensions != !pattern->bounded) return {};
+	std::array<Value, 10> userdata;
+	for (auto* block: program.blocks) {
+		for (auto& inst: *block) {
+			if (inst.GetOpcode() != ValueOpcode::GetUserData) continue;
+			const auto reg = RegIndex(inst.Arg(0).ScalarRegister());
+			if (reg < userdata.size()) userdata[reg] = Value(&inst);
+		}
+	}
+	for (uint32_t reg = 4; reg < 10; ++reg)
+		if ((reg != 8 || pattern->bounded) && userdata[reg].IsEmpty()) return {};
+	UniformFillPlan result;
+	result.fill.kind = UniformFillKind::Buffer;
+	result.fill.words = 1;
+	result.fill.group_stride[0] = 64;
+	std::copy_n(userdata.begin() + 4, 4, result.values.begin());
+	result.pattern_size = userdata[9];
+	// Only the bounded variant reads an explicit count; the other uses thread dimensions.
+	if (pattern->bounded) result.element_count = userdata[8];
+	return result;
+}
+
 } // namespace
 
 void TrackResources(Program& program, const Decoder::Program& decoded, const CFG::Graph& native_cfg,
                     ShaderStageInputInfo input) {
 	Tracker(program, decoded, native_cfg, input).Run();
+	program.uniform_fill = RecognizePatternFill(program, decoded, input);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR
