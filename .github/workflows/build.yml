@@ -112,29 +112,24 @@ jobs:
         run: |
           cmake --install _Build/windows --prefix _Build/windows/install
 
-      - name: Bundle shadPS4 (Windows, source build w/ patch)
+      - name: Bundle shadPS4 (Windows, prebuilt latest)
         shell: bash
         run: |
           set -euo pipefail
-          # Build from source with the KytyPlus user-dir patch so the bundled
-          # binary honors SHADPS4_USER_DIR. Fall back to the prebuilt download
-          # if the source build fails (e.g. upstream drift) so the pipeline
-          # never breaks.
-          if bash scripts/build_shadps4.sh windows _Build/windows/install; then
-            echo "shadPS4 built from source with patch"
-          else
-            echo "::warning::shadPS4 source build failed; falling back to prebuilt"
-            # Resolve the URL from the release instead of rebuilding the name: shadPS4
-            # inserts a build year, e.g. shadps4-win64-sdl-2026-0.20.0.zip.
-            url="$(curl -s https://api.github.com/repos/shadps4-emu/shadPS4/releases/latest \
-              | sed -n 's|.*"browser_download_url": *"\([^"]*shadps4-win64-sdl[^"]*\.zip\)".*|\1|p' \
-              | head -n1)"
-            test -n "$url" || { echo "::error::latest shadPS4 release has no Windows asset"; exit 1; }
-            curl --fail --location --retry 3 --retry-all-errors \
-              --output "$RUNNER_TEMP/shadps4-win.zip" "$url"
-            unzip -o "$RUNNER_TEMP/shadps4-win.zip" -d "$RUNNER_TEMP/shadps4-win"
-            cp "$RUNNER_TEMP/shadps4-win/shadPS4.exe" _Build/windows/install/shadPS4.exe
-          fi
+          # Ship the upstream prebuilt binary. KytyPlus unifies shadPS4's user tree by
+          # launching it with its working directory set to the shared parent, which stock
+          # shadPS4 already honors, so no source patch is required.
+          # Resolve the URL from the release rather than rebuilding the name: shadPS4
+          # inserts a build year, e.g. shadps4-win64-sdl-2026-0.20.0.zip.
+          url="$(curl -s https://api.github.com/repos/shadps4-emu/shadPS4/releases/latest \
+            | sed -n 's|.*"browser_download_url": *"\([^"]*shadps4-win64-sdl[^"]*\.zip\)".*|\1|p' \
+            | head -n1)"
+          test -n "$url" || { echo "::error::latest shadPS4 release has no Windows asset"; exit 1; }
+          echo "==> fetching $url"
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
+            --output "$RUNNER_TEMP/shadps4-win.zip" "$url"
+          unzip -o "$RUNNER_TEMP/shadps4-win.zip" -d "$RUNNER_TEMP/shadps4-win"
+          cp "$RUNNER_TEMP/shadps4-win/shadPS4.exe" _Build/windows/install/shadPS4.exe
           # Ensure the executable bit is set ahead of time so the dispatcher
           # can launch it without a chmod at runtime.
           chmod +x _Build/windows/install/shadPS4.exe
@@ -424,30 +419,24 @@ jobs:
           )
           _Build/linux/install/kyty_emulator --help > /dev/null
 
-      - name: Bundle shadPS4 (Linux, source build w/ patch)
+      - name: Bundle shadPS4 (Linux, prebuilt latest)
         shell: bash
         run: |
           set -euo pipefail
-          # Build from source with the KytyPlus user-dir patch so the bundled
-          # binary honors SHADPS4_USER_DIR. Fall back to the prebuilt download
-          # if the source build fails (e.g. upstream drift) so the pipeline
-          # never breaks.
-          if bash scripts/build_shadps4.sh linux _Build/linux/install; then
-            echo "shadPS4 built from source with patch"
-          else
-            echo "::warning::shadPS4 source build failed; falling back to prebuilt"
-            # Resolve the URL from the release instead of rebuilding the name: shadPS4
-            # inserts a build year, e.g. shadps4-linux-sdl-2026-0.20.0.zip.
-            url="$(curl -s https://api.github.com/repos/shadps4-emu/shadPS4/releases/latest \
-              | sed -n 's|.*"browser_download_url": *"\([^"]*shadps4-linux-sdl[^"]*\.zip\)".*|\1|p' \
-              | head -n1)"
-            test -n "$url" || { echo "::error::latest shadPS4 release has no Linux asset"; exit 1; }
-            curl --fail --location --retry 3 --retry-all-errors \
-              --output "$RUNNER_TEMP/shadps4-linux.zip" "$url"
-            unzip -o "$RUNNER_TEMP/shadps4-linux.zip" -d "$RUNNER_TEMP/shadps4-linux"
-            install -m 755 "$RUNNER_TEMP/shadps4-linux/Shadps4-sdl.AppImage" \
-              _Build/linux/install/shadps4
-          fi
+          # Ship the upstream prebuilt binary. KytyPlus unifies shadPS4's user tree by
+          # launching it with its working directory set to the shared parent, which stock
+          # shadPS4 already honors, so no source patch is required.
+          # Resolve the URL from the release rather than rebuilding the name.
+          url="$(curl -s https://api.github.com/repos/shadps4-emu/shadPS4/releases/latest \
+            | sed -n 's|.*"browser_download_url": *"\([^"]*shadps4-linux-sdl[^"]*\.zip\)".*|\1|p' \
+            | head -n1)"
+          test -n "$url" || { echo "::error::latest shadPS4 release has no Linux asset"; exit 1; }
+          echo "==> fetching $url"
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
+            --output "$RUNNER_TEMP/shadps4-linux.zip" "$url"
+          unzip -o "$RUNNER_TEMP/shadps4-linux.zip" -d "$RUNNER_TEMP/shadps4-linux"
+          install -m 755 "$RUNNER_TEMP/shadps4-linux/Shadps4-sdl.AppImage" \
+            _Build/linux/install/shadps4
           # Explicitly grant execute permission ahead of time so the AppImage
           # is launchable by the dispatcher without a runtime chmod.
           chmod +x _Build/linux/install/shadps4
