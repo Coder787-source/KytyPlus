@@ -21,7 +21,10 @@
 #include "platformDispatch.h"
 
 #include <charconv>
+#include <cerrno>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <new>
 #include <system_error>
 #include <fmt/format.h>
@@ -121,8 +124,19 @@ static bool ParseUint32(const std::string& value, uint32_t& out) {
 }
 
 static bool ParseFloat(const std::string& value, float& out) {
-	const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), out);
-	return error == std::errc{} && end == value.data() + value.size();
+	// The floating-point std::from_chars overloads are unavailable below macOS 26 in CI's
+	// libc++, so validate a strtof round-trip instead.
+	if (value.empty()) {
+		return false;
+	}
+	errno = 0;
+	char* end = nullptr;
+	const auto parsed = std::strtof(value.c_str(), &end);
+	if (errno == ERANGE || end != value.c_str() + value.size() || !std::isfinite(parsed)) {
+		return false;
+	}
+	out = parsed;
+	return true;
 }
 
 static bool ParseBool(const std::string& value, bool& out) {
