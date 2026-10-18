@@ -41,7 +41,10 @@ fi
 echo "==> building shadPS4 at ref: $SHADPS4_REF"
 
 rm -rf "$WORK_DIR"
+# core.autocrlf=false keeps the checkout byte-identical to the repository: the
+# Windows runner defaults to CRLF checkouts, which would break patch matching.
 git clone --recursive --depth 1 --branch "$SHADPS4_REF" \
+  --config core.autocrlf=false \
   https://github.com/shadps4-emu/shadPS4.git "$WORK_DIR"
 cd "$WORK_DIR"
 
