@@ -279,10 +279,10 @@ jobs:
       - name: Verify artifacts
         shell: bash
         run: |
-          file _Build/macos/install/KytyPS5.app/Contents/MacOS/KytyPS5
+          file _Build/macos/install/KytyPlus.app/Contents/MacOS/KytyPlus
           file _Build/macos/install/kyty_emulator
           file _Build/macos/install/libMoltenVK.dylib
-          lipo _Build/macos/install/KytyPS5.app/Contents/MacOS/KytyPS5 -verify_arch x86_64
+          lipo _Build/macos/install/KytyPlus.app/Contents/MacOS/KytyPlus -verify_arch x86_64
           lipo _Build/macos/install/kyty_emulator -verify_arch x86_64
           lipo _Build/macos/install/libMoltenVK.dylib -verify_arch x86_64
           codesign --verify --strict _Build/macos/install/kyty_emulator
@@ -515,7 +515,7 @@ jobs:
           macos_dir="artifacts/KytyPlus-macOS-x86_64"
           test -d "$macos_dir"
           chmod a+x \
-            "$macos_dir/KytyPS5.app/Contents/MacOS/KytyPS5" \
+            "$macos_dir/KytyPlus.app/Contents/MacOS/KytyPlus" \
             "$macos_dir/kyty_emulator" \
             "$macos_dir/libMoltenVK.dylib"
           (
