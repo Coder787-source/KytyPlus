@@ -23,7 +23,7 @@ QString LauncherRelativePath() {
 #if defined(_WIN32)
 	return QStringLiteral("kyty_launcher.exe");
 #elif defined(__APPLE__)
-	return QStringLiteral("KytyPS5.app/Contents/MacOS/KytyPS5");
+	return QStringLiteral("KytyPlus.app/Contents/MacOS/KytyPlus");
 #else
 	return QStringLiteral("kyty_launcher");
 #endif
@@ -33,7 +33,7 @@ QString InstallDirectory() {
 	QDir dir(QCoreApplication::applicationDirPath());
 #if defined(__APPLE__)
 	// Official macOS releases are a bundle; never update a flat development build.
-	if (!dir.cdUp() || !dir.cdUp() || dir.dirName() != QStringLiteral("KytyPS5.app") ||
+	if (!dir.cdUp() || !dir.cdUp() || dir.dirName() != QStringLiteral("KytyPlus.app") ||
 	    !dir.cdUp()) {
 		return {};
 	}
@@ -53,7 +53,7 @@ QNetworkRequest Request(const QUrl& url) {
 	QNetworkRequest request(url);
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
 	                     QNetworkRequest::NoLessSafeRedirectPolicy);
-	request.setRawHeader("User-Agent", "KytyPS5-Updater");
+	request.setRawHeader("User-Agent", "KytyPlus-Updater");
 	request.setTransferTimeout(30000);
 	return request;
 }
@@ -112,7 +112,7 @@ void UpdateChecker::ShowPreviousResult(QWidget* parent) {
 		message = success ? tr("The update was installed successfully.")
 		                  : tr("The update could not be installed.");
 	}
-	QMessageBox(success ? QMessageBox::Information : QMessageBox::Warning, tr("KytyPS5 Update"),
+	QMessageBox(success ? QMessageBox::Information : QMessageBox::Warning, tr("KytyPlus Update"),
 	            message, QMessageBox::Ok, parent)
 	    .exec();
 }
@@ -195,7 +195,7 @@ void UpdateChecker::CheckCurrent(const UpdateRelease::Info& current, bool manual
 }
 
 void UpdateChecker::OfferUpdate() {
-	QMessageBox question(QMessageBox::Information, tr("KytyPS5 Update"),
+	QMessageBox question(QMessageBox::Information, tr("KytyPlus Update"),
 	                     tr("Version %1 is available.\n\nCurrent: %2\n\n"
 	                        "Download and install it now? The launcher will restart. Your settings "
 	                        "and games are kept.")
@@ -230,7 +230,7 @@ void UpdateChecker::Download() {
 	m_workspace = std::make_unique<QTemporaryDir>(
 	    QDir(directory).filePath(QStringLiteral(".kyty-update-XXXXXX")));
 	if (!m_workspace->isValid()) {
-		Finish(tr("The installation folder is not writable. Move KytyPS5 to a writable folder and "
+		Finish(tr("The installation folder is not writable. Move KytyPlus to a writable folder and "
 		          "try again."));
 		return;
 	}
@@ -252,7 +252,7 @@ void UpdateChecker::Download() {
 	emit InstallingChanged(true);
 	m_progress = new QProgressDialog(tr("Downloading %1…").arg(m_release.tag), tr("Cancel"), 0, 100,
 	                                 m_parent);
-	m_progress->setWindowTitle(tr("KytyPS5 Update"));
+	m_progress->setWindowTitle(tr("KytyPlus Update"));
 	m_progress->setWindowModality(Qt::ApplicationModal);
 	m_progress->setAutoClose(false);
 	m_progress->setAutoReset(false);
@@ -403,11 +403,11 @@ void UpdateChecker::Finish(QString error, bool report) {
 	if (error.isEmpty()) {
 		return;
 	}
-	qWarning() << "KytyPS5 updater:" << error;
+	qWarning() << "KytyPlus updater:" << error;
 	if (!report) {
 		return;
 	}
-	QMessageBox message(QMessageBox::Warning, tr("KytyPS5 Update"), error, QMessageBox::Close,
+	QMessageBox message(QMessageBox::Warning, tr("KytyPlus Update"), error, QMessageBox::Close,
 	                    m_parent);
 	if (!release_page.isEmpty()) {
 		message.addButton(QMessageBox::Open);

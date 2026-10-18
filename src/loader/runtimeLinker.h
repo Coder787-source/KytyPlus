@@ -17,7 +17,7 @@ namespace Loader {
 struct EntryParams {
 	int         argc;
 	uint32_t    pad;
-	const char* argv[1];
+	const char* argv[16];
 };
 
 class Elf64;
@@ -92,6 +92,7 @@ struct DynamicInfo {
 	uint64_t init_array_size     = 0;
 	uint64_t fini_array_size     = 0;
 	uint64_t preinit_array_size  = 0;
+	uint64_t pltgot_vaddr        = 0;
 
 	Elf64_Rela* jmprela_table      = nullptr;
 	uint64_t    jmprela_table_size = 0;
@@ -108,10 +109,11 @@ struct DynamicInfo {
 
 	const char* so_name = nullptr;
 
-	std::vector<ModuleId>  export_modules;
-	std::vector<ModuleId>  import_modules;
-	std::vector<LibraryId> export_libs;
-	std::vector<LibraryId> import_libs;
+	std::vector<const char*> needed;
+	std::vector<ModuleId>    export_modules;
+	std::vector<ModuleId>    import_modules;
+	std::vector<LibraryId>   export_libs;
+	std::vector<LibraryId>   import_libs;
 };
 
 struct Program {
@@ -134,8 +136,11 @@ struct Program {
 	ThreadLocalStorage              tls;
 	bool                            fail_if_global_not_resolved = true;
 	bool                            dbg_print_reloc             = false;
+	bool                            relocated                   = false;
 	std::vector<uint8_t>            rela_bits;
 	uint64_t                        proc_param_vaddr            = 0;
+	uint64_t                        custom_call_plt_vaddr       = 0;
+	uint32_t                        custom_call_plt_num         = 0;
 };
 
 class RuntimeLinker {
@@ -162,6 +167,7 @@ public:
 	void  Execute(const std::filesystem::path& game_patch = {});
 	int   StartModule(Program* program, size_t args, const void* argp, module_func_t func);
 	int   StopModule(Program* program, size_t args, const void* argp, module_func_t func);
+	void  StartAllModules();
 	void  StopAllModules();
 	void  DeleteTlss(int thread_id);
 	void  SetApplicationHeapApi(void* const api[10]);
@@ -170,6 +176,7 @@ public:
 
 	void Resolve(const std::string& name, SymbolType type, Program* program, SymbolRecord* out_info,
 	             bool* bind_self);
+	bool ResolveLoadedSymbolByNid(const std::string& nid, SymbolType type, SymbolRecord* out_info);
 
 	SymbolDatabase* Symbols() { return m_symbols.get(); }
 
@@ -190,12 +197,16 @@ private:
 	static void Relocate(Program* program);
 	static void DeleteProgram(Program* program);
 	static void SetupTlsHandler(Program* program);
+	void        PreloadAdjacentPrograms();
+
+	Program* FindProgram(const ModuleId& m, const LibraryId& l);
 
 	static const ModuleId*  FindModule(const Program& program, const std::string& id);
 	static const LibraryId* FindLibrary(const Program& program, const std::string& id);
 
 	std::vector<Program*>           m_programs;
 	std::unique_ptr<SymbolDatabase> m_symbols;
+	bool                            m_relocated = false;
 	Common::Mutex                   m_mutex;
 
 	application_heap_malloc_func_t         m_application_heap_malloc         = nullptr;

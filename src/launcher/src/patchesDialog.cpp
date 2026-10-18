@@ -5,6 +5,7 @@
 
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QJsonArray>
@@ -103,6 +104,7 @@ PatchesDialog::PatchesDialog(const Configuration& game, QWidget* parent)
 	local_layout->addWidget(m_patches, 1);
 	local_layout->addWidget(m_status);
 	auto* local_buttons = new QDialogButtonBox(local);
+	auto* select_file   = local_buttons->addButton(tr("Select file..."), QDialogButtonBox::ActionRole);
 	auto* reload        = local_buttons->addButton(tr("Reload"), QDialogButtonBox::ActionRole);
 	m_apply = local_buttons->addButton(tr("Apply selection"), QDialogButtonBox::ActionRole);
 	local_layout->addWidget(local_buttons);
@@ -110,6 +112,7 @@ PatchesDialog::PatchesDialog(const Configuration& game, QWidget* parent)
 	layout->addWidget(buttons);
 	connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);
 	connect(reload, &QPushButton::clicked, this, &PatchesDialog::Load);
+	connect(select_file, &QPushButton::clicked, this, &PatchesDialog::SelectLocalFile);
 	connect(m_apply, &QPushButton::clicked, this, &PatchesDialog::Save);
 	connect(m_refresh, &QPushButton::clicked, this, &PatchesDialog::LoadRemote);
 	connect(m_import, &QPushButton::clicked, this, &PatchesDialog::ImportRemote);
@@ -224,6 +227,55 @@ void PatchesDialog::Load() {
 	ShowMods(m_patches, m_local_document, true);
 	m_apply->setEnabled(m_patches->count() > 0);
 	m_status->setText(tr("Loaded %1 cheat(s) from %2.").arg(m_patches->count()).arg(path));
+}
+
+void PatchesDialog::SelectLocalFile() {
+	const auto target = Cheats::PlanPath(m_title_id);
+	if (target.isEmpty()) {
+		m_status->setText(tr("Unsupported title ID."));
+		return;
+	}
+	const auto source = QFileDialog::getOpenFileName(this, tr("Select cheat file"), QString(),
+	                                                tr("Cheat files (*.json *.shn);;All Files (*.*)"));
+	if (source.isEmpty()) {
+		return;
+	}
+	QFile in(source);
+	if (!in.open(QIODevice::ReadOnly)) {
+		m_status->setText(tr("Could not read %1: %2").arg(source, in.errorString()));
+		return;
+	}
+	const QByteArray data = in.readAll();
+	if (in.error() != QFile::NoError) {
+		m_status->setText(tr("Could not read %1: %2").arg(source, in.errorString()));
+		return;
+	}
+	QJsonDocument probe;
+	if (const auto error = Cheats::ParseDocument(data, &probe); !error.isEmpty()) {
+		m_status->setText(tr("%1\n%2").arg(error, source));
+		return;
+	}
+	if (QFileInfo(source).canonicalFilePath() == QFileInfo(target).canonicalFilePath()) {
+		Load();
+		return;
+	}
+	// The emulator only ever receives the plan at the title's canonical path, and it reads that
+	// as mods JSON, so an external file is installed as its converted plan rather than copied.
+	if (QFile::exists(target) &&
+	    QMessageBox::question(this, tr("Replace local cheats"),
+	                          tr("Replace the existing file with the selected one?\n\n%1").arg(target),
+	                          QMessageBox::Yes | QMessageBox::No, QMessageBox::No) !=
+	        QMessageBox::Yes) {
+		return;
+	}
+	QByteArray existing;
+	if (QFile out(target); out.open(QIODevice::ReadOnly)) {
+		existing = out.readAll();
+	}
+	if (const auto error = Cheats::SaveDocument(target, probe, existing); !error.isEmpty()) {
+		m_status->setText(error);
+	}
+	Load();
 }
 
 void PatchesDialog::Save() {

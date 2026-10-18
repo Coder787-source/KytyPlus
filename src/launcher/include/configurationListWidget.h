@@ -1,13 +1,17 @@
 #ifndef CONFIGURATION_LIST_WIDGET_H
 #define CONFIGURATION_LIST_WIDGET_H
 
-#include "common.h"
+#include "common/common.h"
 #include "configuration.h"
 
 #include <QMap>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
+
+#include <memory>
+
+#include <memory>
 
 class ConfigurationItem;
 class CompatibilityDatabase;
@@ -21,7 +25,7 @@ class ConfigurationListWidget;
 
 class ConfigurationListWidget: public QWidget {
 	Q_OBJECT
-	KYTY_QT_CLASS_NO_COPY(ConfigurationListWidget);
+	KYTY_CLASS_NO_COPY(ConfigurationListWidget);
 
 public:
 	explicit ConfigurationListWidget(QWidget* parent = nullptr);
@@ -29,6 +33,7 @@ public:
 
 	void               SetRunEnabled(bool flag) { m_run_enabled = flag; }
 	void               SetGameRunning(bool flag) { m_game_running = flag; }
+	void               SetRuntimeDirectory(const QString& directory) { m_runtime_directory = directory; }
 	[[nodiscard]] bool IsRunEnabled() const { return m_run_enabled; }
 
 	[[nodiscard]] const ConfigurationItem* GetSelectedItem() const { return m_selected_item; }
@@ -45,6 +50,9 @@ public:
 	}
 	[[nodiscard]] bool CanViewSelectedTrophies() const;
 
+	[[nodiscard]] std::unique_ptr<Configuration>
+	CreateConfiguration(const ConfigurationItem& item) const;
+
 	bool EnsureGameDirectory();
 	void ScanGameDirectory();
 	bool SelectGameImage(const QString& path);
@@ -55,6 +63,7 @@ signals:
 
 	void Run();
 	void Select();
+	void PreviewControllerColor(const QString& color);
 
 public slots:
 	void WriteSettings();
@@ -80,6 +89,8 @@ private:
 	void               ClearCustomSettings(ConfigurationItem* item);
 	void               SelectItem(QTreeWidgetItem* witem);
 	void               ApplyCompatibility();
+	void               ImportGameSettings(QWidget* parent);
+	void               ExportGameSettings(QWidget* parent) const;
 	[[nodiscard]] bool HasValidGameDirectory() const;
 	[[nodiscard]] bool HasRunningGame() const;
 	[[nodiscard]] bool CanDeleteGame(const ConfigurationItem* item) const;
@@ -90,6 +101,7 @@ private:
 	Ui::ConfigurationListWidget*  m_ui            = nullptr;
 	MainDialog*                   m_main_dialog   = nullptr;
 	QString                       m_settings_file;
+	QString                       m_runtime_directory;
 	QStringList                   m_game_dirs;
 	QString                       m_addons_dir;
 	Configuration                 m_global_info;

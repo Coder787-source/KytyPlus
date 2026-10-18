@@ -39,7 +39,14 @@ bool SrtReadCapture::ReadOrdinary(void* userdata, uint64_t address, std::span<ui
 	if (capture.m_source.read_memory != nullptr) {
 		if (!capture.m_source.read_memory(capture.m_source.userdata, address, values)) return false;
 	} else {
-		std::memcpy(values.data(), reinterpret_cast<const void*>(address), values.size_bytes());
+		// A computed address inside the null page means the descriptor base was never bound.
+		// Read it as zeroes, matching the out-of-range policy in EvaluateRawRead, so the
+		// resource stays analyzable instead of failing specialization for the whole pipeline.
+		if (address < 0x1000) {
+			std::fill(values.begin(), values.end(), 0u);
+		} else {
+			std::memcpy(values.data(), reinterpret_cast<const void*>(address), values.size_bytes());
+		}
 	}
 	capture.m_ranges.emplace_back(address, values.size_bytes());
 	return true;

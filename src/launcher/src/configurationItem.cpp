@@ -284,7 +284,10 @@ void ConfigurationItem::SetCompatibilityEditable(bool editable) {
 void ConfigurationItem::UpdateIcon() {
 	if (!m_info->artwork_icon_path.isEmpty() && QFileInfo::exists(m_info->artwork_icon_path)) {
 		setIcon(NameColumn, QIcon(m_info->artwork_icon_path));
-	} else if (!m_icon.isNull()) {
+		return;
+	}
+
+	if (!m_icon.isNull()) {
 		setIcon(NameColumn, m_icon);
 		return;
 	}

@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QXmlStreamReader>
 
 namespace Cheats {
 
@@ -37,6 +38,114 @@ QString ValidateDocument(const QJsonDocument& document) {
 	return {};
 }
 
+// Retains hex digits only, tolerating the dash-separated byte style used by trainer XML.
+QString HexDigits(const QString& text) {
+	QString out;
+	for (const auto character: text) {
+		const auto latin = character.toLatin1();
+		if ((latin >= '0' && latin <= '9') || (latin >= 'a' && latin <= 'f') ||
+		    (latin >= 'A' && latin <= 'F')) {
+			out += character.toLower();
+		} else if (character != QLatin1Char('-') && character != QLatin1Char(' ') &&
+		           character != QLatin1Char('_')) {
+			return {};
+		}
+	}
+	return out;
+}
+
+// ShenJS trainer XML ("*.shn") describes the same absolute writes as the GoldHEN-style mods
+// JSON, so converting here keeps one cheat representation for the rest of the pipeline.
+QString ParseTrainerXml(const QByteArray& data, QJsonDocument* document) {
+	QXmlStreamReader xml(data);
+	if (!xml.readNextStartElement() || xml.name() != QLatin1String("Trainer")) {
+		return Tr("Not a supported cheat file.");
+	}
+	const auto attribute = [&xml](const char* name) {
+		return xml.attributes().value(QLatin1String(name)).toString().trimmed();
+	};
+	auto process = attribute("Process");
+	if (process.isEmpty()) {
+		process = QStringLiteral("eboot.bin");
+	}
+
+	QJsonArray mods;
+	QJsonArray lines;
+	QJsonObject line;
+	QString    cheat_name;
+	bool       in_cheat = false;
+	bool       in_line  = false;
+	while (!xml.atEnd()) {
+		const auto token = xml.readNext();
+		if (token == QXmlStreamReader::StartElement) {
+			const auto name = xml.name().toString();
+			if (name == QLatin1String("Cheat")) {
+				in_cheat   = true;
+				cheat_name = xml.attributes().value(QLatin1String("Text")).toString().trimmed();
+				lines      = QJsonArray();
+				continue;
+			}
+			if (name == QLatin1String("Cheatline")) {
+				in_line = true;
+				line    = QJsonObject();
+				continue;
+			}
+			if (!in_line) {
+				continue;
+			}
+			const auto value = xml.readElementText().trimmed();
+			if (name == QLatin1String("Offset")) {
+				line[QStringLiteral("offset")] = HexDigits(value).rightJustified(8, QLatin1Char('0'));
+			} else if (name == QLatin1String("ValueOn")) {
+				line[QStringLiteral("on")] = HexDigits(value);
+			} else if (name == QLatin1String("ValueOff")) {
+				line[QStringLiteral("off")] = HexDigits(value);
+			} else if (name == QLatin1String("Section") && !value.isEmpty() &&
+			           value != QLatin1String("0")) {
+				// A mods plan cannot select a section, so such lines are dropped below.
+				line[QStringLiteral("section")] = value;
+			}
+			continue;
+		}
+		if (token != QXmlStreamReader::EndElement) {
+			continue;
+		}
+		const auto name = xml.name().toString();
+		if (name == QLatin1String("Cheatline") && in_line) {
+			in_line = false;
+			if (!line.contains(QStringLiteral("section")) &&
+			    !line.value(QStringLiteral("offset")).toString().isEmpty() &&
+			    line.contains(QStringLiteral("on")) && line.contains(QStringLiteral("off"))) {
+				lines.append(line);
+			}
+			continue;
+		}
+		if (name == QLatin1String("Cheat") && in_cheat) {
+			in_cheat = false;
+			if (!cheat_name.isEmpty() && !lines.isEmpty()) {
+				QJsonObject mod;
+				mod[QStringLiteral("name")]   = cheat_name;
+				mod[QStringLiteral("type")]   = QStringLiteral("checkbox");
+				mod[QStringLiteral("memory")] = lines;
+				mods.append(mod);
+			}
+		}
+	}
+	if (xml.hasError()) {
+		return Tr("Malformed trainer XML: %1").arg(xml.errorString());
+	}
+	if (mods.isEmpty()) {
+		return Tr("No cheats usable with the current patch engine were found.");
+	}
+	QJsonObject root;
+	root[QStringLiteral("id")]      = attribute("Cusa");
+	root[QStringLiteral("version")] = attribute("Version");
+	root[QStringLiteral("process")] = process;
+	root[QStringLiteral("mods")]    = mods;
+	*document = QJsonDocument(root);
+	return {};
+}
+
 } // namespace
 
 bool IsSupportedTitleId(const QString& title_id) {
@@ -53,6 +162,13 @@ QString PlanPath(const QString& title_id) {
 }
 
 QString ParseDocument(const QByteArray& data, QJsonDocument* document) {
+	if (data.trimmed().startsWith('<')) {
+		const auto error = ParseTrainerXml(data, document);
+		if (!error.isEmpty()) {
+			*document = QJsonDocument();
+		}
+		return error;
+	}
 	const auto parsed = QJsonDocument::fromJson(data);
 	const auto error  = ValidateDocument(parsed);
 	*document         = error.isEmpty() ? parsed : QJsonDocument();

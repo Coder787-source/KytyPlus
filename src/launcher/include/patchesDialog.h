@@ -23,6 +23,7 @@ public:
 private:
 	void Load();
 	void Save();
+	void SelectLocalFile();
 	void LoadRemote();
 	void PreviewRemote();
 	void ImportRemote();

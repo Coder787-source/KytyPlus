@@ -94,13 +94,13 @@ endif()
 
 set(launcher_name "kyty_launcher")
 if(APPLE)
-	set(launcher_name "KytyPS5")
+	set(launcher_name "KytyPlus")
 endif()
 
 set_target_properties(launcher PROPERTIES OUTPUT_NAME ${launcher_name})
 
 if(APPLE)
-	# macOS bundle: KytyPS5.app with launcher as main executable and
+	# macOS bundle: KytyPlus.app with launcher as main executable and
 	# kyty_emulator as helper inside Contents/MacOS. MoltenVK is found
 	# next to a flat executable or in the bundle's Contents/Frameworks;
 	# no rpath fixup is needed because SDL loads it by absolute path.
@@ -127,18 +127,18 @@ if(NOT APPLE)
 endif()
 
 if(APPLE)
-	install(TARGETS kyty_emulator DESTINATION "KytyPS5.app/Contents/MacOS")
-	install(TARGETS kyty_updater DESTINATION "KytyPS5.app/Contents/MacOS")
+	install(TARGETS kyty_emulator DESTINATION "KytyPlus.app/Contents/MacOS")
+	install(TARGETS kyty_updater DESTINATION "KytyPlus.app/Contents/MacOS")
 	install(FILES "${KYTY_SOURCE_DIR}/../assets/sounds/trophy-unlock.wav"
-		DESTINATION "KytyPS5.app/Contents/Resources/assets/sounds")
-	install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/cursors" DESTINATION "KytyPS5.app/Contents/Resources/assets")
+		DESTINATION "KytyPlus.app/Contents/Resources/assets/sounds")
+	install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/cursors" DESTINATION "KytyPlus.app/Contents/Resources/assets")
 	# Deploy and ad-hoc sign the Qt frameworks and plugins in the bundle.
 	find_program(KYTY_MACDEPLOYQT NAMES macdeployqt PATHS "${Qt6_DIR}/../../../bin" NO_DEFAULT_PATH)
 	if(NOT KYTY_MACDEPLOYQT)
 		message(FATAL_ERROR "Could not find macdeployqt")
 	endif()
 	install(CODE "
-		execute_process(COMMAND \"${KYTY_MACDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/KytyPS5.app\"
+		execute_process(COMMAND \"${KYTY_MACDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/KytyPlus.app\"
 			-codesign=-
 			RESULT_VARIABLE _kyty_deploy_result)
 		if(NOT _kyty_deploy_result EQUAL 0)

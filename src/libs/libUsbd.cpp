@@ -42,13 +42,15 @@
 namespace Libs {
 
 
+LIB_VERSION("libSceUsbd", 1, "libSceUsbd", 1, 1);
+
 
 
 
 namespace LibUsbd {
 
 
-LIB_VERSION("libSceUsbd", 1, "libSceUsbd", 1, 1);
+
 
 
 
@@ -1032,6 +1034,9 @@ static int KYTY_SYSV_ABI Func_D56B43060720B1E0() {
 
 
 
+} // namespace LibUsbd
+
+
 LIB_DEFINE(InitUsbd_1) {
 
 
@@ -1231,9 +1236,6 @@ LIB_DEFINE(InitUsbd_1) {
 
 
 }
-
-
-} // namespace LibUsbd
 
 
 

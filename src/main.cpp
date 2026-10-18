@@ -238,6 +238,21 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			continue;
 		}
 
+		if (arg == "--hdr") {
+			options.config.hdr_enabled = true;
+			continue;
+		}
+
+		if (arg == "--hide-cursor") {
+			options.config.hide_cursor_enabled = true;
+			continue;
+		}
+
+		if (arg == "--tessellation") {
+			options.config.tessellation_enabled = true;
+			continue;
+		}
+
 		if (!arg.starts_with("--")) {
 			::printf("game input must be provided with --game\n");
 			return false;
@@ -410,6 +425,26 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			}
 		} else if (arg == "--spirv-debug-printf") {
 			if (!ParseBool(value, options.config.spirv_debug_printf_enabled)) {
+				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
+				return false;
+			}
+		} else if (arg == "--network-connected") {
+			if (!ParseBool(value, options.config.network_connected)) {
+				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
+				return false;
+			}
+		} else if (arg == "--sync-raw-image-buffers") {
+			if (!ParseBool(value, options.config.sync_raw_image_buffers)) {
+				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
+				return false;
+			}
+		} else if (arg == "--trophy-notifications") {
+			if (!ParseBool(value, options.config.trophy_enabled)) {
+				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
+				return false;
+			}
+		} else if (arg == "--skip-notice-screen") {
+			if (!ParseBool(value, options.config.skip_notice_screen)) {
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
 				return false;
 			}

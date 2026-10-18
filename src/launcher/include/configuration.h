@@ -15,6 +15,12 @@
 #include <QStringList>
 #include <QVariant>
 
+// Mountable game images the launcher can pick directly, without a containing game folder.
+inline bool IsGameImagePath(const QString& path) {
+	return path.endsWith(QStringLiteral(".ffpfsc"), Qt::CaseInsensitive) ||
+	       path.endsWith(QStringLiteral(".exfat"), Qt::CaseInsensitive);
+}
+
 template <class T>
 inline QStringList EnumToList() {
 	QStringList ret;
@@ -239,6 +245,12 @@ public:
 		custom_settings = other.custom_settings;
 		game_status     = other.game_status;
 		game_comment    = other.game_comment;
+	}
+
+	void CopyFrom(const Configuration& other) {
+		CopyGameInfoFrom(other);
+		CopyEmulatorSettingsFrom(other);
+		elf = other.elf;
 	}
 
 	void WriteSettings(QSettings* s) const;

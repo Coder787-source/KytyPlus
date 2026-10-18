@@ -1,7 +1,7 @@
 #ifndef CONTROLLER_MAPPING_PANEL_H
 #define CONTROLLER_MAPPING_PANEL_H
 
-#include "common.h"
+#include "common/common.h"
 
 #include <QString>
 #include <QStringList>
@@ -14,7 +14,7 @@ class QTimer;
 // Click a row to capture the next keyboard key, mouse button, or gamepad button press.
 class ControllerMappingPanel: public QWidget {
 	Q_OBJECT
-	KYTY_QT_CLASS_NO_COPY(ControllerMappingPanel);
+	KYTY_CLASS_NO_COPY(ControllerMappingPanel);
 
 public:
 	explicit ControllerMappingPanel(QWidget* parent = nullptr);

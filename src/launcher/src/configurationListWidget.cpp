@@ -1,6 +1,6 @@
 #include "configurationListWidget.h"
 
-#include "common.h"
+#include "common/common.h"
 #include "additionalContentDialog.h"
 #include "cheatFile.h"
 #include "common/archive.h"
@@ -26,9 +26,11 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QIcon>
+#include <QInputDialog>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -38,6 +40,7 @@
 #include <QPushButton>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSet>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -889,7 +892,7 @@ void ConfigurationListWidget::edit_configuration() {
 	}
 
 	ConfigurationEditDialog dlg(item->GetInfo(), this);
-	dlg.SetTitle(tr("Edit game settings"));
+	dlg.setWindowTitle(tr("Edit game settings"));
 
 	if (dlg.exec() == QDialog::Accepted) {
 		item->GetInfo().custom_settings = true;
@@ -942,8 +945,134 @@ void ConfigurationListWidget::edit_global_settings() {
 	}
 }
 
+static bool IsGameSettingsTitleId(const QString& title_id) {
+	static const QRegularExpression pattern(QStringLiteral("\\APPSA[0-9]{5}\\z"));
+	return pattern.match(title_id).hasMatch();
+}
+
+void ConfigurationListWidget::ImportGameSettings(QWidget* parent) {
+	const auto path = QFileDialog::getOpenFileName(parent, tr("Import game configs"), {},
+	                                               tr("JSON files (*.json)"));
+	if (path.isEmpty()) {
+		return;
+	}
+	QFile file(path);
+	if (!file.open(QIODevice::ReadOnly)) {
+		QMessageBox::warning(parent, tr("Import failed"), file.errorString());
+		return;
+	}
+	const auto document = QJsonDocument::fromJson(file.readAll());
+	if (!document.isObject() || document.object().isEmpty()) {
+		QMessageBox::warning(
+		    parent, tr("Import failed"),
+		    tr("Expected a JSON object containing game configs keyed by PPSA code."));
+		return;
+	}
+	const auto settings = document.object();
+	for (auto it = settings.constBegin(); it != settings.constEnd(); ++it) {
+		Configuration info;
+		QString       error;
+		if (!IsGameSettingsTitleId(it.key()) || !it.value().isObject() ||
+		    it.value().toObject().isEmpty() ||
+		    !info.SetGameSettings(it.value().toObject(), error)) {
+			QMessageBox::warning(parent, tr("Import failed"),
+			                     tr("Invalid game config for %1. %2").arg(it.key(), error));
+			return;
+		}
+	}
+	struct ImportedGame {
+		ConfigurationItem*             item;
+		std::unique_ptr<Configuration> info;
+	};
+	std::vector<ImportedGame> imported;
+	auto                      unmatched = settings.keys();
+	for (int index = 0; index < m_ui->cfgs_list->topLevelItemCount(); ++index) {
+		auto*      item     = static_cast<ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(index));
+		const auto title_id = item->GetInfo().title_id.trimmed().toUpper();
+		if (!settings.contains(title_id)) {
+			continue;
+		}
+		auto    info = CreateConfiguration(*item);
+		QString error;
+		if (!info->SetGameSettings(settings.value(title_id).toObject(), error)) {
+			QMessageBox::warning(parent, tr("Import failed"),
+			                     tr("Invalid game config for %1. %2").arg(title_id, error));
+			return;
+		}
+		info->custom_settings = true;
+		imported.push_back({item, std::move(info)});
+		unmatched.removeAll(title_id);
+	}
+	auto message = imported.empty() ? tr("No matching games found in the library.")
+	                                : tr("Configs will be updated for the following games:\n");
+	for (const auto& game: imported) {
+		message += tr("\n%1 — %2").arg(game.info->title_id.trimmed().toUpper(), game.info->name);
+	}
+	if (!unmatched.isEmpty()) {
+		message += tr("\nGames not found: %1").arg(unmatched.join(QStringLiteral(", ")));
+	}
+	if (imported.empty()) {
+		QMessageBox::information(parent, tr("Import game configs"), message);
+		return;
+	}
+	QMessageBox confirmation(QMessageBox::Question, tr("Import game configs"), message,
+	                         QMessageBox::Apply | QMessageBox::Cancel, parent);
+	confirmation.setTextFormat(Qt::PlainText);
+	confirmation.setDefaultButton(QMessageBox::Cancel);
+	if (confirmation.exec() != QMessageBox::Apply) {
+		return;
+	}
+	for (auto& [item, info]: imported) {
+		const auto game_path = info->game_path;
+		delete m_custom_infos.take(game_path);
+		m_custom_infos.insert(game_path, info.release());
+		item->GetInfo().custom_settings = true;
+		item->Update();
+	}
+	WriteSettings();
+}
+
+void ConfigurationListWidget::ExportGameSettings(QWidget* parent) const {
+	QMap<QString, const ConfigurationItem*> games;
+	for (int index = 0; index < m_ui->cfgs_list->topLevelItemCount(); ++index) {
+		const auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(index));
+		const auto& game = item->GetInfo();
+		const auto  title_id = game.title_id.trimmed().toUpper();
+		if (m_custom_infos.contains(game.game_path) && IsGameSettingsTitleId(title_id)) {
+			games.insert(tr("%1 — %2 (%3)").arg(title_id, game.name, game.game_path), item);
+		}
+	}
+	if (games.isEmpty()) {
+		QMessageBox::information(parent, tr("Export game config"),
+		                         tr("No game configs with a PPSA code were found."));
+		return;
+	}
+	bool       accepted = false;
+	const auto selected = QInputDialog::getItem(parent, tr("Export game config"), tr("Game:"),
+	                                            games.keys(), 0, false, &accepted);
+	if (!accepted) {
+		return;
+	}
+	const auto& game     = games.value(selected)->GetInfo();
+	const auto  title_id = game.title_id.trimmed().toUpper();
+	const auto  path =
+	    QFileDialog::getSaveFileName(parent, tr("Export game config"),
+	                                 title_id + QStringLiteral(".json"), tr("JSON files (*.json)"));
+	if (path.isEmpty()) {
+		return;
+	}
+	const auto settings =
+	    QJsonObject::fromVariantMap(m_custom_infos.value(game.game_path)->GameSettings());
+	const auto data =
+	    QJsonDocument(QJsonObject {{title_id, settings}}).toJson(QJsonDocument::Indented);
+	QSaveFile file(path);
+	if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
+		QMessageBox::warning(parent, tr("Export failed"), file.errorString());
+	}
+}
+
 void ConfigurationListWidget::edit_input_mapping() {
-	InputMappingDialog dialog(m_global_info.host_input_mapping, this);
+	InputMappingDialog dialog(m_global_info.host_input_mapping, nullptr, this);
 	if (dialog.exec() == QDialog::Accepted) {
 		m_global_info.host_input_mapping = dialog.Mapping();
 		WriteSettings();
@@ -970,7 +1099,8 @@ void ConfigurationListWidget::ViewTrophies() {
 		return;
 	}
 
-	TrophyViewerDialog::ShowForGame(&item->GetInfo(), this);
+	const auto config = CreateConfiguration(*item);
+	TrophyViewerDialog::ShowForGame(config.get(), m_runtime_directory, this);
 }
 
 void ConfigurationListWidget::open_game_folder() {
@@ -1184,7 +1314,7 @@ void ConfigurationListWidget::show_context_menu(const QPoint& pos) {
 		}
 	});
 	action_patches->setVisible(item != nullptr &&
-	                           PatchesDialog::IsSupportedTitleId(item->GetInfo().title_id));
+	                           Cheats::IsSupportedTitleId(item->GetInfo().title_id));
 	QAction* action_addcont = menu.addAction(
 	    style()->standardIcon(QStyle::SP_DirIcon), tr("Additional Content..."));
 	connect(action_addcont, &QAction::triggered, this,

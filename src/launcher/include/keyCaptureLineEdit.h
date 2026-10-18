@@ -1,7 +1,7 @@
 ﻿#ifndef KEY_CAPTURE_LINEEDIT_H
 #define KEY_CAPTURE_LINEEDIT_H
 
-#include "common.h"
+#include "common/common.h"
 
 #include <QLineEdit>
 
@@ -24,7 +24,7 @@ class QWidget;
 // dialog's on-screen hint text ("Press Escape to unbind").
 class KeyCaptureLineEdit: public QLineEdit {
 	Q_OBJECT
-	KYTY_QT_CLASS_NO_COPY(KeyCaptureLineEdit);
+	KYTY_CLASS_NO_COPY(KeyCaptureLineEdit);
 
 public:
 	explicit KeyCaptureLineEdit(QWidget* parent = nullptr);

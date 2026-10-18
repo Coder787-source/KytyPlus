@@ -241,6 +241,7 @@ public:
 	bool PoolDestroy(int memid);
 	int  ResolverCreate(const char* name, int memid);
 	bool ResolverValid(int rid);
+	bool ResolverDestroy(int rid);
 
 	Id   SslInit(uint64_t pool_size);
 	bool SslTerm(Id ssl_ctx_id);
@@ -441,6 +442,17 @@ bool Network::ResolverValid(int rid) {
 	Common::LockGuard lock(m_mutex);
 
 	return rid >= 0 && rid < RESOLVERS_MAX && m_resolvers[rid].used;
+}
+
+bool Network::ResolverDestroy(int rid) {
+	Common::LockGuard lock(m_mutex);
+
+	if (rid < 0 || rid >= RESOLVERS_MAX || !m_resolvers[rid].used) {
+		return false;
+	}
+
+	m_resolvers[rid] = {};
+	return true;
 }
 
 Network::Id Network::SslInit(uint64_t pool_size) {
@@ -1409,6 +1421,29 @@ int KYTY_SYSV_ABI NetResolverCreate(const char* name, int memid, int flags) {
 	}
 
 	return id;
+}
+
+int KYTY_SYSV_ABI NetResolverDestroy(int rid) {
+	PRINT_NAME();
+
+	LOGF("\t rid = %d\n", rid);
+
+	EXIT_IF(g_net == nullptr);
+	if (!g_net->ResolverDestroy(rid)) {
+		return NET_ERROR_EBADF;
+	}
+
+	return OK;
+}
+
+int KYTY_SYSV_ABI NetResolverAbort(int rid, int flags) {
+	PRINT_NAME();
+
+	LOGF("\t rid   = %d\n"
+	     "\t flags = 0x%08x\n",
+	     rid, flags);
+
+	return OK;
 }
 
 int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr, int timeout,
@@ -3605,6 +3640,33 @@ int KYTY_SYSV_ABI HttpCreateRequest(int conn_id, int method, const char* path,
 	return id.ToInt();
 }
 
+int KYTY_SYSV_ABI HttpCreateRequest2(int conn_id, const char* method, const char* path,
+                                    uint64_t content_length) {
+	PRINT_NAME();
+
+	LOGF("\t conn_id        = %d\n"
+	     "\t method         = %s\n"
+	     "\t path           = %s\n"
+	     "\t content_length = %" PRIu64 "\n",
+	     conn_id, method != nullptr ? method : "<null>", path != nullptr ? path : "<null>",
+	     content_length);
+
+	EXIT_IF(g_net == nullptr);
+
+	if (method == nullptr || path == nullptr) {
+		return HTTP_ERROR_INVALID_VALUE;
+	}
+
+	auto id =
+	    g_net->HttpCreateRequestWithURL2(Network::Id(conn_id), method, path, content_length);
+
+	if (!id.IsValid()) {
+		return HTTP_ERROR_OUT_OF_MEMORY;
+	}
+
+	return id.ToInt();
+}
+
 int KYTY_SYSV_ABI HttpCreateRequestWithURL2(int conn_id, const char* method, const char* url,
                                             uint64_t content_length) {
 	PRINT_NAME();
@@ -4296,6 +4358,21 @@ int KYTY_SYSV_ABI NpRegisterStateCallback(void* callback, void* userdata) {
 	return OK;
 }
 
+int KYTY_SYSV_ABI NpRegisterStateCallbackA(NpStateCallbackA callback, void* userdata) {
+	PRINT_NAME();
+
+	if (callback == nullptr) {
+		return np_error_invalid_argument;
+	}
+
+	s_np_state_cb = reinterpret_cast<NpStateCallbackFn>(callback);
+	s_np_state_ud = userdata;
+	LOGF("NetworkStubs: registered NpStateCallbackA=%p userdata=%p\n",
+	     reinterpret_cast<void*>(callback), userdata);
+
+	return OK;
+}
+
 int KYTY_SYSV_ABI NpUnregisterStateCallback() {
 	PRINT_NAME();
 
@@ -4419,6 +4496,27 @@ int KYTY_SYSV_ABI NpGetAccountAge(int req_id, int user_id, uint8_t* age) {
 	*age = 0;
 
 	// return OK;
+	return np_error_signed_out;
+}
+
+int KYTY_SYSV_ABI NpGetAccountLanguage2(int req_id, int user_id, void* language_code) {
+	PRINT_NAME();
+
+	LOGF("\t req_id        = %d\n"
+	     "\t user_id       = %d\n"
+	     "\t language_code = 0x%016" PRIx64 "\n",
+	     req_id, user_id, reinterpret_cast<uint64_t>(language_code));
+
+	if (req_id <= 0 || language_code == nullptr) {
+		return np_error_invalid_argument;
+	}
+
+	std::lock_guard lock(g_np_request_mutex);
+
+	if (np_get_request_locked(req_id) == nullptr) {
+		return np_error_request_not_found;
+	}
+
 	return np_error_signed_out;
 }
 

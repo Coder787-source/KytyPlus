@@ -18,8 +18,8 @@
 #include "kernel/pthread.h"
 #include "loader/elf.h"
 #include "loader/gamePatch.h"
+#include "loader/guestInstructionPatcher.h"
 #include "loader/jit.h"
-#include "loader/redZonePatcher.h"
 #include "loader/symbolDatabase.h"
 #include "loader/x64InstructionEmulator.h"
 
@@ -88,16 +88,6 @@ ThreadLocalStorage::~ThreadLocalStorage() {
 		FreeTlsBlock(&block);
 	}
 }
-
-#pragma pack(1)
-
-struct EntryParams {
-	int         argc;
-	uint32_t    pad;
-	const char* argv[16];
-};
-
-#pragma pack()
 
 using atexit_func_t = KYTY_SYSV_ABI void (*)();
 using entry_func_t  = KYTY_SYSV_ABI void (*)(EntryParams* params, atexit_func_t atexit_func);
@@ -303,9 +293,8 @@ static KYTY_SYSV_ABI uint64_t ResolveImportStubWithId(uint64_t record_id) {
 	if (record_id < g_stubbed_imports.size()) {
 		auto& record = g_stubbed_imports[record_id];
 		auto  nid    = record.name;
-		auto  pos    = Common::FindIndex(nid, "[");
-		if (Common::IndexValid(nid, pos)) {
-			nid = Common::Left(nid, pos);
+		if (const auto pos = nid.find('['); pos != std::string::npos) {
+			nid = nid.substr(0, pos);
 		}
 
 		SymbolRecord resolved {};
@@ -1682,7 +1671,7 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	RelocateAll();
 
 	if (!game_patch.empty()) {
-		GamePatch::Apply(game_patch, m_programs.empty() ? nullptr : m_programs.front());
+		GamePatch::Apply(game_patch, m_programs.empty() ? nullptr : m_programs.front(), m_programs);
 	}
 	StartAllModules();
 
@@ -1966,11 +1955,11 @@ Program* RuntimeLinker::FindProgramByAddr(uint64_t vaddr) {
 	return nullptr;
 }
 
-void RuntimeLinker::StackTrace(uint64_t frame_ptr) {
+void RuntimeLinker::StackTrace(uint64_t frame_ptr, uint64_t stack_ptr) {
 	void* stack[20];
 	int   depth = 20;
 
-	SysStackWalkX86(frame_ptr, stack, &depth);
+	SysStackWalkX86(frame_ptr, stack_ptr, stack, &depth);
 
 	LOGF("Stack trace [thread = %d]:\n", Common::Thread::GetThreadIdUnique());
 
@@ -2461,11 +2450,11 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	program->mapped_size = program->base_size_aligned + tls_handler_size;
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	const bool         use_red_zone_protection  = Config::RedZoneProtectionEnabled();
-	constexpr uint64_t RED_ZONE_TRAMPOLINE_SIZE = 8u * 1024u * 1024u;
+	const bool use_red_zone_protection = Config::RedZoneProtectionEnabled();
+	constexpr uint64_t INSTRUCTION_TRAMPOLINE_SIZE = 8u * 1024u * 1024u;
 	if (use_red_zone_protection) {
-		EXIT_IF(RED_ZONE_TRAMPOLINE_SIZE > UINT64_MAX - program->mapped_size);
-		program->mapped_size += RED_ZONE_TRAMPOLINE_SIZE;
+		EXIT_IF(INSTRUCTION_TRAMPOLINE_SIZE > UINT64_MAX - program->mapped_size);
+		program->mapped_size += INSTRUCTION_TRAMPOLINE_SIZE;
 	}
 #endif
 
@@ -2476,18 +2465,17 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	if (use_red_zone_protection) {
-		program->red_zone_trampoline_vaddr = program->base_vaddr + program->base_size_aligned;
-		program->red_zone_trampoline_size  = RED_ZONE_TRAMPOLINE_SIZE;
-		RegisterRedZonePatchModule(reinterpret_cast<void*>(program->base_vaddr),
-		                           program->base_size_aligned,
-		                           reinterpret_cast<void*>(program->red_zone_trampoline_vaddr),
-		                           program->red_zone_trampoline_size);
+		const auto trampoline_addr           = program->base_vaddr + program->base_size_aligned;
+		program->instruction_trampoline_size = INSTRUCTION_TRAMPOLINE_SIZE;
+		RegisterGuestInstructionPatchModule(
+		    reinterpret_cast<void*>(program->base_vaddr), program->base_size_aligned,
+		    reinterpret_cast<void*>(trampoline_addr), program->instruction_trampoline_size);
 	}
 #endif
 	if (!is_shared) {
 		program->tls.handler_vaddr = program->base_vaddr + program->base_size_aligned;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-		program->tls.handler_vaddr += program->red_zone_trampoline_size;
+		program->tls.handler_vaddr += program->instruction_trampoline_size;
 #endif
 	}
 
@@ -2630,8 +2618,9 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 			     Common::PathToString(program->file_name).c_str());
 		}
 		for (const auto& [segment_addr, segment_size]: executable_segments) {
+			// This loader path reserves a trampoline only for red-zone protection.
 			const auto result =
-			    PatchRedZoneMemoryInstructions(segment_addr, segment_size, function_starts);
+			    PatchGuestInstructions(segment_addr, segment_size, function_starts, true, false);
 			LOGF("Windows guest red-zone patching: %s, functions=%" PRIu64 ", red_zone=%" PRIu64
 			     ", memory=%" PRIu64 ", patched=%" PRIu64 ", short=%" PRIu64 ", stack=%" PRIu64
 			     ", control=%" PRIu64 ", unrelocatable=%" PRIu64 "\n",
@@ -2643,8 +2632,8 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 			     result.unrelocatable_memory_instruction_count);
 			Common::VirtualMemory::FlushInstructionCache(segment_addr, segment_size);
 		}
-		Common::VirtualMemory::FlushInstructionCache(program->red_zone_trampoline_vaddr,
-		                                             program->red_zone_trampoline_size);
+		Common::VirtualMemory::FlushInstructionCache(
+		    program->base_vaddr + program->base_size_aligned, program->instruction_trampoline_size);
 	}
 #endif
 
@@ -2674,8 +2663,8 @@ void RuntimeLinker::DeleteProgram(Program* p) {
 	if (program->base_vaddr != 0 || program->mapped_size != 0) {
 		EXIT_IF(program->base_vaddr == 0 || program->mapped_size == 0);
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-		if (program->red_zone_trampoline_size != 0) {
-			UnregisterRedZonePatchModule(reinterpret_cast<void*>(program->base_vaddr));
+		if (program->instruction_trampoline_size != 0) {
+			UnregisterGuestInstructionPatchModule(reinterpret_cast<void*>(program->base_vaddr));
 		}
 #endif
 		EXIT_IF(

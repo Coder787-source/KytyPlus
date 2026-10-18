@@ -545,13 +545,6 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui, boo
 	    TextToEnum<Configuration::AspectRatio>(ui.comboBox_aspect_ratio->currentText());
 }
 
-void ConfigurationEditDialog::update_info() {
-	UpdateInfo(m_info, *m_ui);
-	if (m_controller_mapping != nullptr) {
-		m_info.host_input_mapping = m_controller_mapping->GetMappings();
-	}
-}
-
 void ConfigurationEditDialog::save() {
 	for (auto* field: {m_ui->lineEdit_shader_log_folder, m_ui->lineEdit_printf_file,
 	                   m_ui->lineEdit_cmd_dump_folder}) {
@@ -580,6 +573,9 @@ void ConfigurationEditDialog::save() {
 	}
 
 	UpdateInfo(m_info, *m_ui, m_global_settings);
+	if (m_controller_mapping != nullptr) {
+		m_info.host_input_mapping = m_controller_mapping->GetMappings();
+	}
 
 	emit accept();
 }

@@ -42,13 +42,15 @@
 namespace Libs {
 
 
+LIB_VERSION("libSceWebBrowserDialog", 1, "libSceWebBrowserDialog", 1, 1);
+
 
 
 
 namespace LibWebBrowserDialog {
 
 
-LIB_VERSION("libSceWebBrowserDialog", 1, "libSceWebBrowserDialog", 1, 1);
+
 
 
 
@@ -237,6 +239,9 @@ static int KYTY_SYSV_ABI Func_F2BE042771625F8C() {
 
 
 
+} // namespace LibWebBrowserDialog
+
+
 LIB_DEFINE(InitWebBrowserDialog_1) {
 
 
@@ -277,9 +282,6 @@ LIB_DEFINE(InitWebBrowserDialog_1) {
 
 
 }
-
-
-} // namespace LibWebBrowserDialog
 
 
 

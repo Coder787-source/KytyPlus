@@ -1,7 +1,7 @@
 #ifndef LOG_VIEWER_DIALOG_H
 #define LOG_VIEWER_DIALOG_H
 
-#include "common.h"
+#include "common/common.h"
 
 #include <QDialog>
 
@@ -9,7 +9,7 @@ class Configuration;
 class QPlainTextEdit;
 
 class LogViewerDialog: public QDialog {
-	KYTY_QT_CLASS_NO_COPY(LogViewerDialog);
+	KYTY_CLASS_NO_COPY(LogViewerDialog);
 
 public:
 	explicit LogViewerDialog(QWidget* parent = nullptr);
