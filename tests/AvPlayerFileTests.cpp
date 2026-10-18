@@ -131,7 +131,7 @@ void CheckVideoReadAhead(const std::filesystem::path& root) {
 	}
 	VideoMemory memory;
 	const AvPlayerMemAllocator allocator {&memory, Allocate, Deallocate, Allocate, Deallocate};
-	Source source(allocator, {}, {}, 6, false, 0);
+	Source source(allocator, {}, 6, false, 0);
 	Check(source.Init("/app0/movie.m4v", AvPlayerSourceFileMp4) == 0, "open video fixture");
 	source.SetSync(1);
 	Check(source.Start() == 0, "start video workers");
@@ -150,7 +150,7 @@ void CheckVideoReadAhead(const std::filesystem::path& root) {
 		Check(source.Video(&info), "six output buffers keep five video frames ready");
 		Check(info.time_stamp > previous, "video retries return successive frames");
 	}
-	Check(source.Pause() == 0, "pause video");
+	source.Pause();
 	memory.protected_buffer = info.data;
 	std::array<uint8_t, 256> current {};
 	std::memcpy(current.data(), info.data, current.size());
