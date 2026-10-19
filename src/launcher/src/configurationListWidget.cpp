@@ -1072,7 +1072,7 @@ void ConfigurationListWidget::ExportGameSettings(QWidget* parent) const {
 }
 
 void ConfigurationListWidget::edit_input_mapping() {
-	InputMappingDialog dialog(m_global_info.host_input_mapping, nullptr, this);
+	InputMappingDialog dialog(m_global_info.host_input_mapping, m_controller_preview, this);
 	if (dialog.exec() == QDialog::Accepted) {
 		m_global_info.host_input_mapping = dialog.Mapping();
 		WriteSettings();

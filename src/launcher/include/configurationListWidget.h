@@ -15,6 +15,7 @@
 
 class ConfigurationItem;
 class CompatibilityDatabase;
+class ControllerPreview;
 class QTreeWidgetItem;
 class QPoint;
 class MainDialog;
@@ -41,6 +42,10 @@ public:
 
 	void        SetMainDialog(MainDialog* main_dialog) { m_main_dialog = main_dialog; }
 	MainDialog* GetMainDialog() { return m_main_dialog; }
+
+	// The Controls dialog captures gamepad presses through the launcher's single SDL
+	// poller, so it needs the owner's preview; without it the pad tab is inert.
+	void SetControllerPreview(ControllerPreview* preview) { m_controller_preview = preview; }
 
 	[[nodiscard]] const QString&     GetSettingsFile() const { return m_settings_file; }
 	[[nodiscard]] const QStringList& GetGameDirectories() const { return m_game_dirs; }
@@ -100,6 +105,7 @@ private:
 	bool                          m_game_running  = false;
 	Ui::ConfigurationListWidget*  m_ui            = nullptr;
 	MainDialog*                   m_main_dialog   = nullptr;
+	ControllerPreview*            m_controller_preview = nullptr;
 	QString                       m_settings_file;
 	QString                       m_runtime_directory;
 	QStringList                   m_game_dirs;

@@ -130,6 +130,7 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 
 	m_main_dialog = main_dialog;
 	m_ui->widget->SetMainDialog(main_dialog);
+	m_ui->widget->SetControllerPreview(&m_controller_preview);
 
 	main_dialog->setWindowFlags(Qt::Dialog /*| Qt::MSWindowsFixedSizeDialogHint*/);
 
@@ -596,7 +597,6 @@ void MainDialogPrivate::Run() {
 	}
 
 	m_running_item->SetRunning(true);
-	m_controller_preview.SetSuspended(true);
 	m_title_sound.SetTitle({});
 
 	Configuration info;
@@ -608,7 +608,12 @@ void MainDialogPrivate::Run() {
 }
 
 void MainDialogPrivate::Update() {
-	m_ui->widget->SetGameRunning(m_process.state() != QProcess::NotRunning);
+	const bool game_running = m_process.state() != QProcess::NotRunning;
+	m_ui->widget->SetGameRunning(game_running);
+	// The launcher and the emulator cannot both own the pad's SDL device, so the preview
+	// is suspended for exactly as long as the process lives. Deriving it from the process
+	// state here is what keeps a failed launch from parking the preview permanently.
+	m_controller_preview.SetSuspended(game_running);
 	const auto* item = m_ui->widget->GetSelectedItem();
 
 	bool run_enabled = (m_process.state() == QProcess::NotRunning && item != nullptr);
