@@ -55,6 +55,7 @@ headline compatibility number for the project.
 
 | Title | Title ID | Status | Last tested (version) | Reports |
 |---|---|---|---|---|
+| Astro Bot | PPSA21567 | Ingame (broken) (boots past the shader-descriptor fault, plays its intro chain and reaches gameplay; frame rate is far from real-time on an iGPU and the title can still exit on its own during a session) | v4.5 | maintainer (Radeon 840M) |
 | Crash Bandicoot 4: It's About Time | PPSA02433 | Ingame (broken) (intro cutscene chain plays end-to-end; gameplay starts but is broken - crashes or corrupt visuals; upstream v0.0.5.5 gets farther than KytyPlus - #88) | v3.8 | maintainer (Radeon 840M) + [#88](https://github.com/KytyPS5/KytyPS5/issues/88) |
 | Dead Cells | PPSA-15554 | Playable | v4.1 | [#3](https://github.com/Coder787-source/KytyPlus/issues/3) |
 | Klonoa Phantasy Reverie Series | PPSA04795 | Playable | v3.9 | [#WBa1htjsqc8](https://www.youtube.com/watch?v=WBa1htjsqc8&t=2s) |
