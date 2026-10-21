@@ -361,7 +361,9 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	usage.usage = is_storage ? vk::ImageUsageFlagBits::eStorage
 	                         : image.usage & ~vk::ImageUsageFlagBits::eStorage;
 	vk::ImageViewMinLodCreateInfoEXT min_lod {};
-	if (normalized.min_lod != 0) {
+	// Passing the struct to a device without VK_EXT_image_view_min_lod would be ignored at best,
+	// so the view keeps its base mip level instead.
+	if (normalized.min_lod != 0 && m_graphics.image_view_min_lod_enabled) {
 		min_lod.minLod = static_cast<float>(normalized.base_level) +
 		                 static_cast<float>(normalized.min_lod) / 256.0f;
 		usage.pNext    = &min_lod;
