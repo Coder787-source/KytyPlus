@@ -5,6 +5,7 @@
 #include "common/logging/log.h"
 #include "common/dateTime.h"
 #include "common/debug.h"
+#include "common/archive.h"
 #include "common/file.h"
 #include <magic_enum.hpp>
 #include "common/platform/sysDbg.h"
@@ -55,9 +56,9 @@ static std::string GetBuildString() {
 
 static void PrintUsage() {
 	::printf("%s\n", GetBuildString().c_str());
-	::printf("kyty_emulator --game <dir|elf> [options]\n\n");
+	::printf("kyty_emulator --game <dir|elf|image> [options]\n\n");
 	::printf("Options:\n");
-	::printf("  --game <dir|elf>                     Game directory or ELF to load.\n");
+	::printf("  --game <dir|elf|image>               Game directory, ELF, .ffpfsc/.exfat image or .zar archive.\n");
 	::printf(
 	    "  --game-patch <json>                  Validated patch plan to apply before entry.\n");
 	::printf("  --install-pkg <pkg>                 Parse/extract a PS4/PS5 .pkg, then exit.\n");
@@ -295,6 +296,18 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 					// are extracted or staged on disk.
 					options.app0_dir = options.game_image / "__kyty_image_root__";
 					options.elf = "/app0/eboot.bin";
+					continue;
+				}
+				if (Common::IsSupportedArchive(value)) {
+					// Members are decompressed on demand through the virtual "archive!/member"
+					// namespace, so no game files are extracted or staged on disk.
+					const auto root = Common::MakeArchivePath(std::filesystem::absolute(value));
+					if (!Common::File::IsFileExisting(root / "eboot.bin")) {
+						::printf("Archive does not contain eboot.bin: %s\n", value.c_str());
+						return false;
+					}
+					options.app0_dir = root;
+					options.elf      = "/app0/eboot.bin";
 					continue;
 				}
 				options.app0_dir = Common::DirectoryWithoutFilename(value);

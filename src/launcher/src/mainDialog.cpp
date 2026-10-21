@@ -240,7 +240,7 @@ void MainDialogPrivate::FindInterpreter() {
 				startup_image = startup_args.at(++i);
 			} else {
 				QMessageBox::warning(m_main_dialog, tr("Open game image"),
-				                     tr("--open-image requires a .ffpfsc or .exfat file path."));
+				                     tr("--open-image requires a .ffpfsc, .exfat or .zar file path."));
 			}
 			break;
 		}
@@ -493,7 +493,7 @@ void MainDialog::RunInterpreter(QProcess* process, const Configuration& info) {
 #endif
 	process->setWorkingDirectory(dir.path());
 
-	if (IsGameImagePath(info.basedir)) {
+	if (IsNapsGameImagePath(info.basedir)) {
 		auto* progress = new QProgressDialog(tr("Reading game image index (no extraction)..."), QString(), 0, 0, this);
 		progress->setWindowTitle(tr("Opening game image"));
 		progress->setWindowModality(Qt::WindowModal);
@@ -926,6 +926,7 @@ void MainDialogPrivate::LoadGame() {
 	auto* btn_folder = msg.addButton(tr("Game folder (eboot.bin inside)..."), QMessageBox::ActionRole);
 	auto* btn_image  = msg.addButton(tr("Compressed game image (.ffpfsc)..."), QMessageBox::ActionRole);
 	auto* btn_exfat  = msg.addButton(tr("exFAT game image (.exfat)..."), QMessageBox::ActionRole);
+	auto* btn_zar    = msg.addButton(tr("ZArchive game image (.zar)..."), QMessageBox::ActionRole);
 	msg.addButton(tr("Cancel"), QMessageBox::RejectRole);
 	msg.exec();
 
@@ -943,12 +944,18 @@ void MainDialogPrivate::LoadGame() {
 		if (dir.isEmpty()) return;
 		info.basedir = dir;
 		info.elf     = QStringLiteral("eboot.bin");
-	} else if (msg.clickedButton() == btn_image || msg.clickedButton() == btn_exfat) {
-		const bool exfat = msg.clickedButton() == btn_exfat;
+	} else if (msg.clickedButton() == btn_image || msg.clickedButton() == btn_exfat ||
+	           msg.clickedButton() == btn_zar) {
+		const bool   exfat  = msg.clickedButton() == btn_exfat;
+		const bool   zar    = msg.clickedButton() == btn_zar;
 		const QString image = QFileDialog::getOpenFileName(
-		    m_main_dialog, exfat ? tr("Load exFAT game image") : tr("Load compressed game image"), QString(),
-		    exfat ? tr("exFAT game image (*.exfat);;All Files (*.*)")
-		          : tr("Compressed game image (*.ffpfsc);;All Files (*.*)"));
+		    m_main_dialog,
+		    zar ? tr("Load ZArchive game image") : exfat ? tr("Load exFAT game image")
+		                                                 : tr("Load compressed game image"),
+		    QString(),
+		    zar ? tr("ZArchive game image (*.zar);;All Files (*.*)")
+		        : exfat ? tr("exFAT game image (*.exfat);;All Files (*.*)")
+		                : tr("Compressed game image (*.ffpfsc);;All Files (*.*)"));
 		if (image.isEmpty()) return;
 		if (m_ui->widget->SelectGameImage(image)) {
 			Update();

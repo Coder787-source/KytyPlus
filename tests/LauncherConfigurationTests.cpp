@@ -17,8 +17,14 @@ int main(int argc, char** argv) {
 	      "exFAT image paths are case-insensitive");
 	Check(IsGameImagePath("game.ffpfsc") && IsGameImagePath("game.FFPFSC"),
 	      "compressed image paths remain supported");
+	Check(IsGameImagePath("game.zar") && IsGameImagePath("C:/games/My Game.ZAR"),
+	      "ZArchive image paths are case-insensitive");
+	// The mount-progress dialog waits for NAPS markers that an in-process archive never emits.
+	Check(!IsNapsGameImagePath("game.zar"),
+	      "ZArchive paths do not select the external NAPS helper");
 	Check(!IsGameImagePath("game.exfat.bak") && !IsGameImagePath("eboot.bin") &&
-	          !IsGameImagePath("game.pkg") && !IsGameImagePath("exfat"),
+	          !IsGameImagePath("game.pkg") && !IsGameImagePath("exfat") &&
+	          !IsGameImagePath("game.zar.bak") && !IsGameImagePath("zar"),
 	      "non-image paths are not treated as game images");
 	QTemporaryDir temp;
 	Check(temp.isValid(), "temporary settings directory");

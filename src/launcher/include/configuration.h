@@ -15,10 +15,16 @@
 #include <QStringList>
 #include <QVariant>
 
-// Mountable game images the launcher can pick directly, without a containing game folder.
-inline bool IsGameImagePath(const QString& path) {
+// Game images the launcher can pick directly, without a containing game folder.
+inline bool IsNapsGameImagePath(const QString& path) {
 	return path.endsWith(QStringLiteral(".ffpfsc"), Qt::CaseInsensitive) ||
 	       path.endsWith(QStringLiteral(".exfat"), Qt::CaseInsensitive);
+}
+
+// ZArchive images are decompressed in-process by the emulator, so they never talk to the external
+// NAPS helper and must not be gated on it.
+inline bool IsGameImagePath(const QString& path) {
+	return IsNapsGameImagePath(path) || path.endsWith(QStringLiteral(".zar"), Qt::CaseInsensitive);
 }
 
 template <class T>

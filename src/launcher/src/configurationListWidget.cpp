@@ -669,7 +669,7 @@ bool ConfigurationListWidget::SelectGameImage(const QString& path) {
 	if (!image.isFile() || !image.isReadable() || image.isSymLink() ||
 	    !IsGameImagePath(image.filePath())) {
 		QMessageBox::warning(this, tr("Open game image"),
-		                     tr("Select an existing, readable .ffpfsc or .exfat file (not a shortcut):\n%1")
+		                     tr("Select an existing, readable .ffpfsc, .exfat or .zar file (not a shortcut):\n%1")
 		                         .arg(image.absoluteFilePath()));
 		return false;
 	}
@@ -825,7 +825,9 @@ void ConfigurationListWidget::ScanGameDirectory() {
 						info->name = display_name;
 					}
 				}
-				const QString metadata_dir = GetCachedImageMetadataDirectory(file);
+				// The NAPS helper cannot read a ZArchive; indexing one would stall the scan.
+				const QString metadata_dir =
+				    IsNapsGameImagePath(file.filePath()) ? GetCachedImageMetadataDirectory(file) : QString();
 				if (!metadata_dir.isEmpty()) {
 					const QDir metadata_files(metadata_dir);
 					const auto metadata = GetGameMetadata(
