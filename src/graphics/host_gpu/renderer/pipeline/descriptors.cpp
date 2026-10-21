@@ -764,7 +764,24 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 					size = std::min({size, uint64_t {256} * 1024 * 1024, limit});
 				}
 			}
-			size = Libs::LibKernel::Memory::ClampRangeSize(address, size);
+			// A descriptor whose base is not committed at all is an unbound resource rather
+			// than a fault. Demon's Souls (issue #17) reaches its intro cutscene holding
+			// buffer descriptors that point into freed memory; aborting there kills the game,
+			// so degrade to the same empty binding the zero-address case above produces.
+			const auto clamped = Libs::LibKernel::Memory::TryClampRangeSize(address, size);
+			if (clamped == 0) {
+				static uint32_t unbound_reports = 0;
+				if (unbound_reports < 8) {
+					unbound_reports++;
+					LOGF("Descriptors: unbound buffer resource addr=0x%016" PRIx64
+					     " size=0x%016" PRIx64 "%s\n",
+					     address, size,
+					     unbound_reports == 8 ? " (further reports suppressed)" : "");
+				}
+				source = {};
+				continue;
+			}
+			size   = clamped;
 			source = {address, size, cache.FindBuffer(address, size)};
 		}
 	}
