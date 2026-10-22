@@ -4142,14 +4142,21 @@ int Initialize() {
 	if (result != OK) {
 		return result;
 	}
+	// The driver DMEM is addressed by absolute guest address below and by the command processor,
+	// so it must be mapped there rather than merely steered toward it: flags 0 would let the kernel
+	// pick any free range, which it does on macOS.
 	void* address = reinterpret_cast<void*>(DriverDmemBase);
-	result = LibKernel::Memory::KernelMapNamedDirectMemory(
-	    &address, DriverDmemSize, 0x33, 0, physical_offset, DriverDmemSize, "SceAgcDriver");
+	result = LibKernel::Memory::KernelMapNamedDirectMemory(&address, DriverDmemSize, 0x33, 0x10,
+	                                                       physical_offset, DriverDmemSize,
+	                                                       "SceAgcDriver");
 	if (result != OK) {
 		EXIT_IF(LibKernel::Memory::KernelCheckedReleaseDirectMemory(physical_offset, DriverDmemSize) != OK);
 		return result;
 	}
-	EXIT_IF(reinterpret_cast<uint64_t>(address) != DriverDmemBase);
+	if (reinterpret_cast<uint64_t>(address) != DriverDmemBase) {
+		EXIT("Graphics5Driver: driver DMEM mapped at 0x%016" PRIx64 ", expected 0x%016" PRIx64 "\n",
+		     reinterpret_cast<uint64_t>(address), DriverDmemBase);
+	}
 	std::memset(address, 0, DriverDmemSize);
 	struct FunctionShaderBindings {
 		uint64_t code;
