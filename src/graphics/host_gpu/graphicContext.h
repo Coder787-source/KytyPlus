@@ -98,7 +98,10 @@ struct GraphicContext {
 	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
 	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;
-	[[nodiscard]] bool     CreateImage(const vk::ImageCreateInfo& info, VulkanImage& image);
+	// out_result receives the underlying VkResult, which callers cannot infer from the boolean:
+	// exhaustion and invalid creation parameters both report false.
+	[[nodiscard]] bool CreateImage(const vk::ImageCreateInfo& info, VulkanImage& image,
+	                               vk::Result* out_result = nullptr);
 	void                   DeleteImage(VulkanImage& image);
 
 	uint32_t screen_width  = 0;

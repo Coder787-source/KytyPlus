@@ -721,10 +721,17 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 		     static_cast<vk::ImageCreateFlags::MaskType>(create.flags), info.samples);
 	}
 
-	if (!graphics.CreateImage(create, backing)) {
-		EXIT("failed to create image: extent=%ux%ux%u format=%d layers=%u levels=%u\n",
-		     create.extent.width, create.extent.height, create.extent.depth,
-		     static_cast<int>(create.format), create.arrayLayers, create.mipLevels);
+	// The result separates exhaustion from rejected parameters; the heap dump alone does not
+	// reliably survive an aborted log.
+	vk::Result image_result = vk::Result::eSuccess;
+	if (!graphics.CreateImage(create, backing, &image_result)) {
+		EXIT("failed to create image: result=%s extent=%ux%ux%u format=%d layers=%u levels=%u "
+		     "usage=0x%x flags=0x%x samples=%u\n",
+		     vk::to_string(image_result).c_str(), create.extent.width, create.extent.height,
+		     create.extent.depth, static_cast<int>(create.format), create.arrayLayers,
+		     create.mipLevels, static_cast<vk::ImageUsageFlags::MaskType>(create.usage),
+		     static_cast<vk::ImageCreateFlags::MaskType>(create.flags),
+		     static_cast<uint32_t>(create.samples));
 	}
 	SetVulkanObjectNameF(
 	    graphics.device, backing.image,
