@@ -8,11 +8,16 @@ internal sealed class NapsExtractor : IDisposable
     readonly long imageBase, imageSize, superblock, cntBase;
     readonly byte[] naps;
     readonly int files, ublocks, cblocks, fidxStart, u2cStart, cblockStart;
-    readonly long mountSize, metadataBase;
+    readonly long mountSize;
+    long metadataBase;
     readonly List<long> boundaries = new();
     readonly Dictionary<int, byte[]> cache = new();
     readonly Queue<int> cacheOrder = new();
     readonly long innerSize;
+
+    // Each candidate is one 256-KiB Kraken decode, so the search is bounded by count. The inner
+    // filesystem sits at the end of the logical space, which is where the candidates start.
+    const int MaxMetadataCandidates = 512;
 
     static ushort U16(ReadOnlySpan<byte> b, int p) => BinaryPrimitives.ReadUInt16LittleEndian(b[p..]);
     static uint U32(ReadOnlySpan<byte> b, int p) => BinaryPrimitives.ReadUInt32LittleEndian(b[p..]);
@@ -64,14 +69,26 @@ internal sealed class NapsExtractor : IDisposable
         int r = index;
         while (r >= 0 && !C(r).Run) --r;
         if (r < 0 || r + 1 >= cblocks) throw new InvalidDataException("Missing NAPS run base");
-        Block run = C(r), first = C(r + 1), current = C(index);
+        Block run = C(r), first = C(r + 1);
         long relative = 0;
         for (int i = r + 1; i < index; ++i)
         {
             int advance = (C(i + 1).COffset - C(i).COffset) & 0x3ffff;
             relative += advance == 0 && C(i).Predictor == 4 ? 0x40000 : advance;
         }
-        return checked((run.Tweak << 15) + (first.COffset & 0xffff) + relative);
+        long offset = checked((run.Tweak << 15) + (first.COffset & 0xffff) + relative);
+        if (Environment.GetEnvironmentVariable("KYTY_NAPS_TRACE") == "1")
+            Console.Error.WriteLine($"  disk: block={index} run={r} runBits=0x{run.Bits:X16} firstBits=0x{first.Bits:X16} " +
+                                    $"tweak=0x{run.Tweak:X} gap={index - r - 1} relative=0x{relative:X} offset=0x{offset:X}");
+        // The run record carries the only absolute disk position in the layout, so an offset
+        // outside the nested image means this package encodes its base differently. Report the
+        // records that produced it; a bare range check cannot be compared between packages.
+        if (offset < 0 || offset > innerSize)
+            throw new InvalidDataException(
+                $"NAPS run base is outside the package image: block={index} run={r} " +
+                $"runBits=0x{run.Bits:X16} firstBits=0x{first.Bits:X16} tweak=0x{run.Tweak:X} " +
+                $"gap=0x{index - r - 1:X} relative=0x{relative:X} offset=0x{offset:X} image=0x{innerSize:X}");
+        return offset;
     }
 
     public NapsExtractor(string path, string? debugPasscode = null)
@@ -86,6 +103,10 @@ internal sealed class NapsExtractor : IDisposable
         byte[] sb = Read(superblock, 0x380);
         if (U64(sb, 8) != 20130315 || U32(sb, 0x20) != 0x10000 || U64(sb, 0x30) > 4096)
             throw new InvalidDataException("Unsupported outer PFS geometry");
+        if (Environment.GetEnvironmentVariable("KYTY_NAPS_TRACE") == "1")
+            Console.WriteLine($"NAPS OUTER: flags=0x{U16(sb, 0x1c):X} encrypted={(U16(sb, 0x1c) & 4) != 0} " +
+                              $"inodes={U64(sb, 0x30)} pprplain={sb.AsSpan(0x370, 16).SequenceEqual("PPRPLAIN-NOAUTH!"u8)} " +
+                              $"image=0x{imageBase:X}+0x{imageSize:X} cnt=0x{cntBase:X}");
         if ((U16(sb, 0x1c) & 4) != 0 && !sb.AsSpan(0x370, 16).SequenceEqual("PPRPLAIN-NOAUTH!"u8))
             decrypted = FakePackage.OpenPs5Debug(backing, debugPasscode ?? new string('0', 32));
         // Signed 32-bit outer dinodes are packed in the block after the data-first superblock.
@@ -143,9 +164,48 @@ internal sealed class NapsExtractor : IDisposable
         }
         boundaries = boundaries.Distinct().Order().ToList();
         mountSize = (long)ublocks * 0x40000;
-        metadataBase = boundaries.LastOrDefault(v => v < mountSize && (v & 0xffff) == 0);
-        if (metadataBase <= 0) throw new InvalidDataException("Missing metadata boundary");
+        // The mount is served in whole 256-KiB blocks, so the inner filesystem begins on a block
+        // boundary; the inner block size (64 KiB) is a smaller granularity and accepts a file tail
+        // that is not the superblock at all.
+        metadataBase = boundaries.LastOrDefault(v => v < mountSize && (v & 0x3ffff) == 0);
         Console.WriteLine($"NAPS: files={files}, blocks={ublocks}, cblocks={cblocks}, metadata=0x{metadataBase:X}");
+        if (Environment.GetEnvironmentVariable("KYTY_NAPS_TRACE") == "1")
+        {
+            // The two tables ahead of the file index are skipped by the offset model, so their
+            // shape is the only evidence about what they hold. Values, not bytes: these are
+            // positions inside the caller's package, which is enough to test a hypothesis.
+            int streams = checked((int)(b & 0xffffff));
+            int bases = checked((int)((a >> 28) & 15));
+            Console.WriteLine($"NAPS LAYOUT: header=0x{a:X16} 0x{b:X16} layout=0x{layoutOffset:X} len=0x{naps.Length:X} " +
+                              $"streams={streams} bases={bases} fidx=0x{fidxStart:X} u2c=0x{u2cStart:X} cblocks=0x{cblockStart:X} " +
+                              $"image=0x{innerSize:X} logical=0x{mountSize:X}");
+            for (int i = 0; i < Math.Min(streams, 4); ++i) Console.WriteLine($"NAPS T1[{i}]=0x{U64(naps, 16 + i * 8):X}");
+            long min1 = long.MaxValue, max1 = -1;
+            for (int i = 0; i < streams; ++i) { long v = (long)U64(naps, 16 + i * 8); if (v < min1) min1 = v; if (v > max1) max1 = v; }
+            if (streams > 0) Console.WriteLine($"NAPS T1 min=0x{min1:X} max=0x{max1:X} last=0x{U64(naps, 16 + (streams - 1) * 8):X}");
+            for (int i = 0; i < bases; ++i) Console.WriteLine($"NAPS T2[{i}]=0x{U64(naps, 16 + streams * 8 + i * 8):X}");
+            int runs = 0, lastRun = -1;
+            long sumTweak = 0, maxTweak = 0;
+            var runList = new List<int>();
+            for (int i = 0; i < cblocks; ++i)
+            {
+                if (!C(i).Run) continue;
+                ++runs; lastRun = i; runList.Add(i);
+                long t = C(i).Tweak;
+                sumTweak += t; if (t > maxTweak) maxTweak = t;
+            }
+            Console.WriteLine($"NAPS RUNS: count={runs} last={lastRun} maxTweak=0x{maxTweak:X} " +
+                              $"sumTweak<<15=0x{sumTweak << 15:X} image=0x{innerSize:X}" +
+                              (lastRun >= 0 ? $" lastBits=0x{C(lastRun).Bits:X16}" : ""));
+            // The head records show how the base field starts; the tail ones are the bases the
+            // metadata block resolves through.
+            void ShowRun(int i)
+            {
+                Console.WriteLine($"NAPS RUN[{i}] bits=0x{C(i).Bits:X16} tweak=0x{C(i).Tweak:X} base=0x{C(i).Tweak << 15:X} " +
+                                  $"uoff=0x{C(i).UOffset:X} coff=0x{C(i).COffset:X} pred={C(i).Predictor}");
+            }
+            foreach (int i in runList.Take(3).Concat(runList.Skip(Math.Max(0, runList.Count - 4)))) ShowRun(i);
+        }
     }
 
     byte[] Decode(int index, int length)
@@ -205,10 +265,30 @@ internal sealed class NapsExtractor : IDisposable
     }
     public void Probe()
     {
-        byte[] sb = Logical(metadataBase, 0x100);
-        Console.WriteLine($"Decoded metadata: {Convert.ToHexString(sb.AsSpan(0, 64))}");
-        if (U64(sb, 0) != 2 || U64(sb, 8) != 20130315)
-            throw new InvalidDataException("Decoded metadata lacks the PS5 PFS superblock");
+        // Even on a block boundary the highest candidate can be a file tail rather than the
+        // superblock, so walk the candidates down from the top and accept only one that decodes as
+        // a real PFS superblock. The position used everywhere later is then proven by its content.
+        var candidates = boundaries.Where(v => v < mountSize && (v & 0x3ffff) == 0).Reverse().ToList();
+        if (candidates.Count == 0) throw new InvalidDataException("Missing metadata boundary");
+        InvalidDataException? first = null;
+        int tried = 0;
+        foreach (long candidate in candidates)
+        {
+            if (tried == MaxMetadataCandidates) break;
+            ++tried;
+            try
+            {
+                byte[] sb = Logical(candidate, 0x100);
+                if (U64(sb, 0) != 2 || U64(sb, 8) != 20130315) continue;
+                metadataBase = candidate;
+                Console.WriteLine($"Decoded metadata: {Convert.ToHexString(sb.AsSpan(0, 64))}");
+                if (tried > 1) Console.WriteLine($"NAPS: metadata found at 0x{candidate:X}, {tried} boundaries tested");
+                return;
+            }
+            catch (InvalidDataException ex) { first ??= ex; }
+        }
+        throw first ?? new InvalidDataException(
+            $"None of the {tried} highest block boundaries decoded as the PS5 PFS superblock");
     }
     record Node(ushort Mode, long Size, long Offset);
     List<(string Path, long Offset, long Size)> ReadTree()
