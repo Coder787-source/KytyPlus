@@ -3,10 +3,12 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "kernel/memory.h"
 
@@ -724,7 +726,17 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	// The result separates exhaustion from rejected parameters; the heap dump alone does not
 	// reliably survive an aborted log.
 	vk::Result image_result = vk::Result::eSuccess;
-	if (!graphics.CreateImage(create, backing, &image_result)) {
+	bool       created      = graphics.CreateImage(create, backing, &image_result);
+	if (!created && image_result == vk::Result::eErrorOutOfDeviceMemory && backing.image == nullptr &&
+	    backing.allocation == nullptr) {
+		// Allocations this small only fail once the device is already full, and the buffer caches
+		// hold memory that a shared iGPU budget does not account for. Only the buffer cache can be
+		// trimmed from here: image creation happens while callers hold the texture cache lock.
+		LOGF("Image: device memory exhausted, trimming buffer cache and retrying\n");
+		m_scheduler.Context().GetBufferCache().RunGarbageCollector();
+		created = graphics.CreateImage(create, backing, &image_result);
+	}
+	if (!created) {
 		EXIT("failed to create image: result=%s extent=%ux%ux%u format=%d layers=%u levels=%u "
 		     "usage=0x%x flags=0x%x samples=%u\n",
 		     vk::to_string(image_result).c_str(), create.extent.width, create.extent.height,
