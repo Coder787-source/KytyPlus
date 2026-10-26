@@ -115,6 +115,13 @@ private:
 	}
 
 	[[nodiscard]] ImageId     InsertImage(const ImageInfo& info);
+	// Frees cached textures so an image of `needed` bytes is likely to fit. Callers must already
+	// hold m_lock, which every insertion path does; the periodic collector cannot be reached from
+	// here because it takes that lock itself.
+	void MakeRoomForImageLocked(uint64_t needed);
+	// Evicts least-recently-used images. Left at zero, `deletions` and `age_floor` follow the
+	// pressure tiers used by the periodic collector; the allocation path passes explicit ones.
+	void CollectLocked(uint64_t tick, bool allow_aggressive, size_t deletions, uint64_t age_floor);
 	void                      RegisterImage(ImageId id);
 	void                      UnregisterImage(ImageId id);
 	void                      DeleteImage(ImageId id);

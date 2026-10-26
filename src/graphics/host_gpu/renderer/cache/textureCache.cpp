@@ -198,6 +198,9 @@ TextureCache::BindingType TextureCache::UploadBinding(const Image& image) {
 }
 
 ImageId TextureCache::InsertImage(const ImageInfo& info) {
+	// Every caller of this holds m_lock, which is what makes the locked collector reachable from
+	// the allocation itself.
+	MakeRoomForImageLocked(Common::AlignUp(info.data.size, 1024));
 	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info);
 	RegisterImage(id);
 	return id;
@@ -1908,54 +1911,89 @@ void TextureCache::RunGarbageCollector() {
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;
 	}
-	const auto collect = [&](bool allow_aggressive) {
-		bool           pressured  = m_total_used_memory >= m_pressure_gc_memory;
-		bool           aggressive = allow_aggressive && m_total_used_memory >= m_critical_gc_memory;
-		const uint64_t age       = std::min<uint64_t>(aggressive ? 160 : pressured ? 80 : 16, tick);
-		size_t         deletions = aggressive ? 40 : pressured ? 20 : 10;
-		std::vector<ImageId> candidates;
-		candidates.reserve(deletions);
-		// Deleting depth recursively deletes its stencil association, so finish LRU traversal
-		// first.
-		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
-			candidates.push_back(id);
-			return candidates.size() == deletions;
-		});
-		for (const auto id: candidates) {
-			if (deletions == 0) {
-				break;
-			}
-			--deletions;
-			auto owner = m_slot_images.try_get(id);
-			if (owner == nullptr || !owner->registered || owner->depth_id) {
+	CollectLocked(tick, false, 0, 0);
+	if (m_total_used_memory >= m_critical_gc_memory) {
+		CollectLocked(tick, true, 0, 0);
+	}
+}
+
+void TextureCache::CollectLocked(uint64_t tick, bool allow_aggressive, size_t deletions,
+                                 uint64_t age_floor) {
+	// An explicit deletion budget means the caller is making room for a pending allocation rather
+	// than following the pressure tiers, so the tier tests count as met.
+	const bool       forced    = deletions != 0;
+	bool             pressured = forced || m_total_used_memory >= m_pressure_gc_memory;
+	bool             aggressive = allow_aggressive && (forced || m_total_used_memory >= m_critical_gc_memory);
+	const uint64_t   age = std::min<uint64_t>(age_floor != 0 ? age_floor
+	                                        : aggressive ? 160 : pressured ? 80 : 16, tick);
+	if (!forced) {
+		deletions = aggressive ? 40 : pressured ? 20 : 10;
+	}
+	std::vector<ImageId> candidates;
+	candidates.reserve(deletions);
+	// Deleting depth recursively deletes its stencil association, so finish LRU traversal
+	// first.
+	m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
+		candidates.push_back(id);
+		return candidates.size() == deletions;
+	});
+	for (const auto id: candidates) {
+		if (deletions == 0) {
+			break;
+		}
+		--deletions;
+		auto owner = m_slot_images.try_get(id);
+		if (owner == nullptr || !owner->registered || owner->depth_id) {
+			continue;
+		}
+		if (owner->IsGpuModified()) {
+			const bool safe = owner->SafeToDownload();
+			if (safe && owner->info.IsTiled()) {
 				continue;
 			}
-			if (owner->IsGpuModified()) {
-				const bool safe = owner->SafeToDownload();
-				if (safe && owner->info.IsTiled()) {
-					continue;
-				}
-				if (safe && !pressured) {
-					continue;
-				}
-				if (safe && !DownloadImageMemory(id)) {
-					continue;
-				}
+			if (safe && !pressured) {
+				continue;
 			}
-			FreeImage(id);
-			if (m_total_used_memory < m_critical_gc_memory && aggressive) {
-				deletions >>= 2;
-				aggressive = false;
-			}
-			if (m_total_used_memory < m_pressure_gc_memory && pressured) {
-				deletions >>= 1;
-				pressured = false;
+			if (safe && !DownloadImageMemory(id)) {
+				continue;
 			}
 		}
-	};
-	collect(false);
-	if (m_total_used_memory >= m_critical_gc_memory) {
-		collect(true);
+		FreeImage(id);
+		if (m_total_used_memory < m_critical_gc_memory && aggressive) {
+			deletions >>= 2;
+			aggressive = false;
+		}
+		if (m_total_used_memory < m_pressure_gc_memory && pressured) {
+			deletions >>= 1;
+			pressured = false;
+		}
+	}
+}
+
+// A pending image has to fit now, not over the next few frames, so this bypasses the periodic
+// trigger and its per-pass caps: the request decides how much to free.
+void TextureCache::MakeRoomForImageLocked(uint64_t needed) {
+	if (needed == 0 || !m_graphics.CanReportMemoryUsage()) {
+		return;
+	}
+	const uint64_t budget = m_graphics.GetTotalMemoryBudget();
+	// Leave headroom: the driver still needs memory for page tables and staging, so aiming at the
+	// last byte of the heap trades this failure for a worse one later in the frame.
+	const uint64_t target = budget - budget / 32;
+	for (uint32_t pass = 0; pass < 8; ++pass) {
+		const uint64_t usage = m_graphics.GetDeviceMemoryUsage();
+		if (usage + needed <= target) {
+			return;
+		}
+		const uint64_t tick = m_gc_tick++;
+		m_total_used_memory = usage;
+		CollectLocked(tick, true, 512, 1);
+		const uint64_t after = m_graphics.GetDeviceMemoryUsage();
+		LOGF("TextureCache: evicting to fit 0x{:x} bytes, device usage 0x{:x} -> 0x{:x} of 0x{:x}\n",
+		     needed, usage, after, budget);
+		if (after >= usage) {
+			return; // Nothing reclaimable right now; repeating the pass cannot help.
+		}
 	}
 }
 
