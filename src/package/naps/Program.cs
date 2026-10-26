@@ -14,6 +14,8 @@ internal sealed class NapsExtractor : IDisposable
     readonly Dictionary<int, byte[]> cache = new();
     readonly Queue<int> cacheOrder = new();
     readonly long innerSize;
+    // Which run-record field holds the disk base, chosen by Probe when the metadata decodes.
+    int m_base_mode;
 
     // Each candidate is one 256-KiB Kraken decode, so the search is bounded by count. The inner
     // filesystem sits at the end of the logical space, which is where the candidates start.
@@ -49,6 +51,10 @@ internal sealed class NapsExtractor : IDisposable
         public int EvenLength => (int)((Bits >> 37) & 0x3ffff) / 2 + 1;
         public int Predictor => (int)((Bits >> 56) & 7);
         public long Tweak => (long)((Bits >> 19) & 0xfffffff);
+        // Run records carry a second position in their top 16 bits, at 64-KiB granularity. On the
+        // packages that resolve through `Tweak` it agrees with it; on the records at the end of the
+        // layout it does not, so which one is the base is decided by what decodes.
+        public long HighBase => (long)(Bits >> 48) << 16;
     }
     Block C(int index)
     {
@@ -76,18 +82,21 @@ internal sealed class NapsExtractor : IDisposable
             int advance = (C(i + 1).COffset - C(i).COffset) & 0x3ffff;
             relative += advance == 0 && C(i).Predictor == 4 ? 0x40000 : advance;
         }
-        long offset = checked((run.Tweak << 15) + (first.COffset & 0xffff) + relative);
+        long offset = checked((m_base_mode == 1 ? run.HighBase + (run.COffset & 0x3ffff)
+                                                : (run.Tweak << 15) + (first.COffset & 0xffff)) + relative);
         if (Environment.GetEnvironmentVariable("KYTY_NAPS_TRACE") == "1")
-            Console.Error.WriteLine($"  disk: block={index} run={r} runBits=0x{run.Bits:X16} firstBits=0x{first.Bits:X16} " +
-                                    $"tweak=0x{run.Tweak:X} gap={index - r - 1} relative=0x{relative:X} offset=0x{offset:X}");
+            Console.Error.WriteLine($"  disk: block={index} run={r} mode={m_base_mode} runBits=0x{run.Bits:X16} " +
+                                    $"firstBits=0x{first.Bits:X16} tweak=0x{run.Tweak:X} high=0x{run.HighBase:X} " +
+                                    $"gap={index - r - 1} relative=0x{relative:X} offset=0x{offset:X}");
         // The run record carries the only absolute disk position in the layout, so an offset
         // outside the nested image means this package encodes its base differently. Report the
         // records that produced it; a bare range check cannot be compared between packages.
         if (offset < 0 || offset > innerSize)
             throw new InvalidDataException(
-                $"NAPS run base is outside the package image: block={index} run={r} " +
+                $"NAPS run base is outside the package image: block={index} run={r} mode={m_base_mode} " +
                 $"runBits=0x{run.Bits:X16} firstBits=0x{first.Bits:X16} tweak=0x{run.Tweak:X} " +
-                $"gap=0x{index - r - 1:X} relative=0x{relative:X} offset=0x{offset:X} image=0x{innerSize:X}");
+                $"high=0x{run.HighBase:X} gap=0x{index - r - 1:X} relative=0x{relative:X} " +
+                $"offset=0x{offset:X} image=0x{innerSize:X}");
         return offset;
     }
 
@@ -235,9 +244,13 @@ internal sealed class NapsExtractor : IDisposable
         if (trace != 0) Console.Error.WriteLine($"  flag=0x{flag:X2} result={status}");
         if (status == LibProsperoPkg.PFS.Compression.Oodle.KrakenDecodeStatus.Success)
             return full;
-        // A zero-filled block can pass the filesystem probe or silently corrupt
-        // an installed game. Reject the package at the first undecodable block.
-        throw new InvalidDataException($"NAPS block {index} at image offset 0x{diskOffset:X} could not be decoded (stored=0x{compressed:X}, raw=0x{length:X})");
+        // A zero-filled block can pass the filesystem probe or silently corrupt an installed game.
+        // Reject the package at the first undecodable block, and quote the records that produced it:
+        // with the raw bits the offset can be re-derived without the package.
+        throw new InvalidDataException(
+            $"NAPS block {index} at image offset 0x{diskOffset:X} could not be decoded " +
+            $"(stored=0x{compressed:X}, raw=0x{length:X}, mode={m_base_mode}, bits=0x{e.Bits:X16}, " +
+            $"next=0x{next.Bits:X16}, flag=0x{flag:X2}, even=0x{e.EvenLength:X})");
     }
 
     byte[] MetadataBlock(int block)
@@ -276,16 +289,24 @@ internal sealed class NapsExtractor : IDisposable
         {
             if (tried == MaxMetadataCandidates) break;
             ++tried;
-            try
+            // The run record has two candidate readings of the disk base. The superblock decides
+            // which one this package uses, so the choice is recorded here rather than assumed.
+            for (int mode = 0; mode < 2; ++mode)
             {
-                byte[] sb = Logical(candidate, 0x100);
-                if (U64(sb, 0) != 2 || U64(sb, 8) != 20130315) continue;
-                metadataBase = candidate;
-                Console.WriteLine($"Decoded metadata: {Convert.ToHexString(sb.AsSpan(0, 64))}");
-                if (tried > 1) Console.WriteLine($"NAPS: metadata found at 0x{candidate:X}, {tried} boundaries tested");
-                return;
+                m_base_mode = mode;
+                cache.Clear(); cacheOrder.Clear();
+                try
+                {
+                    byte[] sb = Logical(candidate, 0x100);
+                    if (U64(sb, 0) != 2 || U64(sb, 8) != 20130315) continue;
+                    metadataBase = candidate;
+                    Console.WriteLine($"Decoded metadata: {Convert.ToHexString(sb.AsSpan(0, 64))}");
+                    Console.WriteLine($"NAPS: metadata at 0x{candidate:X}, run base mode {mode}" +
+                                      (tried > 1 ? $", {tried} boundaries tested" : ""));
+                    return;
+                }
+                catch (InvalidDataException ex) { first ??= ex; }
             }
-            catch (InvalidDataException ex) { first ??= ex; }
         }
         throw first ?? new InvalidDataException(
             $"None of the {tried} highest block boundaries decoded as the PS5 PFS superblock");
