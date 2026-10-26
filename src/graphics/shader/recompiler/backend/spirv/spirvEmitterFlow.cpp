@@ -648,6 +648,9 @@ uint32_t EmitIdentity(ValueEmitContext&, uint32_t value) {
 void EmitVoid(ValueEmitContext&) {}
 
 void EmitStoreCompletion(EmitterState& state) {
+	if (state.scalar_subgroups) {
+		return; // Nothing else in the wave can observe these stores.
+	}
 	state.builder.AddFunction(
 	    spv::OpControlBarrier, ConstantU32(state, spv::ScopeSubgroup),
 	    ConstantU32(state, spv::ScopeDevice),
@@ -751,6 +754,9 @@ uint32_t EmitConditionRef(ValueEmitContext& ctx, const IR::Inst& inst) {
 		predicate = Binary(ctx.state, zero ? spv::OpLogicalAnd : spv::OpLogicalOr,
 		                   TypeBool(ctx.state), predicate, ctx.HalfArg(inst, 0, 1));
 	}
+	if (ctx.state.scalar_subgroups) {
+		return predicate;
+	}
 	const auto result = ctx.state.builder.AllocateId();
 	ctx.state.builder.AddFunction(zero ? spv::OpGroupNonUniformAll : spv::OpGroupNonUniformAny,
 	                              TypeBool(ctx.state), result,
@@ -777,6 +783,9 @@ uint32_t EmitSubgroupUMinU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto value = ctx.Arg(inst, 0);
 	if (ctx.other_half != nullptr) {
 		value = EmitUMin32(state, ctx.HalfArg(inst, 0, 0), ctx.HalfArg(inst, 0, 1));
+	}
+	if (state.scalar_subgroups) {
+		return value;
 	}
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformUMin, TypeU32(state), result,

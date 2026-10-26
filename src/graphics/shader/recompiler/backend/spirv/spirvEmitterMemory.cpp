@@ -16,6 +16,9 @@ uint32_t AndCondition(EmitterState& state, uint32_t lhs, uint32_t rhs) {
 
 uint32_t EmitDsMaskedLaneRead(EmitterState& state, uint32_t source, uint32_t target,
                               uint32_t exec) {
+	if (state.scalar_subgroups) {
+		return source;
+	}
 	if (state.lane_count == 2) {
 		target = Binary(state, spv::OpBitwiseAnd, TypeU32(state), target, ConstantU32(state, 31));
 	}
@@ -1526,6 +1529,9 @@ uint32_t EmitAppendConsume(ValueEmitContext& ctx, const IR::Inst& inst) {
 		                          ConstantU32(state, spv::MemorySemanticsMaskNone), count);
 		return value;
 	});
+	if (state.scalar_subgroups) {
+		return atomic;
+	}
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformShuffle, TypeU32(state), result,
 	                          ConstantU32(state, spv::ScopeSubgroup), atomic, source_lane);
@@ -1664,6 +1670,13 @@ uint32_t EmitPermuteU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto word    = Binary(state, spv::OpShiftRightLogical, TypeU32(state), lane,
 	                            ConstantU32(state, 5));
 	const auto ballot_word = [&](uint32_t predicate) {
+		if (state.scalar_subgroups) {
+			// `word` is lane 32-blocks and the only lane is 0, so the caller reads word zero.
+			const auto bit = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpSelect, TypeU32(state), bit, predicate,
+			                          ConstantU32(state, 1), ConstantU32(state, 0));
+			return bit;
+		}
 		const auto ballot = state.builder.AllocateId();
 		const auto result = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpGroupNonUniformBallot, TypeU32Vector(state, 4), ballot,
@@ -1694,6 +1707,9 @@ uint32_t EmitPermuteU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto source = Select(state, TypeU32(state), active,
 	                           Binary(state, spv::OpBitwiseOr, TypeU32(state), base,
 	                                  EmitFindUMsb32(state, writers)), lane);
+	if (state.scalar_subgroups) {
+		return Select(state, TypeU32(state), active, ctx.Arg(inst, 0), ConstantU32(state, 0));
+	}
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformShuffle, TypeU32(state), result,
 	                          ConstantU32(state, spv::ScopeSubgroup), ctx.Arg(inst, 0), source);

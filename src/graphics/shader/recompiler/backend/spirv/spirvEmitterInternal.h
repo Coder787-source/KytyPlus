@@ -144,6 +144,9 @@ struct EmitterState {
 	const IR::Block*           current_block                         = nullptr;
 	uint32_t                   pixel_valid_mask_variable             = 0;
 	uint32_t                   subgroup_local_invocation_id_variable = 0;
+	// Metal refuses to compile a subgroup builtin into a vertex, tessellation or geometry function,
+	// so those stages emit as a wave of one lane instead of failing the whole pipeline.
+	bool                       scalar_subgroups                      = false;
 	uint32_t                   per_vertex_variable                   = 0;
 	uint32_t                   point_size_variable                   = 0;
 	uint32_t                   clip_distance_variable                = 0;

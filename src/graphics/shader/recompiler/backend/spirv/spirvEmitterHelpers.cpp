@@ -135,6 +135,9 @@ DppTargetLane EmitDppTargetLane(EmitterState& state, const IR::DppMoveFlags& fla
 }
 
 uint32_t EmitSubgroupLocalInvocationId(EmitterState& state) {
+	if (state.scalar_subgroups) {
+		return ConstantU32(state, 0);
+	}
 	if (state.subgroup_local_invocation_id_variable == 0) {
 		EXIT("SubgroupLocalInvocationId was not declared before SPIR-V function emission\n");
 	}
@@ -218,6 +221,10 @@ uint32_t EmitVertexParameterComponentU32(EmitterState& state, const InputBinding
 }
 
 uint32_t EmitSubgroupLaneActiveBool(EmitterState& state, uint32_t lane) {
+	if (state.scalar_subgroups) {
+		// The value on hand is the only one the wave has, so treat its lane as present.
+		return ConstantBool(state, true);
+	}
 	const auto active_ballot = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformBallot, TypeU32Vector(state, 4), active_ballot,
 	                          ConstantU32(state, spv::ScopeSubgroup), ConstantBool(state, true));

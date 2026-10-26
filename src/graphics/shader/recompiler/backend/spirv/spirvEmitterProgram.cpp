@@ -469,7 +469,19 @@ uint32_t ValueEmitContext::HalfArg(const IR::Inst& inst, size_t index, uint32_t 
 
 uint32_t ValueEmitContext::Ballot(IR::Value predicate) {
 	const auto ballot_type = TypeU32Vector(state, 4);
-	const auto scope       = ConstantU32(state, spv::ScopeSubgroup);
+	if (state.scalar_subgroups) {
+		const auto zero = ConstantU32(state, 0);
+		const auto bit  = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpSelect, TypeU32(state), bit,
+		                          other_half == nullptr || half == 0 ? Def(predicate)
+		                                                             : other_half->Def(predicate),
+		                          ConstantU32(state, 1), zero);
+		const auto single = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeConstruct, ballot_type, single, bit, zero, zero,
+		                          zero);
+		return single;
+	}
+	const auto scope = ConstantU32(state, spv::ScopeSubgroup);
 	const auto low         = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformBallot, ballot_type, low, scope,
 	                          other_half == nullptr || half == 0 ? Def(predicate)
@@ -491,6 +503,9 @@ uint32_t ValueEmitContext::Ballot(IR::Value predicate) {
 }
 
 uint32_t ValueEmitContext::FirstLane(uint32_t ballot) {
+	if (state.scalar_subgroups) {
+		return ConstantU32(state, 0);
+	}
 	if (other_half == nullptr) {
 		const auto result = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpGroupNonUniformBallotFindLSB, TypeU32(state), result,
@@ -517,6 +532,9 @@ uint32_t ValueEmitContext::FirstLane(uint32_t ballot) {
 }
 
 uint32_t ValueEmitContext::Shuffle(const IR::Inst& inst, size_t index, uint32_t lane) {
+	if (state.scalar_subgroups) {
+		return Arg(inst, index);
+	}
 	const auto type  = TypeId(state, inst.Arg(index).GetType());
 	const auto scope = ConstantU32(state, spv::ScopeSubgroup);
 	const auto low   = state.builder.AllocateId();

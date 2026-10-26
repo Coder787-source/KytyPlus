@@ -576,7 +576,7 @@ void DefineInputs(EmitterState& state) {
 			                            builtin);
 		}
 	}
-	if (state.program.info.subgroup_local_invocation_id) {
+	if (state.program.info.subgroup_local_invocation_id && !state.scalar_subgroups) {
 		const auto variable = DefineInterfaceVariable(state, TypeU32(state), spv::StorageClassInput,
 		                                              "gl_SubgroupInvocationID");
 		state.subgroup_local_invocation_id_variable = variable;

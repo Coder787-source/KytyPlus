@@ -232,6 +232,11 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	    workgroup != nullptr && program.wave_size == 64u && workgroup->host_subgroup_size == 32u
 	        ? 2u
 	        : 1u;
+#if defined(__APPLE__)
+	// Fragment and compute functions can use subgroups on Metal; nothing else can. Emitting the
+	// builtin at all fails the pipeline compile, so the wave collapses to the invoking lane.
+	state.scalar_subgroups = program.stage != ShaderType::Pixel && program.stage != ShaderType::Compute;
+#endif
 	DefineModule(state);
 	ValidateNativeProgram(program, program.stage == ShaderType::Compute &&
 	                                   input_info.compute != nullptr && input_info.compute->lds_storage);
