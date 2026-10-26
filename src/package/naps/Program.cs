@@ -240,6 +240,15 @@ internal sealed class NapsExtractor : IDisposable
         // and restart independently. Do not guess/invert modes: the wrong
         // literal predictor can return Success with corrupted output.
         int flag = e.Predictor | ((int)((e.Bits >> 59) & 7) << 4);
+        // A record whose predictor groups and decoded-length field are all zero carries no
+        // compression parameters at all, so it cannot describe a Kraken stream: the bytes on disk
+        // are the block, and the gap between the stored span and the logical size is padding.
+        // Gran Turismo 7's metadata block is exactly this (flag=00, even=1, stored=0x3CCAC for a
+        // 0x40000 block) while every block that decodes here has both fields set.
+        if (flag == 0 && e.EvenLength <= 1) {
+            source.AsSpan(0, Math.Min(source.Length, length)).CopyTo(full);
+            return full;
+        }
         var status = LibProsperoPkg.PFS.Compression.Oodle.KrakenDecoder.DecodeBlock(source, flag, e.EvenLength, full);
         if (trace != 0) Console.Error.WriteLine($"  flag=0x{flag:X2} result={status}");
         if (status == LibProsperoPkg.PFS.Compression.Oodle.KrakenDecodeStatus.Success)
