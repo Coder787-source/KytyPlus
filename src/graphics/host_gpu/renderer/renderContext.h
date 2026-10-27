@@ -56,6 +56,19 @@ public:
 	void               PrepareBda();
 	void               RunGarbageCollector();
 
+	// Frees cached textures after an image allocation was refused for want of device memory.
+	// TextureCache publishes this only while it holds its own lock, so the callback must not take
+	// it again; unset elsewhere, where image creation cannot evict without deadlocking.
+	void SetImagePressureEvict(void (*callback)(void*, uint64_t), void* user_data) {
+		m_image_pressure_evict     = callback;
+		m_image_pressure_user_data = user_data;
+	}
+	void EvictImagesUnderPressure(uint64_t needed) const {
+		if (m_image_pressure_evict != nullptr) {
+			m_image_pressure_evict(m_image_pressure_user_data, needed);
+		}
+	}
+
 	void AddInterruptEq(LibKernel::EventQueue::KernelEqueue eq, int event_id);
 	void DeleteInterruptEq(LibKernel::EventQueue::KernelEqueue eq, int event_id);
 	void TriggerInterrupt(int event_id, uint32_t context_id);
@@ -67,6 +80,8 @@ private:
 	};
 
 	GraphicContext&           m_graphics;
+	void (*m_image_pressure_evict)(void*, uint64_t) = nullptr;
+	void*                     m_image_pressure_user_data = nullptr;
 	Common::Mutex             m_mutex;
 	RenderExecutor            m_render_executor;
 	CommandScheduler          m_command_scheduler;

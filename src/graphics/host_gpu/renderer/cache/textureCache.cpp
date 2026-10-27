@@ -14,6 +14,7 @@
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 #include "kernel/memory.h"
 
 #include <algorithm>
@@ -200,8 +201,11 @@ TextureCache::BindingType TextureCache::UploadBinding(const Image& image) {
 ImageId TextureCache::InsertImage(const ImageInfo& info) {
 	// Every caller of this holds m_lock, which is what makes the locked collector reachable from
 	// the allocation itself.
-	MakeRoomForImageLocked(Common::AlignUp(info.data.size, 1024));
-	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info);
+	MakeRoomForImageLocked(Common::AlignUp(info.data.size, 1024), false);
+	// The insert allocates, so this is the window in which image creation may reach the collector
+	// without taking the lock that this thread already holds.
+	const PressureScope pressure {*this};
+	const auto          id = m_slot_images.insert(m_graphics, m_scheduler, info);
 	RegisterImage(id);
 	return id;
 }
@@ -1972,29 +1976,45 @@ void TextureCache::CollectLocked(uint64_t tick, bool allow_aggressive, size_t de
 
 // A pending image has to fit now, not over the next few frames, so this bypasses the periodic
 // trigger and its per-pass caps: the request decides how much to free.
-void TextureCache::MakeRoomForImageLocked(uint64_t needed) {
-	if (needed == 0 || !m_graphics.CanReportMemoryUsage()) {
+void TextureCache::MakeRoomForImageLocked(uint64_t needed, bool force) {
+	if (needed == 0 || (!force && !m_graphics.CanReportMemoryUsage())) {
 		return;
 	}
 	const uint64_t budget = m_graphics.GetTotalMemoryBudget();
 	// Leave headroom: the driver still needs memory for page tables and staging, so aiming at the
 	// last byte of the heap trades this failure for a worse one later in the frame.
 	const uint64_t target = budget - budget / 32;
+	uint64_t       freed  = 0;
 	for (uint32_t pass = 0; pass < 8; ++pass) {
 		const uint64_t usage = m_graphics.GetDeviceMemoryUsage();
-		if (usage + needed <= target) {
+		// A refusal outweighs the prediction: the budget report covers what the driver accounts
+		// for, and the allocation failed anyway.
+		if ((!force && usage + needed <= target) || (force && freed >= needed)) {
 			return;
 		}
 		const uint64_t tick = m_gc_tick++;
 		m_total_used_memory = usage;
 		CollectLocked(tick, true, 512, 1);
 		const uint64_t after = m_graphics.GetDeviceMemoryUsage();
-		LOGF("TextureCache: evicting to fit 0x{:x} bytes, device usage 0x{:x} -> 0x{:x} of 0x{:x}\n",
-		     needed, usage, after, budget);
+		freed += usage > after ? usage - after : 0;
+		LOGF("TextureCache: evicting to fit 0x{:x} bytes ({}), device usage 0x{:x} -> 0x{:x} of 0x{:x}\n",
+		     needed, force ? "allocation refused" : "predicted", usage, after, budget);
 		if (after >= usage) {
 			return; // Nothing reclaimable right now; repeating the pass cannot help.
 		}
 	}
+}
+
+void TextureCache::EvictThroughCache(void* user_data, uint64_t needed) {
+	static_cast<TextureCache*>(user_data)->MakeRoomForImageLocked(needed, true);
+}
+
+TextureCache::PressureScope::PressureScope(TextureCache& cache) : m_cache(cache) {
+	m_cache.m_scheduler.Context().SetImagePressureEvict(&TextureCache::EvictThroughCache, &m_cache);
+}
+
+TextureCache::PressureScope::~PressureScope() {
+	m_cache.m_scheduler.Context().SetImagePressureEvict(nullptr, nullptr);
 }
 
 void TextureCache::ProcessDownloadImages() {

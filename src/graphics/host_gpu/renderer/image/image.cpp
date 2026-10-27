@@ -730,11 +730,20 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	if (!created && image_result == vk::Result::eErrorOutOfDeviceMemory && backing.image == nullptr &&
 	    backing.allocation == nullptr) {
 		// Allocations this small only fail once the device is already full, and the buffer caches
-		// hold memory that a shared iGPU budget does not account for. Only the buffer cache can be
-		// trimmed from here: image creation happens while callers hold the texture cache lock.
+		// hold memory that a shared iGPU budget does not account for. Buffers are always safe to
+		// trim from here; textures need the cache lock, which this thread may already own, so they
+		// are reached through the pressure hook below instead.
 		LOGF("Image: device memory exhausted, trimming buffer cache and retrying\n");
 		m_scheduler.Context().GetBufferCache().RunGarbageCollector();
 		created = graphics.CreateImage(create, backing, &image_result);
+		if (!created && image_result == vk::Result::eErrorOutOfDeviceMemory) {
+			// The budget arithmetic that should have prevented this already disagreed with the
+			// driver, so ask the texture cache outright. It only answers while it owns its lock,
+			// which is the case for every image created through it.
+			LOGF("Image: still refused, evicting cached textures and retrying\n");
+			m_scheduler.Context().EvictImagesUnderPressure(Common::AlignUp(info.data.size, 1024));
+			created = graphics.CreateImage(create, backing, &image_result);
+		}
 	}
 	if (!created) {
 		EXIT("failed to create image: result=%s extent=%ux%ux%u format=%d layers=%u levels=%u "
