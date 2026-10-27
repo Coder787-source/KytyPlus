@@ -17,6 +17,8 @@
 #include <atomic>
 #include <cstdint>
 #include <fmt/format.h>
+#include <mutex>
+#include <set>
 #include <xxhash.h>
 
 namespace Libs::Graphics {
@@ -53,6 +55,21 @@ namespace {
 	return static_cast<bool>(properties.optimalTilingFeatures & feature);
 }
 
+// A dropped access bit is a gap between what the guest was authored against and what this driver
+// allows, and nothing downstream reports it: the draw or read is simply dropped, which reaches the
+// player as a black screen with a clean log. Name the format once, because the substitute that
+// fixes it has to be chosen per format.
+void WarnMissingFormatFeature(vk::Format format, const char* access) {
+	static std::mutex             lock;
+	static std::set<uint32_t>     reported;
+	const std::scoped_lock guard {lock};
+	if (reported.insert(static_cast<uint32_t>(format)).second) {
+		Log::WriteToConsoleAndLog(fmt::format("Warning: format {} cannot be used for {} access on this "
+		                                      "device; drawing or reading it this way will be dropped.\n",
+		                                      vk::to_string(format), access));
+	}
+}
+
 [[nodiscard]] vk::ImageUsageFlags ImageUsageFlags(GraphicContext& graphics, const ImageInfo& info) {
 	auto usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
 	if (info.IsBlock()) {
@@ -77,10 +94,13 @@ namespace {
 		return usage;
 	}
 	const auto properties = graphics.GetFormatProperties(info.pixel_format);
+	const bool depth      = DepthAspectTransferFormat(info.pixel_format) != vk::Format::eUndefined;
 	if (HasFormatFeature(properties, vk::FormatFeatureFlagBits::eSampledImage)) {
 		usage |= vk::ImageUsageFlagBits::eSampled;
+	} else if (!depth) {
+		WarnMissingFormatFeature(info.pixel_format, "sampled");
 	}
-	if (DepthAspectTransferFormat(info.pixel_format) != vk::Format::eUndefined) {
+	if (depth) {
 		usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
 		if (graphics.attachment_feedback_loop_enabled && (usage & vk::ImageUsageFlagBits::eSampled)) {
 			usage |= vk::ImageUsageFlagBits::eAttachmentFeedbackLoopEXT;
@@ -89,6 +109,8 @@ namespace {
 	}
 	if (HasFormatFeature(properties, vk::FormatFeatureFlagBits::eColorAttachment)) {
 		usage |= vk::ImageUsageFlagBits::eColorAttachment;
+	} else {
+		WarnMissingFormatFeature(info.pixel_format, "color attachment");
 	}
 	if (info.samples == 1) {
 		usage |= vk::ImageUsageFlagBits::eStorage;
