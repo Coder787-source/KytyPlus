@@ -43,7 +43,7 @@ internal sealed class NapsExtractor : IDisposable
     byte[] Image(long offset, int length) { Range(imageSize, offset, length); return Read(imageBase + offset, length); }
     byte[] Inner(long offset, int length) { Range(innerSize, offset, length); return Image(offset, length); }
 
-    record struct Block(ulong Bits)
+    record struct Block(ulong Bits, byte Extra)
     {
         public bool Run => (Bits & (1UL << 18)) != 0;
         public int COffset => (int)(Bits & 0x3ffff);
@@ -51,15 +51,18 @@ internal sealed class NapsExtractor : IDisposable
         public int EvenLength => (int)((Bits >> 37) & 0x3ffff) / 2 + 1;
         public int Predictor => (int)((Bits >> 56) & 7);
         public long Tweak => (long)((Bits >> 19) & 0xfffffff);
-        // Run records carry a second position in their top 16 bits, at 64-KiB granularity. On the
-        // packages that resolve through `Tweak` it agrees with it; on the records at the end of the
-        // layout it does not, so which one is the base is decided by what decodes.
+        // Records are nine bytes and the model above fits in sixty-two, so the ninth byte is the
+        // only place a wider field can hide. A 134 GB image needs a 22-bit region index at 32-KiB
+        // granularity, which overflows the bits read here.
+        public long TweakWide => (long)(((Bits >> 19) & 0xfffffff) | ((ulong)Extra << 28));
+        public long TweakExtended19 => (long)(((Bits >> 19) & 0x7ffff) | ((ulong)Extra << 19));
+        // Run records also carry a position in their top 16 bits, at 64-KiB granularity.
         public long HighBase => (long)(Bits >> 48) << 16;
     }
     Block C(int index)
     {
         if (index < 0 || index >= cblocks) throw new InvalidDataException("NAPS block index out of range");
-        return new Block(U64(naps, cblockStart + index * 9));
+        return new Block(U64(naps, cblockStart + index * 9), naps[cblockStart + index * 9 + 8]);
     }
     int U2C(int block)
     {
@@ -82,11 +85,19 @@ internal sealed class NapsExtractor : IDisposable
             int advance = (C(i + 1).COffset - C(i).COffset) & 0x3ffff;
             relative += advance == 0 && C(i).Predictor == 4 ? 0x40000 : advance;
         }
-        long offset = checked((m_base_mode == 1 ? run.HighBase + (run.COffset & 0x3ffff)
-                                                : (run.Tweak << 15) + (first.COffset & 0xffff)) + relative);
+        // Four readings of the run base. The metadata superblock decides which one a package uses,
+        // so the choice is proven by content rather than assumed. The ninth byte only matters for
+        // images too large for the low fields, which is why small packages agree across all four.
+        long offset = m_base_mode switch {
+            1 => checked(run.HighBase + (run.COffset & 0x3ffff) + relative),
+            2 => checked((run.TweakWide << 15) + (first.COffset & 0xffff) + relative),
+            3 => checked((run.TweakExtended19 << 15) + (first.COffset & 0xffff) + relative),
+            _ => checked((run.Tweak << 15) + (first.COffset & 0xffff) + relative),
+        };
         if (Environment.GetEnvironmentVariable("KYTY_NAPS_TRACE") == "1")
             Console.Error.WriteLine($"  disk: block={index} run={r} mode={m_base_mode} runBits=0x{run.Bits:X16} " +
-                                    $"firstBits=0x{first.Bits:X16} tweak=0x{run.Tweak:X} high=0x{run.HighBase:X} " +
+                                    $"extra=0x{run.Extra:X2} firstBits=0x{first.Bits:X16} " +
+                                    $"tweak=0x{run.Tweak:X} high=0x{run.HighBase:X} " +
                                     $"gap={index - r - 1} relative=0x{relative:X} offset=0x{offset:X}");
         // The run record carries the only absolute disk position in the layout, so an offset
         // outside the nested image means this package encodes its base differently. Report the
@@ -94,9 +105,9 @@ internal sealed class NapsExtractor : IDisposable
         if (offset < 0 || offset > innerSize)
             throw new InvalidDataException(
                 $"NAPS run base is outside the package image: block={index} run={r} mode={m_base_mode} " +
-                $"runBits=0x{run.Bits:X16} firstBits=0x{first.Bits:X16} tweak=0x{run.Tweak:X} " +
-                $"high=0x{run.HighBase:X} gap=0x{index - r - 1:X} relative=0x{relative:X} " +
-                $"offset=0x{offset:X} image=0x{innerSize:X}");
+                $"runBits=0x{run.Bits:X16} extra=0x{run.Extra:X2} firstBits=0x{first.Bits:X16} " +
+                $"tweak=0x{run.Tweak:X} high=0x{run.HighBase:X} gap=0x{index - r - 1:X} " +
+                $"relative=0x{relative:X} offset=0x{offset:X} image=0x{innerSize:X}");
         return offset;
     }
 
@@ -259,7 +270,7 @@ internal sealed class NapsExtractor : IDisposable
         throw new InvalidDataException(
             $"NAPS block {index} at image offset 0x{diskOffset:X} could not be decoded " +
             $"(stored=0x{compressed:X}, raw=0x{length:X}, mode={m_base_mode}, bits=0x{e.Bits:X16}, " +
-            $"next=0x{next.Bits:X16}, flag=0x{flag:X2}, even=0x{e.EvenLength:X})");
+            $"extra=0x{e.Extra:X2}, next=0x{next.Bits:X16}, flag=0x{flag:X2}, even=0x{e.EvenLength:X})");
     }
 
     byte[] MetadataBlock(int block)
@@ -298,9 +309,9 @@ internal sealed class NapsExtractor : IDisposable
         {
             if (tried == MaxMetadataCandidates) break;
             ++tried;
-            // The run record has two candidate readings of the disk base. The superblock decides
+            // The run record has four candidate readings of the disk base. The superblock decides
             // which one this package uses, so the choice is recorded here rather than assumed.
-            for (int mode = 0; mode < 2; ++mode)
+            for (int mode = 0; mode < 4; ++mode)
             {
                 m_base_mode = mode;
                 cache.Clear(); cacheOrder.Clear();
