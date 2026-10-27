@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
 
 env:
@@ -15,14 +16,24 @@ jobs:
     name: Prepare build metadata
     runs-on: ubuntu-latest
     outputs:
-      release_tag: ${{ steps.release_tag.outputs.value }}
+      release_tag: ${{ steps.release_tag.outputs.tag }}
+      asset_prefix: ${{ steps.release_tag.outputs.prefix }}
 
     steps:
       - name: Generate release tag
         id: release_tag
         shell: bash
         run: |
-          echo "value=KytyPlus-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          # A pushed version tag names the release, so it sorts among the other vN.M tags and
+          # GitHub marks it latest. A branch build only needs unique artifact names, and must not
+          # publish: a dated tag sorts below v5.1 and buries the release the page should show.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "prefix=KytyPlus-$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "prefix=KytyPlus-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
   windows:
     name: Build KytyPlus (Windows)
@@ -97,7 +108,7 @@ jobs:
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON ^
             -DKYTY_BUILD_ORIGIN=%KYTY_BUILD_ORIGIN% ^
             -DKYTY_BUILD_REPOSITORY=%KYTY_BUILD_REPOSITORY% ^
-            -DKYTY_RELEASE_TAG=${{ needs.metadata.outputs.release_tag }} ^
+            -DKYTY_RELEASE_TAG=${{ needs.metadata.outputs.asset_prefix }} ^
             -DCMAKE_C_COMPILER=clang-cl ^
             -DCMAKE_CXX_COMPILER=clang-cl ^
             -DCMAKE_PREFIX_PATH="%Qt6_DIR%"
@@ -193,7 +204,7 @@ jobs:
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
             -DKYTY_BUILD_ORIGIN="$KYTY_BUILD_ORIGIN" \
             -DKYTY_BUILD_REPOSITORY="$KYTY_BUILD_REPOSITORY" \
-            -DKYTY_RELEASE_TAG="${{ needs.metadata.outputs.release_tag }}" \
+            -DKYTY_RELEASE_TAG="${{ needs.metadata.outputs.asset_prefix }}" \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
@@ -368,7 +379,7 @@ jobs:
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
             -DKYTY_BUILD_ORIGIN="$KYTY_BUILD_ORIGIN" \
             -DKYTY_BUILD_REPOSITORY="$KYTY_BUILD_REPOSITORY" \
-            -DKYTY_RELEASE_TAG="${{ needs.metadata.outputs.release_tag }}" \
+            -DKYTY_RELEASE_TAG="${{ needs.metadata.outputs.asset_prefix }}" \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_PREFIX_PATH="$Qt6_DIR" 2>&1 | tee _Build/configure.log
@@ -454,6 +465,7 @@ jobs:
       always() &&
       github.event_name == 'push' &&
       github.repository == 'Coder787-source/KytyPlus' &&
+      needs.metadata.outputs.release_tag != '' &&
       (needs.windows.result == 'success' ||
        needs.macos.result == 'success' ||
        needs.linux.result == 'success')
@@ -462,7 +474,8 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_NAME: ${{ needs.metadata.outputs.release_tag }}
+      RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+      RELEASE_NAME: ${{ needs.metadata.outputs.asset_prefix }}
 
     steps:
       - name: Download Windows build
@@ -540,14 +553,15 @@ jobs:
             fi
           done
           test "${#assets[@]}" -gt 0
-          if gh release view "$RELEASE_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$RELEASE_NAME" "${assets[@]}" \
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" \
               --clobber \
               --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$RELEASE_NAME" "${assets[@]}" \
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
               --generate-notes \
+              --latest \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "$RELEASE_NAME"
+              --title "$RELEASE_TAG"
           fi
