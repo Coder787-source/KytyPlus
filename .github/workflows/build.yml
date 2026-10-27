@@ -15,6 +15,10 @@ jobs:
   metadata:
     name: Prepare build metadata
     runs-on: ubuntu-latest
+    env:
+      # Never publish below this version. It seeds the counter at the number announced elsewhere;
+      # once the generated tags pass it, it stops having any effect.
+      KYTY_RELEASE_FLOOR: 5.4
     outputs:
       release_tag: ${{ steps.release_tag.outputs.tag }}
       asset_prefix: ${{ steps.release_tag.outputs.prefix }}
@@ -22,18 +26,33 @@ jobs:
     steps:
       - name: Generate release tag
         id: release_tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          # A pushed version tag names the release, so it sorts among the other vN.M tags and
-          # GitHub marks it latest. A branch build only needs unique artifact names, and must not
-          # publish: a dated tag sorts below v5.1 and buries the release the page should show.
+          # A pushed version tag names the release exactly. A branch build takes the next number
+          # above the highest vN.M tag, so every push publishes a release that sorts first on the
+          # page instead of under a dated name.
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
             echo "prefix=KytyPlus-$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "prefix=KytyPlus-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          highest="$(curl -fsS -H "authorization: Bearer $GITHUB_TOKEN" \
+                         "https://api.github.com/repos/$GITHUB_REPOSITORY/tags?per_page=100" |
+                     grep -oE '"name": "v[0-9]+\.[0-9]+"' | grep -oE '[0-9]+\.[0-9]+' |
+                     sort -nr | head -1)"
+          : "${highest:=0.0}"
+          major="${highest%%.*}"
+          minor="$(( ${highest##*.} + 1 ))"
+          floor_major="${KYTY_RELEASE_FLOOR%%.*}"
+          floor_minor="${KYTY_RELEASE_FLOOR##*.}"
+          if (( major < floor_major || (major == floor_major && minor < floor_minor) )); then
+            major="$floor_major"
+            minor="$floor_minor"
+          fi
+          echo "tag=v$major.$minor" >> "$GITHUB_OUTPUT"
+          echo "prefix=KytyPlus-v$major.$minor" >> "$GITHUB_OUTPUT"
 
   windows:
     name: Build KytyPlus (Windows)
@@ -465,7 +484,6 @@ jobs:
       always() &&
       github.event_name == 'push' &&
       github.repository == 'Coder787-source/KytyPlus' &&
-      needs.metadata.outputs.release_tag != '' &&
       (needs.windows.result == 'success' ||
        needs.macos.result == 'success' ||
        needs.linux.result == 'success')
