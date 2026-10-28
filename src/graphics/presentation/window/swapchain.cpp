@@ -33,9 +33,12 @@ namespace Libs::Graphics {
 #define PRESENT_PROBE_LOG(...) Log::WriteToConsoleAndLog(::fmt::format(__VA_ARGS__))
 
 // Two black screens look identical from the window: the guest never fills the frame it flips, or
-// the frame is filled and the window server never shows it. The probe alternates its first frames
-// between the real blit and solid magenta, so one run names which side the fault is on.
-constexpr uint32_t kPresentProbeFrames = 90;
+// the frame is filled and the window server never shows it. The probe reports the blank/real split
+// for the whole session, and on Apple it alternates the swapchain image with solid magenta during
+// boot and again over the first real frames, so one run names which side the fault is on.
+constexpr uint64_t kPresentProbeLead  = 8;
+constexpr uint64_t kPresentProbeEvery = 600;
+constexpr uint64_t kPresentProbeCanary = 20;
 
 struct Presenter::Frame {
 	VulkanImage   image;
@@ -342,7 +345,10 @@ private:
 	vk::Sampler                    m_overlay_sampler     = nullptr;
 	uint32_t                       m_image_index         = static_cast<uint32_t>(-1);
 	uint32_t                       m_frame_index         = 0;
-	uint32_t                       m_probe_frames        = 0;
+	uint64_t                       m_probe_presents      = 0;
+	uint64_t                       m_probe_blank         = 0;
+	uint64_t                       m_probe_real          = 0;
+	bool                           m_probe_last_blank    = true;
 };
 
 struct Presenter::Impl {
@@ -814,23 +820,29 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		m_producers[1] = {overlay.frame->producer_semaphore, overlay.frame->producer_tick};
 	}
 	EXIT_IF(m_image_index >= m_images.size());
-	const uint32_t probe_frame = m_probe_frames < kPresentProbeFrames ? ++m_probe_frames : 0;
-	const bool     probe       = probe_frame != 0;
-#if defined(__APPLE__)
-	const bool canary = probe && (probe_frame % 2u == 1u);
-#endif
-	if (probe && (probe_frame <= 8u || probe_frame == kPresentProbeFrames)) {
-		PRESENT_PROBE_LOG("[present-probe] #{} image={}/{} swapchain={}x{} format={} colorspace={} "
-		                  "hdr={} source={} blank={} {}x{} format={} overlay={}\n",
-		                  probe_frame, m_image_index, ImageCount(), m_extent.width,
-		                  m_extent.height, vk::to_string(m_format), vk::to_string(m_color_space),
-		                  m_hdr_active, source != nullptr ? "frame" : "none",
-		                  source != nullptr ? source->blank : false,
+	const bool blank   = source == nullptr || source->blank;
+	++m_probe_presents;
+	(blank ? m_probe_blank : m_probe_real)++;
+	const bool changed = blank != m_probe_last_blank;
+	m_probe_last_blank = blank;
+	if (m_probe_presents <= kPresentProbeLead || changed ||
+	    m_probe_presents % kPresentProbeEvery == 0) {
+		PRESENT_PROBE_LOG("[present-probe] #{} ({} blank, {} real) image={}/{} swapchain={}x{} "
+		                  "format={} colorspace={} hdr={} source={} {}x{} format={} overlay={}\n",
+		                  m_probe_presents, m_probe_blank, m_probe_real, m_image_index, ImageCount(),
+		                  m_extent.width, m_extent.height, vk::to_string(m_format),
+		                  vk::to_string(m_color_space), m_hdr_active,
+		                  source != nullptr ? (blank ? "blank" : "frame") : "none",
 		                  source != nullptr ? source->image.extent.width : 0u,
 		                  source != nullptr ? source->image.extent.height : 0u,
 		                  source != nullptr ? vk::to_string(source->image.format) : "none",
 		                  overlay.frame != nullptr ? "layer" : "none");
 	}
+#if defined(__APPLE__)
+	const bool canary = (m_probe_presents <= kPresentProbeCanary ||
+	                     (m_probe_real != 0 && m_probe_real <= kPresentProbeCanary)) &&
+	                    m_probe_presents % 2u == 1u;
+#endif
 	auto       vk_command      = command.Handle();
 	const bool draw_overlay    = overlay.frame != nullptr;
 	const bool draw_attachment = draw_overlay || draw_system_overlay;
