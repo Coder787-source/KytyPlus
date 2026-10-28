@@ -25,6 +25,9 @@ struct GraphicContext {
 	vk::Device                         device                                = nullptr;
 	VmaAllocator                       allocator                             = nullptr;
 	bool                               memory_budget_ext_enabled             = false;
+	// VK_EXT_device_fault, enabled when the driver offers it. The recorded fault is the only view
+	// of what the GPU was executing when it hung, and a device loss cannot be reproduced on demand.
+	bool                               device_fault_ext_enabled              = false;
 	bool                               compute_subgroup_size_control_enabled = false;
 	bool                               sample_rate_shading_enabled           = false;
 	bool                               shader_image_int64_atomics_enabled    = false;
@@ -95,6 +98,9 @@ struct GraphicContext {
 	[[nodiscard]] bool CreateAllocator();
 	void               DestroyAllocator();
 	void               LogMemoryBudget() const;
+	// Prints what the driver recorded about a device loss. Call only after a Vulkan call has
+	// returned eErrorDeviceLost; the query is a driver call on a dead device.
+	void               LogDeviceFault() const;
 	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
 	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;

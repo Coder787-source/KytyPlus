@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <vector>
 
 namespace Libs::Graphics {
 
@@ -115,6 +116,52 @@ void GraphicContext::LogMemoryBudget() const {
 		     i, static_cast<uint64_t>(budgets[i].usage), static_cast<uint64_t>(budgets[i].budget),
 		     static_cast<uint64_t>(budgets[i].statistics.allocationBytes),
 		     static_cast<uint64_t>(budgets[i].statistics.blockBytes));
+	}
+}
+
+// The driver keeps its own record of what the GPU was executing when it hung, and a device loss
+// cannot be reproduced on demand, so this is the only chance to read it. The entry point is looked
+// up rather than called through the generated bindings because the vendored C++ header does not
+// wrap this extension.
+void GraphicContext::LogDeviceFault() const {
+	if (!device_fault_ext_enabled || device == nullptr) {
+		LOGF("Device fault: not reported, the driver does not offer VK_EXT_device_fault\n");
+		return;
+	}
+	auto query = reinterpret_cast<PFN_vkGetDeviceFaultInfoEXT>(
+	    VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(static_cast<VkDevice>(device),
+	                                                      "vkGetDeviceFaultInfoEXT"));
+	if (query == nullptr) {
+		LOGF("Device fault: enabled but vkGetDeviceFaultInfoEXT could not be resolved\n");
+		return;
+	}
+	VkDeviceFaultCountsEXT counts {};
+	counts.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT;
+	if (query(static_cast<VkDevice>(device), &counts, nullptr) != VK_SUCCESS) {
+		LOGF("Device fault: the driver recorded nothing\n");
+		return;
+	}
+	std::vector<VkDeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+	std::vector<VkDeviceFaultVendorInfoEXT>  vendors(counts.vendorInfoCount);
+	VkDeviceFaultInfoEXT                     info {};
+	info.sType         = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT;
+	info.pAddressInfos = addresses.empty() ? nullptr : addresses.data();
+	info.pVendorInfos  = vendors.empty() ? nullptr : vendors.data();
+	if (query(static_cast<VkDevice>(device), &counts, &info) != VK_SUCCESS) {
+		LOGF("Device fault: counts=%u/%u but the details could not be read\n",
+		     counts.addressInfoCount, counts.vendorInfoCount);
+		return;
+	}
+	LOGF("Device fault: %s (addresses=%u, vendor=%u)\n", info.description, counts.addressInfoCount,
+	     counts.vendorInfoCount);
+	for (const auto& address: addresses) {
+		LOGF("\tdevice fault address: type=%d reported=0x%016" PRIx64 " precision=0x%016" PRIx64 "\n",
+		     static_cast<int>(address.addressType), address.reportedAddress,
+		     static_cast<uint64_t>(address.addressPrecision));
+	}
+	for (const auto& vendor: vendors) {
+		LOGF("\tdevice fault vendor: \"%s\" code=0x%016" PRIx64 " data=0x%016" PRIx64 "\n",
+		     vendor.description, vendor.vendorFaultCode, vendor.vendorFaultData);
 	}
 }
 
