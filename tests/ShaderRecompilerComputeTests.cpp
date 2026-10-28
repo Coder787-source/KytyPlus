@@ -5266,6 +5266,50 @@ public:
                   write_only_meta, actual.data(), sizeof(actual)) &&
                   actual == std::array<u32, 4>{0, 0xa5a5a5a5u, 0, 0xa5a5a5a5u},
               "metadata registration suppressed guest stores or erased adjacent data");
+
+      // No image exists for this buffer. The verified fill must still be consumed,
+      // including when adjacent words on the same page belong to the GPU.
+      constexpr uint64_t fill_address = base + 0x6004;
+      constexpr uint64_t fill_size = 8 * 16;
+      ShaderRecompiler::IR::CompiledShaderInfo fill_program{};
+      ShaderRecompiler::IR::ResourceSnapshot fill_snapshot;
+      auto fill_input = MakeInput(fill_address, false, true, fill_program,
+                                  fill_snapshot);
+      fill_input.threads_num[0] = 8;
+      fill_input.threads_num[1] = fill_input.threads_num[2] = 1;
+      fill_snapshot.uniform_fill.kind =
+          ShaderRecompiler::IR::UniformFillKind::Buffer;
+      fill_snapshot.uniform_fill.words = 4;
+      fill_snapshot.uniform_fill.group_stride[0] = 8;
+      fill_snapshot.uniform_fill.value = 0x55667788u;
+      auto &buffers = context.GetBufferCache();
+      for (const bool gpu_owned : {false, true}) {
+        if (gpu_owned) {
+          auto [buffer, offset] = buffers.ObtainBuffer(
+              fill_address - 4, fill_size + 8, true, true);
+          buffer->Fill(offset, fill_size + 8, 0x11223344u);
+        }
+        Require(name, "ordinary buffer fill consumed",
+                RenderExecutorTestAccess::TryConsumeComputeImageClear(
+                    executor, fill_input, scheduler.Current(), 1, 1, 1, 0x41u),
+                "a proven uniform buffer fill fell through to compute");
+        buffers.ReadMemory(fill_address - 4, fill_size + 8);
+        std::array<u32, fill_size / sizeof(u32) + 2> filled{};
+        const auto guard = gpu_owned ? 0x11223344u : 0xa5a5a5a5u;
+        Require(name, "ordinary buffer fill contents and guards",
+                Libs::LibKernel::Memory::TryReadBacking(
+                    fill_address - 4, filled.data(), sizeof(filled)) &&
+                    filled.front() == guard && filled.back() == guard &&
+                    std::all_of(filled.begin() + 1, filled.end() - 1,
+                                [](u32 value) { return value == 0x55667788u; }),
+                "the fill lost guest data or overwrote adjacent GPU-owned words");
+      }
+      fill_snapshot.buffers[0].dwords[0] += 1;
+      Require(name, "unaligned buffer fill fallback",
+              !RenderExecutorTestAccess::TryConsumeComputeImageClear(
+                  executor, fill_input, scheduler.Current(), 1, 1, 1, 0x41u),
+              "an unaligned buffer was passed to the dword fill path");
+
       context.UnmapMemory(base, allocation_size);
       scheduler.Finish();
     });
@@ -48717,6 +48761,12 @@ int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--dcc-clear-only") == 0) {
     VulkanHarness vulkan;
     vulkan.CheckRenderExecutorColorMetadataClear();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--compute-buffer-fill-only") == 0) {
+    CheckPs5GameExampleImageClearRuntimeShape();
+    VulkanHarness vulkan;
+    vulkan.CheckComputeMetaClearClassification();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--compute-meta-clear-only") == 0) {
