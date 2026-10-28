@@ -84,9 +84,13 @@ void WarnMissingFormatFeature(vk::Format format, const char* access) {
 			} else {
 				static std::atomic_flag warned = ATOMIC_FLAG_INIT;
 				if (!warned.test_and_set(std::memory_order_relaxed)) {
+					// This branch is taken for every block image on a device without block-texel
+					// views, whether or not the guest intends to write one, so it cannot claim a
+					// black screen. A guest store to an image created this way is caught later and
+					// reported by ValidateStorageTexture with the descriptor contents.
 					Log::WriteToConsoleAndLog(fmt::format(
-					    "Warning: format {} does not support storage access; block-compressed "
-					    "textures written by the guest will not render.\n",
+					    "note: this device cannot create block-compressed images with storage "
+					    "access; {} images are created sampled-only\n",
 					    vk::to_string(info.pixel_format)));
 				}
 			}
