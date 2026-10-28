@@ -22,6 +22,7 @@
 #include <bit>
 #include <cinttypes>
 #include <cstring>
+#include <fmt/format.h>
 #include <limits>
 #include <mutex>
 #include <span>
@@ -1950,6 +1951,13 @@ void TextureCache::CollectLocked(uint64_t tick, bool allow_aggressive, size_t de
 		if (owner == nullptr || !owner->registered || owner->depth_id) {
 			continue;
 		}
+		// Bindings live from a frame's render-state discovery until its draws are recorded, and
+		// discovery already resolved these ids. Freeing one in that window aborts the draw with
+		// "color target changed after render-state discovery", so an in-flight target is not
+		// reclaimable memory however long it has been idle.
+		if (owner->binding.is_bound || owner->binding.is_target) {
+			continue;
+		}
 		if (owner->IsGpuModified()) {
 			const bool safe = owner->SafeToDownload();
 			if (safe && owner->info.IsTiled()) {
@@ -1997,8 +2005,11 @@ void TextureCache::MakeRoomForImageLocked(uint64_t needed, bool force) {
 		CollectLocked(tick, true, 512, 1);
 		const uint64_t after = m_graphics.GetDeviceMemoryUsage();
 		freed += usage > after ? usage - after : 0;
-		LOGF("TextureCache: evicting to fit 0x{:x} bytes ({}), device usage 0x{:x} -> 0x{:x} of 0x{:x}\n",
-		     needed, force ? "allocation refused" : "predicted", usage, after, budget);
+		// Console as well as file: reporters paste terminal output, and this is the only record of
+		// how much memory the cache was chasing.
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "TextureCache: evicting to fit {:#x} bytes ({}), device usage {:#x} -> {:#x} of {:#x}\n",
+		    needed, force ? "allocation refused" : "predicted", usage, after, budget));
 		if (after >= usage) {
 			return; // Nothing reclaimable right now; repeating the pass cannot help.
 		}
