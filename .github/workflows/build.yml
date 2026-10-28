@@ -534,14 +534,37 @@ jobs:
         run: |
           macos_dir="artifacts/KytyPlus-macOS-x86_64"
           test -d "$macos_dir"
-          chmod a+x \
-            "$macos_dir/KytyPlus.app/Contents/MacOS/KytyPlus" \
-            "$macos_dir/kyty_emulator" \
-            "$macos_dir/libMoltenVK.dylib"
+          # The emulator resolves its game-image helper next to its own executable, so the copy of
+          # naps/ at the release root is invisible from inside the bundle.
+          test -d "$macos_dir/naps"
+          rm -rf "$macos_dir/KytyPlus.app/Contents/MacOS/naps"
+          cp -R "$macos_dir/naps" "$macos_dir/KytyPlus.app/Contents/MacOS/naps"
+          # upload-artifact does not carry permission bits, so every program in the downloaded tree
+          # arrives non-executable and only the three paths chmod'd here survived. A bundle whose
+          # helper cannot be exec'd reaches the player as "Can't find emulator" (issue #21), so
+          # restore the bit for every Mach-O image in the release instead of a hand-picked list.
+          while IFS= read -r -d '' candidate; do
+            if file -b "$candidate" | grep -Eq '^Mach-O'; then chmod a+x "$candidate"; fi
+          done < <(find "$macos_dir" -type f -print0)
           (
             cd "$macos_dir"
             zip -r "$GITHUB_WORKSPACE/$RELEASE_NAME-macOS-x86_64.zip" .
           )
+          python3 - "$GITHUB_WORKSPACE/$RELEASE_NAME-macOS-x86_64.zip" <<'PY'
+          import sys, zipfile
+          required = ("KytyPlus.app/Contents/MacOS/KytyPlus", "KytyPlus.app/Contents/MacOS/kyty_emulator",
+                      "KytyPlus.app/Contents/MacOS/kyty_updater",
+                      "KytyPlus.app/Contents/MacOS/naps/kyty_naps_extractor",
+                      "kyty_emulator", "naps/kyty_naps_extractor", "shadps4")
+          entries = {i.filename.lstrip("./"): i for i in zipfile.ZipFile(sys.argv[1]).infolist()}
+          missing = [n for n in required if n not in entries]
+          unrunnable = [n for n in required if n in entries and not (entries[n].external_attr >> 16) & 0o111]
+          for name in missing:
+              print(f"::error::macOS release is missing {name}")
+          for name in unrunnable:
+              print(f"::error::macOS release stores {name} without the executable bit")
+          sys.exit(1 if missing or unrunnable else 0)
+          PY
 
       - name: Package Linux build
         if: needs.linux.result == 'success'
@@ -549,10 +572,11 @@ jobs:
         run: |
           linux_dir="artifacts/KytyPlus-Linux-x86_64"
           test -d "$linux_dir"
-          chmod a+x \
-            "$linux_dir/kyty_launcher" \
-            "$linux_dir/kyty_emulator" \
-            "$linux_dir/kyty_updater"
+          # Same artifact round-trip as macOS: tar stores whatever mode the file has after download,
+          # so the programs the release does not name here ship without the executable bit.
+          while IFS= read -r -d '' candidate; do
+            if file -b "$candidate" | grep -Eq '^ELF'; then chmod a+x "$candidate"; fi
+          done < <(find "$linux_dir" -type f -print0)
           tar -C "$linux_dir" -czf \
             "$GITHUB_WORKSPACE/$RELEASE_NAME-Linux-x86_64.tar.gz" .
 
