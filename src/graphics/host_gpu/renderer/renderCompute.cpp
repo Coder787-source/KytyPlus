@@ -186,7 +186,16 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		return false;
 	}
 	if (!cache.ClearImageFromBuffer(command, descriptor.Base48(), size, packed_clear)) {
-		return false;
+		// The same proof covers ordinary buffers and compression metadata, even before
+		// an image is cached. Avoid dispatching a shader just to repeat one dword.
+		// FillBuffer preserves cache ownership and orders any required GPU transfer.
+		if ((descriptor.Base48() & 3u) != 0) {
+			return false;
+		}
+		KYTY_PROFILER_BLOCK("ComputeBufferFill");
+		command.GetContext().GetBufferCache().FillBuffer(descriptor.Base48(), size,
+		                                               packed_clear, false);
+		return true;
 	}
 	static std::atomic<uint32_t> logged_clears {0};
 	if (logged_clears.fetch_add(1, std::memory_order_relaxed) < 32) {
