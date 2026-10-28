@@ -3,6 +3,7 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -339,6 +340,11 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 }
 
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
+	return Submit(submit, m_graphics.queue, m_graphics.queue_mutex);
+}
+
+uint64_t CommandScheduler::Submit(SubmitInfo submit, vk::Queue queue,
+                                  Common::Mutex& queue_mutex) {
 	EXIT_IF(m_command.IsInvalid());
 	EXIT_IF(submit.num_wait_semaphores > SubmitInfo::MaxSemaphores ||
 	        submit.num_signal_semaphores >= SubmitInfo::MaxSemaphores);
@@ -346,22 +352,22 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	m_command.End();
 	const auto buffer   = m_command.m_buffer;
 	auto&      graphics = m_graphics;
-	EXIT_IF(graphics.queue == nullptr);
+	EXIT_IF(queue == nullptr);
 
 	vk::Result result;
 	uint64_t   tick;
+	vk::TimelineSemaphoreSubmitInfo timeline_info {};
+	vk::SubmitInfo                  submit_info {};
 	{
-		Common::LockGuard lock(graphics.queue_mutex);
+		Common::LockGuard lock(queue_mutex);
 		tick = m_master.NextTick();
 		submit.AddSignal(m_master.Handle(), tick);
 
-		vk::TimelineSemaphoreSubmitInfo timeline_info {};
 		timeline_info.waitSemaphoreValueCount   = submit.num_wait_semaphores;
 		timeline_info.pWaitSemaphoreValues      = submit.wait_ticks.data();
 		timeline_info.signalSemaphoreValueCount = submit.num_signal_semaphores;
 		timeline_info.pSignalSemaphoreValues    = submit.signal_ticks.data();
 
-		vk::SubmitInfo submit_info {};
 		submit_info.pNext                = &timeline_info;
 		submit_info.waitSemaphoreCount   = submit.num_wait_semaphores;
 		submit_info.pWaitSemaphores      = submit.wait_semaphores.data();
@@ -371,10 +377,35 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 		submit_info.signalSemaphoreCount = submit.num_signal_semaphores;
 		submit_info.pSignalSemaphores    = submit.signal_semaphores.data();
 
-		result = graphics.queue.submit(1, &submit_info, nullptr);
+		result = queue.submit(1, &submit_info, nullptr);
+	}
+
+	if (result == vk::Result::eErrorOutOfDeviceMemory) {
+		// A submit the driver rejected never reached the queue, so it can be retried. Retrying on
+		// its own fails again while memory stays exhausted, so let earlier work retire and give the
+		// caches a chance to drop what their own bookkeeping already released. The master semaphore
+		// is waited on rather than the whole device, because presentation can be blocked on this
+		// very tick.
+		for (uint32_t attempt = 1; attempt <= 3; attempt++) {
+			LOGF("vkQueueSubmit: out of device memory, dropping cached allocations (attempt %u)\n",
+			     attempt);
+			// Whether these dumps show usage far below the budget decides a leak against a
+			// genuinely small shared-memory budget, and nothing else in the log records it.
+			graphics.LogMemoryBudget();
+			m_master.Wait(tick - 1);
+			m_context.RunGarbageCollector();
+			Common::LockGuard lock(queue_mutex);
+			result = queue.submit(1, &submit_info, nullptr);
+			if (result == vk::Result::eSuccess) {
+				break;
+			}
+		}
 	}
 
 	if (result != vk::Result::eSuccess) {
+		if (result == vk::Result::eErrorDeviceLost) {
+			graphics.LogDeviceFault();
+		}
 		ReportVulkanFatal("vkQueueSubmit", result, tick, m_command.m_debug_op,
 		                  m_command.m_debug_submit_id, m_command.m_debug_arg0,
 		                  m_command.m_debug_arg1, m_command.m_debug_arg2, m_command.m_debug_arg3,

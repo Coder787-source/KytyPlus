@@ -447,17 +447,21 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 }
 
 static vk::Device VulkanCreateDevice(GraphicContext& graphics,
-	                                 const std::vector<const char*>& device_extensions) {
+	                                 const std::vector<const char*>& device_extensions,
+	                                 uint32_t& present_queue_index) {
 	const auto physical_device = graphics.physical_device;
 	const auto queue_family    = graphics.queue_family;
 	EXIT_IF(physical_device == nullptr);
 	EXIT_IF(queue_family == static_cast<uint32_t>(-1));
 
-	const float               queue_priority = 1.0f;
+	const auto families = physical_device.getQueueFamilyProperties();
+	const auto queue_count = std::min(2u, families[queue_family].queueCount);
+	present_queue_index = queue_count - 1;
+	const std::array<float, 2> queue_priorities {1.0f, 1.0f};
 	vk::DeviceQueueCreateInfo queue_create_info {};
 	queue_create_info.queueFamilyIndex = queue_family;
-	queue_create_info.queueCount       = 1;
-	queue_create_info.pQueuePriorities = &queue_priority;
+	queue_create_info.queueCount       = queue_count;
+	queue_create_info.pQueuePriorities = queue_priorities.data();
 
 	vk::PhysicalDeviceColorWriteEnableFeaturesEXT color_write_ext {};
 	color_write_ext.colorWriteEnable = VK_TRUE;
@@ -689,6 +693,13 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	if (graphics.maintenance8_enabled) {
 		maintenance8.pNext = const_cast<void*>(create_info.pNext);
 		create_info.pNext = &maintenance8;
+	}
+	// Enabling VK_EXT_device_fault without the feature only exposes an empty fault record.
+	vk::PhysicalDeviceFaultFeaturesEXT fault_features {};
+	if (graphics.device_fault_ext_enabled) {
+		fault_features.deviceFault = VK_TRUE;
+		fault_features.pNext       = const_cast<void*>(create_info.pNext);
+		create_info.pNext          = &fault_features;
 	}
 	create_info.pQueueCreateInfos       = &queue_create_info;
 	create_info.queueCreateInfoCount    = 1;
@@ -1061,6 +1072,12 @@ void WindowContext::CreateVulkan() {
 			device_extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 			graphic_ctx.memory_budget_ext_enabled = true;
 		}
+		// The fault record is the only evidence of what the GPU was executing when it hung, and a
+		// device loss cannot be reproduced on demand.
+		if (HasExtension(available_extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+			graphic_ctx.device_fault_ext_enabled = true;
+		}
 #if defined(__APPLE__)
 		// Optional on macOS only; other platforms require it above. The renderer keeps using the
 		// base mip level when this ends up unsupported.
@@ -1085,7 +1102,8 @@ void WindowContext::CreateVulkan() {
 		}
 	}
 
-	graphic_ctx.device = VulkanCreateDevice(graphic_ctx, device_extensions);
+	uint32_t present_queue_index = 0;
+	graphic_ctx.device = VulkanCreateDevice(graphic_ctx, device_extensions, present_queue_index);
 	if (graphic_ctx.device == nullptr) {
 		EXIT("Could not create device");
 	}
@@ -1099,7 +1117,7 @@ void WindowContext::CreateVulkan() {
 
 	render_context = std::make_unique<RenderContext>(graphic_ctx);
 	LibKernel::Memory::InstallGpuResources(render_context.get());
-	presenter = std::make_unique<Presenter>(*this);
+	presenter = std::make_unique<Presenter>(*this, present_queue_index);
 }
 
 void WindowContext::RefreshSurfaceCapabilities() {

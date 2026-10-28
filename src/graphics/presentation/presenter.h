@@ -23,6 +23,7 @@ public:
 	};
 
 	explicit Presenter(WindowContext& window);
+	Presenter(WindowContext& window, uint32_t queue_index);
 	~Presenter();
 	KYTY_CLASS_NO_COPY(Presenter);
 

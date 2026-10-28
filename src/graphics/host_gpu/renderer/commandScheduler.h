@@ -30,6 +30,7 @@ public:
 	void           Finish();
 	CommandBuffer& BeginCommand();
 	uint64_t       Submit(SubmitInfo submit = {});
+	uint64_t       Submit(SubmitInfo submit, vk::Queue queue, Common::Mutex& queue_mutex);
 	// Deferred callbacks can observe an externally owned drain, but cannot initiate shutdown:
 	// the priority runner cannot join itself.
 	void                      Shutdown();

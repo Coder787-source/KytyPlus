@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <fmt/format.h>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -27,10 +28,21 @@
 
 namespace Libs::Graphics {
 
+// Reports from Mac testers are pasted terminal output, and LOGF only reaches the log file, so the
+// presentation diagnosis below has to be written to both.
+#define PRESENT_PROBE_LOG(...) Log::WriteToConsoleAndLog(::fmt::format(__VA_ARGS__))
+
+// Two black screens look identical from the window: the guest never fills the frame it flips, or
+// the frame is filled and the window server never shows it. The probe alternates its first frames
+// between the real blit and solid magenta, so one run names which side the fault is on.
+constexpr uint32_t kPresentProbeFrames = 90;
+
 struct Presenter::Frame {
 	VulkanImage   image;
 	vk::ImageView view         = nullptr;
 	uint64_t      present_tick = 0;
+	vk::Semaphore producer_semaphore = nullptr;
+	uint64_t      producer_tick = 0;
 	bool          busy         = false;
 	bool          hdr          = false;
 	bool          blank        = false;
@@ -232,6 +244,9 @@ void Presenter::Frame::Transit(vk::CommandBuffer command, vk::ImageLayout layout
 }
 
 void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
+	auto& scheduler = command_buffer.GetScheduler();
+	producer_semaphore = scheduler.GetMasterSemaphore().Handle();
+	producer_tick = scheduler.CurrentTick();
 	command_buffer.EndRendering();
 	auto command = command_buffer.Handle();
 	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
@@ -248,6 +263,9 @@ void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
 }
 
 void Presenter::Frame::Clear(CommandBuffer& command_buffer, const vk::ClearColorValue& color) {
+	auto& scheduler = command_buffer.GetScheduler();
+	producer_semaphore = scheduler.GetMasterSemaphore().Handle();
+	producer_tick = scheduler.CurrentTick();
 	command_buffer.EndRendering();
 	auto command = command_buffer.Handle();
 	Transit(command, vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite);
@@ -259,7 +277,10 @@ class Swapchain final {
 public:
 	enum class Status : uint8_t { Success, Recreate, SurfaceLost };
 
-	explicit Swapchain(WindowContext& window): m_window(window) {}
+	Swapchain(WindowContext& window, uint32_t queue_index): m_window(window) {
+		window.graphic_ctx.device.getQueue(window.graphic_ctx.queue_family, queue_index, &m_queue);
+		EXIT_IF(m_queue == nullptr);
+	}
 	~Swapchain();
 	KYTY_CLASS_NO_COPY(Swapchain);
 
@@ -271,6 +292,9 @@ public:
 	void     RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
 	                               const Presenter::Layer& overlay, bool draw_system_overlay);
 	uint64_t Submit(CommandScheduler& scheduler);
+	uint64_t SubmitPrepared(CommandScheduler& scheduler) {
+		return scheduler.Submit({}, m_queue, QueueMutex());
+	}
 	[[nodiscard]] Status Present();
 
 	[[nodiscard]] uint32_t ImageCount() const noexcept {
@@ -285,13 +309,21 @@ public:
 	}
 
 private:
+	Common::Mutex& QueueMutex() {
+		return m_queue == m_window.graphic_ctx.queue ? m_window.graphic_ctx.queue_mutex
+		                                            : m_queue_mutex;
+	}
 	vk::SurfaceFormatKHR SelectFormat();
 	void Destroy();
 	void DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer);
 
 	WindowContext&   m_window;
+	vk::Queue        m_queue = nullptr;
+	Common::Mutex    m_queue_mutex;
+	std::array<std::pair<vk::Semaphore, uint64_t>, 2> m_producers {};
 	vk::SwapchainKHR m_handle = nullptr;
 	vk::Format       m_format = vk::Format::eUndefined;
+	vk::ColorSpaceKHR m_color_space = vk::ColorSpaceKHR::eSrgbNonlinear;
 	std::atomic_bool m_hdr_supported {false};
 	bool             m_hdr_requested = false;
 	bool             m_hdr_active    = false;
@@ -310,11 +342,12 @@ private:
 	vk::Sampler                    m_overlay_sampler     = nullptr;
 	uint32_t                       m_image_index         = static_cast<uint32_t>(-1);
 	uint32_t                       m_frame_index         = 0;
+	uint32_t                       m_probe_frames        = 0;
 };
 
 struct Presenter::Impl {
-	explicit Impl(WindowContext& owner)
-	    : renderer(*owner.render_context), window(owner), swapchain(owner),
+	Impl(WindowContext& owner, uint32_t queue_index)
+	    : renderer(*owner.render_context), window(owner), swapchain(owner, queue_index),
 	      present_scheduler(renderer, owner.graphic_ctx), frames(owner, present_scheduler) {
 		EXIT_IF(owner.render_context == nullptr);
 		swapchain.Create();
@@ -322,8 +355,8 @@ struct Presenter::Impl {
 	}
 
 	void RecoverSwapchain(Swapchain::Status status) {
-		LOGF("Recovering Vulkan swapchain%s\n",
-		     status == Swapchain::Status::SurfaceLost ? " and surface" : "");
+		PRESENT_PROBE_LOG("Recovering Vulkan swapchain{}\n",
+		                  status == Swapchain::Status::SurfaceLost ? " and surface" : "");
 		swapchain.Recreate(status == Swapchain::Status::SurfaceLost);
 		frames.SetFormat(swapchain.Format());
 	}
@@ -434,7 +467,8 @@ void Swapchain::Create() {
 	        : vk::CompositeAlphaFlagBitsKHR::eInherit;
 
 	const auto format = SelectFormat();
-	m_format                      = format.format;
+	m_format            = format.format;
+	m_color_space       = format.colorSpace;
 	const auto swapchain_features = graphics.GetFormatProperties(m_format).optimalTilingFeatures;
 	if (!static_cast<bool>(swapchain_features & vk::FormatFeatureFlagBits::eBlitDst)) {
 		EXIT("swapchain format cannot be a blit destination: format=%d\n",
@@ -473,7 +507,15 @@ void Swapchain::Create() {
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
 	EXIT_IF(m_handle == nullptr);
-	LOGF("Vulkan presentation: %s\n", m_hdr_active ? "HDR10 (PQ)" : "SDR");
+	// A PQ surface shown on a display that is not in HDR mode reaches the player as a black
+	// window, and until now the choice was only written to the log file, which Mac reports do not
+	// include. Name the colour space next to the content that decides it.
+	PRESENT_PROBE_LOG("Vulkan presentation: {} format={} colorspace={} extent={}x{} images={} "
+	                   "mode={} hdr_config={} hdr_supported={} hdr_requested={}\n",
+	                   m_hdr_active ? "HDR10 (PQ)" : "SDR", vk::to_string(m_format),
+	                   vk::to_string(m_color_space), m_extent.width, m_extent.height, image_count,
+	                   vk::to_string(create_info.presentMode), Config::HdrEnabled(),
+	                   IsHdrSupported(), m_hdr_requested);
 
 	m_images = EnumerateVulkan<vk::Image>(
 	    "vkGetSwapchainImagesKHR", [&](uint32_t* count, vk::Image* images) {
@@ -528,8 +570,8 @@ void Swapchain::Destroy() {
 	auto& graphics = m_window.graphic_ctx;
 
 	{
-		Common::LockGuard queue_lock(graphics.queue_mutex);
-		RequireVulkanSuccess(graphics.queue.waitIdle(), "wait for swapchain queue");
+		Common::LockGuard queue_lock(QueueMutex());
+		RequireVulkanSuccess(m_queue.waitIdle(), "wait for swapchain queue");
 	}
 	if (m_system_overlay != nullptr) {
 		m_system_overlay->ReleaseVulkan();
@@ -607,20 +649,20 @@ Swapchain::Status Swapchain::AcquireNextImage(CommandScheduler& scheduler) {
 	    m_handle, std::numeric_limits<uint64_t>::max(), m_image_acquired[m_frame_index], nullptr,
 	    &m_image_index);
 	switch (result) {
-		case vk::Result::eSuccess: break;
-		case vk::Result::eSuboptimalKHR:
-			LOGF("vkAcquireNextImageKHR returned vk::Result::eSuboptimalKHR\n");
-			return Status::Recreate;
-		case vk::Result::eErrorOutOfDateKHR:
-			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorOutOfDateKHR\n");
-			return Status::Recreate;
-		case vk::Result::eErrorUnknown:
-			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorUnknown\n");
-			return Status::Recreate;
-		case vk::Result::eErrorSurfaceLostKHR:
-			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorSurfaceLostKHR\n");
-			return Status::SurfaceLost;
-		default: EXIT("vkAcquireNextImageKHR failed: %s\n", vk::to_string(result).c_str());
+	case vk::Result::eSuccess: break;
+	case vk::Result::eSuboptimalKHR:
+		LOGF("vkAcquireNextImageKHR returned vk::Result::eSuboptimalKHR\n");
+		return Status::Recreate;
+	case vk::Result::eErrorOutOfDateKHR:
+		LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorOutOfDateKHR\n");
+		return Status::Recreate;
+	case vk::Result::eErrorUnknown:
+		LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorUnknown\n");
+		return Status::Recreate;
+	case vk::Result::eErrorSurfaceLostKHR:
+		LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorSurfaceLostKHR\n");
+		return Status::SurfaceLost;
+	default: EXIT("vkAcquireNextImageKHR failed: %s\n", vk::to_string(result).c_str());
 	}
 	EXIT_IF(m_image_index >= m_images.size());
 	return Status::Success;
@@ -764,7 +806,31 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
 
 void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
                                       const Presenter::Layer& overlay, bool draw_system_overlay) {
+	m_producers = {};
+	if (source != nullptr) {
+		m_producers[0] = {source->producer_semaphore, source->producer_tick};
+	}
+	if (overlay.frame != nullptr) {
+		m_producers[1] = {overlay.frame->producer_semaphore, overlay.frame->producer_tick};
+	}
 	EXIT_IF(m_image_index >= m_images.size());
+	const uint32_t probe_frame = m_probe_frames < kPresentProbeFrames ? ++m_probe_frames : 0;
+	const bool     probe       = probe_frame != 0;
+#if defined(__APPLE__)
+	const bool canary = probe && (probe_frame % 2u == 1u);
+#endif
+	if (probe && (probe_frame <= 8u || probe_frame == kPresentProbeFrames)) {
+		PRESENT_PROBE_LOG("[present-probe] #{} image={}/{} swapchain={}x{} format={} colorspace={} "
+		                  "hdr={} source={} blank={} {}x{} format={} overlay={}\n",
+		                  probe_frame, m_image_index, ImageCount(), m_extent.width,
+		                  m_extent.height, vk::to_string(m_format), vk::to_string(m_color_space),
+		                  m_hdr_active, source != nullptr ? "frame" : "none",
+		                  source != nullptr ? source->blank : false,
+		                  source != nullptr ? source->image.extent.width : 0u,
+		                  source != nullptr ? source->image.extent.height : 0u,
+		                  source != nullptr ? vk::to_string(source->image.format) : "none",
+		                  overlay.frame != nullptr ? "layer" : "none");
+	}
 	auto       vk_command      = command.Handle();
 	const bool draw_overlay    = overlay.frame != nullptr;
 	const bool draw_attachment = draw_overlay || draw_system_overlay;
@@ -820,6 +886,18 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		                           &black, 1, &to_transfer.subresourceRange);
 	}
 
+#if defined(__APPLE__)
+	if (canary) {
+		// The image is still in the transfer destination layout the blit above left it in.
+		vk::ClearColorValue magenta {};
+		magenta.float32[0] = 1.0f;
+		magenta.float32[2] = 1.0f;
+		magenta.float32[3] = 1.0f;
+		vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
+		                           &magenta, 1, &to_transfer.subresourceRange);
+	}
+#endif
+
 	vk::ImageMemoryBarrier to_present {};
 	to_present.sType               = vk::StructureType::eImageMemoryBarrier;
 	to_present.srcAccessMask       = vk::AccessFlagBits::eTransferWrite;
@@ -872,8 +950,22 @@ uint64_t Swapchain::Submit(CommandScheduler& scheduler) {
 	EXIT_IF(m_frame_index >= m_image_acquired.size() || m_image_index >= m_render_complete.size());
 	SubmitInfo submit;
 	submit.AddWait(m_image_acquired[m_frame_index], 1, vk::PipelineStageFlagBits::eTransfer);
+	if (m_queue != m_window.graphic_ctx.queue) {
+		for (const auto& [semaphore, tick]: m_producers) {
+			if (semaphore == nullptr || tick == 0) continue;
+			bool merged = false;
+			for (uint32_t i = 0; i < submit.num_wait_semaphores; ++i) {
+				if (submit.wait_semaphores[i] == semaphore) {
+					submit.wait_ticks[i] = std::max(submit.wait_ticks[i], tick);
+					merged = true;
+					break;
+				}
+			}
+			if (!merged) submit.AddWait(semaphore, tick);
+		}
+	}
 	submit.AddSignal(m_render_complete[m_image_index]);
-	const auto tick                       = scheduler.Submit(submit);
+	const auto tick                       = scheduler.Submit(submit, m_queue, QueueMutex());
 	m_image_acquired_ticks[m_frame_index] = tick;
 	return tick;
 }
@@ -891,8 +983,8 @@ Swapchain::Status Swapchain::Present() {
 
 	vk::Result result;
 	{
-		Common::LockGuard lock(m_window.graphic_ctx.queue_mutex);
-		result = m_window.graphic_ctx.queue.presentKHR(&present);
+		Common::LockGuard lock(QueueMutex());
+		result = m_queue.presentKHR(&present);
 	}
 	switch (result) {
 		case vk::Result::eSuccess: break;
@@ -911,7 +1003,10 @@ Swapchain::Status Swapchain::Present() {
 	return Status::Success;
 }
 
-Presenter::Presenter(WindowContext& window): m_impl(std::make_unique<Impl>(window)) {}
+Presenter::Presenter(WindowContext& window): Presenter(window, 0) {}
+
+Presenter::Presenter(WindowContext& window, uint32_t queue_index)
+    : m_impl(std::make_unique<Impl>(window, queue_index)) {}
 
 Presenter::~Presenter() = default;
 
@@ -955,7 +1050,7 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
 		Common::LockGuard lock(m_impl->present_mutex);
 		auto& command = m_impl->present_scheduler.BeginCommand();
 		frame->Clear(command, clear);
-		frame->present_tick = m_impl->present_scheduler.Submit();
+		frame->present_tick = m_impl->swapchain.SubmitPrepared(m_impl->present_scheduler);
 	}
 	return *frame;
 }
@@ -1059,7 +1154,7 @@ void Presenter::Impl::Present() {
 		window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
-	LOGF("Vulkan presentation retry exhausted; dropping frame\n");
+	PRESENT_PROBE_LOG("Vulkan presentation retry exhausted; dropping frame\n");
 }
 
 void Presenter::Discard(Frame& frame) {
