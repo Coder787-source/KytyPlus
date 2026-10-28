@@ -194,42 +194,107 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 	Update();
 }
 
-void MainDialogPrivate::FindInterpreter() {
-	QDir search_dir(QApplication::applicationDirPath());
-	m_interpreter = search_dir.absoluteFilePath(EMULATOR_EXE);
+namespace {
 
-	if (!QFile::exists(m_interpreter)) {
-		search_dir.cdUp();
-		m_interpreter = search_dir.absoluteFilePath(EMULATOR_EXE);
+constexpr qint64 START_TIMEOUT_MS = 3000;
+constexpr qint64 FINISH_TIMEOUT_MS = 5000;
+
+// A release is either a flat folder or a macOS bundle, and the emulator sits beside the launcher in
+// the first case and one to three levels up in the second, so search those instead of assuming.
+QStringList ReleaseRoots() {
+	QStringList roots{QCoreApplication::applicationDirPath()};
+	QDir        walk(roots.first());
+	for (int level = 0; level < 3; ++level) {
+		if (!walk.cdUp()) {
+			break;
+		}
+		roots << walk.absolutePath();
 	}
+	return roots;
+}
 
-	bool found = QFile::exists(m_interpreter);
-	m_ui->widget->SetRuntimeDirectory(QFileInfo(m_interpreter).absolutePath());
+QStringList EmulatorCandidates(const QStringList& roots) {
+	QStringList candidates;
+	for (const auto& root: roots) {
+		candidates << QDir(root).filePath(EMULATOR_EXE)
+		           << QDir(QDir(root).filePath(QStringLiteral("Kyty"))).filePath(EMULATOR_EXE);
+	}
+	candidates.removeDuplicates();
+	return candidates;
+}
 
-	if (found) {
-		m_ui->label_Interpreter->setText(tr("Emulator: ") + m_interpreter);
+// GitHub Actions artifacts drop the executable bit, so a downloaded release can carry programs that
+// exist but cannot be exec'd, which the old check reported as a missing emulator. Restoring the bit
+// here repairs releases that are already published; the packaging step is fixed separately.
+void RepairExecutableBits(const QStringList& roots) {
+#if !defined(_WIN32)
+	static constexpr const char* kPrograms[] = {EMULATOR_EXE, "kyty_updater",
+	                                            "naps/kyty_naps_extractor"};
+	for (const auto& root: roots) {
+		for (const auto* program: kPrograms) {
+			const QString path  = QDir(root).filePath(program);
+			const QFileInfo info(path);
+			if (!info.isFile() || (info.permissions() & QFileDevice::ExeUser) != 0) {
+				continue;
+			}
+			QFile::setPermissions(path, info.permissions() | QFileDevice::ExeOwner |
+			                                    QFileDevice::ExeUser | QFileDevice::ExeGroup |
+			                                    QFileDevice::ExeOther);
+		}
+	}
+#else
+	Q_UNUSED(roots);
+#endif
+}
 
+} // namespace
+
+void MainDialogPrivate::FindInterpreter() {
+	const QStringList   roots      = ReleaseRoots();
+	const QStringList   candidates = EmulatorCandidates(roots);
+	RepairExecutableBits(roots);
+	QString unrunnable;
+	for (const auto& candidate: candidates) {
+		if (!QFileInfo(candidate).isFile()) {
+			continue;
+		}
 		QProcess test;
-		test.setProgram(m_interpreter);
+		test.setProgram(candidate);
 		test.start();
-		test.waitForFinished();
-
-		auto output = QString(test.readAllStandardOutput());
-		auto lines  = output.split(QRegularExpression("[\r\n]"), Qt::SkipEmptyParts);
-
+		if (!test.waitForStarted(START_TIMEOUT_MS)) {
+			if (unrunnable.isEmpty()) {
+				unrunnable = tr("%1 exists but cannot be started:\n%2")
+				                 .arg(candidate, test.errorString());
+			}
+			continue;
+		}
+		if (!test.waitForFinished(FINISH_TIMEOUT_MS)) {
+			test.kill();
+			test.waitForFinished(1000);
+		}
+		const auto lines =
+		    QString(test.readAllStandardOutput()).split(QRegularExpression("[\r\n]"),
+		                                                Qt::SkipEmptyParts);
 		if (lines.count() >= 2) {
 			m_ui->label_Version->setText(
 			    tr("Version: ") + (lines.at(0).startsWith("exe_name") ? lines.at(1) : lines.at(0)));
-		} else {
-			found = false;
 		}
+		m_interpreter = candidate;
+		break;
 	}
 
-	if (!found) {
-		QMessageBox::critical(m_main_dialog, tr("Error"), tr("Can't find emulator"));
+	if (m_interpreter.isEmpty()) {
+		m_ui->label_Interpreter->setText(tr("Emulator: ") + candidates.value(0));
+		QMessageBox::critical(m_main_dialog, tr("Error"),
+		                      unrunnable.isEmpty()
+		                          ? tr("Can't find emulator. Looked for \"%1\" in:\n%2")
+		                                .arg(EMULATOR_EXE, candidates.join("\n"))
+		                          : unrunnable);
 		QApplication::quit();
 		return;
 	}
+	m_ui->widget->SetRuntimeDirectory(QFileInfo(m_interpreter).absolutePath());
+	m_ui->label_Interpreter->setText(tr("Emulator: ") + m_interpreter);
 
 	// Support Explorer's positional path and --open-image <path>.
 	QString startup_image;
