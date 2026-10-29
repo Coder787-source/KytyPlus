@@ -1,3 +1,4 @@
+#include "common/alignment.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -304,8 +305,11 @@ public:
 	// Records a copy of the frame that is about to be blitted, then reads it back once the
 	// submission has run. Whether the presented pixels are black is the one question a screenshot
 	// of the window cannot answer, and it separates "the guest drew black" from "the window shows
-	// nothing".
+	// nothing". Sampling the swapchain image in the same submission separates a dropped blit from a
+	// window server that never displays what it is given.
 	void BeginProbeSample(vk::CommandBuffer command, const Presenter::Frame* source);
+	void ProbeDestination(vk::CommandBuffer command, vk::Image image,
+	                      const vk::ImageSubresourceRange& range);
 	void FinishProbeSample(CommandScheduler& scheduler, uint64_t tick);
 
 	[[nodiscard]] uint32_t ImageCount() const noexcept {
@@ -361,6 +365,9 @@ private:
 	VmaAllocation    m_probe_alloc  = nullptr;
 	void*            m_probe_mapped = nullptr;
 	uint64_t         m_probe_size   = 0;
+	uint64_t         m_probe_src_size = 0;
+	uint64_t         m_probe_dst_offset = 0;
+	uint64_t         m_probe_dst_size   = 0;
 	uint32_t         m_probe_samples = 0;
 	vk::Extent2D     m_probe_extent {};
 	vk::Format       m_probe_format = vk::Format::eUndefined;
@@ -928,6 +935,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		                           &magenta, 1, &to_transfer.subresourceRange);
 	}
 #endif
+	ProbeDestination(vk_command, m_images[m_image_index], to_transfer.subresourceRange);
 
 	vk::ImageMemoryBarrier to_present {};
 	to_present.sType               = vk::StructureType::eImageMemoryBarrier;
@@ -1038,6 +1046,24 @@ namespace {
 constexpr uint32_t kPresentCheckLead  = 4;
 constexpr uint64_t kPresentCheckEvery = 1200;
 constexpr uint32_t kPresentCheckMax   = 12;
+
+// Bytes that are not zero, and a hash of the pixels. A frame the guest never wrote reads back as
+// all zero; a frame that was written but dropped by the blit reads back lit at the source and empty
+// at the destination.
+[[nodiscard]] std::pair<uint64_t, uint64_t> ProbeContent(const uint8_t* bytes, uint64_t offset,
+                                                         uint64_t size) {
+	uint64_t lit  = 0;
+	uint64_t hash = 14695981039346656037ull;
+	for (uint64_t index = 0; index < size; ++index) {
+		lit += bytes[offset + index] != 0;
+	}
+	for (uint64_t index = 0; index + 4 <= size; index += 4) {
+		uint32_t pixel = 0;
+		std::memcpy(&pixel, bytes + offset + index, sizeof(pixel));
+		hash = (hash ^ pixel) * 1099511628211ull;
+	}
+	return {lit, hash};
+}
 } // namespace
 
 void Swapchain::ReleaseProbeBuffer() {
@@ -1055,7 +1081,8 @@ void Swapchain::ReleaseProbeBuffer() {
 }
 
 void Swapchain::BeginProbeSample(vk::CommandBuffer command, const Presenter::Frame* source) {
-	if (source == nullptr || source->blank || m_probe_samples >= kPresentCheckMax) {
+	if (source == nullptr || source->blank || m_probe_samples >= kPresentCheckMax ||
+	    m_probe_reading) {
 		return;
 	}
 	const bool first_frames = m_probe_real <= kPresentCheckLead;
@@ -1063,17 +1090,24 @@ void Swapchain::BeginProbeSample(vk::CommandBuffer command, const Presenter::Fra
 	if (!first_frames && !periodic) {
 		return;
 	}
-	const auto     element = vk::blockSize(source->image.format);
-	const uint64_t size    = static_cast<uint64_t>(element) * source->image.extent.width *
-	                      source->image.extent.height;
-	if (element == 0 || vk::isCompressed(source->image.format)) {
+	const auto src_element = vk::blockSize(source->image.format);
+	const auto dst_element = vk::blockSize(m_format);
+	if (src_element == 0 || dst_element == 0 || vk::isCompressed(source->image.format) ||
+	    vk::isCompressed(m_format)) {
+		return;
+	}
+	const uint64_t src_size = static_cast<uint64_t>(src_element) * source->image.extent.width *
+	                          source->image.extent.height;
+	const uint64_t dst_size = static_cast<uint64_t>(dst_element) * m_extent.width * m_extent.height;
+	const uint64_t dst_offset = Common::AlignUp(src_size, 256ull);
+	if (src_size == 0 || dst_size == 0) {
 		return;
 	}
 	auto& graphics = m_window.graphic_ctx;
-	if (size > m_probe_size) {
+	if (dst_offset + dst_size > m_probe_size) {
 		ReleaseProbeBuffer();
 		vk::BufferCreateInfo buffer_info {};
-		buffer_info.size  = size;
+		buffer_info.size  = dst_offset + dst_size;
 		buffer_info.usage = vk::BufferUsageFlagBits::eTransferDst;
 		VmaAllocationCreateInfo alloc_info {};
 		alloc_info.flags =
@@ -1089,9 +1123,9 @@ void Swapchain::BeginProbeSample(vk::CommandBuffer command, const Presenter::Fra
 		}
 		m_probe_buffer = native;
 		m_probe_mapped = allocated.pMappedData;
-		m_probe_size   = size;
+		m_probe_size   = allocated.size;
 	}
-	if (m_probe_mapped == nullptr) {
+	if (m_probe_mapped == nullptr || dst_offset + dst_size > m_probe_size) {
 		return;
 	}
 	const vk::BufferImageCopy region {
@@ -1100,10 +1134,45 @@ void Swapchain::BeginProbeSample(vk::CommandBuffer command, const Presenter::Fra
 	};
 	command.copyImageToBuffer(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
 	                          m_probe_buffer, 1, &region);
-	m_probe_extent  = {source->image.extent.width, source->image.extent.height};
-	m_probe_format  = source->image.format;
-	m_probe_reading = true;
+	m_probe_extent    = {source->image.extent.width, source->image.extent.height};
+	m_probe_format    = source->image.format;
+	m_probe_src_size  = src_size;
+	m_probe_dst_offset = dst_offset;
+	m_probe_dst_size   = dst_size;
+	m_probe_reading   = true;
 	++m_probe_samples;
+}
+
+void Swapchain::ProbeDestination(vk::CommandBuffer command, vk::Image image,
+                                 const vk::ImageSubresourceRange& range) {
+	if (!m_probe_reading || m_probe_dst_size == 0) {
+		return;
+	}
+	vk::ImageMemoryBarrier to_source {};
+	to_source.sType               = vk::StructureType::eImageMemoryBarrier;
+	to_source.srcAccessMask       = vk::AccessFlagBits::eTransferWrite;
+	to_source.dstAccessMask       = vk::AccessFlagBits::eTransferRead;
+	to_source.oldLayout           = vk::ImageLayout::eTransferDstOptimal;
+	to_source.newLayout           = vk::ImageLayout::eTransferSrcOptimal;
+	to_source.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	to_source.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	to_source.image               = image;
+	to_source.subresourceRange    = range;
+	command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+	                        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0, nullptr,
+	                        0, nullptr, 1, &to_source);
+	const vk::BufferImageCopy region {
+	    .bufferOffset     = m_probe_dst_offset,
+	    .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+	    .imageExtent      = {m_extent.width, m_extent.height, 1},
+	};
+	command.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, m_probe_buffer, 1,
+	                          &region);
+	std::swap(to_source.srcAccessMask, to_source.dstAccessMask);
+	std::swap(to_source.oldLayout, to_source.newLayout);
+	command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+	                        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0, nullptr,
+	                        0, nullptr, 1, &to_source);
 }
 
 void Swapchain::FinishProbeSample(CommandScheduler& scheduler, uint64_t tick) {
@@ -1113,26 +1182,18 @@ void Swapchain::FinishProbeSample(CommandScheduler& scheduler, uint64_t tick) {
 	m_probe_reading = false;
 	scheduler.Wait(tick);
 	const auto* bytes = static_cast<const uint8_t*>(m_probe_mapped);
-	uint64_t    lit   = 0;
-	uint64_t    hash  = 14695981039346656037ull;
-	for (uint64_t offset = 0; offset < m_probe_size; ++offset) {
-		lit += bytes[offset] != 0;
-	}
-	for (uint64_t offset = 0; offset + 4 <= m_probe_size; offset += 4) {
-		uint32_t pixel = 0;
-		std::memcpy(&pixel, bytes + offset, sizeof(pixel));
-		hash = (hash ^ pixel) * 1099511628211ull;
-	}
-	const auto at = [&](uint64_t offset) {
+	const auto  src   = ProbeContent(bytes, 0, m_probe_src_size);
+	const auto  dst   = ProbeContent(bytes, m_probe_dst_offset, m_probe_dst_size);
+	const auto  at    = [&](uint64_t offset) {
 		return fmt::format("{:02x}{:02x}{:02x}{:02x}", bytes[offset], bytes[offset + 1],
 		                   bytes[offset + 2], bytes[offset + 3]);
 	};
-	const uint64_t center = (m_probe_size / 2) & ~3ull;
-	// Bytes rather than pixels: an opaque alpha channel makes every pixel nonzero, while a black
-	// frame still lights a quarter of its bytes.
-	PRESENT_PROBE_LOG("[present-check] real={} {}x{} {} lit={}/{} hash={:016x} first={} center={}\n",
+	PRESENT_PROBE_LOG("[present-check] real={} src={}x{} {} lit={}/{} hash={:016x} first={} | "
+	                  "dst={}x{} {} lit={}/{} hash={:016x} first={}\n",
 	                  m_probe_real, m_probe_extent.width, m_probe_extent.height,
-	                  vk::to_string(m_probe_format), lit, m_probe_size, hash, at(0), at(center));
+	                  vk::to_string(m_probe_format), src.first, m_probe_src_size, src.second,
+	                  at(0), m_extent.width, m_extent.height, vk::to_string(m_format), dst.first,
+	                  m_probe_dst_size, dst.second, at(m_probe_dst_offset));
 }
 
 Presenter::Presenter(WindowContext& window): Presenter(window, 0) {}
