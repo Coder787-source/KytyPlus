@@ -18,11 +18,13 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <fmt/format.h>
 #include <limits>
 #include <memory>
 #include <vector>
 #include <vulkan/vk_platform.h>
+#include <vulkan/vulkan_format_traits.hpp>
 
 // IWYU pragma: no_include <intrin.h>
 
@@ -38,7 +40,7 @@ namespace Libs::Graphics {
 // boot and again over the first real frames, so one run names which side the fault is on.
 constexpr uint64_t kPresentProbeLead  = 8;
 constexpr uint64_t kPresentProbeEvery = 600;
-constexpr uint64_t kPresentProbeCanary = 20;
+[[maybe_unused]] constexpr uint64_t kPresentProbeCanary = 20;
 
 struct Presenter::Frame {
 	VulkanImage   image;
@@ -299,6 +301,12 @@ public:
 		return scheduler.Submit({}, m_queue, QueueMutex());
 	}
 	[[nodiscard]] Status Present();
+	// Records a copy of the frame that is about to be blitted, then reads it back once the
+	// submission has run. Whether the presented pixels are black is the one question a screenshot
+	// of the window cannot answer, and it separates "the guest drew black" from "the window shows
+	// nothing".
+	void BeginProbeSample(vk::CommandBuffer command, const Presenter::Frame* source);
+	void FinishProbeSample(CommandScheduler& scheduler, uint64_t tick);
 
 	[[nodiscard]] uint32_t ImageCount() const noexcept {
 		return static_cast<uint32_t>(m_images.size());
@@ -349,6 +357,15 @@ private:
 	uint64_t                       m_probe_blank         = 0;
 	uint64_t                       m_probe_real          = 0;
 	bool                           m_probe_last_blank    = true;
+	vk::Buffer       m_probe_buffer = nullptr;
+	VmaAllocation    m_probe_alloc  = nullptr;
+	void*            m_probe_mapped = nullptr;
+	uint64_t         m_probe_size   = 0;
+	uint32_t         m_probe_samples = 0;
+	vk::Extent2D     m_probe_extent {};
+	vk::Format       m_probe_format = vk::Format::eUndefined;
+	bool             m_probe_reading = false;
+	void             ReleaseProbeBuffer();
 };
 
 struct Presenter::Impl {
@@ -579,6 +596,7 @@ void Swapchain::Destroy() {
 		Common::LockGuard queue_lock(QueueMutex());
 		RequireVulkanSuccess(m_queue.waitIdle(), "wait for swapchain queue");
 	}
+	ReleaseProbeBuffer();
 	if (m_system_overlay != nullptr) {
 		m_system_overlay->ReleaseVulkan();
 	}
@@ -892,6 +910,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
 		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
 		                     &region, vk::Filter::eLinear);
+		BeginProbeSample(vk_command, source);
 	} else {
 		const vk::ClearColorValue black {};
 		vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
@@ -1013,6 +1032,107 @@ Swapchain::Status Swapchain::Present() {
 	}
 	m_frame_index = (m_frame_index + 1u) % static_cast<uint32_t>(m_images.size());
 	return Status::Success;
+}
+
+namespace {
+constexpr uint32_t kPresentCheckLead  = 4;
+constexpr uint64_t kPresentCheckEvery = 1200;
+constexpr uint32_t kPresentCheckMax   = 12;
+} // namespace
+
+void Swapchain::ReleaseProbeBuffer() {
+	auto& graphics = m_window.graphic_ctx;
+	if (m_probe_alloc != nullptr) {
+		vmaFreeMemory(graphics.allocator, m_probe_alloc);
+		m_probe_alloc = nullptr;
+	}
+	if (m_probe_buffer != nullptr) {
+		graphics.device.destroyBuffer(m_probe_buffer, nullptr);
+		m_probe_buffer = nullptr;
+	}
+	m_probe_mapped = nullptr;
+	m_probe_size   = 0;
+}
+
+void Swapchain::BeginProbeSample(vk::CommandBuffer command, const Presenter::Frame* source) {
+	if (source == nullptr || source->blank || m_probe_samples >= kPresentCheckMax) {
+		return;
+	}
+	const bool first_frames = m_probe_real <= kPresentCheckLead;
+	const bool periodic     = m_probe_presents % kPresentCheckEvery == 0;
+	if (!first_frames && !periodic) {
+		return;
+	}
+	const auto     element = vk::blockSize(source->image.format);
+	const uint64_t size    = static_cast<uint64_t>(element) * source->image.extent.width *
+	                      source->image.extent.height;
+	if (element == 0 || vk::isCompressed(source->image.format)) {
+		return;
+	}
+	auto& graphics = m_window.graphic_ctx;
+	if (size > m_probe_size) {
+		ReleaseProbeBuffer();
+		vk::BufferCreateInfo buffer_info {};
+		buffer_info.size  = size;
+		buffer_info.usage = vk::BufferUsageFlagBits::eTransferDst;
+		VmaAllocationCreateInfo alloc_info {};
+		alloc_info.flags =
+		    VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+		alloc_info.usage          = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+		alloc_info.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		VmaAllocationInfo allocated {};
+		VkBuffer          native = VK_NULL_HANDLE;
+		if (vmaCreateBuffer(graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info),
+		                    &alloc_info, &native, &m_probe_alloc, &allocated) != VK_SUCCESS) {
+			ReleaseProbeBuffer();
+			return;
+		}
+		m_probe_buffer = native;
+		m_probe_mapped = allocated.pMappedData;
+		m_probe_size   = size;
+	}
+	if (m_probe_mapped == nullptr) {
+		return;
+	}
+	const vk::BufferImageCopy region {
+	    .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+	    .imageExtent      = {source->image.extent.width, source->image.extent.height, 1},
+	};
+	command.copyImageToBuffer(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
+	                          m_probe_buffer, 1, &region);
+	m_probe_extent  = {source->image.extent.width, source->image.extent.height};
+	m_probe_format  = source->image.format;
+	m_probe_reading = true;
+	++m_probe_samples;
+}
+
+void Swapchain::FinishProbeSample(CommandScheduler& scheduler, uint64_t tick) {
+	if (!m_probe_reading) {
+		return;
+	}
+	m_probe_reading = false;
+	scheduler.Wait(tick);
+	const auto* bytes = static_cast<const uint8_t*>(m_probe_mapped);
+	uint64_t    lit   = 0;
+	uint64_t    hash  = 14695981039346656037ull;
+	for (uint64_t offset = 0; offset < m_probe_size; ++offset) {
+		lit += bytes[offset] != 0;
+	}
+	for (uint64_t offset = 0; offset + 4 <= m_probe_size; offset += 4) {
+		uint32_t pixel = 0;
+		std::memcpy(&pixel, bytes + offset, sizeof(pixel));
+		hash = (hash ^ pixel) * 1099511628211ull;
+	}
+	const auto at = [&](uint64_t offset) {
+		return fmt::format("{:02x}{:02x}{:02x}{:02x}", bytes[offset], bytes[offset + 1],
+		                   bytes[offset + 2], bytes[offset + 3]);
+	};
+	const uint64_t center = (m_probe_size / 2) & ~3ull;
+	// Bytes rather than pixels: an opaque alpha channel makes every pixel nonzero, while a black
+	// frame still lights a quarter of its bytes.
+	PRESENT_PROBE_LOG("[present-check] real={} {}x{} {} lit={}/{} hash={:016x} first={} center={}\n",
+	                  m_probe_real, m_probe_extent.width, m_probe_extent.height,
+	                  vk::to_string(m_probe_format), lit, m_probe_size, hash, at(0), at(center));
 }
 
 Presenter::Presenter(WindowContext& window): Presenter(window, 0) {}
@@ -1161,6 +1281,7 @@ void Presenter::Impl::Present() {
 			RecoverSwapchain(status);
 			continue;
 		}
+		swapchain.FinishProbeSample(present_scheduler, tick);
 
 		presented_overlay_revision.store(overlay_visual.revision, std::memory_order_release);
 		window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
