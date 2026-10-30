@@ -10,6 +10,14 @@ on:
 env:
   KYTY_BUILD_ORIGIN: ${{ github.repository != 'Coder787-source/KytyPlus' && 'Fork' || github.event_name == 'push' && 'Official' || 'Source' }}
   KYTY_BUILD_REPOSITORY: ${{ github.repository }}
+  # Branch builds publish an auto-numbered release on every push. Set to 'true' to restore that.
+  # A pushed vN.M tag ignores this switch: tagging is already the explicit intent to publish.
+  KYTY_PUBLISH_RELEASE: 'false'
+  # The one place the SignPath token enters this workflow. Do not put the token itself on the line
+  # below — this file is public, and a committed token stays recoverable after a delete. Store it as
+  # the repository secret SIGNPATH_API_TOKEN (Settings -> Secrets and variables -> Actions ->
+  # New repository secret) and it lands here. Empty means the signing steps are skipped.
+  SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
 
 jobs:
   metadata:
@@ -22,6 +30,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.release_tag.outputs.tag }}
       asset_prefix: ${{ steps.release_tag.outputs.prefix }}
+      publish_release: ${{ steps.release_tag.outputs.publish }}
 
     steps:
       - name: Generate release tag
@@ -36,6 +45,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
             echo "prefix=KytyPlus-$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           highest="$(curl -fsS -H "authorization: Bearer $GITHUB_TOKEN" \
@@ -53,6 +63,7 @@ jobs:
           fi
           echo "tag=v$major.$minor" >> "$GITHUB_OUTPUT"
           echo "prefix=KytyPlus-v$major.$minor" >> "$GITHUB_OUTPUT"
+          echo "publish=$KYTY_PUBLISH_RELEASE" >> "$GITHUB_OUTPUT"
 
   windows:
     name: Build KytyPlus (Windows)
@@ -164,7 +175,73 @@ jobs:
           # can launch it without a chmod at runtime.
           chmod +x _Build/windows/install/shadPS4.exe
           ls -la _Build/windows/install/shadPS4.exe
+      # SignPath takes a GitHub artifact id, so the unsigned tree is uploaded first, the request is
+      # submitted for that id, and the signed tree then replaces it under the release artifact name.
+      # Without SIGNPATH_API_TOKEN configured the build uploads the unsigned tree directly, so forks
+      # and PRs keep working.
+      # A mistyped secret name disables signing quietly and the run still goes green, so name the
+      # path this run takes. The token itself is never printed.
+      - name: Report signing mode
+        shell: bash
+        run: |
+          if [[ -n "$SIGNPATH_API_TOKEN" ]]; then
+            echo "SignPath token present: Windows binaries will be signed"
+          else
+            echo "::warning::SIGNPATH_API_TOKEN is empty - the Windows build stays unsigned"
+          fi
+
+      - name: Upload unsigned Windows artifacts
+        id: upload-unsigned-artifact
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPlus-Windows-Unsigned
+          path: _Build/windows/install/**
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Sign Windows binaries (SignPath)
+        id: sign-windows
+        if: ${{ steps.upload-unsigned-artifact.outputs.artifact-id != '' }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: '${{ env.SIGNPATH_API_TOKEN }}'
+          organization-id: '4413fbaa-fa93-4c8d-aaef-7a407baf48a3'
+          project-slug: 'KytyPlus'
+          signing-policy-slug: 'test-signing'
+          github-artifact-id: '${{ steps.upload-unsigned-artifact.outputs.artifact-id }}'
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: '_Build/windows/signed'
+
+      - name: Verify signed Windows artifacts
+        if: ${{ steps.sign-windows.outputs.signing-request-id != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir=_Build/windows/signed
+          find "$dir" -maxdepth 2 | head -30
+          if [[ ! -f "$dir/kyty_emulator.exe" ]]; then
+            # The download keeps the archive shape it was handed; unpack it so the tree below
+            # matches what the unsigned upload contained.
+            archive="$(find "$dir" -maxdepth 1 -name '*.zip' -print -quit)"
+            test -n "$archive" || { echo "::error::SignPath returned no kyty_emulator.exe"; exit 1; }
+            unzip -o -q "$archive" -d "$dir"
+          fi
+          test -f "$dir/kyty_emulator.exe"
+          test -f "$dir/kyty_launcher.exe"
+          ls -la "$dir/kyty_emulator.exe" "$dir/kyty_launcher.exe"
+
+      - name: Upload signed Windows artifacts
+        if: ${{ steps.sign-windows.outputs.signing-request-id != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPlus-Windows-x64
+          path: _Build/windows/signed/**
+          if-no-files-found: error
+
       - name: Upload Windows artifacts
+        if: ${{ steps.upload-unsigned-artifact.outputs.artifact-id == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: KytyPlus-Windows-x64
@@ -239,6 +316,9 @@ jobs:
         run: |
           cmake --install _Build/macos --prefix _Build/macos/install
 
+      # SignPath issues Authenticode signatures for Windows PE files only, so there is no signing
+      # request in this job: an ad-hoc signature is what macOS accepts without an Apple Developer
+      # certificate, and Developer ID plus notarization needs an Apple account, not CI secrets.
       - name: Re-sign installed emulator (RPATH fixup invalidates POST_BUILD signature)
         shell: bash
         run: |
@@ -471,6 +551,8 @@ jobs:
           # is launchable by the dispatcher without a runtime chmod.
           chmod +x _Build/linux/install/shadps4
           ls -la _Build/linux/install/shadps4
+      # No signing request here either: ELF has no in-place publisher signature for SignPath to
+      # attach, so the Linux build ships exactly as the compiler emitted it.
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -484,6 +566,7 @@ jobs:
       always() &&
       github.event_name == 'push' &&
       github.repository == 'Coder787-source/KytyPlus' &&
+      needs.metadata.outputs.publish_release == 'true' &&
       (needs.windows.result == 'success' ||
        needs.macos.result == 'success' ||
        needs.linux.result == 'success')
