@@ -81,22 +81,32 @@ inherits that capability and adds an optimization/tooling layer on top — see t
 
 ### Features exclusive to KytyPlus
 
-These are **not** in upstream Kyty or KytyPS5. Each is implemented, compiled, and wired into a
-real code path. Game-level benefit is **not yet validated** on real hardware — that is what
-testers are for.
+These are **not** in upstream Kyty or KytyPS5. Each is implemented and compiled; the first group is
+wired into a live code path, the second is mechanism only. Game-level benefit is **not yet
+validated** on real hardware — that is what testers are for.
 
 **Fully wired, validated where noted:**
 
-- **Shader / pipeline disk cache** — compiled Vulkan pipelines persist to `_Cache/vulkan_pipeline_cache.bin` and reload on subsequent launches, skipping work for shaders that haven’t changed. A compatibility check rejects stale caches. *(First in the PS5 scene. Game-level benefit unvalidated.)*
-- **FSR 1.0 upscaler** — edge-adaptive spatial upscaling (EASU + RCAS), works on all Vulkan GPUs (AMD / NVIDIA / Intel). Configurable via the launcher (method + sharpness); auto-enabled on iGPUs. Falls back to a plain blit if the GPU can’t handle it. *(First in the PS5 scene. The upscaler runs; the internal-resolution-reduction / bandwidth-saving half is not yet wired.)*
-- **Configurable present path** — present mode (VSync / Mailbox / Immediate), present filter (Nearest / Linear / Cubic), and aspect ratio (Stretch / 16:9 / 4:3 / Integer). *(First in the PS5 scene.)*
+- **Shader / pipeline disk cache** — compiled Vulkan pipelines persist to `_PipelineCache/<TitleID>.bin` and reload on subsequent launches, skipping work for shaders that haven’t changed. A compatibility check rejects stale caches. *(First in the PS5 scene. Game-level benefit unvalidated.)*
+- **Configurable present mode** — VSync / Mailbox / Immediate, selected in the launcher and applied when the swapchain is created, with a fallback to a mode the surface actually offers. *(First in the PS5 scene.)*
 - **PKG package parser + full PFS filesystem parser** — parses Sony `.pkg` package files (PS4/PS5 digital games / updates) via `--install-pkg`, extracts the inner PFS image, then walks the full filesystem (PFS superblock, D32/S32/S64 inodes, directory enumeration, indirect block traversal, PFSC/zlib decompression). *(First in the PS5 scene.)*
 - **Install .PKG GUI buttons** — "Install Package (.pkg)" buttons in the launcher, so users no longer need the command line to install. Fixes the discoverability gap where users previously couldn't find the install path.
 -  **Unified PS4/PS5 dispatch** — auto-detects PS4 vs PS5 from the game ELF and dispatches PS4 titles to an embedded **shadPS4** subprocess, reparenting its window into KytyPlus with unified saves.
 
-**Wired, validated only as mechanism / spec, not on real games or hardware:**
+**Implemented; validated only as mechanism / spec, not on real games or hardware:**
 
-- **iGPU auto-optimization** — detects integrated GPUs (e.g. Radeon 780M-class) via the Vulkan device type and automatically enables FSR 1.0 + a texture LOD bias to cut bandwidth. `force_igpu_mode` lets you opt in on a discrete GPU for testing. *(First PS5 emulator to focus on iGPU optimization. Game-level benefit unvalidated.)*
+- **FSR 1.0 upscaler** — edge-adaptive spatial upscaling (EASU + RCAS) implemented in
+  `src/graphics/presentation/fsrUpscaler.cpp`, selectable in the launcher (method + sharpness). The
+  code compiles and the setting round-trips, but the present path does not call it yet, so frames
+  are scaled by the swapchain blit instead. *(Not in effect until it is wired.)*
+- **Present filter and aspect ratio** — `present_filter` (Nearest / Linear / Cubic) and
+  `aspect_ratio` (Stretch / 16:9 / 4:3 / Integer) parse, persist and appear in the launcher;
+  `GetPresentFilter()` and `GetAspectRatio()` still have no callers in the graphics code.
+- **iGPU auto-optimization** — detects integrated GPUs (e.g. Radeon 780M-class) via the Vulkan
+  device type and applies the iGPU defaults: a texture LOD bias and present-mode adjustments. It
+  deliberately leaves the user's FSR choice alone (`ApplyIgpuDefaults` in
+  `src/common/emulatorConfig.cpp`). `force_igpu_mode` lets you opt in on a discrete GPU for testing.
+  *(First PS5 emulator to focus on iGPU optimization. Game-level benefit unvalidated.)*
 - **UMA heap detection** — detects unified-memory architectures (device-local + host-visible + host-coherent). Detection is live; the staging-bypass itself is not yet wired.
 - **Bandwidth-aware adaptive LOD bias** — monitors frame timing and ramps texture LOD bias up under bandwidth pressure / down with headroom, invalidating stale samplers via a generation counter. *(First in the PS5 scene. Mechanism self-validatable; game-level benefit unvalidated.)*
 - **MMIO bus + NVMe LLE foundation** — a real address-range router for memory-mapped devices (registered in the boot path) plus an NVMe controller rewritten as an `MmioDevice` talking to the real MMU. *(First LLE infrastructure in the PS5 scene. Not yet exercised by games — groundwork, not a working storage path.)*
@@ -104,8 +114,9 @@ testers are for.
 - **EXIT diagnostics** — 24 highest-impact unimplemented-path guards upgraded from raw condition strings to descriptive messages, so tester crash logs say what opcode/register/syscall was missing. *(No-regression.)*
 - **Config validation** — case-insensitive parsing, deprecated names transparently migrated (e.g. `Fsr31` → `Fsr1`), invalid values rejected with a clear log message.
 > [!NOTE]
-> All of the above are implemented, compiled, and wired in. Game-level benefit is **not yet
-> verified**. That’s why we need testers to be able to test these
+> All of the above are implemented and compiled. The first group is wired into a live code path;
+> the second group is mechanism only and not in effect yet. Game-level benefit is **not yet
+> verified** either way. That’s why we need testers to be able to test these
 > features, so that together, we can build a better emulator.
 
 Compatibility is still **early**. A title that no longer hits one known crash will often hit the
@@ -136,8 +147,8 @@ Multi-minute session on a dev build (post-v3.4).
 - **Rendering correctness:** the game's first interactive screen (content-warning / title flow)
   draws with **no visible graphical glitches** — crisp text, correct layout, working QR code,
   no corruption or garbling anywhere in the frame.
-- **Presentation:** the game allocates and renders native 3840×2160 buffers; FSR 1.0
-  (EASU + RCAS) upscales them into the window correctly. The present path is stable end-to-end.
+- **Presentation:** the game allocates and renders native 3840×2160 buffers; the presenter scales
+  them into the 1166×656 window with a single filtered blit. The present path is stable end-to-end.
 - **Stability:** 4,088 frames and ~149,000 GPU submits over a ~4-minute session with **zero GPU
   hangs, zero device losses, zero crashes**, ending in a clean exit — no Windows driver reset
   (TDR) was triggered at any point.
@@ -284,7 +295,7 @@ documentation only.
 1. Open the repository **Releases** page.
 2. Download the latest install zip (full `_Build/windows/install` tree — **not** a lone `.exe`).
 3. Extract somewhere writable (example: `C:\KytyPlus\`).
-4. Run `launcher.exe` or `kyty_emulator.exe` as described in [Running](#running).
+4. Run `kyty_launcher.exe` or `kyty_emulator.exe` as described in [Running](#running).
 
 > [!IMPORTANT]
 > Under GPL-2.0, redistributed binaries must be paired with corresponding source availability.
@@ -329,7 +340,7 @@ cmake --install _Build/windows --prefix _Build/windows/install
 Replace the Qt path with your installed version. After a successful install you should have:
 
 ```text
-_Build\windows\install\launcher.exe
+_Build\windows\install\kyty_launcher.exe
 _Build\windows\install\kyty_emulator.exe
 ```
 
@@ -447,7 +458,7 @@ Update GPU drivers before reporting graphics bugs.
 ### Graphical launcher
 
 ```powershell
-.\_Build\windows\install\launcher.exe
+.\_Build\windows\install\kyty_launcher.exe
 ```
 
 1. Open global settings and add a folder that contains your dumped games.
