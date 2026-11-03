@@ -46,7 +46,7 @@ jobs:
           highest="$(curl -fsS -H "authorization: Bearer $GITHUB_TOKEN" \
                          "https://api.github.com/repos/$GITHUB_REPOSITORY/tags?per_page=100" |
                      grep -oE '"name": "v[0-9]+\.[0-9]+"' | grep -oE '[0-9]+\.[0-9]+' |
-                     sort -nr | head -1)"
+                     sort -nr | head -1 || true)"
           : "${highest:=0.0}"
           major="${highest%%.*}"
           minor="$(( ${highest##*.} + 1 ))"
