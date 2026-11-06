@@ -1,5 +1,20 @@
 # KytyPlus
 
+> [!IMPORTANT]
+> ## KytyPlus Leadership & Community Development
+>
+> I am stepping back from actively leading KytyPlus development. Maintaining the project has become increasingly demanding, and I can no longer commit the time and energy needed for regular development.
+>
+> **This does not necessarily mean the end of KytyPlus.** I am exploring whether some KytyPlus-specific improvements can be contributed upstream to [KytyPS5](https://github.com/KytyPS5/KytyPS5). No upstream integration or project retirement is confirmed yet.
+>
+> **Want to keep KytyPlus going?**
+> - **Fork it:** You're welcome to fork the repository and continue development independently, in accordance with its license.
+> - **Discuss co-development:** If you have experience with C++, Vulkan, graphics programming, or emulator development and would like to help maintain the official project, contact me at **keshakantamani@gmail.com**. Potential collaborators can start by submitting pull requests.
+>
+> I intend to retain ownership of this repository. I may return to active development someday, but I can't promise when or whether that will happen.
+>
+> Thank you to everyone who has followed and supported KytyPlus. To anyone who continues the project, I'll be cheering you on and supporting you from the sidelines whenever I can!
+
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4.svg)](#system-requirements)
 [![Status](https://img.shields.io/badge/status-Early%20Development-blue.svg)](#current-status)
 [![License](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
