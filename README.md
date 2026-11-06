@@ -9,7 +9,7 @@
 >
 > **Want to keep KytyPlus going?**
 > - **Fork it:** You're welcome to fork the repository and continue development independently, in accordance with its license.
-> - **Discuss co-development:** If you have experience with C++, Vulkan, graphics programming, or emulator development and would like to help maintain the official project, contact me at **keshakantamani@gmail.com**. Potential collaborators can start by submitting pull requests.
+> - **Discuss co-development:** If you have experience with C++, Vulkan, graphics programming, or emulator development and would like to help maintain the official project, contact me at **keshavkantamani@gmail.com**. Potential collaborators can start by submitting pull requests.
 >
 > I intend to retain ownership of this repository. I may return to active development someday, but I can't promise when or whether that will happen.
 >
