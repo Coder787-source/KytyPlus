@@ -59,6 +59,7 @@ headline compatibility number for the project.
 | Crash Bandicoot 4: It's About Time | PPSA02433 | Ingame (broken) (intro cutscene chain plays end-to-end; gameplay starts but is broken - crashes or corrupt visuals; upstream v0.0.5.5 gets farther than KytyPlus - #88) | v3.8 | maintainer (Radeon 840M) + [#88](https://github.com/KytyPS5/KytyPS5/issues/88) |
 | Dead Cells | PPSA-15554 | Playable | v4.1 | [#3](https://github.com/Coder787-source/KytyPlus/issues/3) |
 | Demon's Souls | PPSA01341 | Does not boot | v4.2 | [#16](https://github.com/Coder787-source/KytyPlus/issues/16) |
+| GRAN TURISMO 7 PPSA01317 |  | Other | 0.3.0 | [#20](https://github.com/Coder787-source/KytyPlus/issues/20) |
 | Klonoa Phantasy Reverie Series | PPSA04795 | Playable | v3.9 | [#WBa1htjsqc8](https://www.youtube.com/watch?v=WBa1htjsqc8&t=2s) |
 | Minecraft | PPSA17221 | Playable | v4.0 | maintainer |
 | Silent Hill 2 Remake | PPSA08709 | Other (interactive content-warning screen; stable 4-min run, single-digit FPS, first iGPU result; could boot further but untested, upstream baseline: crash at boot/splash #210, #77) | v3.5 | maintainer (Radeon 840M) |
