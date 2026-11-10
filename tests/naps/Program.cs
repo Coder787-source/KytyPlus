@@ -47,6 +47,38 @@ internal static class NapsRegressionTests
         Check(KrakenDecoder.DecodeBlock(entropy.AsSpan(0, entropy.Length - 1), 0, entropy.Length - 1,
             new byte[expected.Length]) != KrakenDecodeStatus.Success, "Truncated entropy must be rejected");
 
+        // Run bases name a 256-KiB block (bits 49..63 plus the ninth byte, doubled) and the next
+        // record gives the offset inside it. These nine-byte records are the tail of a 134 GB PS5
+        // package: a run, then three data records (metadata block, then its neighbours).
+        {
+            var records = new List<byte>();
+            // run: start=0xF93F0 (low 15 bits 0x73F0 in bits 49.., high bits 0x1F in byte 9), COffset 0
+            ulong runBits = (1UL << 18) | ((ulong)(0xF93F0 & 0x7fff) << 49);
+            Span<byte> r = stackalloc byte[9];
+            BinaryPrimitives.WriteUInt64LittleEndian(r, runBits); r[8] = (byte)(0xF93F0 >> 15);
+            records.AddRange(r.ToArray());
+            foreach (ulong coff in new ulong[] { 0x10000, 0x105F5, 0x13D43 })
+            {
+                BinaryPrimitives.WriteUInt64LittleEndian(r, coff); r[8] = 0x01;
+                records.AddRange(r.ToArray());
+            }
+            var big = (NapsExtractor)RuntimeHelpers.GetUninitializedObject(typeof(NapsExtractor));
+            typeof(NapsExtractor).GetField("naps", fields)!.SetValue(big, records.ToArray());
+            typeof(NapsExtractor).GetField("cblocks", fields)!.SetValue(big, 4);
+            typeof(NapsExtractor).GetField("cblockStart", fields)!.SetValue(big, 0);
+            typeof(NapsExtractor).GetField("innerSize", fields)!.SetValue(big, 0x1F281B0000L);
+            var disk = typeof(NapsExtractor).GetMethod("DiskOffset", fields)!;
+            Check((long)disk.Invoke(big, new object[] { 1 })! == 0x1F27E10000L, "First block after a run starts at the run's 256-KiB block");
+            Check((long)disk.Invoke(big, new object[] { 2 })! == 0x1F27E105F5L, "Next block follows the previous block's stored length");
+            Check((long)disk.Invoke(big, new object[] { 3 })! == 0x1F27E13D43L, "Offsets accumulate across data records");
+            // An unchanged offset between two data records is a whole 256-KiB block stored verbatim.
+            BinaryPrimitives.WriteUInt64LittleEndian(r, 0x1000); r[8] = 1;
+            var same = new List<byte>(records.Take(9)); same.AddRange(r.ToArray()); same.AddRange(r.ToArray()); same.AddRange(r.ToArray());
+            typeof(NapsExtractor).GetField("naps", fields)!.SetValue(big, same.ToArray());
+            typeof(NapsExtractor).GetField("cblocks", fields)!.SetValue(big, 4);
+            Check((long)disk.Invoke(big, new object[] { 3 })! == 0x1F27E00000L + 0x1000 + 2 * 0x40000, "Zero advance between data records is a stored 256-KiB block");
+        }
+
         GameImageTests.Run();
         Console.WriteLine("PASS: 19-bit file selectors, bare entropy, stored chunks, independent second chunks, truncated input");
         return 0;
