@@ -7,7 +7,8 @@ internal sealed class NapsExtractor : IDisposable
     readonly FileGameImage backing;
     readonly long imageBase, imageSize, superblock, cntBase;
     readonly byte[] naps;
-    readonly int files, ublocks, cblocks, fidxStart, u2cStart, cblockStart;
+    readonly int files, ublocks, cblocks, fidxStart;
+    int u2cStart, cblockStart;
     readonly long mountSize;
     long metadataBase;
     readonly List<long> boundaries = new();
@@ -58,6 +59,10 @@ internal sealed class NapsExtractor : IDisposable
         public long TweakExtended19 => (long)(((Bits >> 19) & 0x7ffff) | ((ulong)Extra << 19));
         // Run records also carry a position in their top 16 bits, at 64-KiB granularity.
         public long HighBase => (long)(Bits >> 48) << 16;
+        // A run record holds twice the 256-KiB block index of the disk position where its run starts:
+        // 15 bits at 49..63 and the low 8 bits of the ninth byte above them. The next data record
+        // supplies the byte offset inside that block (its COffset).
+        public long RunStart => (long)(((Bits >> 49) & 0x7fff) | ((ulong)Extra << 15));
     }
     Block C(int index)
     {
@@ -82,17 +87,19 @@ internal sealed class NapsExtractor : IDisposable
         long relative = 0;
         for (int i = r + 1; i < index; ++i)
         {
+            // The next record's offset inside its 256-KiB block marks where this block's stored bytes
+            // end. An unchanged offset is a full 256-KiB block stored verbatim.
             int advance = (C(i + 1).COffset - C(i).COffset) & 0x3ffff;
-            relative += advance == 0 && C(i).Predictor == 4 ? 0x40000 : advance;
+            relative += advance == 0 ? 0x40000 : advance;
         }
-        // Four readings of the run base. The metadata superblock decides which one a package uses,
-        // so the choice is proven by content rather than assumed. The ninth byte only matters for
-        // images too large for the low fields, which is why small packages agree across all four.
+        // Mode 0 is the real addressing: the run record gives the 256-KiB block, the next record the
+        // offset inside it. Modes 1-4 are the earlier guesses, kept only as a fallback for the probe.
         long offset = m_base_mode switch {
-            1 => checked(run.HighBase + (run.COffset & 0x3ffff) + relative),
-            2 => checked((run.TweakWide << 15) + (first.COffset & 0xffff) + relative),
-            3 => checked((run.TweakExtended19 << 15) + (first.COffset & 0xffff) + relative),
-            _ => checked((run.Tweak << 15) + (first.COffset & 0xffff) + relative),
+            1 => checked((run.Tweak << 15) + (first.COffset & 0xffff) + relative),
+            2 => checked(run.HighBase + (run.COffset & 0x3ffff) + relative),
+            3 => checked((run.TweakWide << 15) + (first.COffset & 0xffff) + relative),
+            4 => checked((run.TweakExtended19 << 15) + (first.COffset & 0xffff) + relative),
+            _ => checked(run.RunStart / 2 * 0x40000 + first.COffset + relative),
         };
         if (Environment.GetEnvironmentVariable("KYTY_NAPS_TRACE") == "1")
             Console.Error.WriteLine($"  disk: block={index} run={r} mode={m_base_mode} runBits=0x{run.Bits:X16} " +
@@ -109,6 +116,72 @@ internal sealed class NapsExtractor : IDisposable
                 $"tweak=0x{run.Tweak:X} high=0x{run.HighBase:X} gap=0x{index - r - 1:X} " +
                 $"relative=0x{relative:X} offset=0x{offset:X} image=0x{innerSize:X}");
         return offset;
+    }
+
+    // A run record must be followed by a data record, and the position it names must lie inside the
+    // image. Records read at the wrong offset break this within a few hundred entries.
+    bool CblocksConsistent(out bool monotone)
+    {
+        monotone = true;
+        long previous = -1;
+        for (int i = 0; i < cblocks; ++i)
+        {
+            Block record = C(i);
+            if (!record.Run) continue;
+            if (i + 1 >= cblocks || C(i + 1).Run) return false;
+            long start = record.RunStart;
+            if (start / 2 * 0x40000 + C(i + 1).COffset >= innerSize) return false;
+            if (start < previous) monotone = false;
+            previous = start;
+        }
+        return true;
+    }
+    // u2c entries are a 24-bit base plus seven deltas from it, all non-decreasing and inside the table.
+    bool U2cConsistent()
+    {
+        int count = (ublocks + 8) >> 3;
+        long previous = 0;
+        for (int e = 0; e < count; ++e)
+        {
+            int p = u2cStart + e * 10;
+            if (p + 10 > naps.Length) return false;
+            long b = naps[p] | naps[p + 1] << 8 | naps[p + 2] << 16;
+            if (b < previous || b >= cblocks) return false;
+            int d = 0;
+            for (int k = 3; k < 10; ++k) { if (naps[p + k] < d) return false; d = naps[p + k]; }
+            previous = b;
+        }
+        return true;
+    }
+    void LocateTables()
+    {
+        int u2cEntries = (ublocks + 8) >> 3;
+        long bestCost = long.MaxValue; int bestU = 0, bestC = 0, bestF = 0;
+        int legacyU = checked(fidxStart + files * 6), legacyC = checked(legacyU + u2cEntries * 10);
+        // (fidx entries, u2c padding) in preference order: the exact-fit arithmetic first.
+        var tried = new HashSet<(int, int)>();
+        foreach (int extra in new[] { 1, 0, 2, 3, 4, 5, 6, 7, 8 })
+        {
+        foreach (int mode in new[] { 0, 1, 2 }) // 0 exact, 1 cblocks rounded up to 8, 2 u2c padded to 16 then rounded
+        {
+            long fe = fidxStart + (long)(files + extra) * 6;
+            long u = mode == 2 ? (fe + 15) & ~15L : fe;
+            long c = u + (long)u2cEntries * 10;
+            if (mode != 0) c = (c + 7) & ~7L;
+            if (c + (long)cblocks * 9 > naps.Length || !tried.Add(((int)u, (int)c))) continue;
+            u2cStart = (int)u; cblockStart = (int)c;
+            if (!CblocksConsistent(out bool mono)) continue;
+            long cost = (mono ? 0 : 2) + (U2cConsistent() ? 0 : 1);
+            if (cost < bestCost) { bestCost = cost; bestU = (int)u; bestC = (int)c; bestF = files + extra; }
+            if (cost == 0) break;
+        }
+        if (bestCost == 0) break;
+        }
+        if (bestCost == long.MaxValue) { u2cStart = legacyU; cblockStart = legacyC; bestF = files; }
+        else { u2cStart = bestU; cblockStart = bestC; }
+        if (Environment.GetEnvironmentVariable("KYTY_NAPS_TRACE") == "1")
+            Console.WriteLine($"NAPS TABLES: fidxEntries={bestF} u2c=0x{u2cStart:X} cblocks=0x{cblockStart:X} " +
+                              $"cost={(bestCost == long.MaxValue ? -1 : bestCost)} (legacy u2c=0x{legacyU:X} cblocks=0x{legacyC:X})");
     }
 
     public NapsExtractor(string path, string? debugPasscode = null)
@@ -172,9 +245,12 @@ internal sealed class NapsExtractor : IDisposable
         files = checked((int)(a & 0xffffff) + 1); ublocks = (int)((a >> 32) & 0xffffff);
         cblocks = checked((int)((b >> 24) & 0xffffff) + 2);
         fidxStart = checked(16 + (int)(b & 0xffffff) * 8 + (int)((a >> 28) & 15) * 8);
-        // Native NAPS uses numFiles fidx entries and an extra terminal cblock.
-        u2cStart = checked(fidxStart + files * 6);
-        cblockStart = checked(u2cStart + ((ublocks + 8) >> 3) * 10);
+        // The sections after the header are contiguous, but the file-offset table holds a
+        // package-dependent number of entries (numFiles plus terminal/padding pseudo-entries), so
+        // where the u2c and CblockInfo tables start cannot be computed from the header alone. Every
+        // plausible placement is tried and the one whose records are self-consistent is used; a
+        // table read even a few bytes off shifts every 9-byte record and corrupts all addresses.
+        LocateTables();
         Range(naps.Length, cblockStart, (long)cblocks * 9);
         for (int i = 0; i < files; ++i)
         {
@@ -232,6 +308,7 @@ internal sealed class NapsExtractor : IDisposable
     {
         Block e = C(index), next = C(index + 1);
         int compressed = (next.COffset - e.COffset) & 0x3ffff;
+        if (compressed == 0) compressed = 0x40000; // unchanged offset: a full block stored verbatim
         if (compressed <= 0 || compressed > 0x40000) throw new InvalidDataException($"Invalid NAPS compressed length at entry {index}");
         // The caller knows the exact uncompressed bytes for this file block.
         // UOffset is a doubled logical position, and its delta can also include
@@ -251,15 +328,6 @@ internal sealed class NapsExtractor : IDisposable
         // and restart independently. Do not guess/invert modes: the wrong
         // literal predictor can return Success with corrupted output.
         int flag = e.Predictor | ((int)((e.Bits >> 59) & 7) << 4);
-        // A record whose predictor groups and decoded-length field are all zero carries no
-        // compression parameters at all, so it cannot describe a Kraken stream: the bytes on disk
-        // are the block, and the gap between the stored span and the logical size is padding.
-        // Gran Turismo 7's metadata block is exactly this (flag=00, even=1, stored=0x3CCAC for a
-        // 0x40000 block) while every block that decodes here has both fields set.
-        if (flag == 0 && e.EvenLength <= 1) {
-            source.AsSpan(0, Math.Min(source.Length, length)).CopyTo(full);
-            return full;
-        }
         var status = LibProsperoPkg.PFS.Compression.Oodle.KrakenDecoder.DecodeBlock(source, flag, e.EvenLength, full);
         if (trace != 0) Console.Error.WriteLine($"  flag=0x{flag:X2} result={status}");
         if (status == LibProsperoPkg.PFS.Compression.Oodle.KrakenDecodeStatus.Success)
@@ -309,9 +377,9 @@ internal sealed class NapsExtractor : IDisposable
         {
             if (tried == MaxMetadataCandidates) break;
             ++tried;
-            // The run record has four candidate readings of the disk base. The superblock decides
+            // Mode 0 is the real addressing; modes 1-4 are older readings kept as a fallback. The superblock decides
             // which one this package uses, so the choice is recorded here rather than assumed.
-            for (int mode = 0; mode < 4; ++mode)
+            for (int mode = 0; mode < 5; ++mode)
             {
                 m_base_mode = mode;
                 cache.Clear(); cacheOrder.Clear();
